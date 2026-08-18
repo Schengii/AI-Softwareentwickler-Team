@@ -22,14 +22,27 @@ DEFAULT_AGENT_MODEL: str = os.getenv("DEFAULT_AGENT_MODEL", "gemini-3.6-flash")
 
 # Agenten-spezifische Modelle (kann überschrieben werden)
 AGENT_MODELS: dict[str, str] = {
-    "ui_ux":         os.getenv("UI_UX_MODEL",    DEFAULT_AGENT_MODEL),
-    "frontend":      os.getenv("FRONTEND_MODEL", DEFAULT_AGENT_MODEL),
-    "backend":       os.getenv("BACKEND_MODEL",  DEFAULT_AGENT_MODEL),
-    "database":      os.getenv("DATABASE_MODEL", DEFAULT_AGENT_MODEL),
-    "devops":        os.getenv("DEVOPS_MODEL",   DEFAULT_AGENT_MODEL),
-    "tester":        os.getenv("TESTER_MODEL",   DEFAULT_AGENT_MODEL),
-    "documentation": os.getenv("DOCS_MODEL",     DEFAULT_AGENT_MODEL),
-    "security":      os.getenv("SECURITY_MODEL", DEFAULT_AGENT_MODEL),
+    # Kern-Entwicklungsteam
+    "ui_ux":             os.getenv("UI_UX_MODEL",          DEFAULT_AGENT_MODEL),
+    "frontend":          os.getenv("FRONTEND_MODEL",       DEFAULT_AGENT_MODEL),
+    "backend":           os.getenv("BACKEND_MODEL",        DEFAULT_AGENT_MODEL),
+    "database":          os.getenv("DATABASE_MODEL",       DEFAULT_AGENT_MODEL),
+    "devops":            os.getenv("DEVOPS_MODEL",         DEFAULT_AGENT_MODEL),
+    "tester":            os.getenv("TESTER_MODEL",         DEFAULT_AGENT_MODEL),
+    "documentation":     os.getenv("DOCS_MODEL",           DEFAULT_AGENT_MODEL),
+    "security":          os.getenv("SECURITY_MODEL",       DEFAULT_AGENT_MODEL),
+    # Neue Agenten (v1.2)
+    "mobile":            os.getenv("MOBILE_MODEL",         DEFAULT_AGENT_MODEL),
+    "ml":                os.getenv("ML_MODEL",             DEFAULT_AGENT_MODEL),
+    "performance":       os.getenv("PERFORMANCE_MODEL",    DEFAULT_AGENT_MODEL),
+    "i18n":              os.getenv("I18N_MODEL",           DEFAULT_AGENT_MODEL),
+    # Phasen-Agenten
+    "business_analyst":  os.getenv("BA_MODEL",             DEFAULT_AGENT_MODEL),
+    "architect":         os.getenv("ARCHITECT_MODEL",      DEFAULT_AGENT_MODEL),
+    "code_reviewer":     os.getenv("CODE_REVIEWER_MODEL",  DEFAULT_AGENT_MODEL),
+    # Utility-Agenten
+    "readme":            os.getenv("README_MODEL",         DEFAULT_AGENT_MODEL),
+    "github":            os.getenv("GITHUB_MODEL",         DEFAULT_AGENT_MODEL),
 }
 
 # ──────────────────────────────────────────

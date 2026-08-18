@@ -47,6 +47,14 @@ AVAILABLE_AGENTS = {
         "name": "Sicherheits-Analyst",
         "description": "Analysiert Code auf Sicherheitslücken, empfiehlt Best Practices und prüft OWASP-Compliance."
     },
+    "readme": {
+        "name": "README-Agent",
+        "description": "Aktualisiert die README.md des Projekts bei Änderungen, neuen Features oder Strukturänderungen."
+    },
+    "github": {
+        "name": "GitHub-Agent",
+        "description": "Generiert Commit-Messages, Branch-Strategien, PR-Beschreibungen und Git-Workflow-Empfehlungen."
+    },
 }
 
 DECOMPOSE_SYSTEM_PROMPT = """Du bist ein erfahrener Software-Architekt und Projektmanager.

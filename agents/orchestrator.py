@@ -21,6 +21,8 @@ from agents.devops_agent import DevOpsAgent
 from agents.tester_agent import TesterAgent
 from agents.documentation_agent import DocumentationAgent
 from agents.security_agent import SecurityAgent
+from agents.readme_agent import ReadmeAgent
+from agents.github_agent import GitHubAgent
 from core.task_manager import TaskManager
 from core.result_aggregator import ResultAggregator
 from core.message_bus import AgentResult, AgentTask
@@ -51,6 +53,8 @@ class Orchestrator:
             "tester":        TesterAgent(),
             "documentation": DocumentationAgent(),
             "security":      SecurityAgent(),
+            "readme":        ReadmeAgent(),
+            "github":        GitHubAgent(),
         }
 
         # Hilfssysteme

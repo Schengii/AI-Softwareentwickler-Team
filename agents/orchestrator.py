@@ -9,11 +9,18 @@ Workflow:
    - 🎨 Design, Media & Content (geführt von Creative Lead)
    - 🟡 Qualität, DevOps & Security (geführt von QA & Operations Lead)
    - 🔴 Excellence, Hygiene & Evolution (geführt von Governance Lead)
-3. Die jeweiligen Fachbereichs-Teamleiter verteilen die Aufgaben an ihre Fachteams,
-   synchronisieren deren Zwischenschritte und konsolidieren die Deliverables.
-4. Jeder Teamleiter sendet seinen fertigen Fachbereichs-Bericht zurück an den Hauptagenten.
-5. Der Hauptagent sammelt alle Bereichs-Berichte, führt Sandbox-Prüfungen durch,
-   schreibt den Workspace (`workspace/<projekt>/`) und präsentiert dem Nutzer das fertige Ergebnis.
+3. Jeder Fachbereichs-Teamleiter delegiert per ECHTEM LLM-Aufruf konkrete
+   Arbeitsanweisungen an sein Fachteam, lässt es arbeiten (die Mitglieder haben
+   dabei echten Datei-/Werkzeugzugriff auf das Projektverzeichnis – siehe
+   agents/base_agent.py) und konsolidiert die Ergebnisse anschließend per
+   weiterem echten LLM-Aufruf zu einem geprüften Fachbereichsbericht.
+4. Nach der QA-Phase installiert der Hauptagent Abhängigkeiten in einer
+   isolierten Umgebung und führt die ECHTE Testsuite aus (core/verifier.py).
+   Bei Fehlschlägen wird anhand der realen Tracebacks ermittelt, welcher
+   Agent die betroffene Datei geschrieben hat – nur dieser bekommt den
+   gezielten Korrekturauftrag (statt blind alle Dev-Agenten neu zu starten).
+5. Der Hauptagent sammelt alle Fachbereichsberichte und präsentiert dem
+   Nutzer das geprüfte Gesamtergebnis.
 """
 
 import asyncio
@@ -60,28 +67,47 @@ from core.task_manager import TaskManager
 from core.result_aggregator import ResultAggregator
 from core.message_bus import AgentResult, AgentTask
 from core.workspace import WorkspaceManager
+from core.verifier import ProjectVerifier
 from memory.conversation_history import ConversationHistory
-from config import ORCHESTRATOR_MODEL, MAX_REVIEW_ITERATIONS, AUTO_SAVE_WORKSPACE
+from config import (
+    ORCHESTRATOR_MODEL,
+    AUTO_SAVE_WORKSPACE,
+    MAX_VERIFICATION_ITERATIONS,
+    ENABLE_DEPARTMENT_LEAD_EXECUTION,
+    AGENT_MAX_TOOL_ITERATIONS,
+)
+
+# Reine Prüf-/Berichts-Agenten: sollen bestehenden Code LESEN und bewerten, aber nicht
+# selbst umschreiben (das ist Aufgabe von refactoring/backend/etc.) – spart nebenbei auch
+# Tokens, da ihnen ein kleineres Werkzeug-Set (kein write_file/edit_file/run_command) angeboten wird.
+REVIEW_ONLY_AGENT_IDS = {"code_reviewer", "compliance", "project_cleaner"}
 
 StatusCallback = Callable[[str], None]
+
+# Reihenfolge & Anzeige der 5 Fachbereichs-Phasen. Die Mitgliederlisten stammen
+# zentral aus DEPARTMENT_DEFINITIONS (agents/department_lead_agent.py), damit
+# Orchestrator und Teamleiter-Prompts nie auseinanderlaufen können.
+PHASE_ORDER = [
+    ("planning_lead", "Fachbereich 1/5: Planung & Architektur", "👔", "sequential"),
+    ("dev_lead", "Fachbereich 2/5: Software-Entwicklung", "⚡", "parallel"),
+    ("creative_lead", "Fachbereich 3/5: Design & Content", "🎨", "parallel"),
+    ("qa_lead", "Fachbereich 4/5: Qualität & Security", "🛡️", "parallel"),
+    ("governance_lead", "Fachbereich 5/5: Review & Governance", "🔍", "sequential"),
+]
 
 
 class Orchestrator:
     """
-    Hauptagent, der die 5 Fachbereichs-Teamleiter und deren 30 Spezialisten koordiniert.
+    Hauptagent, der die 5 Fachbereichs-Teamleiter und deren 33 Spezialisten koordiniert.
     """
 
     def __init__(self):
         # 1. Fachbereichs-Teamleiter (Department Leads)
         self._dept_leads: dict[str, DepartmentLeadAgent] = {
-            "planning_lead":   DepartmentLeadAgent("planning_lead"),
-            "dev_lead":        DepartmentLeadAgent("dev_lead"),
-            "creative_lead":   DepartmentLeadAgent("creative_lead"),
-            "qa_lead":         DepartmentLeadAgent("qa_lead"),
-            "governance_lead": DepartmentLeadAgent("governance_lead"),
+            dept_id: DepartmentLeadAgent(dept_id) for dept_id in DEPARTMENT_DEFINITIONS
         }
 
-        # 2. Alle 30 spezialisierten Fachteam-Agenten
+        # 2. Alle 33 spezialisierten Fachteam-Agenten
         self._agents: dict[str, BaseAgent] = {
             # Phase 1: Führung, Planung & Recherche
             "team_lead":         TeamLeadAgent(),
@@ -160,15 +186,27 @@ class Orchestrator:
 
         notify(f"📋 [bold white]Gesamtplan:[/bold white] {task_summary}")
 
+        # Jede Teilaufgabe bekommt ab hier echten Zugriff auf das Projektverzeichnis
+        # (read_file/write_file/edit_file/run_command/run_tests via agents/base_agent.py).
+        project_dir = str(self._workspace.get_project_dir(project_slug))
+        for t in agent_tasks:
+            t.project_dir = project_dir
+            t.max_tool_iterations = AGENT_MAX_TOOL_ITERATIONS.get(t.agent_id)  # None = config.MAX_AGENT_TOOL_ITERATIONS
+            if t.agent_id in REVIEW_ONLY_AGENT_IDS:
+                t.tools_read_only = True
+
         # Führe hierarchische Fachbereichs-Ausführung durch
-        results = await self._run_department_hierarchy(
+        results, file_owners = await self._run_department_hierarchy(
             user_request=user_request,
+            task_summary=task_summary,
             agent_tasks=agent_tasks,
-            project_slug=project_slug,
+            project_dir=project_dir,
             notify=notify,
         )
 
-        # Workspace Dateispeicherung
+        # Fallback-Dateispeicherung: Falls ein Agent trotz Werkzeug-Zugriff Code nur im
+        # Antworttext statt über write_file/edit_file geliefert hat, wird er zusätzlich
+        # per Regex geparst – ohne bereits über Tools geschriebene Dateien zu überschreiben.
         saved_files_count = 0
         if AUTO_SAVE_WORKSPACE:
             for res in results:
@@ -178,10 +216,22 @@ class Orchestrator:
                         text_content=res.content,
                         agent_name=res.agent_name,
                     )
-                    saved_files_count += len(files)
+                    new_files = [f for f in files if f.relative_path not in file_owners]
+                    saved_files_count += len(new_files)
+                    for f in new_files:
+                        file_owners[f.relative_path] = res.agent_id
 
             if saved_files_count > 0:
-                notify(f"💾 [green]Workspace:[/green] {saved_files_count} Projektdateien in `workspace/{project_slug}/` gespeichert.")
+                notify(f"💾 [green]Workspace:[/green] {saved_files_count} zusätzliche Projektdateien (Text-Fallback) in `workspace/{project_slug}/` gespeichert.")
+
+        # Echte Verifikation: Abhängigkeiten installieren, Tests wirklich ausführen,
+        # bei Fehlschlägen gezielt den verantwortlichen Agenten korrigieren lassen.
+        results, verification_summary = await self._run_verification_loop(
+            project_dir=project_dir,
+            all_results=results,
+            file_owners=file_owners,
+            notify=notify,
+        )
 
         # Synthese der Fachbereichs-Ergebnisse durch den Hauptagenten
         notify("🔍 [bold cyan]Phase 5/5:[/bold cyan] Hauptagent konsolidiert Berichte aller Fachbereichsleiter...")
@@ -217,6 +267,8 @@ class Orchestrator:
         final_output = (
             f"{final_solution}\n\n"
             f"---\n\n"
+            f"{verification_summary}\n\n"
+            f"---\n\n"
             f"{retro_result.content if retro_result else ''}\n\n"
             f"---\n\n"
             f"{trainer_result.content if trainer_result else ''}\n\n"
@@ -228,205 +280,256 @@ class Orchestrator:
         notify("✅ [bold green]Fertig![/bold green] Alle Fachbereiche haben ihre Aufgaben erfolgreich abgeschlossen.")
         return final_output
 
+    # ──────────────────────────────────────────────────────────────
+    # Fachbereichs-Hierarchie mit ECHTER Teamleiter-Delegation & -Konsolidierung
+    # ──────────────────────────────────────────────────────────────
+
     async def _run_department_hierarchy(
         self,
         user_request: str,
+        task_summary: str,
         agent_tasks: list[AgentTask],
-        project_slug: str,
+        project_dir: str,
         notify: Callable[[str], None],
-    ) -> list[AgentResult]:
+    ) -> tuple[list[AgentResult], dict[str, str]]:
         """
-        Hierarchischer Workflow:
-        Hauptagent → Fachbereichsleiter → Fachteam (Unteragenten) → Fachbereichsleiter → Hauptagent
+        Führt alle 5 Fachbereichs-Phasen aus. Jede Phase lässt (sofern
+        ENABLE_DEPARTMENT_LEAD_EXECUTION aktiv ist) den zuständigen Teamleiter
+        per echtem LLM-Aufruf delegieren und konsolidieren – keine simulierten
+        Statusmeldungen mehr, sondern echte Leitungs-Ergebnisse im Report.
         """
         all_results: list[AgentResult] = []
+        file_owners: dict[str, str] = {}
         task_map = {t.agent_id: t for t in agent_tasks}
+        running_context = ""  # Kompakter Kontext aus vorherigen Phasen (z.B. Planungsergebnisse)
 
-        # ── 1. FACHBEREICH: Planung & Architektur (planning_lead) ──
-        planning_members = ["product_owner", "business_analyst", "web_research", "architect", "finops", "team_lead"]
-        planning_tasks = [task_map[aid] for aid in planning_members if aid in task_map]
-        planning_context = ""
+        for dept_id, phase_label, icon, run_mode in PHASE_ORDER:
+            member_ids = DEPARTMENT_DEFINITIONS[dept_id]["members"]
+            member_tasks = [task_map[aid] for aid in member_ids if aid in task_map]
+            if not member_tasks:
+                continue
 
-        if planning_tasks:
-            lead = self._dept_leads["planning_lead"]
-            notify(f"👔 [bold cyan]Fachbereich 1/5: Planung & Architektur[/bold cyan] (Geleitet von: {lead.name})...")
-            
-            # Teamleiter verteilt an Unteragenten
-            for task in planning_tasks:
-                agent_name = self._agents[task.agent_id].name
-                notify(f"  ▶️ [yellow]Fachteam arbeitet:[/yellow] {agent_name}...")
-                start_t = time.monotonic()
-                res = await self._run_single_agent(task)
-                dur = time.monotonic() - start_t
-                all_results.append(res)
-                status_ico = "✅ [green]Fertig[/green]" if res.success else "❌ [red]Fehler[/red]"
-                notify(f"  {status_ico}: {agent_name} ({dur:.1f}s)")
-                if res.success:
-                    planning_context += f"\n\n### {res.agent_name}\n{res.content[:2500]}"
+            lead = self._dept_leads[dept_id]
+            notify(f"{icon} [bold cyan]{phase_label}[/bold cyan] (Geleitet von: {lead.name})...")
 
-            # Teamleiter konsolidiert und meldet an Hauptagent
-            notify(f"  📥 [bold green]Rückmeldung an Hauptagent:[/bold green] {lead.name} hat Planung & Architektur abgenommen.")
+            if running_context:
+                for task in member_tasks:
+                    task.context += f"\n\n## Kontext aus vorherigen Fachbereichen:\n{running_context[:2500]}"
 
-        # ── 2. FACHBEREICH: Kern-Entwicklung (dev_lead) ──
-        dev_members = ["backend", "frontend", "database", "api_integration", "data_engineer", "mobile", "ml", "prompt_engineer", "performance"]
-        dev_tasks = [task_map[aid] for aid in dev_members if aid in task_map]
+            # ── Echte Delegation durch den Teamleiter ──
+            if ENABLE_DEPARTMENT_LEAD_EXECUTION:
+                delegation = await self._run_department_delegation(lead, task_summary, member_tasks, project_dir)
+                all_results.append(delegation)
+                if delegation.success and delegation.content:
+                    notify(f"  📤 [cyan]{lead.name} delegiert:[/cyan] {self._first_line(delegation.content)}")
+                    for task in member_tasks:
+                        task.context += f"\n\n## Arbeitsauftrag von {lead.name}:\n{delegation.content[:1200]}"
+                else:
+                    notify(f"  ⚠️ [yellow]{lead.name} konnte nicht delegieren ({delegation.error}) – Fachteam startet ohne Zusatzanweisung.[/yellow]")
 
-        if dev_tasks:
-            lead = self._dept_leads["dev_lead"]
-            notify(f"⚡ [bold cyan]Fachbereich 2/5: Software-Entwicklung[/bold cyan] (Geleitet von: {lead.name})...")
-            
-            for task in dev_tasks:
-                if planning_context:
-                    task.context += f"\n\n## Vorgaben aus Fachbereich Planung:\n{planning_context[:3000]}"
-                agent_name = self._agents[task.agent_id].name
-                notify(f"  ▶️ [yellow]Entwickler arbeitet:[/yellow] {agent_name}...")
+            # ── Fachteam arbeitet (parallel oder sequentiell, je nach Phase) ──
+            if run_mode == "parallel":
+                for task in member_tasks:
+                    notify(f"  ▶️ [yellow]Fachteam arbeitet:[/yellow] {self._agents[task.agent_id].name}...")
+                member_results = await self._run_agents_parallel(member_tasks, notify=notify)
+            else:
+                member_results = []
+                for task in member_tasks:
+                    agent_name = self._agents[task.agent_id].name
+                    notify(f"  ▶️ [yellow]Fachteam arbeitet:[/yellow] {agent_name}...")
+                    start_t = time.monotonic()
+                    res = await self._run_single_agent(task)
+                    dur = time.monotonic() - start_t
+                    member_results.append(res)
+                    status_ico = "✅ [green]Fertig[/green]" if res.success else "❌ [red]Fehler[/red]"
+                    notify(f"  {status_ico}: {agent_name} ({dur:.1f}s)")
 
-            dev_results = await self._run_agents_parallel(dev_tasks, notify=notify)
-            all_results.extend(dev_results)
+            all_results.extend(member_results)
+            self._update_file_owners(file_owners, member_results)
+            # Auf die letzten ~3000 Zeichen begrenzen, damit der Kontext über 5 Phasen hinweg
+            # nicht unbegrenzt wächst und jedem folgenden Agenten unnötig viele Tokens kostet.
+            running_context = (running_context + self._format_results_for_review(member_results)[:2000])[-3000:]
 
-            # Sandbox-Prüfung
-            try:
-                from core.code_sandbox import CodeSandbox
-                errors = []
-                for res in dev_results:
-                    if res.success and res.content:
-                        import re
-                        for block in re.findall(r'```(?:python|py)?\r?\n(.*?)```', res.content, re.DOTALL):
-                            v = CodeSandbox.validate_code(block, "py")
-                            if not v.is_valid:
-                                errors.extend(v.errors)
-                if errors:
-                    notify(f"  ⚠️ [yellow]Dev Lead bemerkt:[/yellow] {len(errors)} Syntax-Hinweise werden im Review bereinigt.")
-            except Exception:
-                pass
+            # ── Echte Konsolidierung durch den Teamleiter ──
+            if ENABLE_DEPARTMENT_LEAD_EXECUTION:
+                consolidation = await self._run_department_consolidation(lead, member_results, project_dir)
+                all_results.append(consolidation)
+                if consolidation.success and consolidation.content:
+                    notify(f"  📥 [bold green]{lead.name} konsolidiert:[/bold green] {self._first_line(consolidation.content)}")
+                else:
+                    notify(f"  ⚠️ [yellow]{lead.name} konnte den Bereich nicht konsolidieren ({consolidation.error}).[/yellow]")
+            else:
+                notify(f"  📥 [dim]{phase_label} abgeschlossen ({len(member_results)} Ergebnisse).[/dim]")
 
-            notify(f"  📥 [bold green]Rückmeldung an Hauptagent:[/bold green] {lead.name} meldet Code-Deliverables fertig.")
+        return all_results, file_owners
 
-        # ── 3. FACHBEREICH: Design, Media & Content (creative_lead) ──
-        creative_members = ["image_generator", "copywriter", "ui_ux", "accessibility", "i18n", "documentation", "readme"]
-        creative_tasks = [task_map[aid] for aid in creative_members if aid in task_map]
-
-        if creative_tasks:
-            lead = self._dept_leads["creative_lead"]
-            notify(f"🎨 [bold cyan]Fachbereich 3/5: Design & Content[/bold cyan] (Geleitet von: {lead.name})...")
-            for task in creative_tasks:
-                if planning_context:
-                    task.context += f"\n\n## Projektkontext:\n{planning_context[:1500]}"
-            creative_results = await self._run_agents_parallel(creative_tasks, notify=notify)
-            all_results.extend(creative_results)
-            notify(f"  📥 [bold green]Rückmeldung an Hauptagent:[/bold green] {lead.name} hat Assets & Texte freigegeben.")
-
-        # ── 4. FACHBEREICH: Qualität, DevOps & Security (qa_lead) ──
-        qa_members = ["devops", "tester", "security", "resilience_guard", "github"]
-        qa_tasks = [task_map[aid] for aid in qa_members if aid in task_map]
-
-        if qa_tasks:
-            lead = self._dept_leads["qa_lead"]
-            notify(f"🛡️ [bold cyan]Fachbereich 4/5: Qualität & Security[/bold cyan] (Geleitet von: {lead.name})...")
-            dev_context = self._format_results_for_review(all_results)
-            for task in qa_tasks:
-                task.context += f"\n\n## Zu prüfende Deliverables:\n{dev_context[:3000]}"
-            qa_results = await self._run_agents_parallel(qa_tasks, notify=notify)
-            all_results.extend(qa_results)
-
-            # Automatische Sandbox-Pytest-Ausführung
-            try:
-                from core.code_sandbox import CodeSandbox
-                import sys
-                project_dir = self._workspace.get_project_dir(project_slug)
-                test_files = list(project_dir.rglob("test_*.py"))
-                if test_files:
-                    notify("  🧪 [yellow]Sandbox-Runner:[/yellow] Führe automatische Pytest/Unittest-Validierung aus...")
-                    exec_res = CodeSandbox.run_command(
-                        [sys.executable, "-m", "unittest", "discover", "-s", str(project_dir), "-p", "test_*.py"],
-                        cwd=project_dir,
-                        timeout_seconds=15.0,
-                    )
-                    if exec_res.exit_code == 0:
-                        notify("  ✅ [bold green]Sandbox-Tests bestanden:[/bold green] Alle Unit-Tests im Workspace grün!")
-                    else:
-                        notify(f"  ⚠️ [bold yellow]Sandbox-Tests:[/bold yellow] Test-Feedback wird an Reviewer übergeben ({exec_res.stderr[:200]})")
-            except Exception:
-                pass
-
-            notify(f"  📥 [bold green]Rückmeldung an Hauptagent:[/bold green] {lead.name} bestätigt Tests & Security-Audits.")
-
-        # ── 5. FACHBEREICH: Governance, Review & Hygiene (governance_lead) ──
-        gov_members = ["code_reviewer", "refactoring", "compliance", "project_cleaner"]
-        gov_tasks = [task_map[aid] for aid in gov_members if aid in task_map]
-
-        if gov_tasks:
-            lead = self._dept_leads["governance_lead"]
-            notify(f"🔍 [bold cyan]Fachbereich 5/5: Review & Governance[/bold cyan] (Geleitet von: {lead.name})...")
-            full_context = self._format_results_for_review(all_results)
-            for task in gov_tasks:
-                task.description += f"\n\nPrüfe die Gesamtlösung:\n{full_context[:3500]}"
-                start_t = time.monotonic()
-                res = await self._run_single_agent(task)
-                dur = time.monotonic() - start_t
-                all_results.append(res)
-                status_ico = "✅ [green]Abgenommen[/green]" if res.success else "❌ [red]Fehler[/red]"
-                notify(f"  {status_ico}: {res.agent_name} ({dur:.1f}s)")
-            notify(f"  📥 [bold green]Rückmeldung an Hauptagent:[/bold green] {lead.name} erteilt finale Qualitätsfreigabe.")
-
-        # Iterative Review & Fix Loop
-        all_results = await self._run_iterative_fix_loop(
-            user_request=user_request,
-            all_results=all_results,
-            agent_tasks=agent_tasks,
-            notify=notify,
+    async def _run_department_delegation(
+        self,
+        lead: DepartmentLeadAgent,
+        task_summary: str,
+        member_tasks: list[AgentTask],
+        project_dir: str,
+    ) -> AgentResult:
+        """Lässt den Teamleiter per echtem LLM-Aufruf konkrete Arbeitsanweisungen für sein Team erstellen."""
+        members_overview = "\n".join(f"- `{t.agent_id}`: {t.description}" for t in member_tasks)
+        task = AgentTask(
+            task_id=f"{lead.department_id}_delegate",
+            agent_id=lead.department_id,
+            description=(
+                f"Der Hauptagent hat folgenden Ausschnitt der Gesamtaufgabe deinem Fachbereich zugewiesen:\n"
+                f"{task_summary}\n\nGeplante Einzelaufgaben deines Teams für diese Runde:\n{members_overview}\n\n"
+                f"Gib klare, priorisierte Arbeitsanweisungen für dein Team (max. ca. 100 Wörter je Mitglied). "
+                f"Weise auf Schnittstellen zwischen den Mitgliedern hin, falls relevant."
+            ),
+            context="",
+            project_dir=project_dir,
+            allow_tools=True,
+            tools_read_only=True,  # Delegation darf bestehenden Code lesen, aber nicht verändern
+            max_tool_iterations=3,
         )
+        return await lead.execute(task)
 
-        return all_results
+    async def _run_department_consolidation(
+        self,
+        lead: DepartmentLeadAgent,
+        member_results: list[AgentResult],
+        project_dir: str,
+    ) -> AgentResult:
+        """Lässt den Teamleiter die echten Ergebnisse seines Teams prüfen und konsolidieren."""
+        results_text = self._format_results_for_review(member_results)
+        task = AgentTask(
+            task_id=f"{lead.department_id}_consolidate",
+            agent_id=lead.department_id,
+            description=(
+                f"Deine Fachteam-Mitglieder haben folgende Ergebnisse geliefert:\n{results_text[:4000]}\n\n"
+                f"Prüfe sie auf Vollständigkeit und Konsistenz (bei Bedarf über list_files/read_file gegen "
+                f"den tatsächlichen Projektstand) und erstelle deinen offiziellen Fachbereichsbericht gemäß "
+                f"deinem vorgegebenen Ausgabeformat."
+            ),
+            context="",
+            project_dir=project_dir,
+            allow_tools=True,
+            tools_read_only=True,  # Konsolidierung prüft und berichtet, ändert keinen Code
+            max_tool_iterations=4,
+        )
+        return await lead.execute(task)
+
+    @staticmethod
+    def _first_line(text: str, max_chars: int = 160) -> str:
+        first = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        return (first[:max_chars] + "…") if len(first) > max_chars else first
+
+    @staticmethod
+    def _update_file_owners(file_owners: dict[str, str], results: list[AgentResult]) -> None:
+        """Merkt sich, welcher Agent welche Datei tatsächlich geschrieben hat (für die Verifikationsschleife)."""
+        for res in results:
+            for rel_path in res.files_written:
+                file_owners[rel_path] = res.agent_id
 
     def _format_results_for_review(self, results: list[AgentResult]) -> str:
         blocks = []
         for r in results:
             if r.success and r.content:
-                blocks.append(f"### Code/Ergebnis von {r.agent_name}:\n{r.content[:2000]}")
+                files_note = f" (Dateien: {', '.join(r.files_written)})" if r.files_written else ""
+                blocks.append(f"### Ergebnis von {r.agent_name}{files_note}:\n{r.content[:2000]}")
         return "\n\n".join(blocks)
 
-    async def _run_iterative_fix_loop(
+    # ──────────────────────────────────────────────────────────────
+    # Echte Verifikation: Dependency-Installation + tatsächliche Testausführung
+    # ──────────────────────────────────────────────────────────────
+
+    async def _run_verification_loop(
         self,
-        user_request: str,
+        project_dir: str,
         all_results: list[AgentResult],
-        agent_tasks: list[AgentTask],
+        file_owners: dict[str, str],
         notify: Callable[[str], None],
-    ) -> list[AgentResult]:
-        reviewer_res = next((r for r in all_results if r.agent_id == "code_reviewer" and r.success), None)
-        if not reviewer_res:
-            return all_results
+    ) -> tuple[list[AgentResult], str]:
+        """
+        Ersetzt die alte Keyword-basierte Fix-Schleife. Installiert Abhängigkeiten
+        in einer isolierten Umgebung, führt die echte Testsuite aus und schickt bei
+        Fehlschlägen einen GEZIELTEN Korrekturauftrag an genau die Agenten, deren
+        Dateien laut echtem Traceback betroffen sind.
+        """
+        verifier = ProjectVerifier(project_dir)
+        summary_lines: list[str] = []
 
-        rev_text = reviewer_res.content.lower()
-        has_critical_issues = any(
-            w in rev_text for w in ["kritischer fehler", "critical error", "schwerwiegender bug", "blocker"]
-        )
+        notify("🧪 [bold cyan]Verifikation:[/bold cyan] Installiere Abhängigkeiten in isolierter Umgebung...")
+        install_log = await asyncio.to_thread(verifier.ensure_environment)
+        if install_log:
+            notify(f"  📦 {install_log.splitlines()[0]}")
+            summary_lines.append(f"- 📦 {install_log.splitlines()[0]}")
 
-        if not has_critical_issues:
-            return all_results
+        for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
+            notify(f"  🧪 [yellow]Testlauf {attempt}/{MAX_VERIFICATION_ITERATIONS}:[/yellow] Führe echte Tests aus...")
+            report = await asyncio.to_thread(verifier.run_tests)
 
-        notify("🛠️ [bold red]Review-Schleife:[/bold red] Fachbereichsleiter koordinieren automatische Fehlerbehebung...")
-        tasks_to_fix = [t for t in agent_tasks if t.agent_id in ["backend", "frontend", "database"]]
+            if not report.ran:
+                notify(f"  ℹ️ [dim]{report.reason_skipped}[/dim]")
+                summary_lines.append(f"- ℹ️ {report.reason_skipped}")
+                break
 
-        if tasks_to_fix:
-            fix_tasks = [
-                AgentTask(
-                    task_id=f"{t.task_id}_fix",
-                    agent_id=t.agent_id,
-                    description=f"KORRIGIERE gemeldete Fehler:\n{reviewer_res.content[:2000]}\nAufgabe:\n{t.description}",
-                    context=user_request[:1000],
+            if report.passed:
+                notify(f"  ✅ [bold green]Alle Tests bestanden[/bold green] (Versuch {attempt}, {report.duration_seconds:.1f}s).")
+                summary_lines.append(f"- ✅ Echte Testsuite bestanden nach {attempt} Durchlauf/Durchläufen ({report.duration_seconds:.1f}s).")
+                break
+
+            notify(f"  ❌ [bold red]{len(report.failures)} Testfehler[/bold red] – ermittle betroffene Agenten aus dem echten Traceback...")
+
+            agents_to_fix: dict[str, list] = {}
+            for failure in report.failures:
+                owners = {file_owners[f] for f in failure.files if f in file_owners}
+                if not owners and any(r.agent_id == "tester" for r in all_results):
+                    owners = {"tester"}
+                for owner in owners:
+                    if owner in self._agents:
+                        agents_to_fix.setdefault(owner, []).append(failure)
+
+            if not agents_to_fix:
+                notify("  ⚠️ [yellow]Testfehler konnten keinem Agenten eindeutig zugeordnet werden – Auto-Fix abgebrochen.[/yellow]")
+                summary_lines.append(f"- ⚠️ Versuch {attempt}: {len(report.failures)} Testfehler blieben ungelöst (keine eindeutige Dateizuordnung im Traceback).")
+                break
+
+            fix_tasks = []
+            for agent_id, fails in agents_to_fix.items():
+                failure_text = "\n\n".join(
+                    f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(f.files) or 'unbekannt'}"
+                    for f in fails
                 )
-                for t in tasks_to_fix
-            ]
-            fixed_results = await self._run_agents_parallel(fix_tasks, notify=notify)
-            fixed_ids = {r.agent_id for r in fixed_results if r.success}
-            all_results = [r for r in all_results if r.agent_id not in fixed_ids]
-            all_results.extend([r for r in fixed_results if r.success])
+                fix_tasks.append(AgentTask(
+                    task_id=f"verify_fix_{agent_id}_{attempt}",
+                    agent_id=agent_id,
+                    description=(
+                        f"Die ECHTE automatische Testsuite ist fehlgeschlagen (kein Schätzwert, sondern realer "
+                        f"pytest/unittest-Output). Nutze read_file, um die betroffene(n) Datei(en) zu prüfen, und "
+                        f"edit_file/write_file, um den Fehler zu beheben. Verifiziere deinen Fix danach mit run_tests.\n\n"
+                        f"{failure_text}"
+                    ),
+                    context="",
+                    project_dir=project_dir,
+                ))
 
-        return all_results
+            notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix:[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())} (nicht blind alle Dev-Agenten)...")
+            fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+            self._update_file_owners(file_owners, fix_results)
+            all_results.extend(fix_results)
+            summary_lines.append(f"- 🛠️ Versuch {attempt}: {len(report.failures)} echte Testfehler → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt.")
+
+            if attempt == MAX_VERIFICATION_ITERATIONS:
+                notify("  ⚠️ [yellow]Maximale Verifikations-Iterationen erreicht – letzter Stand wird übernommen.[/yellow]")
+                summary_lines.append(f"- ⚠️ Nach {MAX_VERIFICATION_ITERATIONS} Versuchen nicht vollständig grün – letzter Stand wurde übernommen.")
+
+        verification_summary = "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n" + (
+            "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."
+        )
+        return all_results, verification_summary
+
+    # ──────────────────────────────────────────────────────────────
+    # Ausführungs-Helfer
+    # ──────────────────────────────────────────────────────────────
 
     async def _run_single_agent(self, task: AgentTask) -> AgentResult:
-        agent = self._agents.get(task.agent_id)
+        agent = self._agents.get(task.agent_id) or self._dept_leads.get(task.agent_id)
         if not agent:
             return AgentResult(
                 task_id=task.task_id,
@@ -544,24 +647,27 @@ class Orchestrator:
         total_prompt_tokens = sum(r.prompt_tokens for r in results)
         total_completion_tokens = sum(r.completion_tokens for r in results) + synth_tokens
         grand_total_tokens = sum(r.total_tokens for r in results) + synth_tokens
+        total_tool_calls = sum(r.tool_calls_count for r in results)
+        total_files_written = len({f for r in results for f in r.files_written})
 
         lines = [
             "### 📈 Projekt-Kennzahlen & Ressourcen-Verbrauch\n",
             f"- ⏱️ **Gesamtdauer:** `{total_duration:.2f} Sekunden`",
             f"- 🪙 **Gesamtverbrauch Tokens:** `{grand_total_tokens:,}` (Prompt: `{total_prompt_tokens:,}` | Completion: `{total_completion_tokens:,}`)",
+            f"- 🛠️ **Werkzeug-Aufrufe (echte Datei-/Testoperationen):** `{total_tool_calls:,}` | **Dateien geschrieben/geändert:** `{total_files_written}`",
             f"- 📁 **Projektverzeichnis:** `workspace/{project_slug}/`\n",
-            "| KI-Agent | Rolle / Fachbereich | Modell | Dauer | Tokens | Status |",
-            "|---|---|---|---|---|---|",
+            "| KI-Agent | Rolle / Fachbereich | Modell | Dauer | Tokens | Tool-Calls | Status |",
+            "|---|---|---|---|---|---|---|",
         ]
 
         for r in results:
             status_icon = "✅" if r.success else "❌"
             lines.append(
-                f"| **{r.agent_name}** | `{r.agent_id}` | `{r.model_used or 'default'}` | {r.duration_seconds:.1f}s | {r.total_tokens:,} | {status_icon} |"
+                f"| **{r.agent_name}** | `{r.agent_id}` | `{r.model_used or 'default'}` | {r.duration_seconds:.1f}s | {r.total_tokens:,} | {r.tool_calls_count} | {status_icon} |"
             )
 
         lines.append(
-            f"| **Hauptagent (Synthese)** | `orchestrator` | `{ORCHESTRATOR_MODEL}` | - | {synth_tokens:,} | ✅ |"
+            f"| **Hauptagent (Synthese)** | `orchestrator` | `{ORCHESTRATOR_MODEL}` | - | {synth_tokens:,} | - | ✅ |"
         )
         return "\n".join(lines)
 
@@ -602,6 +708,9 @@ class Orchestrator:
 
     def clear_history(self) -> None:
         self._history.clear()
+
+    def get_history(self) -> ConversationHistory:
+        return self._history
 
     def get_workspace_manager(self) -> WorkspaceManager:
         return self._workspace

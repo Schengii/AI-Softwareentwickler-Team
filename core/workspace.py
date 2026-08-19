@@ -176,6 +176,12 @@ class WorkspaceManager:
 
         return saved_files
 
+    def list_projects(self) -> list[str]:
+        """Gibt die Namen aller vorhandenen Projektordner im Workspace zurück (sortiert)."""
+        if not self.base_dir.exists():
+            return []
+        return sorted(p.name for p in self.base_dir.iterdir() if p.is_dir())
+
     def list_project_files(self, project_name: str) -> list[dict]:
         """Gibt eine Liste aller Dateien im Projektordner zurück."""
         project_dir = self.get_project_dir(project_name)

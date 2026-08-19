@@ -4,8 +4,10 @@ mit präziser Token-Messung und automatischer Failover-Kette.
 """
 
 import asyncio
-from dataclasses import dataclass
-from typing import Optional
+import json
+import uuid
+from dataclasses import dataclass, field
+from typing import Any, Optional
 import httpx
 from google import genai
 from google.genai import types as genai_types
@@ -50,6 +52,33 @@ RETRY_DELAY_SECONDS = 1.5
 
 
 @dataclass
+class ToolCall:
+    """Ein vom Modell angeforderter Werkzeug-Aufruf innerhalb des agentischen Loops."""
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+@dataclass
+class AgentMessage:
+    """
+    Ein neutraler, provider-unabhängiger Konversations-Turn für den agentischen
+    Werkzeug-Loop. Wird von jedem Client-Wrapper in sein natives Nachrichtenformat
+    (Gemini Content, OpenAI-Style Messages, Anthropic Messages) übersetzt.
+
+    role:
+    - "user"      – Aufgabenstellung / Werkzeug-Ergebnis wird als Folgeeingabe gesendet
+    - "assistant" – Modellantwort (Text und/oder angeforderte tool_calls)
+    - "tool"      – Ergebnis eines ausgeführten Werkzeug-Aufrufs (verweist per tool_call_id zurück)
+    """
+    role: str
+    text: str = ""
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    tool_call_id: str = ""
+    tool_name: str = ""
+
+
+@dataclass
 class LLMResponse:
     """Antwort eines LLM-Aufrufs mit Metriken."""
     text: str
@@ -57,6 +86,67 @@ class LLMResponse:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    tool_calls: list[ToolCall] = field(default_factory=list)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Gemeinsame Helfer für alle OpenAI-kompatiblen REST-Clients (Groq, DeepSeek,
+# OpenRouter) – bauen den Nachrichtenverlauf und Tool-Katalog im OpenAI-Format
+# auf und parsen die Antwort (Text ODER tool_calls) einheitlich.
+# ──────────────────────────────────────────────────────────────────────────
+
+def _openai_build_messages(messages: list["AgentMessage"], system_prompt: Optional[str]) -> list[dict]:
+    payload_messages: list[dict] = []
+    if system_prompt:
+        payload_messages.append({"role": "system", "content": system_prompt})
+
+    for msg in messages:
+        if msg.role == "user":
+            payload_messages.append({"role": "user", "content": msg.text})
+        elif msg.role == "assistant":
+            entry: dict = {"role": "assistant", "content": msg.text or None}
+            if msg.tool_calls:
+                entry["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.name, "arguments": json.dumps(tc.arguments, ensure_ascii=False)},
+                    }
+                    for tc in msg.tool_calls
+                ]
+            payload_messages.append(entry)
+        elif msg.role == "tool":
+            payload_messages.append({"role": "tool", "tool_call_id": msg.tool_call_id, "content": msg.text})
+
+    return payload_messages
+
+
+def _openai_build_tools(tools: list[dict]) -> list[dict]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t.get("description", ""),
+                "parameters": t.get("parameters", {"type": "object", "properties": {}}),
+            },
+        }
+        for t in tools
+    ]
+
+
+def _openai_parse_tool_calls(message: dict) -> list[ToolCall]:
+    raw_calls = message.get("tool_calls") or []
+    parsed: list[ToolCall] = []
+    for call in raw_calls:
+        fn = call.get("function", {})
+        raw_args = fn.get("arguments", "{}")
+        try:
+            args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+        except json.JSONDecodeError:
+            args = {}
+        parsed.append(ToolCall(id=call.get("id") or str(uuid.uuid4())[:8], name=fn.get("name", ""), arguments=args))
+    return parsed
 
 
 class HuggingFaceClient:
@@ -75,6 +165,14 @@ class HuggingFaceClient:
     async def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         res = await self.generate_with_usage(prompt, system_prompt)
         return res.text
+
+    async def generate_with_tools(
+        self, messages: list["AgentMessage"], system_prompt: Optional[str], tools: list[dict]
+    ) -> LLMResponse:
+        # HuggingFace-Modelle werden hier nicht mit nativem Function-Calling angebunden –
+        # Fallback auf Gemini, das die Werkzeug-Schleife vollständig unterstützt.
+        fallback = GeminiClient(model_name="gemini-3.6-flash")
+        return await fallback.generate_with_tools(messages, system_prompt, tools)
 
 
 class OpenRouterClient:
@@ -147,6 +245,60 @@ class OpenRouterClient:
         res = await self.generate_with_usage(prompt, system_prompt)
         return res.text
 
+    async def generate_with_tools(
+        self, messages: list["AgentMessage"], system_prompt: Optional[str], tools: list[dict]
+    ) -> LLMResponse:
+        if not OPENROUTER_API_KEY or token_guard.is_model_exhausted(f"openrouter:{self.model_name}"):
+            fallback = GeminiClient(model_name="gemini-3.6-flash")
+            return await fallback.generate_with_tools(messages, system_prompt, tools)
+
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "HTTP-Referer": "https://github.com/Schengii/AI-Softwareentwickler-Team",
+            "X-Title": "AI Developer Team",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model_name if self.model_name != "auto" else "google/gemini-2.5-flash",
+            "messages": _openai_build_messages(messages, system_prompt),
+            "tools": _openai_build_tools(tools),
+            "tool_choice": "auto",
+            "temperature": TEMPERATURE,
+            "max_tokens": MAX_OUTPUT_TOKENS,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(self.api_url, headers=headers, json=payload)
+                data = response.json()
+
+                if response.status_code == 200 and "choices" in data:
+                    message = data["choices"][0]["message"]
+                    usage = data.get("usage", {})
+                    p_tok = usage.get("prompt_tokens", 0)
+                    c_tok = usage.get("completion_tokens", 0)
+                    token_guard.record_usage(f"openrouter:{self.model_name}", p_tok, c_tok)
+
+                    return LLMResponse(
+                        text=message.get("content") or "",
+                        model_name=f"openrouter:{self.model_name}",
+                        prompt_tokens=p_tok,
+                        completion_tokens=c_tok,
+                        total_tokens=usage.get("total_tokens", p_tok + c_tok),
+                        tool_calls=_openai_parse_tool_calls(message),
+                    )
+
+                err_msg = data.get("error", {}).get("message", "OpenRouter API Error")
+                if response.status_code in (401, 402, 429) or "balance" in err_msg.lower() or "limit" in err_msg.lower():
+                    token_guard.mark_model_exhausted(f"openrouter:{self.model_name}", f"OpenRouter: {err_msg}")
+                fallback = GeminiClient(model_name="gemini-3.6-flash")
+                return await fallback.generate_with_tools(messages, system_prompt, tools)
+
+        except Exception as e:
+            token_guard.mark_model_exhausted(f"openrouter:{self.model_name}", str(e))
+            fallback = GeminiClient(model_name="gemini-3.6-flash")
+            return await fallback.generate_with_tools(messages, system_prompt, tools)
+
 
 class DeepSeekClient:
     """Wrapper für die DeepSeek API (OpenAI-kompatibel via REST)."""
@@ -216,6 +368,55 @@ class DeepSeekClient:
         res = await self.generate_with_usage(prompt, system_prompt)
         return res.text
 
+    async def generate_with_tools(
+        self, messages: list["AgentMessage"], system_prompt: Optional[str], tools: list[dict]
+    ) -> LLMResponse:
+        if not DEEPSEEK_API_KEY or token_guard.is_model_exhausted(f"deepseek:{self.model_name}"):
+            fallback = GeminiClient(model_name="gemini-3.6-flash")
+            return await fallback.generate_with_tools(messages, system_prompt, tools)
+
+        headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+        payload = {
+            "model": self.model_name,
+            "messages": _openai_build_messages(messages, system_prompt),
+            "tools": _openai_build_tools(tools),
+            "tool_choice": "auto",
+            "temperature": TEMPERATURE,
+            "max_tokens": MAX_OUTPUT_TOKENS,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(self.api_url, headers=headers, json=payload)
+                data = response.json()
+
+                if response.status_code == 200 and "choices" in data:
+                    message = data["choices"][0]["message"]
+                    usage = data.get("usage", {})
+                    p_tok = usage.get("prompt_tokens", 0)
+                    c_tok = usage.get("completion_tokens", 0)
+                    token_guard.record_usage(f"deepseek:{self.model_name}", p_tok, c_tok)
+
+                    return LLMResponse(
+                        text=message.get("content") or "",
+                        model_name=f"deepseek:{self.model_name}",
+                        prompt_tokens=p_tok,
+                        completion_tokens=c_tok,
+                        total_tokens=usage.get("total_tokens", p_tok + c_tok),
+                        tool_calls=_openai_parse_tool_calls(message),
+                    )
+
+                err_msg = data.get("error", {}).get("message", "DeepSeek API Error")
+                if response.status_code in (402, 429) or "balance" in err_msg.lower() or "quota" in err_msg.lower():
+                    token_guard.mark_model_exhausted(f"deepseek:{self.model_name}", f"DeepSeek: {err_msg}")
+                fallback = GeminiClient(model_name="gemini-3.6-flash")
+                return await fallback.generate_with_tools(messages, system_prompt, tools)
+
+        except Exception as e:
+            token_guard.mark_model_exhausted(f"deepseek:{self.model_name}", str(e))
+            fallback = GeminiClient(model_name="gemini-3.6-flash")
+            return await fallback.generate_with_tools(messages, system_prompt, tools)
+
 
 class GeminiClient:
     """Wrapper für die Google Gemini API."""
@@ -236,6 +437,121 @@ class GeminiClient:
     async def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         res = await self.generate_with_usage(prompt, system_prompt)
         return res.text
+
+    async def generate_with_tools(
+        self, messages: list["AgentMessage"], system_prompt: Optional[str], tools: list[dict]
+    ) -> LLMResponse:
+        """
+        Führt einen Function-Calling-fähigen Gemini-Aufruf aus. Gibt entweder finalen
+        Text (response.tool_calls == []) oder angeforderte Werkzeug-Aufrufe zurück,
+        die der Aufrufer ausführen und per Folge-Message zurückspielen muss.
+        """
+        if not _gemini_client:
+            if _groq_client:
+                groq_fallback = GroqClient(model_name="openai/gpt-oss-120b")
+                return await groq_fallback.generate_with_tools(messages, system_prompt, tools)
+            raise RuntimeError("Gemini Client nicht initialisiert. Bitte GEMINI_API_KEY setzen.")
+
+        genai_tool = genai_types.Tool(function_declarations=[
+            genai_types.FunctionDeclaration(
+                name=t["name"],
+                description=t.get("description", ""),
+                parameters_json_schema=t.get("parameters", {"type": "object", "properties": {}}),
+            )
+            for t in tools
+        ]) if tools else None
+
+        contents = self._build_gemini_contents(messages)
+        config = genai_types.GenerateContentConfig(
+            temperature=TEMPERATURE,
+            max_output_tokens=MAX_OUTPUT_TOKENS,
+            system_instruction=system_prompt if system_prompt else None,
+            tools=[genai_tool] if genai_tool else None,
+        )
+
+        models_to_try = [self.model_name] + MODEL_FALLBACKS.get(self.model_name, [])
+        models_to_try = [m for m in models_to_try if not token_guard.is_model_exhausted(m)] or [self.model_name]
+
+        last_error: Exception | None = None
+        for model in models_to_try:
+            if model.startswith("groq:"):
+                return await GroqClient(model_name=model).generate_with_tools(messages, system_prompt, tools)
+            elif model.startswith("deepseek:"):
+                return await DeepSeekClient(model_name=model).generate_with_tools(messages, system_prompt, tools)
+            elif model.startswith("openrouter:"):
+                return await OpenRouterClient(model_name=model).generate_with_tools(messages, system_prompt, tools)
+            elif model.startswith("huggingface:"):
+                return await HuggingFaceClient(model_name=model).generate_with_tools(messages, system_prompt, tools)
+
+            try:
+                response = await asyncio.to_thread(
+                    _gemini_client.models.generate_content, model=model, contents=contents, config=config,
+                )
+                return self._parse_gemini_tool_response(response, model)
+            except Exception as e:
+                last_error = e
+                err_str = str(e)
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota" in err_str:
+                    token_guard.mark_model_exhausted(model, "429 Quota Exceeded")
+                continue
+
+        raise RuntimeError(f"Gemini Function-Calling Fehler nach allen Fallback-Modellen ({self.model_name}): {last_error}") from last_error
+
+    @staticmethod
+    def _build_gemini_contents(messages: list["AgentMessage"]) -> list:
+        """Übersetzt neutrale AgentMessage-Turns in Gemini Content-Objekte."""
+        contents = []
+        for msg in messages:
+            if msg.role == "user":
+                contents.append(genai_types.Content(role="user", parts=[genai_types.Part(text=msg.text)]))
+            elif msg.role == "assistant":
+                parts = []
+                if msg.text:
+                    parts.append(genai_types.Part(text=msg.text))
+                for tc in msg.tool_calls:
+                    parts.append(genai_types.Part.from_function_call(name=tc.name, args=tc.arguments))
+                contents.append(genai_types.Content(role="model", parts=parts))
+            elif msg.role == "tool":
+                # Gemini kennt keine eigene "tool"-Rolle in Content – die Funktionsantwort
+                # wird als "user"-Content mit einem function_response-Part gesendet.
+                contents.append(genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part.from_function_response(name=msg.tool_name, response={"result": msg.text})],
+                ))
+        return contents
+
+    @staticmethod
+    def _parse_gemini_tool_response(response, model: str) -> LLMResponse:
+        text_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+
+        candidate = response.candidates[0] if getattr(response, "candidates", None) else None
+        parts = candidate.content.parts if candidate and candidate.content else []
+        for part in parts or []:
+            if getattr(part, "function_call", None):
+                fc = part.function_call
+                call_id = getattr(fc, "id", None) or str(uuid.uuid4())[:8]
+                tool_calls.append(ToolCall(id=call_id, name=fc.name, arguments=dict(fc.args) if fc.args else {}))
+            elif getattr(part, "text", None):
+                text_parts.append(part.text)
+
+        prompt_tokens = completion_tokens = total_tokens = 0
+        if hasattr(response, "usage_metadata") and response.usage_metadata:
+            meta = response.usage_metadata
+            prompt_tokens = getattr(meta, "prompt_token_count", 0) or 0
+            completion_tokens = getattr(meta, "candidates_token_count", 0) or 0
+            total_tokens = getattr(meta, "total_token_count", 0) or (prompt_tokens + completion_tokens)
+
+        token_guard.record_usage(model, prompt_tokens, completion_tokens)
+
+        return LLMResponse(
+            text="\n".join(text_parts),
+            model_name=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            tool_calls=tool_calls,
+        )
 
     async def _call_with_retry_and_usage(
         self,
@@ -385,6 +701,53 @@ class GroqClient:
         res = await self.generate_with_usage(prompt, system_prompt)
         return res.text
 
+    async def generate_with_tools(
+        self, messages: list["AgentMessage"], system_prompt: Optional[str], tools: list[dict]
+    ) -> LLMResponse:
+        if not _groq_client:
+            gemini_fallback = GeminiClient(model_name="gemini-3.6-flash")
+            return await gemini_fallback.generate_with_tools(messages, system_prompt, tools)
+
+        try:
+            response = await asyncio.to_thread(
+                _groq_client.chat.completions.create,
+                model=self.model_name,
+                messages=_openai_build_messages(messages, system_prompt),
+                tools=_openai_build_tools(tools),
+                tool_choice="auto",
+                temperature=TEMPERATURE,
+                max_tokens=MAX_OUTPUT_TOKENS,
+            )
+            message = response.choices[0].message
+            raw_text = message.content or ""
+            import re
+            clean_text = re.sub(r'<think>.*?</think>', '', raw_text, flags=re.DOTALL).strip()
+
+            tool_calls = []
+            for call in (getattr(message, "tool_calls", None) or []):
+                try:
+                    args = json.loads(call.function.arguments) if call.function.arguments else {}
+                except json.JSONDecodeError:
+                    args = {}
+                tool_calls.append(ToolCall(id=call.id, name=call.function.name, arguments=args))
+
+            usage = getattr(response, "usage", None)
+            p_tok = usage.prompt_tokens if usage else 0
+            c_tok = usage.completion_tokens if usage else 0
+            token_guard.record_usage(f"groq:{self.model_name}", p_tok, c_tok)
+
+            return LLMResponse(
+                text=clean_text, model_name=f"groq:{self.model_name}",
+                prompt_tokens=p_tok, completion_tokens=c_tok, total_tokens=p_tok + c_tok,
+                tool_calls=tool_calls,
+            )
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "rate_limit" in err_str:
+                token_guard.mark_model_exhausted(f"groq:{self.model_name}", "Groq Rate Limit")
+            gemini_fallback = GeminiClient(model_name="gemini-3.6-flash")
+            return await gemini_fallback.generate_with_tools(messages, system_prompt, tools)
+
 
 class ClaudeClient:
     """Wrapper für die Anthropic Claude API mit Token-Tracking & Fallback."""
@@ -441,6 +804,74 @@ class ClaudeClient:
     async def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         res = await self.generate_with_usage(prompt, system_prompt)
         return res.text
+
+    async def generate_with_tools(
+        self, messages: list["AgentMessage"], system_prompt: Optional[str], tools: list[dict]
+    ) -> LLMResponse:
+        if not self._client:
+            gemini_fallback = GeminiClient(model_name="gemini-3.6-flash")
+            return await gemini_fallback.generate_with_tools(messages, system_prompt, tools)
+
+        anthropic_messages = self._build_anthropic_messages(messages)
+        anthropic_tools = [
+            {"name": t["name"], "description": t.get("description", ""), "input_schema": t.get("parameters", {"type": "object", "properties": {}})}
+            for t in tools
+        ]
+
+        kwargs: dict = {
+            "model": self.model_name,
+            "max_tokens": MAX_OUTPUT_TOKENS,
+            "messages": anthropic_messages,
+            "tools": anthropic_tools,
+        }
+        if system_prompt:
+            kwargs["system"] = system_prompt
+
+        try:
+            response = await self._client.messages.create(**kwargs)
+            text_parts = []
+            tool_calls = []
+            for block in response.content:
+                if block.type == "text":
+                    text_parts.append(block.text)
+                elif block.type == "tool_use":
+                    tool_calls.append(ToolCall(id=block.id, name=block.name, arguments=dict(block.input) if block.input else {}))
+
+            p_tok = response.usage.input_tokens if hasattr(response, "usage") else 0
+            c_tok = response.usage.output_tokens if hasattr(response, "usage") else 0
+            token_guard.record_usage(self.model_name, p_tok, c_tok)
+
+            return LLMResponse(
+                text="\n".join(text_parts), model_name=self.model_name,
+                prompt_tokens=p_tok, completion_tokens=c_tok, total_tokens=p_tok + c_tok,
+                tool_calls=tool_calls,
+            )
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "rate_limit" in err_str:
+                token_guard.mark_model_exhausted(self.model_name, "Claude Rate Limit")
+            gemini_fallback = GeminiClient(model_name="gemini-3.6-flash")
+            return await gemini_fallback.generate_with_tools(messages, system_prompt, tools)
+
+    @staticmethod
+    def _build_anthropic_messages(messages: list["AgentMessage"]) -> list[dict]:
+        anthropic_messages: list[dict] = []
+        for msg in messages:
+            if msg.role == "user":
+                anthropic_messages.append({"role": "user", "content": msg.text})
+            elif msg.role == "assistant":
+                content = []
+                if msg.text:
+                    content.append({"type": "text", "text": msg.text})
+                for tc in msg.tool_calls:
+                    content.append({"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.arguments})
+                anthropic_messages.append({"role": "assistant", "content": content})
+            elif msg.role == "tool":
+                anthropic_messages.append({
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": msg.tool_call_id, "content": msg.text}],
+                })
+        return anthropic_messages
 
 
 class LLMFactory:

@@ -24,8 +24,8 @@ from core.message_bus import AgentTask, AgentResult
 DEPARTMENT_DEFINITIONS = {
     "planning_lead": {
         "title": "Teamleiter Produkt, Analyse & Architektur (Planning Lead)",
-        "members": ["product_owner", "business_analyst", "web_research", "architect", "finops"],
-        "description": "Führt das Planungs- & Architekturteam. Koordiniert Requirements, Marktrecherche, Systemblueprint und FinOps-Kosten."
+        "members": ["product_owner", "business_analyst", "web_research", "architect", "finops", "team_lead"],
+        "description": "Führt das Planungs- & Architekturteam. Koordiniert Requirements, Marktrecherche, Systemblueprint, FinOps-Kosten und Team-Fokus (Engineering Manager)."
     },
     "dev_lead": {
         "title": "Teamleiter Software-Entwicklung (Dev Lead)",

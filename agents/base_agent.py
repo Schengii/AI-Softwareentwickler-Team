@@ -1,15 +1,27 @@
 """
 agents/base_agent.py – Abstrakte Basisklasse für alle Unteragenten
 
-Jeder spezialisierte Agent erbt von dieser Klasse und misst präzise
-seinen Tokenverbrauch und seine Laufzeit.
+Jeder spezialisierte Agent erbt von dieser Klasse. Ist ein Projektverzeichnis
+gesetzt (AgentTask.project_dir) und Werkzeuge erlaubt, durchläuft der Agent
+einen ECHTEN agentischen Loop: Er bekommt Zugriff auf read_file, write_file,
+edit_file, list_files, search_code, run_command und run_tests, ruft sie über
+natives Function-Calling der jeweiligen LLM-API auf und sieht die realen
+Ergebnisse (Dateiinhalte, Testausgaben) – statt nur einen einzelnen Text zu
+generieren, der hinterher per Regex nach Codeblöcken durchsucht wird.
+
+Ohne project_dir (z.B. für reine Text-/Synthese-Aufgaben) bleibt der einfache
+Ein-Schuss-Aufruf über generate_with_usage() erhalten.
 """
 
+import json
 import time
 from abc import ABC, abstractmethod
 from typing import Optional
-from core.llm_factory import LLMFactory, GeminiClient
-from core.message_bus import AgentTask, AgentResult
+
+from config import MAX_AGENT_TOOL_ITERATIONS
+from core.agent_toolbox import AgentToolbox
+from core.llm_factory import AgentMessage, GeminiClient, LLMFactory, LLMResponse
+from core.message_bus import AgentResult, AgentTask
 
 
 class BaseAgent(ABC):
@@ -35,15 +47,25 @@ class BaseAgent(ABC):
         Reichert den System-Prompt automatisch mit persistent gelernten Regeln an.
         """
         start_time = time.monotonic()
+        use_tools = bool(task.project_dir) and task.allow_tools
+        toolbox: Optional[AgentToolbox] = None
 
         try:
             from memory.agent_knowledge_base import agent_knowledge_base
             effective_system_prompt = agent_knowledge_base.get_augmented_prompt(self.agent_id, self.system_prompt)
 
-            prompt = self._build_prompt(task)
-            response = await self._llm.generate_with_usage(prompt, effective_system_prompt)
-            duration = time.monotonic() - start_time
+            if use_tools:
+                toolbox = AgentToolbox(project_dir=task.project_dir, agent_id=self.agent_id, read_only=task.tools_read_only)
+                effective_system_prompt = self._augment_with_tool_instructions(effective_system_prompt)
+                response, prompt_tokens, completion_tokens = await self._run_agentic_loop(
+                    task=task, toolbox=toolbox, system_prompt=effective_system_prompt,
+                )
+            else:
+                prompt = self._build_prompt(task)
+                response = await self._llm.generate_with_usage(prompt, effective_system_prompt)
+                prompt_tokens, completion_tokens = response.prompt_tokens, response.completion_tokens
 
+            duration = time.monotonic() - start_time
             return AgentResult(
                 task_id=task.task_id,
                 agent_id=self.agent_id,
@@ -52,9 +74,11 @@ class BaseAgent(ABC):
                 content=response.text,
                 duration_seconds=duration,
                 model_used=response.model_name,
-                prompt_tokens=response.prompt_tokens,
-                completion_tokens=response.completion_tokens,
-                total_tokens=response.total_tokens,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+                files_written=sorted(toolbox.files_written) if toolbox else [],
+                tool_calls_count=toolbox.call_count if toolbox else 0,
             )
 
         except Exception as e:
@@ -68,7 +92,72 @@ class BaseAgent(ABC):
                 error=str(e),
                 duration_seconds=duration,
                 model_used=self._llm.model_name,
+                files_written=sorted(toolbox.files_written) if toolbox else [],
+                tool_calls_count=toolbox.call_count if toolbox else 0,
             )
+
+    async def _run_agentic_loop(
+        self,
+        task: AgentTask,
+        toolbox: AgentToolbox,
+        system_prompt: str,
+    ) -> tuple[LLMResponse, int, int]:
+        """
+        Der echte Werkzeug-Loop: Modell antwortet entweder mit finalem Text ODER
+        mit angeforderten Werkzeug-Aufrufen. Werkzeug-Aufrufe werden ausgeführt,
+        ihr reales Ergebnis wird als Folge-Nachricht zurückgespielt, bis das
+        Modell eine finale Textantwort liefert oder das Iterationslimit erreicht ist.
+        """
+        max_iterations = task.max_tool_iterations or MAX_AGENT_TOOL_ITERATIONS
+        turns: list[AgentMessage] = [AgentMessage(role="user", text=self._build_prompt(task))]
+
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        response: Optional[LLMResponse] = None
+
+        for iteration in range(1, max_iterations + 1):
+            response = await self._llm.generate_with_tools(turns, system_prompt, toolbox.tool_specs())
+            total_prompt_tokens += response.prompt_tokens
+            total_completion_tokens += response.completion_tokens
+
+            if not response.tool_calls or iteration == max_iterations:
+                if not response.text and response.tool_calls:
+                    # Modell hat im letzten erlaubten Schritt nur Werkzeuge angefordert,
+                    # aber keinen Abschlusstext geliefert -> ehrliche Notiz statt leerer Antwort.
+                    files_note = ", ".join(sorted(toolbox.files_written)) or "keine"
+                    response.text = (
+                        f"⚠️ Maximale Werkzeug-Iterationen ({max_iterations}) erreicht, bevor eine finale "
+                        f"Zusammenfassung generiert wurde. Bisher geschriebene/geänderte Dateien: {files_note}."
+                    )
+                break
+
+            turns.append(AgentMessage(role="assistant", text=response.text, tool_calls=response.tool_calls))
+            for tool_call in response.tool_calls:
+                result = await toolbox.dispatch(tool_call.name, tool_call.arguments)
+                turns.append(AgentMessage(
+                    role="tool",
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    text=json.dumps(result, ensure_ascii=False),
+                ))
+
+        assert response is not None
+        return response, total_prompt_tokens, total_completion_tokens
+
+    def _augment_with_tool_instructions(self, system_prompt: str) -> str:
+        return f"""{system_prompt}
+
+## 🛠️ WERKZEUG-NUTZUNG (agentischer Modus)
+Du hast direkten Zugriff auf das Projektverzeichnis über Werkzeuge:
+- `list_files` / `read_file`: Verschaffe dir IMMER zuerst einen Überblick über bestehenden Code, bevor du etwas änderst.
+- `write_file`: Für neue Dateien oder vollständige Neuerstellung.
+- `edit_file`: Für punktuelle Änderungen an bestehenden Dateien (präziser Patch statt Neuerstellung).
+- `search_code`: Um relevante Stellen im Projekt zu finden, ohne jede Datei einzeln zu lesen.
+- `run_command` / `run_tests`: Um Abhängigkeiten zu installieren bzw. deine Änderungen wirklich zu verifizieren.
+
+Speichere Code IMMER direkt über write_file/edit_file im Projektverzeichnis – gib ihn nicht nur als Text in
+deiner Antwort aus. Deine finale Textantwort soll eine KURZE Zusammenfassung sein (was wurde geschrieben/geändert,
+warum, was ist noch offen) – kein erneutes Einfügen des kompletten Codes."""
 
     def _build_prompt(self, task: AgentTask) -> str:
         """Baut den finalen Prompt token-effizient zusammen mit strikten Sparsamkeits-Regeln."""

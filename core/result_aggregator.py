@@ -59,17 +59,26 @@ Erstelle jetzt das finale, strukturierte Gesamtergebnis für den Nutzer."""
         resp = await self._llm.generate_with_usage(prompt, SYNTHESIZE_SYSTEM_PROMPT)
         return resp.text, resp.total_tokens
 
+    # Cap pro Agenten-Ergebnis, damit die Synthese-Anfrage bei vielen aktiven Agenten
+    # (inkl. der jetzt echten Teamleiter-Delegation/-Konsolidierung, siehe orchestrator.py)
+    # nicht unbegrenzt wächst. Code-Deliverables sind bereits im Workspace gespeichert –
+    # der Hauptagent braucht hier nur genug Kontext für eine stimmige Zusammenfassung.
+    MAX_CONTENT_CHARS_PER_RESULT = 2500
+
     def _format_results(
         self,
         successful: list[AgentResult],
         failed: list[AgentResult]
     ) -> str:
-        """Formatiert Teamergebnisse kompakt."""
+        """Formatiert Teamergebnisse kompakt (pro Agent gekürzt, um Token-Verbrauch zu begrenzen)."""
         sections = []
 
         for result in successful:
+            content = result.content
+            if len(content) > self.MAX_CONTENT_CHARS_PER_RESULT:
+                content = content[: self.MAX_CONTENT_CHARS_PER_RESULT] + "\n… [gekürzt, vollständiger Inhalt im Workspace gespeichert] …"
             sections.append(
-                f"### [{result.agent_name}]\n{result.content}"
+                f"### [{result.agent_name}]\n{content}"
             )
 
         for result in failed:

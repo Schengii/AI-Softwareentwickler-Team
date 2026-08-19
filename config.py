@@ -99,6 +99,37 @@ MAX_REVIEW_ITERATIONS: int = int(os.getenv("MAX_REVIEW_ITERATIONS", "1"))
 AUTO_SAVE_WORKSPACE: bool = os.getenv("AUTO_SAVE_WORKSPACE", "true").lower() in ("true", "1", "yes")
 
 # ──────────────────────────────────────────
+# Agentischer Werkzeug-Loop (echte Tool-Nutzung statt Ein-Schuss-Textgenerierung)
+# ──────────────────────────────────────────
+ENABLE_AGENT_TOOLS: bool = os.getenv("ENABLE_AGENT_TOOLS", "true").lower() in ("true", "1", "yes")
+MAX_AGENT_TOOL_ITERATIONS: int = int(os.getenv("MAX_AGENT_TOOL_ITERATIONS", "6"))
+
+# Nicht jeder Agent braucht dasselbe Iterationsbudget: Jede zusätzliche Iteration sendet
+# die komplette bisherige Konversation (inkl. aller Werkzeug-Ergebnisse) erneut mit – das
+# Budget wird daher pro Agenten-Rolle gestaffelt, um unnötigen Tokenverbrauch zu vermeiden,
+# ohne code-schreibende Agenten einzuschränken, die echte Iteration brauchen.
+AGENT_MAX_TOOL_ITERATIONS: dict[str, int] = {
+    # Vorwiegend textbasierte Planungs-/Content-Rollen: meist 1-2 Dateien, wenig Iteration nötig
+    "product_owner": 3, "business_analyst": 3, "web_research": 3, "finops": 3, "team_lead": 3,
+    "copywriter": 3, "ui_ux": 3, "accessibility": 3, "i18n": 3, "documentation": 3,
+    "readme": 3, "github": 2, "image_generator": 3,
+    # Reine Prüf-/Review-Rollen: lesen viel, schreiben nichts -> weniger Iteration nötig
+    "code_reviewer": 4, "compliance": 4, "project_cleaner": 3,
+}
+
+# ──────────────────────────────────────────
+# Echte Verifikation (Dependency-Installation + tatsächliche Testausführung)
+# ──────────────────────────────────────────
+MAX_VERIFICATION_ITERATIONS: int = int(os.getenv("MAX_VERIFICATION_ITERATIONS", "2"))
+DEPENDENCY_INSTALL_TIMEOUT_SECONDS: float = float(os.getenv("DEPENDENCY_INSTALL_TIMEOUT_SECONDS", "120"))
+TEST_RUN_TIMEOUT_SECONDS: float = float(os.getenv("TEST_RUN_TIMEOUT_SECONDS", "60"))
+
+# ──────────────────────────────────────────
+# Fachbereichs-Teamleiter: echte Delegation & Konsolidierung per LLM-Call
+# ──────────────────────────────────────────
+ENABLE_DEPARTMENT_LEAD_EXECUTION: bool = os.getenv("ENABLE_DEPARTMENT_LEAD_EXECUTION", "true").lower() in ("true", "1", "yes")
+
+# ──────────────────────────────────────────
 # Pfade
 # ──────────────────────────────────────────
 BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))

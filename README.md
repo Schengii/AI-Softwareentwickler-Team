@@ -19,6 +19,23 @@
 
 ---
 
+## 🛠️ Echter agentischer Werkzeug-Loop, echte Verifikation & aktive Teamleiter
+
+Seit dem letzten Umbau ist das Team kein reiner Ein-Schuss-Textgenerator mehr, sondern nutzt echtes,
+providerübergreifendes Function-Calling:
+
+- **Echte Werkzeuge statt nur Text:** Jeder Agent mit Projektzugriff bekommt `read_file`, `write_file`,
+  `edit_file` (präziser Patch statt Volltext-Neuerstellung), `list_files`, `search_code`, `run_command`
+  und `run_tests` – und ruft sie über natives Function-Calling von Gemini/DeepSeek/Groq/Claude/OpenRouter
+  wirklich auf, bevor er eine Aufgabe als erledigt meldet (`agents/base_agent.py`, `core/agent_toolbox.py`).
+- **Echte Verifikation statt Keyword-Raten:** Nach der QA-Phase installiert der Hauptagent Abhängigkeiten
+  in einer isolierten venv und führt die tatsächliche Testsuite aus (`core/verifier.py`). Schlägt ein Test
+  fehl, wird der reale Traceback geparst und der Korrekturauftrag GEZIELT an genau den Agenten geschickt,
+  der die betroffene Datei geschrieben hat – nicht mehr blind an alle Dev-Agenten.
+- **Aktive Fachbereichs-Teamleiter:** Jeder der 5 Teamleiter delegiert und konsolidiert jetzt über einen
+  echten LLM-Aufruf (nicht mehr nur simulierte Statusmeldungen) und erscheint mit eigenem, geprüftem
+  Ergebnis in der finalen Kennzahlen-Tabelle.
+
 ## 📖 Inhaltsverzeichnis
 
 - [Hierarchische Team- & Fachbereichsstruktur (Grafik)](#teamstruktur)

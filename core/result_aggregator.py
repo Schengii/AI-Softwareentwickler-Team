@@ -55,8 +55,29 @@ ERGEBNISSE DES TEAMS:
 
 Erstelle jetzt das finale, strukturierte Gesamtergebnis für den Nutzer."""
 
-        resp = await self._llm.generate_with_usage(prompt, SYNTHESIZE_SYSTEM_PROMPT)
-        return resp.text, resp.total_tokens
+        try:
+            resp = await self._llm.generate_with_usage(prompt, SYNTHESIZE_SYSTEM_PROMPT)
+            return resp.text, resp.total_tokens
+        except Exception as e:
+            # KRITISCH: Das Team hat zu diesem Zeitpunkt bereits echte Arbeit geleistet
+            # (Dateien geschrieben, Tests bestanden) – die liegt bereits im Workspace.
+            # Schlägt ausgerechnet dieser LETZTE Schritt fehl (z.B. weil an diesem Tag
+            # alle konfigurierten Provider gleichzeitig erschöpft sind), darf der Nutzer
+            # NICHT mit einem Absturz und ohne jedes Ergebnis dastehen. Fallback: eine
+            # einfache, nicht LLM-polierte Zusammenfassung aus den rohen Ergebnissen.
+            return self._fallback_summary(results_text, e), 0
+
+    @staticmethod
+    def _fallback_summary(results_text: str, error: Exception) -> str:
+        return (
+            "### ⚠️ Automatische Synthese nicht verfügbar\n\n"
+            f"Die abschließende KI-Zusammenfassung konnte nicht erstellt werden "
+            f"(alle konfigurierten Modelle/Provider aktuell nicht erreichbar: `{error}`).\n\n"
+            "**Die Arbeit des Teams ist davon nicht betroffen** – alle bereits erfolgreich "
+            "erstellten Dateien liegen im Workspace-Verzeichnis. Nachfolgend die rohen "
+            "Ergebnisse aller Agenten als unformatierte Übersicht:\n\n"
+            f"{results_text}"
+        )
 
     # Cap pro Agenten-Ergebnis, damit die Synthese-Anfrage bei vielen aktiven Agenten
     # (inkl. der jetzt echten Teamleiter-Delegation/-Konsolidierung, siehe orchestrator.py)

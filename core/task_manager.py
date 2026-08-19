@@ -258,7 +258,14 @@ VERFÜGBARE AGENTEN:
 
 Erstelle jetzt das JSON mit den Teilaufgaben."""
 
-        raw_json = await self._llm.generate_json(prompt, DECOMPOSE_SYSTEM_PROMPT)
+        try:
+            raw_json = await self._llm.generate_json(prompt, DECOMPOSE_SYSTEM_PROMPT)
+        except Exception as e:
+            # Wie in ResultAggregator.synthesize(): nicht crashen, sondern einen klaren,
+            # nutzerverständlichen Grund liefern statt eines rohen Stacktraces. Orchestrator.
+            # process() behandelt eine leere agent_tasks-Liste bereits als regulären Fall.
+            return f"⚠️ Aufgabenanalyse fehlgeschlagen (alle konfigurierten Modelle/Provider aktuell nicht erreichbar: {e})", "project", []
+
         plan = self._parse_plan(raw_json)
         task_summary = plan.get("task_summary", "Aufgabe wird bearbeitet...")
         project_slug = plan.get("project_slug", "project")

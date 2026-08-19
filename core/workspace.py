@@ -80,11 +80,11 @@ class WorkspaceManager:
         if not file_map:
             return ""
 
-        # Wenn RAG Query übergeben wurde oder das Projekt viele Dateien hat, nutze Vector-Indexing
+        # Wenn RAG Query übergeben wurde oder das Projekt viele Dateien hat, nutze semantische Suche
+        # (echte Gemini-Embeddings mit persistentem Cache, Fallback auf BM25 – core/embedding_index.py)
         if query and len(file_map) > 5:
-            from core.vector_store import code_index
-            code_index.index_files(file_map)
-            top_chunks = code_index.search(query, top_k=6)
+            from core.embedding_index import semantic_search
+            top_chunks = semantic_search(project_dir, query, top_k=6)
             context_lines = [f"### 🔍 RAG-RELEVANTER CODE AUS ({project_dir.name}) FÜR '{query}':\n"]
             for chunk in top_chunks:
                 context_lines.append(f"--- DATEI: {chunk['file']} (Zeile {chunk['line_start']}) ---\n{chunk['chunk']}\n\n")

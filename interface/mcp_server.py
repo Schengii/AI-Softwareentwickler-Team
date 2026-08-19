@@ -46,16 +46,20 @@ class MCPServer:
             },
             {
                 "name": "ai_team_rag_search",
-                "description": "Durchsucht den Codebase-Vektor-Index semantisch nach relevanten Codeabschnitten.",
+                "description": "Durchsucht ein Projekt im Workspace semantisch (echte Gemini-Embeddings mit BM25-Fallback) nach relevanten Codeabschnitten.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
+                        "project": {
+                            "type": "string",
+                            "description": "Name des Projekts im Workspace (siehe ai_team_list_projects)."
+                        },
                         "query": {
                             "type": "string",
                             "description": "Suchbegriff oder Code-Funktion."
                         }
                     },
-                    "required": ["query"]
+                    "required": ["project", "query"]
                 }
             }
         ]
@@ -89,10 +93,13 @@ class MCPServer:
                 }
 
             elif name == "ai_team_rag_search":
-                from core.vector_store import code_index
+                from core.embedding_index import semantic_search
+                from core.workspace import WorkspaceManager
+                project = arguments.get("project", "")
                 query = arguments.get("query", "")
-                results = code_index.search(query, top_k=3)
-                res_text = "\n\n".join([f"Datei: {r['file']} (Zeile {r['line_start']}):\n{r['chunk']}" for r in results]) or "Keine Treffer im Index."
+                project_dir = WorkspaceManager().get_project_dir(project) if project else None
+                results = semantic_search(project_dir, query, top_k=3) if project_dir else []
+                res_text = "\n\n".join([f"Datei: {r['file']} (Zeile {r['line_start']}):\n{r['chunk']}" for r in results]) or "Keine Treffer gefunden."
                 return {
                     "jsonrpc": "2.0",
                     "id": req_id,

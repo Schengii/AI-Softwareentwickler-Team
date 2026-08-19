@@ -12,6 +12,7 @@ Bietet:
 import asyncio
 import os
 import sys
+from typing import Optional
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -69,6 +70,7 @@ class CLIInterface:
     def __init__(self):
         self._orchestrator = Orchestrator()
         self._workspace = self._orchestrator.get_workspace_manager()
+        self._loaded_project_dir: Optional[str] = None  # von /load gesetzt, von /rag genutzt
 
     def run(self) -> None:
         """Startet das interaktive CLI."""
@@ -256,6 +258,7 @@ class CLIInterface:
             target_path = " ".join(args)
             ctx = self._workspace.read_existing_project_context(target_path)
             if ctx:
+                self._loaded_project_dir = str(self._workspace.get_project_dir(target_path))
                 self._orchestrator._history.add_user_message(f"Hier ist der bestehende Projektcode, den wir analysieren/erweitern:\n\n{ctx}")
                 console.print(f"✅ [bold green]Projekt erfolgreich geladen:[/bold green] `{target_path}` ({len(ctx)} Zeichen analysiert).")
                 console.print("💡 Du kannst deinem Team jetzt Aufgaben zu diesem Projekt stellen (z. B. *'Refaktoriere die App und füge Tests hinzu'*).", style="dim")
@@ -266,15 +269,19 @@ class CLIInterface:
             if not args:
                 console.print("⚠️ Bitte gib einen Suchbegriff an: `/rag <query>`", style="yellow")
                 return False
+            if not self._loaded_project_dir:
+                console.print("⚠️ Kein Projekt geladen. Lade zuerst eines mit `/load <pfad_oder_name>`.", style="yellow")
+                return False
             query_str = " ".join(args)
-            from core.vector_store import code_index
-            results = code_index.search(query_str, top_k=4)
+            from core.embedding_index import semantic_search
+            results = semantic_search(self._loaded_project_dir, query_str, top_k=4)
             if results:
                 console.print(f"🔍 [bold green]RAG-Treffer für '{query_str}':[/bold green]")
                 for r in results:
-                    console.print(f"📄 `{r['file']}` (Zeile {r['line_start']}):\n```python\n{r['chunk'][:400]}\n```")
+                    score_note = f" (Ähnlichkeit: {r['score']})" if "score" in r else ""
+                    console.print(f"📄 `{r['file']}` (Zeile {r['line_start']}){score_note}:\n```python\n{r['chunk'][:400]}\n```")
             else:
-                console.print(f"Keine relevanten Codeblöcke für '{query_str}' gefunden (Index ist leer oder keine Übereinstimmung). Lade zuerst ein Projekt mit `/load`.", style="yellow")
+                console.print(f"Keine relevanten Codeblöcke für '{query_str}' gefunden.", style="yellow")
 
         elif cmd in ("/tokens", "/token", "/verbrauch", "/quota", "/kosten"):
             from core.quota_estimator import QuotaEstimator

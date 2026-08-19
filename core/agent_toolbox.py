@@ -243,24 +243,16 @@ class AgentToolbox:
     # ── Such-Werkzeug ────────────────────────────────────────────────
 
     async def _tool_search_code(self, query: str, top_k: int = 5) -> dict:
-        from core.vector_store import CodeVectorIndex
+        import asyncio
+        from core.embedding_index import semantic_search
 
-        ignored_parts = {".venv", "venv", ".ai_team_venv", "__pycache__", ".git", "node_modules"}
-        valid_ext = {".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".md", ".yml", ".yaml", ".sql", ".html", ".css"}
-        file_map: dict[str, str] = {}
-        for p in self.project_dir.rglob("*"):
-            if p.is_file() and p.suffix in valid_ext and not any(part in ignored_parts for part in p.parts):
-                try:
-                    file_map[str(p.relative_to(self.project_dir)).replace("\\", "/")] = p.read_text(encoding="utf-8", errors="ignore")
-                except Exception:
-                    continue
-
-        if not file_map:
-            return {"results": [], "note": "Noch keine durchsuchbaren Dateien im Projekt vorhanden."}
-
-        idx = CodeVectorIndex()
-        idx.index_files(file_map)
-        results = idx.search(query, top_k=max(1, min(top_k, 15)))
+        # semantic_search versucht echte Gemini-Embeddings (persistenter Cache pro Projekt,
+        # embeddet nur geänderte Dateien neu) und faellt automatisch auf BM25 zurueck.
+        # In einen Thread ausgelagert, da sync() blockierende Datei-I/O + API-Aufrufe macht
+        # und dieser Aufruf sonst den Event-Loop waehrend parallel laufender Agenten blockiert.
+        results = await asyncio.to_thread(semantic_search, self.project_dir, query, max(1, min(top_k, 15)))
+        if not results:
+            return {"results": [], "note": "Keine relevanten Treffer (oder noch keine durchsuchbaren Dateien im Projekt)."}
         return {"results": [{"file": r["file"], "line_start": r["line_start"], "chunk": r["chunk"][:1500]} for r in results]}
 
     # ── Ausführungs-Werkzeuge ────────────────────────────────────────

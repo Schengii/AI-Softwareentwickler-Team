@@ -15,6 +15,11 @@ build/
 venv/
 .venv/
 env/
+**/.ai_team_venv/
+
+# Persistenter RAG-Embedding-Cache pro Generiertem Projekt (core/embedding_index.py) –
+# enthält reine Vektor-Caches, keine Quelldateien, muss nicht versioniert werden.
+**/.ai_team_rag/
 
 # IDEs
 .vscode/

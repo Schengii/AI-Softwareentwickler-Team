@@ -24,6 +24,8 @@ Workflow:
 """
 
 import asyncio
+import json
+import re
 import time
 from collections.abc import Callable
 
@@ -631,25 +633,62 @@ class Orchestrator:
         trainer_result = await trainer.execute(task)
 
         if trainer_result and trainer_result.success and trainer_result.content:
-            try:
-                import re
-
-                from memory.agent_knowledge_base import agent_knowledge_base
-                lines = trainer_result.content.splitlines()
-                current_agent = None
-                for line in lines:
-                    if "Betroffener Agent:" in line:
-                        match = re.search(r'Betroffener Agent:\s*[`\'"]?([a-zA-Z0-9_]+)', line)
-                        if match:
-                            current_agent = match.group(1).replace("_agent", "")
-                    elif current_agent and ("Vorgeschlagene Ergänzung" in line or line.strip().startswith('"') or line.strip().startswith("- ")):
-                        clean_rule = line.strip(' "-*#')
-                        if len(clean_rule) > 15:
-                            agent_knowledge_base.add_learning(current_agent, clean_rule)
-            except Exception:
-                pass
+            self._extract_and_store_learnings(trainer_result.content)
 
         return trainer_result
+
+    def _extract_and_store_learnings(self, report_text: str) -> None:
+        """
+        Speichert die Lern-Regeln aus dem Trainer-Report persistent (memory/agent_learnings.json),
+        damit ALLE Agenten aus vergangenen Fehlern/Läufen lernen (BaseAgent.execute() reichert
+        jeden System-Prompt automatisch mit den gespeicherten Regeln des jeweiligen Agenten an).
+
+        Primär über den maschinenlesbaren ```json-Block (robust, siehe AgentTrainerAgent),
+        mit Fallback auf die alte text-musterbasierte Extraktion, falls das Modell den
+        JSON-Block einmal nicht liefert. Jede agent_id wird gegen die echten Agenten/Leads
+        validiert, damit keine erfundene oder falsch geschriebene Rolle in der Wissensbasis landet.
+        """
+        from memory.agent_knowledge_base import agent_knowledge_base
+
+        valid_agent_ids = set(self._agents.keys()) | set(self._dept_leads.keys())
+        learnings = self._parse_structured_learnings(report_text) or self._parse_legacy_text_learnings(report_text)
+
+        for entry in learnings:
+            agent_id = entry.get("agent_id", "")
+            rule = (entry.get("rule") or "").strip()
+            if agent_id in valid_agent_ids and len(rule) > 15:
+                agent_knowledge_base.add_learning(agent_id, rule)
+
+    @staticmethod
+    def _parse_structured_learnings(report_text: str) -> list[dict]:
+        match = re.search(r"```json\s*\n(.*?)```", report_text, re.DOTALL)
+        if not match:
+            return []
+        try:
+            data = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            return []
+        learnings = data.get("learnings") if isinstance(data, dict) else None
+        return learnings if isinstance(learnings, list) else []
+
+    @staticmethod
+    def _parse_legacy_text_learnings(report_text: str) -> list[dict]:
+        """Fallback, falls der Trainer (entgegen der Anweisung) keinen gültigen JSON-Block liefert."""
+        learnings: list[dict] = []
+        current_agent: str | None = None
+        for line in report_text.splitlines():
+            if "Betroffener Agent:" in line:
+                # \**: toleriert Markdown-Fettschrift ("**Betroffener Agent:**"), die reale
+                # Modell-Ausgaben durchgehend verwenden – ohne das schlug dieses Muster in
+                # der Praxis nie an (bei einem echten Testlauf entdeckt).
+                match = re.search(r'Betroffener Agent:\**\s*[`\'"]?([a-zA-Z0-9_]+)', line)
+                if match:
+                    current_agent = match.group(1).replace("_agent", "")
+            elif current_agent and ("Vorgeschlagene Ergänzung" in line or line.strip().startswith('"') or line.strip().startswith("- ")):
+                clean_rule = line.strip(' "-*#')
+                if len(clean_rule) > 15:
+                    learnings.append({"agent_id": current_agent, "rule": clean_rule})
+        return learnings
 
     def _build_metrics_summary(
         self,

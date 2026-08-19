@@ -8,6 +8,7 @@ Spezialisiert auf:
 - Schutz vor Projekt-Aufblähung (Project Bloat & Dependency Bloat)
 """
 
+import re
 from pathlib import Path
 
 from agents.base_agent import BaseAgent
@@ -75,6 +76,21 @@ build/
 .pytest_cache/
 ```
 
+### 5. Maschinenlesbare Löschliste
+Am ENDE deiner Antwort MUSST du zusätzlich einen Codeblock mit exakt diesem Format anhängen –
+nur Pfade, die du unter Punkt 2 auch wirklich als sicher zur Löschung empfohlen hast, einer pro
+Zeile, relativ zum Projekt-Root. Nutze list_files/read_file/search_code, um dich VOR jeder
+Empfehlung wirklich zu vergewissern, dass ein Pfad unbenutzt ist – im Zweifel NICHT auflisten:
+```deletions
+pfad/zur/datei_oder_ordner_1
+pfad/zur/datei_oder_ordner_2
+```
+Ist nichts zur Löschung empfohlen, gib einen leeren Codeblock ```deletions\n```  aus.
+
+WICHTIG: Du hast nur LESE-Zugriff (list_files, read_file, search_code) – du kannst und darfst
+selbst nichts löschen oder verändern. Jede Löschung aus deiner Liste wird ausschließlich nach
+expliziter Bestätigung durch den Menschen ausgeführt.
+
 Antworte auf Deutsch. Konsequent auf Ordnung, Minimalismus und langfristige Wartbarkeit ausgerichtet."""
 
     # Ausschließlich automatisch regenerierbare Cache-Verzeichnisse – NIE Quellcode oder
@@ -102,3 +118,52 @@ Antworte auf Deutsch. Konsequent auf Ordnung, Minimalismus und langfristige Wart
                     pass
 
         return removed
+
+    @staticmethod
+    def parse_recommended_deletions(report_text: str) -> list[str]:
+        """
+        Extrahiert die maschinenlesbare Löschliste (```deletions ... ```-Block) aus einem
+        echten Hygiene-Report des Agenten. Robust gegen Leerzeilen/Whitespace; gibt bei
+        fehlendem oder leerem Block eine leere Liste zurück (kein Fehler).
+        """
+        match = re.search(r"```deletions\s*\n(.*?)```", report_text, re.DOTALL)
+        if not match:
+            return []
+        paths = [line.strip() for line in match.group(1).splitlines()]
+        return [p for p in paths if p and not p.startswith("#")]
+
+    @staticmethod
+    def apply_confirmed_deletions(project_dir: str, relative_paths: list[str]) -> tuple[list[str], list[str]]:
+        """
+        Löscht NUR die übergebenen, bereits vom Menschen bestätigten Pfade (Dateien oder
+        Ordner) innerhalb von project_dir. Wird ausschließlich von interface/cli.py nach
+        einer expliziten Confirm.ask()-Bestätigung aufgerufen – niemals von einem Agenten
+        selbst (dieser hat dafür bewusst kein Werkzeug in core/agent_toolbox.py).
+
+        Returns: (erfolgreich_geloescht, fehlgeschlagen_oder_ausserhalb)
+        """
+        import shutil
+
+        base = Path(project_dir).resolve()
+        removed: list[str] = []
+        failed: list[str] = []
+
+        for rel in relative_paths:
+            clean = rel.replace("\\", "/").lstrip("/")
+            target = (base / clean).resolve()
+            if target != base and base not in target.parents:
+                failed.append(f"{rel} (außerhalb des Projektverzeichnisses – abgelehnt)")
+                continue
+            if not target.exists():
+                failed.append(f"{rel} (existiert nicht mehr)")
+                continue
+            try:
+                if target.is_dir():
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+                removed.append(rel)
+            except Exception as e:
+                failed.append(f"{rel} ({e})")
+
+        return removed, failed

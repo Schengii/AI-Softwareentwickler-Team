@@ -101,6 +101,38 @@ class TestAgentToolbox(unittest.TestCase):
         result = run(self.toolbox.dispatch("delete_everything", {}))
         self.assertIn("error", result)
 
+    def test_env_file_cannot_be_read(self):
+        # project_dir kann seit /audit-projekt auch auf das Framework-Root zeigen (echtes
+        # .env mit echten API-Keys), nicht nur auf generierte workspace/-Sandboxen.
+        (Path(self.temp_dir) / ".env").write_text("GEMINI_API_KEY=echter-geheimer-wert")
+        result = run(self.toolbox.dispatch("read_file", {"path": ".env"}))
+        self.assertIn("error", result)
+        self.assertNotIn("geheimer-wert", str(result))
+
+    def test_env_file_hidden_from_list_files(self):
+        (Path(self.temp_dir) / ".env").write_text("SECRET=1")
+        (Path(self.temp_dir) / "app.py").write_text("x = 1")
+        result = run(self.toolbox.dispatch("list_files", {}))
+        self.assertNotIn(".env", result["files"])
+        self.assertIn("app.py", result["files"])
+
+    def test_env_file_cannot_be_overwritten(self):
+        (Path(self.temp_dir) / ".env").write_text("GEMINI_API_KEY=echt")
+        result = run(self.toolbox.dispatch("write_file", {"path": ".env", "content": "pwned=true"}))
+        self.assertIn("error", result)
+        self.assertEqual((Path(self.temp_dir) / ".env").read_text(), "GEMINI_API_KEY=echt")
+
+    def test_credentials_json_and_pem_files_blocked(self):
+        for name in ("credentials.json", "server.pem", "id_rsa"):
+            (Path(self.temp_dir) / name).write_text("secret-content")
+            result = run(self.toolbox.dispatch("read_file", {"path": name}))
+            self.assertIn("error", result, msg=f"{name} sollte gesperrt sein")
+
+    def test_env_example_remains_readable(self):
+        (Path(self.temp_dir) / ".env.example").write_text("GEMINI_API_KEY=")
+        result = run(self.toolbox.dispatch("read_file", {"path": ".env.example"}))
+        self.assertNotIn("error", result)
+
 
 if __name__ == "__main__":
     unittest.main()

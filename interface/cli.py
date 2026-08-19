@@ -52,6 +52,7 @@ HELP_TEXT = """
 | `/export [projekt]` | Packt das Projektverzeichnis in ein ZIP-Archiv |
 | `/run-tests [projekt]` | Führt automatische Unit-Tests im Projekt aus |
 | `/delete-project <name>` | Löscht ein Projekt unwiderruflich aus dem Workspace (mit Bestätigung) |
+| `/audit-projekt [projekt]` | Lässt den Projekt-Hygiene-Agenten das Framework (oder ein Projekt) wirklich durchsehen; Löschungen nur nach Bestätigung |
 | `/push` | Führt manuell einen Git-Commit & Push aus |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
@@ -70,10 +71,13 @@ Schreibe einfach deine Anforderung in den Chat (z. B. *"Erstelle eine Todo-Webap
 class CLIInterface:
     """Das interaktive Kommandozeilen-Interface."""
 
+    AUDIT_REMINDER_INTERVAL = 5  # Nach je N abgeschlossenen Aufgaben an /audit-projekt erinnern
+
     def __init__(self):
         self._orchestrator = Orchestrator()
         self._workspace = self._orchestrator.get_workspace_manager()
         self._loaded_project_dir: str | None = None  # von /load gesetzt, von /rag genutzt
+        self._tasks_since_audit_reminder = 0
 
     def run(self) -> None:
         """Startet das interaktive CLI."""
@@ -162,6 +166,16 @@ class CLIInterface:
 
         # GitHub-Push Dialog
         await self._ask_for_git_push(user_input)
+
+        # Regelmäßige Erinnerung an die Projekt-Hygiene (kein Auto-Löschen – nur ein Hinweis).
+        self._tasks_since_audit_reminder += 1
+        if self._tasks_since_audit_reminder >= self.AUDIT_REMINDER_INTERVAL:
+            self._tasks_since_audit_reminder = 0
+            console.print(
+                "💡 [dim]Tipp: Seit einer Weile kein Struktur-Audit mehr – "
+                "`/audit-projekt` lässt den Projekt-Hygiene-Agenten das Projekt "
+                "wirklich durchsehen und schlägt konkrete Aufräumungen vor.[/dim]"
+            )
 
     async def _ask_for_git_push(self, task_summary: str) -> None:
         """
@@ -269,6 +283,81 @@ class CLIInterface:
         else:
             console.print(f"⚠️ Löschung von `{project_name}` fehlgeschlagen.", style="yellow")
 
+    async def _audit_project(self, target_path: str | None) -> None:
+        """
+        Lässt den project_cleaner-Agenten mit ECHTEM Lesezugriff (list_files/read_file/
+        search_code) eine Struktur-Hygiene-Analyse durchführen – Standard: das Framework
+        selbst, optional ein einzelnes workspace/-Projekt. Löscht NIE automatisch: zeigt
+        den vollen Report und fragt bei konkreten Empfehlungen explizit nach Bestätigung,
+        analog zu /delete-project und dem Git-Push-Gate.
+        """
+        from agents.project_cleaner_agent import ProjectCleanerAgent
+        from config import BASE_DIR
+        from core.message_bus import AgentTask
+
+        if target_path:
+            target_dir = str(self._workspace.get_project_dir(target_path))
+            label = f"Projekt `{target_path}`"
+        else:
+            target_dir = BASE_DIR
+            label = "das gesamte Framework (Projekt-Root)"
+
+        console.print(f"🧹 [bold cyan]Projekt-Hygiene-Audit:[/bold cyan] {label} wird analysiert (echter Lesezugriff, kann etwas dauern)...")
+
+        cleaner = self._orchestrator._agents.get("project_cleaner")
+        if not cleaner:
+            console.print("⚠️ project_cleaner-Agent nicht verfügbar.", style="yellow")
+            return
+
+        task = AgentTask(
+            task_id="manual_audit",
+            agent_id="project_cleaner",
+            description=(
+                f"Führe eine vollständige Struktur-Hygiene-Analyse von {label} durch. "
+                "Nutze list_files/read_file/search_code, um dir einen ECHTEN Überblick zu "
+                "verschaffen, bevor du irgendetwas zur Löschung empfiehlst."
+            ),
+            context="",
+            project_dir=target_dir,
+            allow_tools=True,
+            tools_read_only=True,
+            max_tool_iterations=8,
+        )
+        result = await cleaner.execute(task)
+
+        if not result.success:
+            console.print(f"⚠️ Audit fehlgeschlagen: {result.error}", style="yellow")
+            return
+
+        console.print(Panel(Markdown(result.content), title="🧹 Projekt-Hygiene-Report", border_style="cyan"))
+
+        recommended = ProjectCleanerAgent.parse_recommended_deletions(result.content)
+        if not recommended:
+            console.print("✅ Keine konkreten Löschempfehlungen.", style="green")
+            return
+
+        console.print(
+            Panel(
+                "\n".join(f"  {p}" for p in recommended),
+                title=f"🗑️ {len(recommended)} Löschempfehlung(en) – bisher wurde NICHTS gelöscht",
+                border_style="red",
+            )
+        )
+        try:
+            should_apply = Confirm.ask("Diese Pfade jetzt wirklich löschen?", default=False)
+        except Exception:
+            should_apply = False
+
+        if not should_apply:
+            console.print("↩️ Nichts gelöscht.", style="dim")
+            return
+
+        removed, failed = ProjectCleanerAgent.apply_confirmed_deletions(target_dir, recommended)
+        if removed:
+            console.print(f"🗑️ [bold green]{len(removed)} Pfad(e) gelöscht:[/bold green] {', '.join(removed)}")
+        if failed:
+            console.print(f"⚠️ {len(failed)} Pfad(e) übersprungen: {', '.join(failed)}", style="yellow")
+
     async def _handle_command(self, command: str) -> bool:
         """Verarbeitet CLI-Befehle."""
         parts = command.strip().split()
@@ -299,6 +388,9 @@ class CLIInterface:
                 console.print("⚠️ Bitte gib den Projektnamen an: `/delete-project <name>`", style="yellow")
                 return False
             await self._delete_project_with_confirmation(args[0])
+
+        elif cmd in ("/audit-projekt", "/audit", "/hygiene"):
+            await self._audit_project(args[0] if args else None)
 
         elif cmd in ("/push", "/git"):
             await self._ask_for_git_push("manuelles Update")

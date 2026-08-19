@@ -16,6 +16,7 @@ Alle Datei-Operationen sind strikt auf project_dir beschränkt (kein Directory
 Traversal), und run_command ist auf eine Sicherheits-Whitelist begrenzt.
 """
 
+import fnmatch
 import shlex
 import sys
 from pathlib import Path
@@ -124,6 +125,21 @@ class AgentToolbox:
     MAX_TOOL_RESULT_CHARS = 8_000
     MAX_LISTED_FILES = 300
 
+    # project_dir zeigt normalerweise auf einen generierten Sandbox-Ordner unter workspace/,
+    # der strukturell nie Secrets enthält. Seit /audit-projekt kann project_dir aber auch auf
+    # das Framework-Root selbst zeigen (echtes .env mit echten API-Keys!) – diese Sperre gilt
+    # deshalb IMMER, nicht nur im Nur-Lese-Modus, und blockiert read_file/write_file/edit_file
+    # gleichermaßen (verhindert nebenbei auch ein versehentliches Überschreiben von .env).
+    SENSITIVE_NAME_PATTERNS = (
+        ".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", "*credentials*", "*secret*",
+    )
+
+    @classmethod
+    def _is_sensitive_name(cls, filename: str) -> bool:
+        if filename == ".env.example":  # enthaelt bewusst keine echten Werte
+            return False
+        return any(fnmatch.fnmatch(filename.lower(), pat) for pat in cls.SENSITIVE_NAME_PATTERNS)
+
     def __init__(self, project_dir: str | Path, agent_id: str, read_only: bool = False):
         self.project_dir = Path(project_dir).resolve()
         self.project_dir.mkdir(parents=True, exist_ok=True)
@@ -145,6 +161,8 @@ class AgentToolbox:
         target = (self.project_dir / clean).resolve()
         if target != self.project_dir and self.project_dir not in target.parents:
             raise ToolExecutionError(f"Pfad '{rel_path}' liegt außerhalb des Projektverzeichnisses – abgelehnt.")
+        if self._is_sensitive_name(target.name):
+            raise ToolExecutionError(f"'{rel_path}' enthält vermutlich Zugangsdaten/Secrets und ist für Agenten-Werkzeuge gesperrt.")
         return target
 
     async def dispatch(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -198,7 +216,7 @@ class AgentToolbox:
         files = sorted(
             str(p.relative_to(self.project_dir)).replace("\\", "/")
             for p in base.rglob("*")
-            if p.is_file() and not any(part in ignored_parts for part in p.parts)
+            if p.is_file() and not any(part in ignored_parts for part in p.parts) and not self._is_sensitive_name(p.name)
         )
         if len(files) > self.MAX_LISTED_FILES:
             return {

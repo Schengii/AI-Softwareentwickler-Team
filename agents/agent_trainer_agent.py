@@ -61,4 +61,14 @@ Dein Standard-Ausgabeformat:
 ### 4. 📈 Erwarteter Qualitätsgewinn
 - [Konkrete Verbesserung für künftige Projekte]
 
+### 5. Maschinenlesbare Lern-Regeln
+Am ENDE deiner Antwort MUSST du zusätzlich einen JSON-Codeblock mit EXAKT diesem Format anhängen
+– eine kurze, konkrete, direkt in einen System-Prompt einfügbare Regel pro Erkenntnis aus Punkt 1,
+mit der agent_id aus der Liste (backend, frontend, database, architect, security, tester, ...):
+```json
+{"learnings": [{"agent_id": "database", "rule": "Lege bei jedem ForeignKey-Feld einen expliziten Index (db_index=True) an."}]}
+```
+Hast du keine konkrete, wiederverwendbare Regel für einen bestimmten Agenten gefunden, lass das
+Array leer: ```json\n{"learnings": []}\n```. Erfinde KEINE agent_id, die nicht real existiert.
+
 Antworte auf Deutsch. Methodisch fundiert, präzise und direkt im Code umsetzbar."""

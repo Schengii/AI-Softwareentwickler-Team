@@ -117,6 +117,22 @@ class TestEmbeddingCodeIndex(unittest.TestCase):
         self.assertTrue(any(r["file"] == "auth.py" for r in results))
         self.mock_embed.assert_not_called()
 
+    def test_env_file_never_indexed_even_with_embeddings(self):
+        # project_dir kann seit /audit-projekt auch auf das Framework-Root zeigen (echtes
+        # .env). Selbst falls jemand credentials.json (.json ist eine erlaubte Endung) anlegt,
+        # darf dessen Inhalt nie eingebettet/durchsucht werden.
+        self._write(".env", "GEMINI_API_KEY=echter-geheimer-wert")
+        self._write("credentials.json", '{"api_key": "auch-geheim"}')
+        self._write("app.py", "def public_function():\n    pass\n")
+
+        index = EmbeddingCodeIndex(self.project_dir)
+        index.sync()
+
+        indexed_files = set(index._file_entries.keys())
+        self.assertNotIn(".env", indexed_files)
+        self.assertNotIn("credentials.json", indexed_files)
+        self.assertIn("app.py", indexed_files)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -36,6 +36,19 @@ MAX_CHARS_PER_CHUNK = 6000  # Sicherheitsnetz gegen die Token-Obergrenze der Emb
 VALID_EXTENSIONS = {".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".md", ".yml", ".yaml", ".sql", ".html", ".css"}
 IGNORED_DIR_PARTS = {".venv", "venv", ".ai_team_venv", CACHE_DIRNAME, "__pycache__", ".git", "node_modules", "dist", "build"}
 
+# Konsistent mit core/agent_toolbox.py::AgentToolbox.SENSITIVE_NAME_PATTERNS – project_dir
+# kann seit /audit-projekt auch auf das Framework-Root (echtes .env) zeigen, nicht nur auf
+# generierte workspace/-Sandboxen. .env selbst wird zwar meist schon über VALID_EXTENSIONS
+# ausgefiltert, aber z.B. credentials.json (.json ist erlaubt) nicht – deshalb zusätzlich hier.
+SENSITIVE_NAME_PATTERNS = (".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", "*credentials*", "*secret*")
+
+
+def _is_sensitive_name(filename: str) -> bool:
+    import fnmatch
+    if filename == ".env.example":
+        return False
+    return any(fnmatch.fnmatch(filename.lower(), pat) for pat in SENSITIVE_NAME_PATTERNS)
+
 
 @dataclass
 class SemanticChunk:
@@ -154,7 +167,11 @@ class EmbeddingCodeIndex:
         if not self.project_dir.exists():
             return file_map
         for p in self.project_dir.rglob("*"):
-            if p.is_file() and p.suffix in VALID_EXTENSIONS and not any(part in IGNORED_DIR_PARTS for part in p.parts):
+            if (
+                p.is_file() and p.suffix in VALID_EXTENSIONS
+                and not any(part in IGNORED_DIR_PARTS for part in p.parts)
+                and not _is_sensitive_name(p.name)
+            ):
                 try:
                     file_map[str(p.relative_to(self.project_dir)).replace("\\", "/")] = p.read_text(encoding="utf-8", errors="ignore")
                 except Exception:
@@ -246,7 +263,11 @@ def semantic_search(project_dir: str | Path, query: str, top_k: int = 5) -> list
     file_map: dict[str, str] = {}
     if project_path.exists():
         for p in project_path.rglob("*"):
-            if p.is_file() and p.suffix in VALID_EXTENSIONS and not any(part in IGNORED_DIR_PARTS for part in p.parts):
+            if (
+                p.is_file() and p.suffix in VALID_EXTENSIONS
+                and not any(part in IGNORED_DIR_PARTS for part in p.parts)
+                and not _is_sensitive_name(p.name)
+            ):
                 try:
                     file_map[str(p.relative_to(project_path)).replace("\\", "/")] = p.read_text(encoding="utf-8", errors="ignore")
                 except Exception:

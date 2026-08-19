@@ -1,0 +1,50 @@
+name: CI
+
+# Läuft bei jedem Push auf main und bei jedem Pull Request gegen main, außerdem manuell
+# über "Run workflow" auslösbar. Bewusst OHNE API-Keys/Secrets: Die komplette Testsuite
+# ist auf echte Mocks umgestellt (siehe tests/test_mock_workflow.py, test_llm_routing.py)
+# und läuft nachweislich ohne jeden externen API-Aufruf durch – so kostet CI nichts und
+# jeder Fork/PR kann sie ohne Secrets-Zugriff ausführen. Echte End-to-End-Läufe mit
+# echten LLM-Aufrufen bleiben bewusst ein manueller, gezielter Schritt (siehe README),
+# nicht Teil jedes automatischen Laufs.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Bricht einen laufenden Run für denselben Branch ab, wenn ein neuerer Push eintrifft –
+# spart CI-Minuten bei mehreren schnell aufeinanderfolgenden Commits.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Python ${{ matrix.python-version }} einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Abhängigkeiten installieren
+        run: pip install -r requirements.txt
+
+      - name: Syntax-Check (alle Quelldateien kompilieren)
+        run: |
+          python -m py_compile $(git ls-files '*.py' | grep -v '^workspace/' | grep -v '^test_proj/' | grep -v '^zip_proj/')
+
+      - name: Testsuite ausführen
+        run: python -m unittest discover -s tests -p "test_*.py" -v

@@ -2,6 +2,7 @@
 
 <div align="center">
 
+[![CI](https://github.com/Schengii/AI-Softwareentwickler-Team/actions/workflows/ci.yml/badge.svg)](https://github.com/Schengii/AI-Softwareentwickler-Team/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Hierarchy](https://img.shields.io/badge/Fachbereichs--Hierarchie-5_Teamleiter-blue?style=for-the-badge)
 ![Specialists](https://img.shields.io/badge/KI--Spezialisten-33_Agenten-success?style=for-the-badge)
@@ -164,3 +165,9 @@ python main.py
 ```bash
 python -m unittest discover -s tests -p "test_*.py"
 ```
+
+Die komplette Testsuite ist vollständig gemockt und läuft **ohne jeden API-Key/echten
+LLM-Aufruf** durch (verifiziert). `.github/workflows/ci.yml` führt sie bei jedem Push/PR
+gegen `main` automatisch aus (Python 3.11 & 3.12) – kostenlos, ohne Secrets nötig, plus
+ein Syntax-Check aller Quelldateien. Echte End-to-End-Läufe mit echten LLM-Aufrufen
+bleiben bewusst ein manueller, gezielter Schritt und sind nicht Teil der CI.

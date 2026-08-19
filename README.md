@@ -7,7 +7,7 @@
 ![Hierarchy](https://img.shields.io/badge/Fachbereichs--Hierarchie-5_Teamleiter-blue?style=for-the-badge)
 ![Specialists](https://img.shields.io/badge/KI--Spezialisten-33_Agenten-success?style=for-the-badge)
 ![Resilience-Guard](https://img.shields.io/badge/Resilience--Guard-Fault--Tolerance_&_CircuitBreaker-orange?style=for-the-badge)
-![RAG](https://img.shields.io/badge/Codebase_RAG-In--Memory_BM25-orange?style=for-the-badge)
+![RAG](https://img.shields.io/badge/Codebase_RAG-Gemini_Embeddings_%2B_BM25--Fallback-orange?style=for-the-badge)
 ![MCP](https://img.shields.io/badge/MCP_Server-IDE_Ready-6941C6?style=for-the-badge)
 ![Web-UI](https://img.shields.io/badge/Web--Dashboard-Dark_Mode-2ea043?style=for-the-badge)
 ![Persistent-Learning](https://img.shields.io/badge/Persistente_Selbstoptimierung-Aktiv-success?style=for-the-badge)
@@ -122,6 +122,24 @@ Der [ResilienceGuardAgent (agents/resilience_guard_agent.py)](file:///c:/Users/s
 - **Smart Retries:** Exponentielles Backoff mit Jitter gegen Thundering-Herd-Probleme.
 - **Graceful Degradation:** Fällt nahtlos auf Caches oder Fallbacks zurück.
 - **Chaos Tests:** Schreibt gezielte Unit-Tests zur Simulation von Netzwerk-Timeouts und Verbindungsabbrüchen.
+
+---
+
+## 🔍 Lokales Codebase-RAG & Semantische Suche
+
+Agenten (über das `search_code`-Werkzeug), `/load` bestehender Projekte, der `/rag`-CLI-Befehl
+und der MCP-Server (`ai_team_rag_search`) durchsuchen den Code semantisch über echte
+Gemini-Embeddings (`core/embedding_index.py`, Modell `gemini-embedding-001`, 768 Dimensionen)
+– findet auch Treffer ohne Wortüberschneidung, z. B. liefert *"Wie wird ein Nutzer
+eingeloggt?"* die passende `auth.py`, obwohl dort nirgends "einloggen" steht.
+
+- **Persistenter Cache pro Projekt** (`workspace/<projekt>/.ai_team_rag/index.json`): Nur
+  neue oder per SHA-256-Hash erkannte geänderte Dateien werden neu eingebettet – nicht das
+  gesamte Projekt bei jedem Aufruf.
+- **Automatischer Fallback:** Ohne `GEMINI_API_KEY` oder bei einem fehlgeschlagenen
+  Embedding-Aufruf springt das System auf die eingebaute BM25-Keyword-Suche
+  (`core/vector_store.py`) zurück – die Suche funktioniert also immer, nur mit
+  unterschiedlicher Qualität.
 
 ---
 

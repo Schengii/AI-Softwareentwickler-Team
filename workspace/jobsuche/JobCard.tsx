@@ -1,94 +1,57 @@
-// src/components/JobCard.tsx
-import React from "react";
+import React, { memo } from 'react';
+import { motion } from 'framer-motion';
 
-/**
- * Props für die Job‑Karte.
- * id wird für eindeutige ARIA‑Bezüge verwendet.
- */
-export interface JobCardProps {
-  id: string;
+interface JobCardProps {
   title: string;
   company: string;
+  matchScore: number; // 0 - 100
+  tags: string[];
   location: string;
-  salary?: string;
-  /** Optionaler Text, darf HTML‑Tags enthalten – wird sicher sanitisiert. */
-  description?: string;
 }
 
-/**
- * JobCard – barrierefrei, responsiv, XSS‑sicher.
- */
-export const JobCard: React.FC<JobCardProps> = ({
-  id,
-  title,
-  company,
-  location,
-  salary,
-  description,
-}) => {
-  /**
-   * Wenn `description` HTML enthält, wird es mit DOMPurify
-   * gesäubert, bevor es über `dangerouslySetInnerHTML` gerendert wird.
-   * Für reinen Text‑Content ist das nicht nötig – React escaped
-   * automatisch.
-   */
-  const sanitizedDescription = React.useMemo(() => {
-    if (!description) return null;
-    // Lazy‑load von DOMPurify, um Bundle‑Size zu sparen
-    const DOMPurify = require("dompurify");
-    return DOMPurify.sanitize(description);
-  }, [description]);
+export const JobCard: React.FC<JobCardProps> = memo(({ title, company, matchScore, tags, location }) => {
+  // Farbe basierend auf Match-Score
+  const getScoreColor = (score: number) => {
+    if (score >= 80) return 'text-emerald-600';
+    if (score >= 50) return 'text-amber-600';
+    return 'text-rose-600';
+  };
 
   return (
-    <article
-      className="p-6 bg-white border border-slate-200 rounded-lg shadow-sm hover:shadow-md transition-shadow focus-within:ring-2 focus-within:ring-blue-600"
-      aria-labelledby={`job-title-${id}`}
-      tabIndex={0} // macht die Karte per Tastatur fokussierbar
+    <motion.div 
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="p-6 bg-white rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow duration-200"
     >
-      {/* Titel – wichtig für Screen‑Reader */}
-      <h3
-        id={`job-title-${id}`}
-        className="text-xl font-bold text-slate-900 mb-2"
+      <div className="flex justify-between items-start mb-4">
+        <div>
+          <h3 className="text-lg font-bold text-slate-900">{title}</h3>
+          <p className="text-sm text-slate-500">{company} • {location}</p>
+        </div>
+        <div className="text-right">
+          <span className={`text-2xl font-black ${getScoreColor(matchScore)}`}>
+            {matchScore}%
+          </span>
+          <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400">Match</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2 mb-6">
+        {tags.map((tag) => (
+          <span key={tag} className="px-2 py-1 bg-slate-100 text-slate-600 text-xs rounded-md font-medium">
+            {tag}
+          </span>
+        ))}
+      </div>
+
+      <button 
+        className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg transition-colors"
+        aria-label={`Bewerben auf ${title} bei ${company}`}
       >
-        {title}
-      </h3>
-
-      {/* Unternehmen & Ort */}
-      <p className="text-slate-600 mb-1">
-        <span>{company}</span> • <span>{location}</span>
-      </p>
-
-      {/* Gehalt (optional) */}
-      {salary && (
-        <p className="text-slate-700 font-medium" aria-label={`Gehalt: ${salary}`}>
-          {salary}
-        </p>
-      )}
-
-      {/* Beschreibung – max. 3 Zeilen, line‑clamp für Responsive */}
-      {description && (
-        <p
-          className="mt-2 text-slate-500 line-clamp-3"
-          // aria‑hidden, weil die komplette Beschreibung auf Detail‑Seite
-          // verfügbar ist; nur ein kurzer Auszug wird gezeigt.
-          aria-hidden="true"
-          // Wenn HTML erlaubt ist, nutzen wir sanitized HTML.
-          {...(sanitizedDescription && {
-            dangerouslySetInnerHTML: { __html: sanitizedDescription },
-          })}
-        >
-          {/* Fallback‑Text, falls description reiner Text ist */}
-          {!sanitizedDescription && description}
-        </p>
-      )}
-
-      {/* Link zur Detail‑Seite – klarer Fokus‑Ring */}
-      <a
-        href={`/jobs/${id}`}
-        className="inline-block mt-4 text-blue-600 hover:underline focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-      >
-        Mehr erfahren
-      </a>
-    </article>
+        One-Click Bewerbung
+      </button>
+    </motion.div>
   );
-};
+});
+
+JobCard.displayName = 'JobCard';

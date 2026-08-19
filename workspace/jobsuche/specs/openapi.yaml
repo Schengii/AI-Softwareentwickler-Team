@@ -1,0 +1,53 @@
+openapi: 3.1.0
+info:
+  title: Jobsuche 2.0 API
+  version: 1.0.0
+  description: KI-gestützte Matching-Engine für Kandidaten und Recruiter.
+
+paths:
+  /v1/jobs/match:
+    post:
+      summary: KI-Skill-Match berechnen
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [job_id, resume_text]
+              properties:
+                job_id: { type: string, format: uuid }
+                resume_text: { type: string }
+      responses:
+        '200':
+          description: Match-Score erfolgreich berechnet
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  score: { type: integer, minimum: 0, maximum: 100 }
+                  reasoning: { type: string }
+        '429': { description: Rate Limit überschritten }
+        '500': { description: KI-Inferenz Fehler }
+
+  /v1/applications:
+    post:
+      summary: One-Click Bewerbung
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: header
+          name: X-Idempotency-Key
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '201': { description: Bewerbung eingereicht }
+        '409': { description: Bewerbung existiert bereits (Idempotency) }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

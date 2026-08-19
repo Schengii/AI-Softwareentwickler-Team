@@ -158,8 +158,13 @@ eingeloggt?"* die passende `auth.py`, obwohl dort nirgends "einloggen" steht.
 ## 🚀 Alle CLI-Befehle im Überblick
 
 ```bash
-python main.py
+python main.py                          # Interaktive CLI (Standard)
+python main.py --dashboard [--port N]   # Web-Dashboard unter http://localhost:8080
 ```
+
+Das Web-Dashboard (`interface/web_dashboard.py`) ist ein echter, funktionsfähiger Server:
+Der "Start"-Button schickt die Aufgabe per POST an `/api/run`, die dann real über
+`Orchestrator.process()` läuft, mit Live-Fortschritt per Polling – kein Mockup.
 
 | Befehl | Beschreibung |
 |---|---|

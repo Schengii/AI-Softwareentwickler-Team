@@ -1,19 +1,89 @@
 """
-interface/web_dashboard.py – Modernes Dark-Mode Web-Dashboard für das KI-Team
+interface/web_dashboard.py – Echtes, funktionsfähiges Web-Dashboard für das KI-Team
 
-Ermöglicht:
-- Visualisierung des hierarchischen Organigramms
-- Live-Status aller 32 Agenten & 5 Fachbereiche
-- Workspace-Dateiexplorer & Code-Viewer
-- Starten von Projekten über ein visuelles Web-Interface
+Vorher war dieses Modul reine UI-Attrappe: nirgends im Projekt aufgerufen (main.py/cli.py
+verwiesen nie darauf), und der "Projekt-Entwicklung starten"-Button löste serverseitig gar
+nichts aus – nur eine statische Textanzeige im Browser, kein einziger echter Request.
+`/api/status` lieferte fest verdrahtete Werte ("32 Spezialisten", inzwischen 33).
+
+Jetzt:
+- Startbar über `python main.py --dashboard` oder `python -m interface.web_dashboard`.
+- "Start"-Button sendet die Aufgabe wirklich per POST an /api/run, die dann echt über
+  Orchestrator.process() läuft (in einem seriellen Hintergrund-Worker – siehe unten).
+- Live-Fortschritt via Polling von /api/status/<job_id>, inkl. echter Status-Callback-Zeilen
+  (dieselben, die auch die CLI anzeigt) und dem finalen Ergebnis.
+- /api/status liefert echte Werte aus der laufenden Orchestrator-Instanz statt Konstanten.
+
+Bewusste Design-Entscheidung: Jobs laufen SERIELL in einem einzigen Worker-Thread (nicht
+mehrere gleichzeitig), weil Orchestrator._history (ConversationHistory) sonst bei parallelen
+Anfragen aus verschiedenen Threads inkonsistent würde. Für eine lokale Einzelnutzer-Anwendung
+ist das die richtige, einfache und sichere Grundannahme – wie ein CLI-Terminal kann jeweils
+ein Auftrag aktiv sein, weitere werden eingereiht.
 """
 
-import http.server
+import asyncio
 import json
-import socketserver
-import urllib.parse
-from pathlib import Path
-from config import BASE_DIR
+import queue
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from agents.orchestrator import Orchestrator
+
+MAX_LOG_LINES_KEPT = 500
+
+
+@dataclass
+class Job:
+    job_id: str
+    prompt: str
+    status: str = "queued"  # queued -> running -> done | error
+    log: list[str] = field(default_factory=list)
+    result: str = ""
+    error: str = ""
+    created_at: float = field(default_factory=time.monotonic)
+
+
+class DashboardServer:
+    """Hält die geteilte Orchestrator-Instanz, die Job-Queue und den seriellen Worker."""
+
+    def __init__(self):
+        self.orchestrator = Orchestrator()
+        self.jobs: dict[str, Job] = {}
+        self._queue: "queue.Queue[str]" = queue.Queue()
+        self._worker = threading.Thread(target=self._run_worker, daemon=True)
+        self._worker.start()
+
+    def enqueue(self, prompt: str) -> str:
+        job_id = uuid.uuid4().hex[:12]
+        self.jobs[job_id] = Job(job_id=job_id, prompt=prompt)
+        self._queue.put(job_id)
+        return job_id
+
+    def _run_worker(self) -> None:
+        while True:
+            job_id = self._queue.get()
+            job = self.jobs.get(job_id)
+            if not job:
+                continue
+            job.status = "running"
+
+            def on_status(msg: str, _job=job):
+                import re
+                clean = re.sub(r"\[/?[a-zA-Z0-9 _]+\]", "", msg)  # rich-Markup entfernen
+                _job.log.append(clean)
+                if len(_job.log) > MAX_LOG_LINES_KEPT:
+                    del _job.log[: len(_job.log) - MAX_LOG_LINES_KEPT]
+
+            try:
+                result = asyncio.run(self.orchestrator.process(job.prompt, status_callback=on_status))
+                job.result = result
+                job.status = "done"
+            except Exception as e:
+                job.error = str(e)
+                job.status = "error"
 
 
 HTML_DASHBOARD = """<!DOCTYPE html>
@@ -21,221 +91,208 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>🤖 KI-Softwareentwickler-Team Dashboard</title>
+  <title>KI-Softwareentwickler-Team Dashboard</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg-dark: #0d1117;
-      --card-bg: #161b22;
-      --card-border: #30363d;
-      --accent: #58a6ff;
-      --accent-green: #2ea043;
-      --accent-purple: #8957e5;
-      --text-main: #c9d1d9;
-      --text-muted: #8b949e;
-      --text-white: #f0f6fc;
+      --bg-dark: #0d1117; --card-bg: #161b22; --card-border: #30363d;
+      --accent: #58a6ff; --accent-green: #2ea043; --text-main: #c9d1d9;
+      --text-muted: #8b949e; --text-white: #f0f6fc;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      background-color: var(--bg-dark);
-      color: var(--text-main);
-      font-family: 'Inter', sans-serif;
-      padding: 24px;
-      line-height: 1.5;
-    }
-    .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding-bottom: 20px;
-      border-bottom: 1px solid var(--card-border);
-      margin-bottom: 28px;
-    }
+    body { background-color: var(--bg-dark); color: var(--text-main); font-family: 'Inter', sans-serif; padding: 24px; line-height: 1.5; }
+    .header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 20px; border-bottom: 1px solid var(--card-border); margin-bottom: 28px; }
     .header h1 { font-size: 24px; color: var(--text-white); display: flex; align-items: center; gap: 10px; }
-    .badge {
-      background: rgba(88, 166, 255, 0.15);
-      color: var(--accent);
-      padding: 4px 12px;
-      border-radius: 20px;
-      font-size: 13px;
-      font-weight: 600;
-      border: 1px solid rgba(88, 166, 255, 0.3);
-    }
+    .badge { background: rgba(88, 166, 255, 0.15); color: var(--accent); padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: 600; border: 1px solid rgba(88, 166, 255, 0.3); }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-bottom: 28px; }
-    .card {
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 12px;
-      padding: 20px;
-      transition: transform 0.2s ease, border-color 0.2s ease;
-    }
-    .card:hover { transform: translateY(-2px); border-color: var(--accent); }
-    .card h3 { color: var(--text-white); font-size: 16px; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
-    .card p { font-size: 13px; color: var(--text-muted); margin-bottom: 14px; }
-    .member-tag {
-      display: inline-block;
-      background: #21262d;
-      color: #e6edf3;
-      padding: 3px 8px;
-      border-radius: 6px;
-      font-size: 11px;
-      font-family: 'JetBrains Mono', monospace;
-      margin: 2px;
-      border: 1px solid #30363d;
-    }
-    .prompt-box {
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 12px;
-      padding: 20px;
-      margin-bottom: 28px;
-    }
-    textarea {
-      width: 100%;
-      height: 90px;
-      background: #0d1117;
-      border: 1px solid var(--card-border);
-      border-radius: 8px;
-      color: #f0f6fc;
-      padding: 12px;
-      font-family: inherit;
-      resize: vertical;
-      margin-top: 10px;
-    }
-    button {
-      background: var(--accent-green);
-      color: white;
-      border: none;
-      padding: 10px 20px;
-      border-radius: 8px;
-      font-weight: 600;
-      cursor: pointer;
-      margin-top: 12px;
-      transition: opacity 0.2s;
-    }
-    button:hover { opacity: 0.9; }
-    .status-badge {
-      font-size: 11px;
-      padding: 2px 8px;
-      border-radius: 12px;
-      background: rgba(46, 160, 67, 0.15);
-      color: var(--accent-green);
-      float: right;
-    }
+    .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 20px; }
+    .card h3 { color: var(--text-white); font-size: 16px; margin-bottom: 8px; }
+    .member-tag { display: inline-block; background: #21262d; color: #e6edf3; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-family: 'JetBrains Mono', monospace; margin: 2px; border: 1px solid #30363d; }
+    .prompt-box { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 20px; margin-bottom: 28px; }
+    textarea { width: 100%; height: 90px; background: #0d1117; border: 1px solid var(--card-border); border-radius: 8px; color: #f0f6fc; padding: 12px; font-family: inherit; resize: vertical; margin-top: 10px; }
+    button { background: var(--accent-green); color: white; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; margin-top: 12px; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #logPanel { display: none; background: #010409; border: 1px solid var(--card-border); border-radius: 12px; padding: 16px; margin-bottom: 28px; }
+    #logOutput { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; white-space: pre-wrap; max-height: 340px; overflow-y: auto; color: var(--text-main); }
+    #resultOutput { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; white-space: pre-wrap; margin-top: 12px; color: var(--text-white); }
   </style>
 </head>
 <body>
   <div class="header">
-    <h1>🤖 KI-Softwareentwickler-Team <span>v4.2</span></h1>
-    <div>
-      <span class="badge">32 Spezialisten</span>
-      <span class="badge" style="color: #2ea043; border-color: #2ea043;">5 Fachbereiche Aktiv</span>
-    </div>
+    <h1>🤖 KI-Softwareentwickler-Team</h1>
+    <div id="teamMeta"><span class="badge" id="agentCountBadge">lade…</span></div>
   </div>
 
   <div class="prompt-box">
     <h3>⚡ Neue Projekt-Aufgabe an das KI-Team</h3>
     <textarea id="promptInput" placeholder="z. B. Entwickle ein FastAPI Backend mit Authentifizierung und PostgreSQL..."></textarea>
-    <button onclick="startTask()">Projekt-Entwicklung starten</button>
+    <button id="startBtn" onclick="startTask()">Projekt-Entwicklung starten</button>
     <span id="taskStatus" style="margin-left: 15px; font-size: 13px; color: var(--accent);"></span>
   </div>
 
-  <h2 style="color: var(--text-white); font-size: 18px; margin-bottom: 16px;">🏢 Fachbereichs- & Teamleiter-Hierarchie</h2>
-  <div class="grid">
-    <div class="card">
-      <h3>🔵 Planung & Architektur <span class="status-badge">Bereit</span></h3>
-      <p><strong>Teamleiter:</strong> <code>planning_lead</code></p>
-      <div>
-        <span class="member-tag">product_owner</span>
-        <span class="member-tag">business_analyst</span>
-        <span class="member-tag">web_research</span>
-        <span class="member-tag">architect</span>
-        <span class="member-tag">finops</span>
-      </div>
-    </div>
-    <div class="card">
-      <h3>🟢 Software-Entwicklung <span class="status-badge">Bereit</span></h3>
-      <p><strong>Teamleiter:</strong> <code>dev_lead</code></p>
-      <div>
-        <span class="member-tag">backend</span>
-        <span class="member-tag">frontend</span>
-        <span class="member-tag">database</span>
-        <span class="member-tag">api_integration</span>
-        <span class="member-tag">data_engineer</span>
-        <span class="member-tag">mobile</span>
-        <span class="member-tag">ml</span>
-        <span class="member-tag">prompt_engineer</span>
-        <span class="member-tag">performance</span>
-      </div>
-    </div>
-    <div class="card">
-      <h3>🎨 Design & Content <span class="status-badge">Bereit</span></h3>
-      <p><strong>Teamleiter:</strong> <code>creative_lead</code></p>
-      <div>
-        <span class="member-tag">image_generator</span>
-        <span class="member-tag">copywriter</span>
-        <span class="member-tag">ui_ux</span>
-        <span class="member-tag">accessibility</span>
-        <span class="member-tag">i18n</span>
-        <span class="member-tag">documentation</span>
-      </div>
-    </div>
-    <div class="card">
-      <h3>🟡 Qualität & DevOps <span class="status-badge">Bereit</span></h3>
-      <p><strong>Teamleiter:</strong> <code>qa_lead</code></p>
-      <div>
-        <span class="member-tag">devops</span>
-        <span class="member-tag">tester</span>
-        <span class="member-tag">security</span>
-        <span class="member-tag">github</span>
-      </div>
-    </div>
-    <div class="card">
-      <h3>🔴 Review & Evolution <span class="status-badge">Bereit</span></h3>
-      <p><strong>Teamleiter:</strong> <code>governance_lead</code></p>
-      <div>
-        <span class="member-tag">code_reviewer</span>
-        <span class="member-tag">refactoring</span>
-        <span class="member-tag">compliance</span>
-        <span class="member-tag">project_cleaner</span>
-        <span class="member-tag">agent_trainer</span>
-      </div>
-    </div>
+  <div id="logPanel">
+    <h3 style="color: var(--text-white); margin-bottom: 10px;">📡 Live-Fortschritt</h3>
+    <div id="logOutput"></div>
+    <div id="resultOutput"></div>
   </div>
 
+  <h2 style="color: var(--text-white); font-size: 18px; margin-bottom: 16px;">🏢 Fachbereichs- & Teamleiter-Hierarchie</h2>
+  <div class="grid" id="departmentGrid"><p style="color: var(--text-muted);">Lade Teamstruktur…</p></div>
+
   <script>
-    function startTask() {
-      const val = document.getElementById('promptInput').value.trim();
-      if (!val) return alert('Bitte gib eine Aufgabe ein.');
-      document.getElementById('taskStatus').innerText = '⏳ Team wurde aktiviert. Siehe Terminal / CLI für Live-Fortschritt...';
+    let pollTimer = null;
+
+    async function loadStatus() {
+      const res = await fetch('/api/status');
+      const data = await res.json();
+      document.getElementById('agentCountBadge').innerText =
+        `${data.agents_count} Spezialisten · ${data.departments_count} Fachbereiche`;
+      const grid = document.getElementById('departmentGrid');
+      grid.innerHTML = '';
+      for (const dept of data.departments) {
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = `<h3>${dept.title}</h3><p><strong>Teamleiter:</strong> <code>${dept.lead_id}</code></p>
+          <div>${dept.members.map(m => `<span class="member-tag">${m}</span>`).join('')}</div>`;
+        grid.appendChild(card);
+      }
     }
+
+    async function startTask() {
+      const val = document.getElementById('promptInput').value.trim();
+      if (!val) { alert('Bitte gib eine Aufgabe ein.'); return; }
+      document.getElementById('startBtn').disabled = true;
+      document.getElementById('taskStatus').innerText = '⏳ Wird gestartet…';
+      document.getElementById('logPanel').style.display = 'block';
+      document.getElementById('logOutput').innerText = '';
+      document.getElementById('resultOutput').innerText = '';
+
+      const res = await fetch('/api/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: val }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        document.getElementById('taskStatus').innerText = '❌ ' + (data.error || 'Fehler beim Start.');
+        document.getElementById('startBtn').disabled = false;
+        return;
+      }
+      pollJob(data.job_id);
+    }
+
+    function pollJob(jobId) {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(async () => {
+        const res = await fetch(`/api/status/${jobId}`);
+        const data = await res.json();
+        document.getElementById('logOutput').innerText = data.log.join('\\n');
+        document.getElementById('logOutput').scrollTop = document.getElementById('logOutput').scrollHeight;
+
+        if (data.status === 'queued') {
+          document.getElementById('taskStatus').innerText = '⏳ In Warteschlange…';
+        } else if (data.status === 'running') {
+          document.getElementById('taskStatus').innerText = '🔄 Team arbeitet…';
+        } else if (data.status === 'done') {
+          document.getElementById('taskStatus').innerText = '✅ Fertig!';
+          document.getElementById('resultOutput').innerText = data.result;
+          document.getElementById('startBtn').disabled = false;
+          clearInterval(pollTimer);
+        } else if (data.status === 'error') {
+          document.getElementById('taskStatus').innerText = '❌ Fehler: ' + data.error;
+          document.getElementById('startBtn').disabled = false;
+          clearInterval(pollTimer);
+        }
+      }, 2000);
+    }
+
+    loadStatus();
   </script>
 </body>
 </html>
 """
 
 
-class DashboardHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        if self.path in ("/", "/index.html"):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(HTML_DASHBOARD.encode("utf-8"))
-        elif self.path == "/api/status":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            status = {"status": "online", "agents_count": 32, "departments": 5}
-            self.wfile.write(json.dumps(status).encode("utf-8"))
-        else:
-            super().do_GET()
+def _build_status_payload(server: DashboardServer) -> dict:
+    from agents.department_lead_agent import DEPARTMENT_DEFINITIONS
+
+    departments = []
+    for dept_id, info in DEPARTMENT_DEFINITIONS.items():
+        departments.append({
+            "lead_id": dept_id,
+            "title": info["title"],
+            "members": [m for m in info["members"] if m in server.orchestrator._agents],
+        })
+    return {
+        "status": "online",
+        "agents_count": len(server.orchestrator._agents),
+        "departments_count": len(server.orchestrator._dept_leads),
+        "departments": departments,
+    }
 
 
-def run_dashboard(port: int = 8080):
-    with socketserver.TCPServer(("", port), DashboardHandler) as httpd:
-        print(f"🚀 Web-Dashboard läuft unter: http://localhost:{port}")
+def make_handler(server: DashboardServer):
+    class DashboardHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # weniger Konsolen-Rauschen
+            pass
+
+        def _send_json(self, payload: dict, status: int = 200) -> None:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path in ("/", "/index.html"):
+                body = HTML_DASHBOARD.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif self.path == "/api/status":
+                self._send_json(_build_status_payload(server))
+            elif self.path.startswith("/api/status/"):
+                job_id = self.path.rsplit("/", 1)[-1]
+                job = server.jobs.get(job_id)
+                if not job:
+                    self._send_json({"error": "Unbekannte job_id"}, status=404)
+                    return
+                self._send_json({
+                    "job_id": job.job_id, "status": job.status,
+                    "log": job.log, "result": job.result, "error": job.error,
+                })
+            else:
+                self._send_json({"error": "Not found"}, status=404)
+
+        def do_POST(self):
+            if self.path == "/api/run":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length) or b"{}")
+                    prompt = (payload.get("prompt") or "").strip()
+                except Exception:
+                    self._send_json({"error": "Ungültiger Request-Body"}, status=400)
+                    return
+                if not prompt:
+                    self._send_json({"error": "Kein 'prompt' angegeben."}, status=400)
+                    return
+                job_id = server.enqueue(prompt)
+                self._send_json({"job_id": job_id, "status": "queued"}, status=202)
+            else:
+                self._send_json({"error": "Not found"}, status=404)
+
+    return DashboardHandler
+
+
+def run_dashboard(port: int = 8080) -> None:
+    server = DashboardServer()
+    handler_cls = make_handler(server)
+    with ThreadingHTTPServer(("", port), handler_cls) as httpd:
+        print(f"🚀 Web-Dashboard läuft unter: http://localhost:{port} ({len(server.orchestrator._agents)} Agenten geladen)")
         httpd.serve_forever()
 
 

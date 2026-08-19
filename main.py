@@ -17,7 +17,22 @@ from interface.cli import CLIInterface
 
 
 def main():
-    """Startet das KI-Softwareentwickler-Team."""
+    """Startet das KI-Softwareentwickler-Team.
+
+    Standardmäßig die interaktive CLI. Mit `--dashboard [--port N]` stattdessen das
+    Web-Dashboard (siehe interface/web_dashboard.py).
+    """
+    if "--dashboard" in sys.argv:
+        from interface.web_dashboard import run_dashboard
+        port = 8080
+        if "--port" in sys.argv:
+            try:
+                port = int(sys.argv[sys.argv.index("--port") + 1])
+            except (IndexError, ValueError):
+                pass
+        run_dashboard(port=port)
+        return
+
     cli = CLIInterface()
     cli.run()
 

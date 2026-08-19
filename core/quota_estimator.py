@@ -18,6 +18,11 @@ FREE_TIER_LIMITS = {
         "limit_desc": "15 RPM / 1.000.000 Tokens/min (Kostenlos)",
         "approx_daily_budget": 1_000_000,
     },
+    "claude": {
+        "name": "Anthropic Claude",
+        "limit_desc": "Kein dauerhaftes Gratis-Kontingent – kostenpflichtig, außer Groq-Fallback greift",
+        "approx_daily_budget": 0,
+    },
     "groq": {
         "name": "Groq Turbo (LLaMA/GPT-OSS)",
         "limit_desc": "30 RPM / 6.000 Tokens/min (Kostenlos, tägl. Reset)",
@@ -59,6 +64,7 @@ class QuotaEstimator:
         # Aufteilung nach Providern
         provider_usage: dict[str, int] = {
             "gemini": 0,
+            "claude": 0,
             "groq": 0,
             "deepseek": 0,
             "openrouter": 0,
@@ -71,6 +77,8 @@ class QuotaEstimator:
             tokens = stat.get("total_tokens", 0)
             if "gemini" in m_lower:
                 provider_usage["gemini"] += tokens
+            elif "claude" in m_lower:
+                provider_usage["claude"] += tokens
             elif "groq" in m_lower:
                 provider_usage["groq"] += tokens
             elif "deepseek" in m_lower:
@@ -115,6 +123,9 @@ class QuotaEstimator:
 
             if p_key == "tavily":
                 lines.append(f"| **{info['name']}** | `{used:,}` Calls | {status_badge} | {info['limit_desc']} |")
+            elif budget == 0:
+                # Kein Free-Tier-Kontingent (z.B. Claude) -> kein "X Tokens übrig" vortäuschen
+                lines.append(f"| **{info['name']}** | `{used:,}` Tokens | {status_badge} | {info['limit_desc']} |")
             else:
                 lines.append(f"| **{info['name']}** | `{used:,}` Tokens | {status_badge} | ca. `{remaining:,}` Tokens übrig ({info['limit_desc']}) |")
 

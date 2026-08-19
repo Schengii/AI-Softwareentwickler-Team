@@ -57,12 +57,14 @@ AGENT_MODELS: dict[str, str] = {
     "data_engineer":     os.getenv("DATA_ENGINEER_MODEL",  STANDARD_MODEL),
     "mobile":            os.getenv("MOBILE_MODEL",         STANDARD_MODEL),
     "ml":                os.getenv("ML_MODEL",             "deepseek:deepseek-chat"),
+    "prompt_engineer":   os.getenv("PROMPT_ENG_MODEL",     HEAVY_MODEL),
     "performance":       os.getenv("PERFORMANCE_MODEL",    "groq:openai/gpt-oss-120b"),
 
     # ── Phase 3: Design, Media, Content & Text ──
     "image_generator":   os.getenv("IMAGE_GEN_MODEL",      "huggingface:auto"),
     "copywriter":        os.getenv("COPYWRITER_MODEL",     STANDARD_MODEL),
     "ui_ux":             os.getenv("UI_UX_MODEL",          LITE_MODEL),
+    "accessibility":     os.getenv("A11Y_MODEL",           LITE_MODEL),
     "i18n":              os.getenv("I18N_MODEL",           LITE_MODEL),
     "documentation":     os.getenv("DOCS_MODEL",           LITE_MODEL),
     "readme":            os.getenv("README_MODEL",         LITE_MODEL),

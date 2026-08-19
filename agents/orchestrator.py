@@ -35,10 +35,12 @@ from agents.api_integration_agent import ApiIntegrationAgent
 from agents.data_engineer_agent import DataEngineerAgent
 from agents.mobile_agent import MobileAgent
 from agents.ml_agent import MLAgent
+from agents.prompt_engineer_agent import PromptEngineerAgent
 from agents.performance_agent import PerformanceAgent
 from agents.image_generator_agent import ImageGeneratorAgent
 from agents.copywriter_agent import CopywriterAgent
 from agents.ui_ux_agent import UIUXAgent
+from agents.accessibility_agent import AccessibilityAgent
 from agents.i18n_agent import I18nAgent
 from agents.documentation_agent import DocumentationAgent
 from agents.devops_agent import DevOpsAgent
@@ -98,10 +100,12 @@ class Orchestrator:
             "data_engineer":     DataEngineerAgent(),
             "mobile":            MobileAgent(),
             "ml":                MLAgent(),
+            "prompt_engineer":   PromptEngineerAgent(),
             "performance":       PerformanceAgent(),
             "image_generator":   ImageGeneratorAgent(),
             "copywriter":        CopywriterAgent(),
             "ui_ux":             UIUXAgent(),
+            "accessibility":     AccessibilityAgent(),
             "i18n":              I18nAgent(),
             "documentation":     DocumentationAgent(),
 
@@ -262,7 +266,7 @@ class Orchestrator:
             notify(f"  📥 [bold green]Rückmeldung an Hauptagent:[/bold green] {lead.name} hat Planung & Architektur abgenommen.")
 
         # ── 2. FACHBEREICH: Kern-Entwicklung (dev_lead) ──
-        dev_members = ["backend", "frontend", "database", "api_integration", "data_engineer", "mobile", "ml", "performance"]
+        dev_members = ["backend", "frontend", "database", "api_integration", "data_engineer", "mobile", "ml", "prompt_engineer", "performance"]
         dev_tasks = [task_map[aid] for aid in dev_members if aid in task_map]
 
         if dev_tasks:
@@ -297,7 +301,7 @@ class Orchestrator:
             notify(f"  📥 [bold green]Rückmeldung an Hauptagent:[/bold green] {lead.name} meldet Code-Deliverables fertig.")
 
         # ── 3. FACHBEREICH: Design, Media & Content (creative_lead) ──
-        creative_members = ["image_generator", "copywriter", "ui_ux", "i18n", "documentation", "readme"]
+        creative_members = ["image_generator", "copywriter", "ui_ux", "accessibility", "i18n", "documentation", "readme"]
         creative_tasks = [task_map[aid] for aid in creative_members if aid in task_map]
 
         if creative_tasks:
@@ -322,6 +326,27 @@ class Orchestrator:
                 task.context += f"\n\n## Zu prüfende Deliverables:\n{dev_context[:3000]}"
             qa_results = await self._run_agents_parallel(qa_tasks, notify=notify)
             all_results.extend(qa_results)
+
+            # Automatische Sandbox-Pytest-Ausführung
+            try:
+                from core.code_sandbox import CodeSandbox
+                import sys
+                project_dir = self._workspace.get_project_dir(project_slug)
+                test_files = list(project_dir.rglob("test_*.py"))
+                if test_files:
+                    notify("  🧪 [yellow]Sandbox-Runner:[/yellow] Führe automatische Pytest/Unittest-Validierung aus...")
+                    exec_res = CodeSandbox.run_command(
+                        [sys.executable, "-m", "unittest", "discover", "-s", str(project_dir), "-p", "test_*.py"],
+                        cwd=project_dir,
+                        timeout_seconds=15.0,
+                    )
+                    if exec_res.exit_code == 0:
+                        notify("  ✅ [bold green]Sandbox-Tests bestanden:[/bold green] Alle Unit-Tests im Workspace grün!")
+                    else:
+                        notify(f"  ⚠️ [bold yellow]Sandbox-Tests:[/bold yellow] Test-Feedback wird an Reviewer übergeben ({exec_res.stderr[:200]})")
+            except Exception:
+                pass
+
             notify(f"  📥 [bold green]Rückmeldung an Hauptagent:[/bold green] {lead.name} bestätigt Tests & Security-Audits.")
 
         # ── 5. FACHBEREICH: Governance, Review & Hygiene (governance_lead) ──

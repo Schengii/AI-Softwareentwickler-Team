@@ -1,5 +1,5 @@
 """
-agents/__init__.py – Export aller Agenten und Fachbereichs-Teamleiter des KI-Entwickler-Teams
+agents/__init__.py – Export aller Agenten und Fachbereichs-Teamleiter des KI-Entwickler-Teams (32 Spezialisten)
 """
 
 from agents.base_agent import BaseAgent
@@ -18,10 +18,12 @@ from agents.api_integration_agent import ApiIntegrationAgent
 from agents.data_engineer_agent import DataEngineerAgent
 from agents.mobile_agent import MobileAgent
 from agents.ml_agent import MLAgent
+from agents.prompt_engineer_agent import PromptEngineerAgent
 from agents.performance_agent import PerformanceAgent
 from agents.image_generator_agent import ImageGeneratorAgent
 from agents.copywriter_agent import CopywriterAgent
 from agents.ui_ux_agent import UIUXAgent
+from agents.accessibility_agent import AccessibilityAgent
 from agents.i18n_agent import I18nAgent
 from agents.documentation_agent import DocumentationAgent
 from agents.devops_agent import DevOpsAgent
@@ -53,10 +55,12 @@ __all__ = [
     "DataEngineerAgent",
     "MobileAgent",
     "MLAgent",
+    "PromptEngineerAgent",
     "PerformanceAgent",
     "ImageGeneratorAgent",
     "CopywriterAgent",
     "UIUXAgent",
+    "AccessibilityAgent",
     "I18nAgent",
     "DocumentationAgent",
     "DevOpsAgent",

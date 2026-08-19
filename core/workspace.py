@@ -53,37 +53,53 @@ class WorkspaceManager:
         project_path.mkdir(parents=True, exist_ok=True)
         return project_path
 
-    def read_existing_project_context(self, project_name: str, max_chars: int = 12000) -> str:
-        """Liest bestehende Projektdateien ein, damit die Agenten auf bestehendem Code aufbauen können."""
+    def read_existing_project_context(self, project_name: str, query: Optional[str] = None, max_chars: int = 12000) -> str:
+        """
+        Liest bestehende Projektdateien ein.
+        Unterstützt automatisches RAG-Indexing & BM25-Recherche für große Repositories.
+        """
         project_dir = self.get_project_dir(project_name)
         if not project_dir.exists():
             return ""
 
-        context_lines = [f"### 📂 DATEIEN IM BESTEHENDEN PROJEKT ({project_dir.name}):\n"]
-        total_len = 0
-
-        # Wichtige Dateiendungen
         valid_extensions = {".py", ".js", ".ts", ".jsx", ".tsx", ".html", ".css", ".json", ".sql", ".md", ".txt", ".yml", ".yaml"}
+        file_map: dict[str, str] = {}
 
         for file_path in project_dir.rglob("*"):
             if file_path.is_file() and file_path.suffix in valid_extensions:
-                # Überspringe virtuelle Environments und Git
                 parts = file_path.parts
                 if any(p in (".venv", "venv", ".git", "__pycache__", "node_modules", "dist", "build") for p in parts):
                     continue
-
-                rel_path = file_path.relative_to(project_dir)
                 try:
+                    rel_path = str(file_path.relative_to(project_dir))
                     content = file_path.read_text(encoding="utf-8", errors="ignore")
-                    if len(content) > 3000:
-                        content = content[:3000] + "\n... [gekürzt] ..."
-                    snippet = f"--- DATEI: {rel_path} ---\n{content}\n\n"
-                    if total_len + len(snippet) > max_chars:
-                        break
-                    context_lines.append(snippet)
-                    total_len += len(snippet)
+                    file_map[rel_path] = content
                 except Exception:
                     pass
+
+        if not file_map:
+            return ""
+
+        # Wenn RAG Query übergeben wurde oder das Projekt viele Dateien hat, nutze Vector-Indexing
+        if query and len(file_map) > 5:
+            from core.vector_store import code_index
+            code_index.index_files(file_map)
+            top_chunks = code_index.search(query, top_k=6)
+            context_lines = [f"### 🔍 RAG-RELEVANTER CODE AUS ({project_dir.name}) FÜR '{query}':\n"]
+            for chunk in top_chunks:
+                context_lines.append(f"--- DATEI: {chunk['file']} (Zeile {chunk['line_start']}) ---\n{chunk['chunk']}\n\n")
+            return "\n".join(context_lines)
+
+        context_lines = [f"### 📂 DATEIEN IM BESTEHENDEN PROJEKT ({project_dir.name}):\n"]
+        total_len = 0
+        for rel_path, content in file_map.items():
+            if len(content) > 3000:
+                content = content[:3000] + "\n... [gekürzt] ..."
+            snippet = f"--- DATEI: {rel_path} ---\n{content}\n\n"
+            if total_len + len(snippet) > max_chars:
+                break
+            context_lines.append(snippet)
+            total_len += len(snippet)
 
         return "\n".join(context_lines)
 

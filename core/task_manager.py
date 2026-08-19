@@ -85,6 +85,11 @@ AVAILABLE_AGENTS = {
         "phase": 3,
         "description": "LLM-APIs, RAG-Systeme, Embeddings, Vector Stores und ML-Pipelines.",
     },
+    "prompt_engineer": {
+        "name": "Prompt Engineer & AI Architect",
+        "phase": 3,
+        "description": "System-Prompts für LLM-Apps, Few-Shot-Vorlagen, Guardrails und RAG-Prompting.",
+    },
     "performance": {
         "name": "Performance-Ingenieur",
         "phase": 3,
@@ -106,6 +111,11 @@ AVAILABLE_AGENTS = {
         "name": "UI/UX Designer",
         "phase": 3,
         "description": "Wireframes, Design-Systeme, Farbpaletten und Design-Tokens.",
+    },
+    "accessibility": {
+        "name": "Accessibility & a11y Specialist",
+        "phase": 3,
+        "description": "WCAG 2.2 AA/AAA Barrierefreiheit, ARIA-Attribute, Tastaturnavigation, Screenreader.",
     },
     "i18n": {
         "name": "Internationalisierungs-Spezialist",
@@ -200,8 +210,8 @@ Das JSON-Format ist exakt wie folgt:
 Verfügbare Agenten-IDs:
 team_lead, product_owner, business_analyst, web_research,
 architect, finops,
-frontend, backend, database, api_integration, data_engineer, mobile, ml, performance,
-image_generator, copywriter, ui_ux, i18n, documentation, devops, tester, security,
+frontend, backend, database, api_integration, data_engineer, mobile, ml, prompt_engineer, performance,
+image_generator, copywriter, ui_ux, accessibility, i18n, documentation, devops, tester, security,
 code_reviewer, refactoring, compliance, project_cleaner, agent_trainer, readme, github
 
 Wichtige Regeln:

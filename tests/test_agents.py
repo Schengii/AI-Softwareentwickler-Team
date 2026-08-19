@@ -8,8 +8,8 @@ from agents.base_agent import BaseAgent
 from agents import (
     TeamLeadAgent, ProductOwnerAgent, BusinessAnalystAgent, WebResearchAgent,
     ArchitectAgent, FinOpsAgent, FrontendAgent, BackendAgent, DatabaseAgent,
-    ApiIntegrationAgent, DataEngineerAgent, MobileAgent, MLAgent, PerformanceAgent,
-    ImageGeneratorAgent, CopywriterAgent, UIUXAgent, I18nAgent, DocumentationAgent,
+    ApiIntegrationAgent, DataEngineerAgent, MobileAgent, MLAgent, PromptEngineerAgent, PerformanceAgent,
+    ImageGeneratorAgent, CopywriterAgent, UIUXAgent, AccessibilityAgent, I18nAgent, DocumentationAgent,
     DevOpsAgent, TesterAgent, SecurityAgent, CodeReviewerAgent, RefactoringAgent,
     ComplianceAgent, ProjectCleanerAgent, AgentTrainerAgent, RetrospectiveAgent, ReadmeAgent, GitHubAgent
 )
@@ -22,8 +22,8 @@ class TestAgentSystem(unittest.TestCase):
         self.orchestrator = Orchestrator()
 
     def test_all_30_agents_registered(self):
-        """Stellt sicher, dass exakt 30 Spezialisten im Team registriert sind."""
-        self.assertEqual(len(self.orchestrator._agents), 30)
+        """Stellt sicher, dass alle 32 Spezialisten im Team registriert sind."""
+        self.assertEqual(len(self.orchestrator._agents), 32)
 
     def test_agent_instances_and_prompts(self):
         """Prüft, dass jeder Agent einen validen System-Prompt und eine eindeutige ID besitzt."""
@@ -41,10 +41,12 @@ class TestAgentSystem(unittest.TestCase):
             ("data_engineer", DataEngineerAgent),
             ("mobile", MobileAgent),
             ("ml", MLAgent),
+            ("prompt_engineer", PromptEngineerAgent),
             ("performance", PerformanceAgent),
             ("image_generator", ImageGeneratorAgent),
             ("copywriter", CopywriterAgent),
             ("ui_ux", UIUXAgent),
+            ("accessibility", AccessibilityAgent),
             ("i18n", I18nAgent),
             ("documentation", DocumentationAgent),
             ("devops", DevOpsAgent),

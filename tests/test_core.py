@@ -26,13 +26,14 @@ class TestCoreModules(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_available_agents_structure(self):
-        """Prüft, dass alle 30 Agenten im TaskManager mit Namen und Phase konfiguriert sind."""
-        self.assertEqual(len(AVAILABLE_AGENTS), 30)
-        for aid, info in AVAILABLE_AGENTS.items():
-            self.assertIn("name", info)
-            self.assertIn("phase", info)
-            self.assertIn("description", info)
-            self.assertIn(info["phase"], [1, 2, 3, 4])
+        """Prüft, dass alle 32 Agenten im TaskManager mit Namen und Phase konfiguriert sind."""
+        self.assertEqual(len(AVAILABLE_AGENTS), 32)
+        for agent_id, data in AVAILABLE_AGENTS.items():
+            self.assertIn("name", data)
+            self.assertIn("phase", data)
+            self.assertIn("description", data)
+            self.assertIsInstance(data["phase"], int)
+            self.assertTrue(1 <= data["phase"] <= 5)
 
     def test_token_guard_recording_and_warnings(self):
         """Prüft, dass TokenGuard Verbräuche misst und Warnungen auslöst."""

@@ -29,13 +29,13 @@ DEPARTMENT_DEFINITIONS = {
     },
     "dev_lead": {
         "title": "Teamleiter Software-Entwicklung (Dev Lead)",
-        "members": ["frontend", "backend", "database", "api_integration", "data_engineer", "mobile", "ml", "performance"],
-        "description": "Führt das Kern-Entwicklerteam. Koordiniert Frontend, Backend, Datenbank, APIs, Mobile, ML und Latenzoptimierung."
+        "members": ["frontend", "backend", "database", "api_integration", "data_engineer", "mobile", "ml", "performance", "prompt_engineer"],
+        "description": "Führt das Kern-Entwicklerteam. Koordiniert Frontend, Backend, Datenbank, APIs, Mobile, ML, Prompt-Engineering und Latenzoptimierung."
     },
     "creative_lead": {
         "title": "Teamleiter Design, Media & Content (Creative Lead)",
-        "members": ["image_generator", "copywriter", "ui_ux", "i18n", "documentation", "readme"],
-        "description": "Führt das Kreativ- und Content-Team. Koordiniert UI/UX, SVG/Bild-Generierung, Copywriting, Internationalisierung und Dokumentation."
+        "members": ["image_generator", "copywriter", "ui_ux", "accessibility", "i18n", "documentation", "readme"],
+        "description": "Führt das Kreativ- und Content-Team. Koordiniert UI/UX, a11y Barrierefreiheit, SVG/Bild-Generierung, Copywriting und Dokumentation."
     },
     "qa_lead": {
         "title": "Teamleiter Qualität, DevOps & Security (QA & Operations Lead)",

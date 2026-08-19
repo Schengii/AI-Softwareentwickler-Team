@@ -28,10 +28,10 @@ console = Console()
 
 BANNER = """
 ╔══════════════════════════════════════════════════════════════╗
-║        🤖  KI-Softwareentwickler-Team (v2.3)  🤖            ║
+║        🤖  KI-Softwareentwickler-Team (v4.2)  🤖            ║
 ║        ─────────────────────────────────────                 ║
-║  Dein 30-köpfiges autonomes KI-Entwickler-Team               ║
-║  Live-Status • Anti-Bloat • Multi-LLM (Gemini & Claude)      ║
+║  Dein 32-köpfiges autonomes KI-Entwickler-Team               ║
+║  5 Fachbereiche • RAG • Sandbox • MCP & Web-Dashboard        ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -42,7 +42,8 @@ HELP_TEXT = """
 |---|---|
 | `/projekte` | Listet alle bestehenden Projekte im Workspace auf |
 | `/load <pfad/name>` | Lädt ein bestehendes Projekt (Workspace oder externer Pfad) zur Weiterentwicklung |
-| `/team` | Zeigt alle 30 Spezialisten und deren KI-Modelle an |
+| `/rag <begriff>` | Führt eine semantische Code-Recherche im geladenen Projekt durch |
+| `/team` | Zeigt alle 5 Fachbereiche, Teamleiter und 32 Spezialisten an |
 | `/workspace [projekt]` | Listet alle generierten Dateien im Projektordner auf |
 | `/export [projekt]` | Packt das Projektverzeichnis in ein ZIP-Archiv |
 | `/run-tests [projekt]` | Führt automatische Unit-Tests im Projekt aus |
@@ -232,6 +233,20 @@ class CLIInterface:
                 console.print("💡 Du kannst deinem Team jetzt Aufgaben zu diesem Projekt stellen (z. B. *'Refaktoriere die App und füge Tests hinzu'*).", style="dim")
             else:
                 console.print(f"⚠️ Konnte keine relevanten Quellcodedateien unter `{target_path}` finden.", style="yellow")
+
+        elif cmd in ("/rag", "/search", "/find"):
+            if not args:
+                console.print("⚠️ Bitte gib einen Suchbegriff an: `/rag <query>`", style="yellow")
+                return False
+            query_str = " ".join(args)
+            from core.vector_store import code_index
+            results = code_index.search(query_str, top_k=4)
+            if results:
+                console.print(f"🔍 [bold green]RAG-Treffer für '{query_str}':[/bold green]")
+                for r in results:
+                    console.print(f"📄 `{r['file']}` (Zeile {r['line_start']}):\n```python\n{r['chunk'][:400]}\n```")
+            else:
+                console.print(f"Keine relevanten Codeblöcke für '{query_str}' gefunden (Index ist leer oder keine Übereinstimmung). Lade zuerst ein Projekt mit `/load`.", style="yellow")
 
         elif cmd in ("/projekte", "/projects", "/list"):
             self._list_all_projects()

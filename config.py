@@ -37,6 +37,13 @@ ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 # Cross-Provider-Fallback: Ist ein Modell erschöpft (Quota/Rate-Limit) oder ein API-Key
 # fehlt, springt core/llm_factory.py automatisch auf das jeweils andere Modell/den anderen
 # Provider (Claude <-> Gemini) um – siehe MODEL_FALLBACKS in core/llm_factory.py.
+#
+# Anthropic bietet – anders als Gemini – KEIN dauerhaftes Gratis-Kontingent (nur ein
+# einmaliges kleines Startguthaben für neue Accounts). Solange kein ANTHROPIC_API_KEY
+# gesetzt ist, springt core/llm_factory.py bei allen HEAVY-Aufgaben deshalb zunächst auf
+# GROQ_HEAVY_MODEL – ein starkes, aber tatsächlich kostenloses Open-Weight-Modell mit
+# großzügigem Rate-Limit – und erst danach auf die Gemini-Standard-Stufe aus, statt
+# sofort auf das schwächste verfügbare Modell abzurutschen.
 GEMINI_LITE_MODEL: str = os.getenv("GEMINI_LITE_MODEL", "gemini-3.1-flash-lite")
 GEMINI_STANDARD_MODEL: str = os.getenv("GEMINI_STANDARD_MODEL", "gemini-3.6-flash")
 GEMINI_HEAVY_MODEL: str = os.getenv("GEMINI_HEAVY_MODEL", "gemini-pro-latest")
@@ -44,6 +51,9 @@ GEMINI_HEAVY_MODEL: str = os.getenv("GEMINI_HEAVY_MODEL", "gemini-pro-latest")
 CLAUDE_LITE_MODEL: str = os.getenv("CLAUDE_LITE_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_STANDARD_MODEL: str = os.getenv("CLAUDE_STANDARD_MODEL", "claude-sonnet-5")
 CLAUDE_HEAVY_MODEL: str = os.getenv("CLAUDE_HEAVY_MODEL", "claude-opus-5")
+
+# Kostenlose Ausweich-Stufe für HEAVY-Aufgaben, falls kein ANTHROPIC_API_KEY vorhanden ist.
+GROQ_HEAVY_MODEL: str = os.getenv("GROQ_HEAVY_MODEL", "groq:openai/gpt-oss-120b")
 
 # Primäre Zuordnung pro Komplexitätsstufe: Standard/Lite laufen primär über Gemini
 # (schnell & günstig), Heavy primär über Claude (stärkeres Trade-off-Reasoning).

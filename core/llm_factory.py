@@ -20,6 +20,7 @@ from config import (
     ANTHROPIC_API_KEY,
     MAX_OUTPUT_TOKENS,
     TEMPERATURE,
+    GROQ_HEAVY_MODEL,
 )
 from core.token_guard import token_guard
 
@@ -860,14 +861,25 @@ class ClaudeClient:
             except ImportError:
                 self._client = None
 
+    @staticmethod
+    def _free_heavy_fallback_client():
+        """
+        Kostenlose Ausweichstufe, wenn Claude nicht verfügbar ist (kein ANTHROPIC_API_KEY
+        oder Fehler): Anthropic bietet – anders als Gemini – kein dauerhaftes Gratis-Kontingent.
+        Bevorzugt daher Groq (echtes, kostenloses Rate-Limit-Kontingent mit einem starken
+        Open-Weight-Modell) statt direkt auf die schwächere Gemini-Standardstufe abzurutschen.
+        """
+        if GROQ_API_KEY:
+            return GroqClient(model_name=GROQ_HEAVY_MODEL)
+        return GeminiClient(model_name="gemini-3.6-flash")
+
     async def generate_with_usage(
         self, prompt: str, system_prompt: Optional[str] = None, _allow_self_fallback: bool = True,
     ) -> LLMResponse:
         if not self._client:
             if not _allow_self_fallback:
                 raise RuntimeError("Claude innerhalb einer Fallback-Kette nicht verfügbar (kein ANTHROPIC_API_KEY).")
-            gemini_fallback = GeminiClient(model_name="gemini-3.6-flash")
-            return await gemini_fallback.generate_with_usage(prompt, system_prompt)
+            return await self._free_heavy_fallback_client().generate_with_usage(prompt, system_prompt)
 
         messages = [{"role": "user", "content": prompt}]
         kwargs: dict = {
@@ -900,8 +912,7 @@ class ClaudeClient:
                 token_guard.mark_model_exhausted(self.model_name, "Claude Rate Limit")
             if not _allow_self_fallback:
                 raise
-            gemini_client = GeminiClient(model_name="gemini-3.6-flash")
-            return await gemini_client.generate_with_usage(prompt, system_prompt)
+            return await self._free_heavy_fallback_client().generate_with_usage(prompt, system_prompt)
 
     async def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         res = await self.generate_with_usage(prompt, system_prompt)
@@ -914,8 +925,7 @@ class ClaudeClient:
         if not self._client:
             if not _allow_self_fallback:
                 raise RuntimeError("Claude innerhalb einer Fallback-Kette nicht verfügbar (kein ANTHROPIC_API_KEY).")
-            gemini_fallback = GeminiClient(model_name="gemini-3.6-flash")
-            return await gemini_fallback.generate_with_tools(messages, system_prompt, tools)
+            return await self._free_heavy_fallback_client().generate_with_tools(messages, system_prompt, tools)
 
         anthropic_messages = self._build_anthropic_messages(messages)
         anthropic_tools = [
@@ -957,8 +967,7 @@ class ClaudeClient:
                 token_guard.mark_model_exhausted(self.model_name, "Claude Rate Limit")
             if not _allow_self_fallback:
                 raise
-            gemini_fallback = GeminiClient(model_name="gemini-3.6-flash")
-            return await gemini_fallback.generate_with_tools(messages, system_prompt, tools)
+            return await self._free_heavy_fallback_client().generate_with_tools(messages, system_prompt, tools)
 
     @staticmethod
     def _build_anthropic_messages(messages: list["AgentMessage"]) -> list[dict]:

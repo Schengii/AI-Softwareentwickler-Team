@@ -40,6 +40,8 @@ HELP_TEXT = """
 
 | Befehl | Beschreibung |
 |---|---|
+| `/projekte` | Listet alle bestehenden Projekte im Workspace auf |
+| `/load <pfad/name>` | Lädt ein bestehendes Projekt (Workspace oder externer Pfad) zur Weiterentwicklung |
 | `/team` | Zeigt alle 30 Spezialisten und deren KI-Modelle an |
 | `/workspace [projekt]` | Listet alle generierten Dateien im Projektordner auf |
 | `/export [projekt]` | Packt das Projektverzeichnis in ein ZIP-Archiv |
@@ -50,9 +52,12 @@ HELP_TEXT = """
 | `/hilfe` | Zeigt diese Hilfe an |
 | `/beenden` | Beendet das Programm |
 
-**So startest du ein Projekt:**
+**So startest du ein neues Projekt:**
 Schreibe einfach deine Anforderung in den Chat (z. B. *"Erstelle eine Todo-Webapp mit FastAPI & SQLite"*).
-Der Hauptagent zerlegt die Aufgabe, lässt die Unteragenten mit Live-Statusanzeige arbeiten und präsentiert dir das fertige Ergebnis.
+
+**So entwickelst du ein bestehendes/externes Projekt weiter:**
+1. Lade das Projekt mit `/load C:\\MeinProjekt` oder `/load mein-projekt`
+2. Gib dem Team deine Anweisung (z. B. *"Füge Authentifizierung hinzu und refaktoriere die Datenbank"*).
 """
 
 
@@ -215,6 +220,22 @@ class CLIInterface:
             proj_name = args[0] if args else "jobsuche-app"
             self._run_tests(proj_name)
 
+        elif cmd in ("/load", "/laden", "/open", "/oeffnen", "/import"):
+            if not args:
+                console.print("⚠️ Bitte gib den Pfad oder Namen des Projekts an:\n👉 `/load <pfad_oder_name>`", style="yellow")
+                return False
+            target_path = " ".join(args)
+            ctx = self._workspace.read_existing_project_context(target_path)
+            if ctx:
+                self._orchestrator._history.add_user_message(f"Hier ist der bestehende Projektcode, den wir analysieren/erweitern:\n\n{ctx}")
+                console.print(f"✅ [bold green]Projekt erfolgreich geladen:[/bold green] `{target_path}` ({len(ctx)} Zeichen analysiert).")
+                console.print("💡 Du kannst deinem Team jetzt Aufgaben zu diesem Projekt stellen (z. B. *'Refaktoriere die App und füge Tests hinzu'*).", style="dim")
+            else:
+                console.print(f"⚠️ Konnte keine relevanten Quellcodedateien unter `{target_path}` finden.", style="yellow")
+
+        elif cmd in ("/projekte", "/projects", "/list"):
+            self._list_all_projects()
+
         elif cmd in ("/verlauf", "/history"):
             self._print_history()
 
@@ -226,6 +247,25 @@ class CLIInterface:
             console.print(f"❓ Unbekannter Befehl: '{command}'. Tippe /hilfe für eine Übersicht.", style="yellow")
 
         return False
+
+    def _list_all_projects(self) -> None:
+        """Listet alle vorhandenen Projekte im Workspace auf."""
+        base = self._workspace.base_dir
+        subdirs = [p for p in base.iterdir() if p.is_dir()]
+        if not subdirs:
+            console.print("📭 Noch keine Projekte im Workspace vorhanden.", style="yellow")
+            return
+
+        table = Table(title="🗂️ Vorhandene Projekte im Workspace", box=box.ROUNDED)
+        table.add_column("Projektname", style="cyan bold")
+        table.add_column("Dateien", justify="right", style="green")
+        table.add_column("Pfad", style="dim")
+
+        for d in sorted(subdirs, key=lambda x: x.name):
+            file_count = sum(1 for f in d.rglob("*") if f.is_file())
+            table.add_row(d.name, str(file_count), str(d))
+
+        console.print(table)
 
     def _print_workspace(self, project_name: str) -> None:
         files = self._workspace.list_project_files(project_name)

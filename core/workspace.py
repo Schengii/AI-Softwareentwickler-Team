@@ -41,15 +41,51 @@ class WorkspaceManager:
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def get_project_dir(self, project_name: str) -> Path:
-        """Gibt den sicheren Pfad zum Projektverzeichnis zurück."""
+        """Gibt den sicheren Pfad zum Projektverzeichnis zurück (unterstützt auch absolute Pfade)."""
+        # Wenn ein absoluter Pfad (z.B. C:\Projekte\App) übergeben wurde
+        if os.path.isabs(project_name):
+            path_candidate = Path(project_name).resolve()
+            path_candidate.mkdir(parents=True, exist_ok=True)
+            return path_candidate
+
         clean_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', project_name).strip('_') or "default_project"
         project_path = (self.base_dir / clean_name).resolve()
-        
-        if not str(project_path).startswith(str(self.base_dir)):
-            raise ValueError(f"Ungültiger Projektpfad: {project_name}")
-
         project_path.mkdir(parents=True, exist_ok=True)
         return project_path
+
+    def read_existing_project_context(self, project_name: str, max_chars: int = 12000) -> str:
+        """Liest bestehende Projektdateien ein, damit die Agenten auf bestehendem Code aufbauen können."""
+        project_dir = self.get_project_dir(project_name)
+        if not project_dir.exists():
+            return ""
+
+        context_lines = [f"### 📂 DATEIEN IM BESTEHENDEN PROJEKT ({project_dir.name}):\n"]
+        total_len = 0
+
+        # Wichtige Dateiendungen
+        valid_extensions = {".py", ".js", ".ts", ".jsx", ".tsx", ".html", ".css", ".json", ".sql", ".md", ".txt", ".yml", ".yaml"}
+
+        for file_path in project_dir.rglob("*"):
+            if file_path.is_file() and file_path.suffix in valid_extensions:
+                # Überspringe virtuelle Environments und Git
+                parts = file_path.parts
+                if any(p in (".venv", "venv", ".git", "__pycache__", "node_modules", "dist", "build") for p in parts):
+                    continue
+
+                rel_path = file_path.relative_to(project_dir)
+                try:
+                    content = file_path.read_text(encoding="utf-8", errors="ignore")
+                    if len(content) > 3000:
+                        content = content[:3000] + "\n... [gekürzt] ..."
+                    snippet = f"--- DATEI: {rel_path} ---\n{content}\n\n"
+                    if total_len + len(snippet) > max_chars:
+                        break
+                    context_lines.append(snippet)
+                    total_len += len(snippet)
+                except Exception:
+                    pass
+
+        return "\n".join(context_lines)
 
     def parse_and_save_files(
         self,

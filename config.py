@@ -1,5 +1,6 @@
 """
 config.py – Zentrale Konfiguration für das KI-Softwareentwickler-Team (30 Spezialisten)
+Multi-LLM & Tool Support: Gemini, Groq, DeepSeek, OpenRouter, Tavily, Hugging Face & Claude
 """
 
 import os
@@ -12,14 +13,21 @@ load_dotenv()
 # API Keys
 # ──────────────────────────────────────────
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
+OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
+TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
+HUGGINGFACE_API_KEY: str = os.getenv("HUGGINGFACE_API_KEY", "")
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 
 # ──────────────────────────────────────────
-# Modell-Konfiguration (Aktuelle Gemini v3.6 / v3.1 / Flash Modelle)
+# Modell-Konfiguration (Multi-Provider Tiering)
 # ──────────────────────────────────────────
 HEAVY_MODEL: str = os.getenv("HEAVY_MODEL", "gemini-3.6-flash")
 STANDARD_MODEL: str = os.getenv("STANDARD_MODEL", "gemini-3.6-flash")
 LITE_MODEL: str = os.getenv("LITE_MODEL", "gemini-3.1-flash-lite")
+TURBO_MODEL: str = os.getenv("TURBO_MODEL", "groq:openai/gpt-oss-120b")
+REASONING_MODEL: str = os.getenv("REASONING_MODEL", "deepseek:deepseek-chat")
 
 ORCHESTRATOR_MODEL: str = os.getenv("ORCHESTRATOR_MODEL", "gemini-3.6-flash")
 DEFAULT_AGENT_MODEL: str = os.getenv("DEFAULT_AGENT_MODEL", "gemini-3.6-flash")
@@ -32,22 +40,22 @@ AGENT_MODELS: dict[str, str] = {
     "business_analyst":  os.getenv("BA_MODEL",             STANDARD_MODEL),
     "web_research":      os.getenv("WEB_RESEARCH_MODEL",   STANDARD_MODEL),
 
-    # ── Phase 2: Architektur & FinOps ──
-    "architect":         os.getenv("ARCHITECT_MODEL",      HEAVY_MODEL),
+    # ── Phase 2: Architektur & FinOps (DeepSeek & Gemini) ──
+    "architect":         os.getenv("ARCHITECT_MODEL",      "deepseek:deepseek-chat"),
     "finops":            os.getenv("FINOPS_MODEL",         STANDARD_MODEL),
 
-    # ── Phase 3: Kern-Entwicklung ──
-    "backend":           os.getenv("BACKEND_MODEL",        STANDARD_MODEL),
+    # ── Phase 3: Kern-Entwicklung (DeepSeek, Groq & Gemini) ──
+    "backend":           os.getenv("BACKEND_MODEL",        "deepseek:deepseek-chat"),
     "frontend":          os.getenv("FRONTEND_MODEL",       STANDARD_MODEL),
-    "database":          os.getenv("DATABASE_MODEL",       STANDARD_MODEL),
+    "database":          os.getenv("DATABASE_MODEL",       "deepseek:deepseek-chat"),
     "api_integration":   os.getenv("API_INTEGRATION_MODEL",STANDARD_MODEL),
     "data_engineer":     os.getenv("DATA_ENGINEER_MODEL",  STANDARD_MODEL),
     "mobile":            os.getenv("MOBILE_MODEL",         STANDARD_MODEL),
-    "ml":                os.getenv("ML_MODEL",             STANDARD_MODEL),
-    "performance":       os.getenv("PERFORMANCE_MODEL",    STANDARD_MODEL),
+    "ml":                os.getenv("ML_MODEL",             "deepseek:deepseek-chat"),
+    "performance":       os.getenv("PERFORMANCE_MODEL",    "groq:openai/gpt-oss-120b"),
 
     # ── Phase 3: Design, Media, Content & Text ──
-    "image_generator":   os.getenv("IMAGE_GEN_MODEL",      STANDARD_MODEL),
+    "image_generator":   os.getenv("IMAGE_GEN_MODEL",      "huggingface:auto"),
     "copywriter":        os.getenv("COPYWRITER_MODEL",     STANDARD_MODEL),
     "ui_ux":             os.getenv("UI_UX_MODEL",          LITE_MODEL),
     "i18n":              os.getenv("I18N_MODEL",           LITE_MODEL),
@@ -57,12 +65,12 @@ AGENT_MODELS: dict[str, str] = {
 
     # ── Phase 3: Infrastruktur & Qualität ──
     "devops":            os.getenv("DEVOPS_MODEL",         STANDARD_MODEL),
-    "tester":            os.getenv("TESTER_MODEL",         STANDARD_MODEL),
-    "security":          os.getenv("SECURITY_MODEL",       STANDARD_MODEL),
+    "tester":            os.getenv("TESTER_MODEL",         "groq:openai/gpt-oss-120b"),
+    "security":          os.getenv("SECURITY_MODEL",       "deepseek:deepseek-chat"),
 
     # ── Phase 4: Review, Refactoring, Compliance & Hygiene ──
-    "code_reviewer":     os.getenv("CODE_REVIEWER_MODEL",  HEAVY_MODEL),
-    "refactoring":       os.getenv("REFACTORING_MODEL",    STANDARD_MODEL),
+    "code_reviewer":     os.getenv("CODE_REVIEWER_MODEL",  "deepseek:deepseek-chat"),
+    "refactoring":       os.getenv("REFACTORING_MODEL",    "groq:openai/gpt-oss-120b"),
     "compliance":        os.getenv("COMPLIANCE_MODEL",     STANDARD_MODEL),
     "project_cleaner":   os.getenv("PROJECT_CLEANER_MODEL",LITE_MODEL),
 
@@ -94,8 +102,8 @@ WORKSPACE_DIR: str = os.path.join(BASE_DIR, "workspace")
 # Validierung
 # ──────────────────────────────────────────
 def validate_config() -> list[str]:
-    """Prüft ob API-Keys vorhanden sind."""
+    """Prüft ob mindestens ein API-Key vorhanden ist."""
     errors = []
-    if not GEMINI_API_KEY and not ANTHROPIC_API_KEY:
-        errors.append("Weder GEMINI_API_KEY noch ANTHROPIC_API_KEY in der .env Datei gefunden")
+    if not (GEMINI_API_KEY or GROQ_API_KEY or DEEPSEEK_API_KEY or OPENROUTER_API_KEY or HUGGINGFACE_API_KEY or ANTHROPIC_API_KEY):
+        errors.append("Kein API-Key in der .env Datei gefunden")
     return errors

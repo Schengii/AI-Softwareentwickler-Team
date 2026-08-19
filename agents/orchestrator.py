@@ -181,14 +181,20 @@ class Orchestrator:
             results=results,
         )
 
-        # Retrospektive
-        notify("📊 [bold cyan]Abschluss:[/bold cyan] Retrospektive-Agent erstellt Lessons Learned & Kennzahlen...")
+        # Retrospektive & Automatische Selbstoptimierung
+        notify("📊 [bold cyan]Abschluss:[/bold cyan] Retrospektive & KI-Selbstoptimierung werden durchgeführt...")
         total_duration = time.monotonic() - overall_start_time
 
         retro_result = await self._run_retrospective(
             user_request=user_request,
             results=results,
             total_duration=total_duration,
+        )
+
+        trainer_result = await self._run_agent_trainer_self_optimization(
+            user_request=user_request,
+            results=results,
+            retro_content=retro_result.content if retro_result else "",
         )
 
         stats_table = self._build_metrics_summary(
@@ -202,6 +208,8 @@ class Orchestrator:
             f"{final_solution}\n\n"
             f"---\n\n"
             f"{retro_result.content if retro_result else ''}\n\n"
+            f"---\n\n"
+            f"{trainer_result.content if trainer_result else ''}\n\n"
             f"---\n\n"
             f"{stats_table}"
         )
@@ -450,6 +458,41 @@ class Orchestrator:
             context=retro_context,
         )
         return await retro_agent.execute(task)
+
+    async def _run_agent_trainer_self_optimization(
+        self,
+        user_request: str,
+        results: list[AgentResult],
+        retro_content: str,
+    ) -> Optional[AgentResult]:
+        trainer = self._agents.get("agent_trainer")
+        if not trainer:
+            return None
+
+        # Prüfe ob Fehler oder Optimierungsbedarf gemeldet wurden
+        has_errors = any(not r.success for r in results)
+        high_usage = any(r.total_tokens > 4000 for r in results)
+
+        if not has_errors and not high_usage:
+            # Bei perfektem Lauf keine unnötigen Token verbrauchen
+            return None
+
+        context = (
+            f"PROJEKTAUFGABE: {user_request}\n\n"
+            f"RETROSPEKTIVE & ERKENNTNISSE:\n{retro_content[:1500]}\n\n"
+            f"FEHLERHAFTE ODER TOKEN-INTENSIVE AGENTEN:\n"
+        )
+        for r in results:
+            if not r.success or r.total_tokens > 4000:
+                context += f"- {r.agent_name} ({r.agent_id}): Success={r.success}, Tokens={r.total_tokens}, Error={r.error}\n"
+
+        task = AgentTask(
+            task_id="trainer_auto_opt",
+            agent_id="agent_trainer",
+            description="Analysiere die aufgetretenen Fehler/Ineffizienzen und liefere konkrete Prompt-Schärfungen zur Selbstoptimierung der Agenten.",
+            context=context,
+        )
+        return await trainer.execute(task)
 
     def _build_metrics_summary(
         self,

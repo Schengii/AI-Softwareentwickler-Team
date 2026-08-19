@@ -67,8 +67,11 @@ class BaseAgent(ABC):
             )
 
     def _build_prompt(self, task: AgentTask) -> str:
-        """Baut den finalen Prompt token-effizient zusammen."""
-        prompt_parts = [f"**DEINE AUFGABE:**\n{task.description}"]
+        """Baut den finalen Prompt token-effizient zusammen mit strikten Sparsamkeits-Regeln."""
+        prompt_parts = [
+            f"**DEINE AUFGABE:**\n{task.description}\n",
+            "**TOKEN-EFFIZIENZ-REGEL:** Antworte hochpräzise, fokussiert und ohne Füllwörter oder Redundanzen. Liefere vollständigen, lauffähigen Code und Fakten in kompakter Markdown-Struktur."
+        ]
 
         if task.context:
             prompt_parts.insert(0, f"**PROJEKT-KONTEXT:**\n{task.context}\n")

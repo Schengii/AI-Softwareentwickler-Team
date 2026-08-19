@@ -68,10 +68,12 @@ class TestAgentSystem(unittest.TestCase):
             self.assertEqual(agent.agent_id, agent_id)
 
     def test_team_info_generation(self):
-        """Prüft, dass die get_team_info-Methode eine lesbare Markdown-Struktur liefert."""
+        """Prüft, dass die get_team_info-Methode eine lesbare Markdown-Struktur der Fachbereiche liefert."""
         info = self.orchestrator.get_team_info()
-        self.assertIn("Dein KI-Team (30 Spezialisten)", info)
-        self.assertIn("Phase 1: Führung, Planung & Recherche", info)
+        self.assertIn("Strukturierte Fachbereiche & Teamleiter-Hierarchie", info)
+        self.assertIn("Planning Lead", info)
+        self.assertIn("Dev Lead", info)
+        self.assertIn("Creative Lead", info)
 
 
 if __name__ == "__main__":

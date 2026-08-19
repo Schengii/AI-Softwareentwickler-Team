@@ -101,3 +101,40 @@ class ToolRegistry:
                 handler=list_workspace_files_handler,
             )
         )
+
+        # Tool: Live-Web-Recherche (Tavily)
+        async def web_search_handler(query: str, max_results: int = 3) -> dict:
+            from config import TAVILY_API_KEY
+            if not TAVILY_API_KEY:
+                return {"error": "TAVILY_API_KEY nicht konfiguriert"}
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.post(
+                        "https://api.tavily.com/search",
+                        json={
+                            "api_key": TAVILY_API_KEY,
+                            "query": query,
+                            "search_depth": "basic",
+                            "max_results": max_results,
+                        }
+                    )
+                    return resp.json() if resp.status_code == 200 else {"error": f"Status {resp.status_code}"}
+            except Exception as e:
+                return {"error": str(e)}
+
+        self.register(
+            ToolDefinition(
+                name="tavily_search",
+                description="Führt eine Live-Web-Suche durch, um aktuelle Dokumentationen und Bibliotheken abzufragen.",
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Suchbegriff"},
+                        "max_results": {"type": "integer", "description": "Maximale Trefferanzahl"},
+                    },
+                    "required": ["query"],
+                },
+                handler=web_search_handler,
+            )
+        )

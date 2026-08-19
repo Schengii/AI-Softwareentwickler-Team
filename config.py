@@ -36,6 +36,11 @@ DEFAULT_AGENT_MODEL: str = os.getenv("DEFAULT_AGENT_MODEL", "gemini-3.6-flash")
 AGENT_MODELS: dict[str, str] = {
     # ── Phase 1: Führung, Planung & Recherche ──
     "team_lead":         os.getenv("TEAM_LEAD_MODEL",      HEAVY_MODEL),
+    "planning_lead":     os.getenv("PLANNING_LEAD_MODEL",  HEAVY_MODEL),
+    "dev_lead":          os.getenv("DEV_LEAD_MODEL",       HEAVY_MODEL),
+    "creative_lead":     os.getenv("CREATIVE_LEAD_MODEL",  STANDARD_MODEL),
+    "qa_lead":           os.getenv("QA_LEAD_MODEL",        STANDARD_MODEL),
+    "governance_lead":   os.getenv("GOVERNANCE_LEAD_MODEL",HEAVY_MODEL),
     "product_owner":     os.getenv("PO_MODEL",             STANDARD_MODEL),
     "business_analyst":  os.getenv("BA_MODEL",             STANDARD_MODEL),
     "web_research":      os.getenv("WEB_RESEARCH_MODEL",   STANDARD_MODEL),

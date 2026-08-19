@@ -1,10 +1,11 @@
 """
-agents/__init__.py – Export aller 30 spezialisierten Agenten des KI-Entwickler-Teams
+agents/__init__.py – Export aller Agenten und Fachbereichs-Teamleiter des KI-Entwickler-Teams
 """
 
 from agents.base_agent import BaseAgent
 from agents.orchestrator import Orchestrator
 from agents.team_lead_agent import TeamLeadAgent
+from agents.department_lead_agent import DepartmentLeadAgent
 from agents.product_owner_agent import ProductOwnerAgent
 from agents.business_analyst_agent import BusinessAnalystAgent
 from agents.web_research_agent import WebResearchAgent
@@ -39,6 +40,7 @@ __all__ = [
     "BaseAgent",
     "Orchestrator",
     "TeamLeadAgent",
+    "DepartmentLeadAgent",
     "ProductOwnerAgent",
     "BusinessAnalystAgent",
     "WebResearchAgent",

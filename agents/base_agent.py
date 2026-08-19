@@ -32,12 +32,16 @@ class BaseAgent(ABC):
     async def execute(self, task: AgentTask) -> AgentResult:
         """
         Führt die zugewiesene Aufgabe aus und gibt das Ergebnis samt Tokenmetriken zurück.
+        Reichert den System-Prompt automatisch mit persistent gelernten Regeln an.
         """
         start_time = time.monotonic()
 
         try:
+            from memory.agent_knowledge_base import agent_knowledge_base
+            effective_system_prompt = agent_knowledge_base.get_augmented_prompt(self.agent_id, self.system_prompt)
+
             prompt = self._build_prompt(task)
-            response = await self._llm.generate_with_usage(prompt, self.system_prompt)
+            response = await self._llm.generate_with_usage(prompt, effective_system_prompt)
             duration = time.monotonic() - start_time
 
             return AgentResult(

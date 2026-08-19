@@ -21,70 +21,91 @@ HUGGINGFACE_API_KEY: str = os.getenv("HUGGINGFACE_API_KEY", "")
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 
 # ──────────────────────────────────────────
-# Modell-Konfiguration (Multi-Provider Tiering)
+# Modell-Konfiguration: Claude + Gemini, nach tatsächlichem Aufgabenbedarf gestaffelt
 # ──────────────────────────────────────────
-HEAVY_MODEL: str = os.getenv("HEAVY_MODEL", "gemini-3.6-flash")
-STANDARD_MODEL: str = os.getenv("STANDARD_MODEL", "gemini-3.6-flash")
-LITE_MODEL: str = os.getenv("LITE_MODEL", "gemini-3.1-flash-lite")
-TURBO_MODEL: str = os.getenv("TURBO_MODEL", "groq:openai/gpt-oss-120b")
-REASONING_MODEL: str = os.getenv("REASONING_MODEL", "deepseek:deepseek-chat")
+# Jeder Agent bekommt nur so viel Modell, wie seine Aufgabe wirklich braucht:
+# - LITE:     kleine, klar umrissene Aufgaben (Texte, Konfiguration, Übersetzung, Checklisten)
+# - STANDARD: reguläre Feature-Entwicklung (Code, das funktionieren, aber keine tiefen
+#             Architektur-Trade-offs abwägen muss)
+# - HEAVY:    Architektur-/Sicherheits-/Review-Entscheidungen mit echten Trade-offs,
+#             plus die Fachbereichs-Teamleiter, die die Qualität ihres Bereichs verantworten
+# Der Hauptagent (Orchestrator) bekommt separat das stärkste Modell, da er über das
+# gesamte Projekt hinweg nur 2x pro Lauf aufgerufen wird (Zerlegung + Synthese) und
+# dort die höchste Qualität am meisten zählt – bei den 38 Fachrollen wäre das teuerste
+# Modell für JEDEN Aufruf dagegen unnötig, wenn nur wenige Rollen es wirklich brauchen.
+#
+# Cross-Provider-Fallback: Ist ein Modell erschöpft (Quota/Rate-Limit) oder ein API-Key
+# fehlt, springt core/llm_factory.py automatisch auf das jeweils andere Modell/den anderen
+# Provider (Claude <-> Gemini) um – siehe MODEL_FALLBACKS in core/llm_factory.py.
+GEMINI_LITE_MODEL: str = os.getenv("GEMINI_LITE_MODEL", "gemini-3.1-flash-lite")
+GEMINI_STANDARD_MODEL: str = os.getenv("GEMINI_STANDARD_MODEL", "gemini-3.6-flash")
+GEMINI_HEAVY_MODEL: str = os.getenv("GEMINI_HEAVY_MODEL", "gemini-pro-latest")
 
-ORCHESTRATOR_MODEL: str = os.getenv("ORCHESTRATOR_MODEL", "gemini-3.6-flash")
-DEFAULT_AGENT_MODEL: str = os.getenv("DEFAULT_AGENT_MODEL", "gemini-3.6-flash")
+CLAUDE_LITE_MODEL: str = os.getenv("CLAUDE_LITE_MODEL", "claude-haiku-4-5-20251001")
+CLAUDE_STANDARD_MODEL: str = os.getenv("CLAUDE_STANDARD_MODEL", "claude-sonnet-5")
+CLAUDE_HEAVY_MODEL: str = os.getenv("CLAUDE_HEAVY_MODEL", "claude-opus-5")
 
-# Rollen- und aufgabengerechte Modell-Zuordnung (30 Spezialisten)
+# Primäre Zuordnung pro Komplexitätsstufe: Standard/Lite laufen primär über Gemini
+# (schnell & günstig), Heavy primär über Claude (stärkeres Trade-off-Reasoning).
+LITE_MODEL: str = GEMINI_LITE_MODEL
+STANDARD_MODEL: str = GEMINI_STANDARD_MODEL
+HEAVY_MODEL: str = CLAUDE_STANDARD_MODEL
+
+ORCHESTRATOR_MODEL: str = os.getenv("ORCHESTRATOR_MODEL", CLAUDE_HEAVY_MODEL)
+DEFAULT_AGENT_MODEL: str = os.getenv("DEFAULT_AGENT_MODEL", STANDARD_MODEL)
+
+# Rollen- und aufgabengerechte Modell-Zuordnung (33 Spezialisten + 5 Fachbereichsleiter)
 AGENT_MODELS: dict[str, str] = {
-    # ── Phase 1: Führung, Planung & Recherche ──
-    "team_lead":         os.getenv("TEAM_LEAD_MODEL",      HEAVY_MODEL),
-    "planning_lead":     os.getenv("PLANNING_LEAD_MODEL",  HEAVY_MODEL),
-    "dev_lead":          os.getenv("DEV_LEAD_MODEL",       HEAVY_MODEL),
-    "creative_lead":     os.getenv("CREATIVE_LEAD_MODEL",  STANDARD_MODEL),
-    "qa_lead":           os.getenv("QA_LEAD_MODEL",        STANDARD_MODEL),
-    "governance_lead":   os.getenv("GOVERNANCE_LEAD_MODEL",HEAVY_MODEL),
-    "product_owner":     os.getenv("PO_MODEL",             STANDARD_MODEL),
-    "business_analyst":  os.getenv("BA_MODEL",             STANDARD_MODEL),
-    "web_research":      os.getenv("WEB_RESEARCH_MODEL",   STANDARD_MODEL),
+    # ── Führung & Planung: Leads mit Architektur-/Qualitäts-Verantwortung -> HEAVY ──
+    "planning_lead":     os.getenv("PLANNING_LEAD_MODEL",   HEAVY_MODEL),
+    "dev_lead":          os.getenv("DEV_LEAD_MODEL",        HEAVY_MODEL),
+    "governance_lead":   os.getenv("GOVERNANCE_LEAD_MODEL", HEAVY_MODEL),
+    # Leads mit eher konsolidierender/koordinierender Aufgabe -> STANDARD reicht
+    "creative_lead":     os.getenv("CREATIVE_LEAD_MODEL",   STANDARD_MODEL),
+    "qa_lead":           os.getenv("QA_LEAD_MODEL",         STANDARD_MODEL),
 
-    # ── Phase 2: Architektur & FinOps (DeepSeek & Gemini) ──
-    "architect":         os.getenv("ARCHITECT_MODEL",      "deepseek:deepseek-chat"),
-    "finops":            os.getenv("FINOPS_MODEL",         STANDARD_MODEL),
+    # ── Planung, Analyse & Recherche: klar umrissene Teilaufgaben -> STANDARD/LITE ──
+    "team_lead":         os.getenv("TEAM_LEAD_MODEL",       STANDARD_MODEL),
+    "product_owner":     os.getenv("PO_MODEL",              STANDARD_MODEL),
+    "business_analyst":  os.getenv("BA_MODEL",              STANDARD_MODEL),
+    "web_research":      os.getenv("WEB_RESEARCH_MODEL",    LITE_MODEL),   # fasst v.a. Suchergebnisse zusammen
+    "finops":            os.getenv("FINOPS_MODEL",          LITE_MODEL),   # größtenteils Rechen-/Checklisten-Aufgabe
 
-    # ── Phase 3: Kern-Entwicklung (DeepSeek, Groq & Gemini) ──
-    "backend":           os.getenv("BACKEND_MODEL",        "deepseek:deepseek-chat"),
-    "frontend":          os.getenv("FRONTEND_MODEL",       STANDARD_MODEL),
-    "database":          os.getenv("DATABASE_MODEL",       "deepseek:deepseek-chat"),
-    "api_integration":   os.getenv("API_INTEGRATION_MODEL",STANDARD_MODEL),
-    "data_engineer":     os.getenv("DATA_ENGINEER_MODEL",  STANDARD_MODEL),
-    "mobile":            os.getenv("MOBILE_MODEL",         STANDARD_MODEL),
-    "ml":                os.getenv("ML_MODEL",             "deepseek:deepseek-chat"),
-    "prompt_engineer":   os.getenv("PROMPT_ENG_MODEL",     HEAVY_MODEL),
-    "performance":       os.getenv("PERFORMANCE_MODEL",    "groq:openai/gpt-oss-120b"),
+    # ── Architektur & Kern-Entwicklung mit echten Trade-offs -> HEAVY ──
+    "architect":         os.getenv("ARCHITECT_MODEL",       HEAVY_MODEL),
+    "backend":           os.getenv("BACKEND_MODEL",         HEAVY_MODEL),
+    "database":          os.getenv("DATABASE_MODEL",        HEAVY_MODEL),
+    "ml":                os.getenv("ML_MODEL",               HEAVY_MODEL),
+    "prompt_engineer":   os.getenv("PROMPT_ENG_MODEL",      HEAVY_MODEL),
 
-    # ── Phase 3: Design, Media, Content & Text ──
-    "image_generator":   os.getenv("IMAGE_GEN_MODEL",      "huggingface:auto"),
-    "copywriter":        os.getenv("COPYWRITER_MODEL",     STANDARD_MODEL),
-    "ui_ux":             os.getenv("UI_UX_MODEL",          LITE_MODEL),
-    "accessibility":     os.getenv("A11Y_MODEL",           LITE_MODEL),
-    "i18n":              os.getenv("I18N_MODEL",           LITE_MODEL),
-    "documentation":     os.getenv("DOCS_MODEL",           LITE_MODEL),
-    "readme":            os.getenv("README_MODEL",         LITE_MODEL),
-    "github":            os.getenv("GITHUB_MODEL",         LITE_MODEL),
+    # ── Reguläre Feature-Entwicklung -> STANDARD ──
+    "frontend":          os.getenv("FRONTEND_MODEL",        STANDARD_MODEL),
+    "api_integration":   os.getenv("API_INTEGRATION_MODEL", STANDARD_MODEL),
+    "data_engineer":     os.getenv("DATA_ENGINEER_MODEL",   STANDARD_MODEL),
+    "mobile":            os.getenv("MOBILE_MODEL",          STANDARD_MODEL),
+    "devops":            os.getenv("DEVOPS_MODEL",          STANDARD_MODEL),
+    "tester":            os.getenv("TESTER_MODEL",          STANDARD_MODEL),
+    "resilience_guard":  os.getenv("RESILIENCE_MODEL",      STANDARD_MODEL),
+    "performance":       os.getenv("PERFORMANCE_MODEL",     STANDARD_MODEL),
+    "compliance":        os.getenv("COMPLIANCE_MODEL",      STANDARD_MODEL),
+    "retrospective":     os.getenv("RETROSPECTIVE_MODEL",   STANDARD_MODEL),
 
-    # ── Phase 3: Infrastruktur & Qualität ──
-    "devops":            os.getenv("DEVOPS_MODEL",         STANDARD_MODEL),
-    "tester":            os.getenv("TESTER_MODEL",         "groq:openai/gpt-oss-120b"),
-    "security":          os.getenv("SECURITY_MODEL",       "deepseek:deepseek-chat"),
-    "resilience_guard":  os.getenv("RESILIENCE_MODEL",     "groq:openai/gpt-oss-120b"),
+    # ── Sicherheits-/Qualitäts-Entscheidungen mit echten Trade-offs -> HEAVY ──
+    "security":          os.getenv("SECURITY_MODEL",        HEAVY_MODEL),
+    "code_reviewer":     os.getenv("CODE_REVIEWER_MODEL",   HEAVY_MODEL),
+    "refactoring":       os.getenv("REFACTORING_MODEL",     HEAVY_MODEL),
+    "agent_trainer":     os.getenv("AGENT_TRAINER_MODEL",   HEAVY_MODEL),
 
-    # ── Phase 4: Review, Refactoring, Compliance & Hygiene ──
-    "code_reviewer":     os.getenv("CODE_REVIEWER_MODEL",  "deepseek:deepseek-chat"),
-    "refactoring":       os.getenv("REFACTORING_MODEL",    "groq:openai/gpt-oss-120b"),
-    "compliance":        os.getenv("COMPLIANCE_MODEL",     STANDARD_MODEL),
-    "project_cleaner":   os.getenv("PROJECT_CLEANER_MODEL",LITE_MODEL),
-
-    # ── Phase 5: Ausbildung & Retrospektive ──
-    "agent_trainer":     os.getenv("AGENT_TRAINER_MODEL",  HEAVY_MODEL),
-    "retrospective":     os.getenv("RETROSPECTIVE_MODEL",  STANDARD_MODEL),
+    # ── Kleine, klar umrissene Aufgaben -> LITE ──
+    "image_generator":   os.getenv("IMAGE_GEN_MODEL",       LITE_MODEL),
+    "copywriter":        os.getenv("COPYWRITER_MODEL",      LITE_MODEL),
+    "ui_ux":             os.getenv("UI_UX_MODEL",           LITE_MODEL),
+    "accessibility":     os.getenv("A11Y_MODEL",            LITE_MODEL),
+    "i18n":              os.getenv("I18N_MODEL",            LITE_MODEL),
+    "documentation":     os.getenv("DOCS_MODEL",            LITE_MODEL),
+    "readme":            os.getenv("README_MODEL",          LITE_MODEL),
+    "github":            os.getenv("GITHUB_MODEL",          LITE_MODEL),
+    "project_cleaner":   os.getenv("PROJECT_CLEANER_MODEL", LITE_MODEL),
 }
 
 # ──────────────────────────────────────────

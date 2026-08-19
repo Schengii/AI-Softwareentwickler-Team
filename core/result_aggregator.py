@@ -23,7 +23,7 @@ class ResultAggregator:
     """Kombiniert Agenten-Ergebnisse zu einer einheitlichen Antwort."""
 
     def __init__(self, model_name: str = "gemini-3.6-flash"):
-        self._llm = LLMFactory.create_gemini(model_name)
+        self._llm = LLMFactory.create_for_model(model_name)
 
     async def synthesize(
         self,

@@ -1,0 +1,126 @@
+"""
+core/code_sandbox.py – Code Execution & Static Validation Sandbox
+
+Bietet dem KI-Team:
+- Statische Syntax- und Typprüfungen für Python, JSON, YAML
+- Sichere Code-Validierung vor dem Abspeichern
+- Ausführung von Test-Befehlen in geschütztem Subprocess mit Timeout
+"""
+
+import ast
+import json
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+
+@dataclass
+class ValidationResult:
+    """Ergebnis einer Datei- oder Code-Prüfung."""
+    is_valid: bool
+    language: str
+    errors: list[str]
+    warnings: list[str]
+
+
+@dataclass
+class ExecutionResult:
+    """Ergebnis eines Test- oder Ausführungs-Laufs."""
+    exit_code: int
+    stdout: str
+    stderr: str
+    duration_seconds: float
+    timed_out: bool = False
+
+
+class CodeSandbox:
+    """
+    Validiert generierten Code und führt Tests in geschützter Umgebung aus.
+    """
+
+    @staticmethod
+    def validate_code(code_string: str, file_path_or_ext: str) -> ValidationResult:
+        """
+        Prüft Code statisch auf Syntax- und Formatierungsfehler.
+        """
+        ext = file_path_or_ext.lower().split(".")[-1] if "." in file_path_or_ext else file_path_or_ext.lower()
+        errors: list[str] = []
+        warnings: list[str] = []
+
+        if ext in ("py", "python"):
+            try:
+                ast.parse(code_string)
+            except SyntaxError as e:
+                errors.append(f"Python SyntaxError in Zeile {e.lineno}: {e.msg}")
+            except Exception as e:
+                errors.append(f"Python Parse-Fehler: {str(e)}")
+
+        elif ext in ("json",):
+            try:
+                json.loads(code_string)
+            except json.JSONDecodeError as e:
+                errors.append(f"JSON Parse-Fehler in Zeile {e.lineno}, Spalte {e.colno}: {e.msg}")
+
+        elif ext in ("yaml", "yml"):
+            # Einfacher YAML-Check ohne harte PyYAML-Abhängigkeit
+            lines = code_string.splitlines()
+            for i, line in enumerate(lines, 1):
+                if "\t" in line and not line.strip().startswith("#"):
+                    warnings.append(f"YAML Warnung Zeile {i}: Tabs anstelle von Leerzeichen gefunden.")
+
+        return ValidationResult(
+            is_valid=len(errors) == 0,
+            language=ext,
+            errors=errors,
+            warnings=warnings,
+        )
+
+    @staticmethod
+    def run_command(
+        command: list[str],
+        cwd: Optional[Path | str] = None,
+        timeout_seconds: float = 30.0,
+    ) -> ExecutionResult:
+        """
+        Führt ein Terminal-Kommando (z. B. pytest oder python -m unittest) sicher aus.
+        """
+        import time
+        start_time = time.monotonic()
+
+        try:
+            process = subprocess.run(
+                command,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                shell=False,
+            )
+            duration = time.monotonic() - start_time
+            return ExecutionResult(
+                exit_code=process.returncode,
+                stdout=process.stdout,
+                stderr=process.stderr,
+                duration_seconds=duration,
+                timed_out=False,
+            )
+        except subprocess.TimeoutExpired as e:
+            duration = time.monotonic() - start_time
+            return ExecutionResult(
+                exit_code=-1,
+                stdout=e.stdout or "",
+                stderr=f"Timeout nach {timeout_seconds} Sekunden überschritten.",
+                duration_seconds=duration,
+                timed_out=True,
+            )
+        except Exception as e:
+            duration = time.monotonic() - start_time
+            return ExecutionResult(
+                exit_code=-1,
+                stdout="",
+                stderr=f"Fehler bei Befehlsausführung: {str(e)}",
+                duration_seconds=duration,
+                timed_out=False,
+            )

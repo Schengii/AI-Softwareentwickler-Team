@@ -1,16 +1,17 @@
-# 🤖 KI-Softwareentwickler-Team (v2.0)
+# 🤖 KI-Softwareentwickler-Team (v2.3)
 
 <div align="center">
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Gemini](https://img.shields.io/badge/Google_Gemini-4285F4?style=for-the-badge&logo=google&logoColor=white)
 ![Claude](https://img.shields.io/badge/Anthropic_Claude-D4A017?style=for-the-badge&logoColor=white)
-![Agents](https://img.shields.io/badge/Agenten-23-success?style=for-the-badge)
-![asyncio](https://img.shields.io/badge/asyncio-Parallel-green?style=for-the-badge)
+![Agents](https://img.shields.io/badge/Agenten-30-success?style=for-the-badge)
+![Anti-Bloat](https://img.shields.io/badge/Anti--Bloat-Aktiv-green?style=for-the-badge)
+![Token Guard](https://img.shields.io/badge/Token_Guard-Aktiv-blue?style=for-the-badge)
 ![License](https://img.shields.io/badge/Lizenz-MIT-blue?style=for-the-badge)
 
-**Ein autonomes, multi-agenten KI-Team für vollständige, professionelle Softwareentwicklung.**  
-23 spezialisierte KI-Experten – mit 5-Phasen-Workflow, iterativem Review- & Fix-Loop, Code-Sandbox und Workspace-Dateisystem.
+**Ein autonomes, multi-agenten KI-Team für vollständige, token-optimierte Softwareentwicklung.**  
+30 spezialisierte KI-Experten – mit Projekt-Hygiene & Anti-Bloat Wächter, Multi-LLM Support (Claude 3.5 Sonnet & Gemini Pro/Flash), Teamleiter, Ausbilder/Prompt-Optimizer, Web-Recherche, Bild- & Text-Generierung, automatischem Git-Push und Workspace-Dateisystem.
 
 </div>
 
@@ -18,41 +19,58 @@
 
 ## 📖 Inhaltsverzeichnis
 
-- [Überblick](#überblick)
-- [Agentenstruktur (23 Spezialisten)](#agentenstruktur)
-- [5-Phasen-Workflow & Iterativer Fix-Loop](#5-phasen-workflow)
+- [Überblick & Highlights](#überblick)
+- [Modell-Tiering & Token-Guard](#modell-tiering)
+- [Agentenstruktur (30 Spezialisten)](#agentenstruktur)
+- [Projekt-Hygiene & Anti-Bloat Schutz](#projekt-hygiene--anti-bloat)
+- [5-Phasen-Workflow & Hintergrundausführung](#5-phasen-workflow)
 - [Workspace & Code-Execution Engine](#workspace-dateisystem)
-- [Projektstruktur](#projektstruktur)
 - [Installation & Setup](#installation)
-- [Konfiguration](#konfiguration)
-- [CLI-Befehle](#cli-befehle)
+- [CLI-Befehle & GitHub Push](#cli-befehle)
 - [Automatisierte Tests](#tests)
-- [Agenten im Detail](#agenten-im-detail)
-- [Changelog](#changelog)
 
 ---
 
-## 🌟 Überblick
+## 🌟 Überblick & Highlights
 
-Das **KI-Softwareentwickler-Team** ist ein professionelles Python-Framework, das ein komplettes 23-köpfiges Entwickler- und Engineering-Team simuliert. Der Nutzer interagiert mit dem **Hauptagenten (Orchestrator)**, der die Aufgabenstellung intelligent analysiert, die passenden Spezialisten über 5 Phasen koordiniert, Code-Qualität in einem iterativen Fix-Loop sichert und fertige Projektdateien direkt im Workspace abspeichert.
+Das **KI-Softwareentwickler-Team** koordiniert 30 spezialisierte Rollen. Alle Unteragenten arbeiten **vollständig im Hintergrund**, sodass der Nutzer nur die validierte Gesamtlösung erhält.
 
-### Kernfunktionen
+### Kern-Highlights (v2.3)
 
-| Funktion | Beschreibung |
+| Feature | Beschreibung |
 |---|---|
-| 🏛️ **5-Phasen-Workflow** | Product/BA $\rightarrow$ Architekt/FinOps $\rightarrow$ Parallele Entwicklung $\rightarrow$ Review/Compliance $\rightarrow$ Workspace/Synthese |
-| 🔄 **Iterativer Review- & Fix-Loop** | Automatische Nachbesserung durch Entwickler bei kritischen Mängeln im Review |
-| 📁 **Automatischer Datei-Workspace** | Generierter Code wird strukturiert in `workspace/<projekt>/` abgelegt und kann als ZIP exportiert werden |
-| 🧪 **Code-Sandbox & Validation** | Statische Syntax- und Typprüfung für Python, JSON & YAML sowie Subprocess-Testausführung |
-| ⚡ **Vollparallele Ausführung** | Entwickler- und QA-Spezialisten arbeiten gleichzeitig via `asyncio.gather()` |
-| 🛡️ **Legal & Compliance Audit** | Integrierter DSGVO/GDPR-Check, Lizenzprüfung (GPL vs. MIT) und Barrierefreiheit (WCAG 2.1) |
-| 💰 **FinOps & Cloud-Kalkulation** | Vorab-Kostenschätzung für AWS, GCP, Hetzner, Serverless und AI-Tokens |
+| 🧽 **Projekt-Hygiene & Struktur-Wächter** | Bereinigt alten/toten Code, Logs, Cache und verwaiste Dateien; hält Ordner schlank und sauber. |
+| 👔 **Teamleiter (Engineering Manager)** | Koordiniert Ziele, Definition of Done und löst Trade-Offs (Performance vs. Kosten). |
+| 🎨 **Bild- & Grafik-Designer** | Erstellt speicherbare SVGs, Logos und High-End Prompts für Imagen 3 / Midjourney. |
+| ✍️ **Copywriter & Content Specialist** | Schreibt Landingpage-Texte, UI-Microcopy (Buttons, Errors), SEO-Texte und FAQs. |
+| 🌐 **Web-Recherche & Info Specialist** | Recherchiert aktuelle Dokumentationen, Bibliotheken und Best Practices im Web. |
+| 🎓 **Ausbilder & Agent-Optimizer** | Analysiert Fehler der Agenten, schärft System-Prompts und bildet neue Agenten aus. |
+| 🔀 **Interaktiver GitHub-Agent** | Fragt nach Projektabschluss höflich nach Erlaubnis und committet/pusht auf GitHub. |
+| 🛡️ **Token-Guard & Multi-Provider** | Nutzt Claude 3.5 Sonnet & Gemini Pro/Flash mit Quota-Failover und Warnsystem. |
 
 ---
 
-## 🏗️ Agentenstruktur
+## 🧽 Projekt-Hygiene & Anti-Bloat
 
-### Vollständige Team-Übersicht (23 Spezialisten)
+Der neue **Projekt-Hygiene & Struktur-Wächter (`project_cleaner`)** stellt sicher:
+1. **Kein Dead Code & keine verwaisten Module:** Unbenutzter Code oder Prototyp-Reste werden identifiziert und gelöscht.
+2. **Saubere Verzeichnishierarchie:** Dateien werden logisch nach Clean Architecture strukturiert (`src/core/`, `src/api/`, etc.).
+3. **Automatische Cache- & Temp-Bereinigung:** Entfernt temporäre Build-Dateien, `__pycache__` und Test-Logs.
+4. **Schlanke `.gitignore`:** Schützt das Git-Repository dauerhaft vor unnötigem Müll.
+
+---
+
+## 🎯 Modell-Tiering & Token-Optimierung
+
+| Tier | Standardmodell | Einsatzzweck & Agenten |
+|---|---|---|
+| **Heavy Tier** | `gemini-2.5-pro` / `claude-3-5-sonnet` | Teamleiter (`team_lead`), Architekt (`architect`), Code-Reviewer (`code_reviewer`), Ausbilder (`agent_trainer`). |
+| **Standard Tier** | `gemini-2.5-flash` / `claude-3-5-haiku` | Frontend, Backend, Database, Data Engineer, API Integration, DevOps, Tester, Security, Product Owner, Bildgenerator, Copywriter, Web-Recherche, Compliance, Retrospektive. |
+| **Lite Tier** | `gemini-2.5-flash-lite` | Projekt-Hygiene (`project_cleaner`), UI/UX Konzepte, Dokumentation (`documentation`), Übersetzungen (`i18n`), README, GitHub Messages. |
+
+---
+
+## 🏗️ Agentenstruktur (30 Spezialisten)
 
 ```
 Du (Nutzer)
@@ -60,132 +78,69 @@ Du (Nutzer)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                🤖 HAUPTAGENT (Orchestrator)                  │
-│   Task-Zerlegung → Phasensteuerung → Fix-Loop → Synthese    │
+│  Plant → Delegiert im Hintergrund → Prüft → Fasst zusammen  │
 └─────────────────────────────────────────────────────────────┘
          │
-         │  5-Phasen-Workflow & Iterative Schleifen
-         │
     ┌────▼────┐
-    │ Phase 1 │  🎯 Product Owner  &  📋 Business Analyst
-    └────┬────┘  (Vision, MVP-Scope, User Stories, Akzeptanzkriterien)
-         │ Anforderungs- & Produktkontext
+    │ Phase 1 │  👔 Teamleiter  &  🎯 Product Owner  &  📋 Business Analyst  &  🌐 Web-Recherche
+    └────┬────┘  (Vision, DoD, Scope, Marktrecherche, User Stories, Akzeptanzkriterien)
+         │
     ┌────▼────┐
     │ Phase 2 │  🏛️ Software-Architekt  &  💰 Cost & FinOps
-    └────┬────┘  (Systemdiagramme, API-Contracts, Cloud-Kosten & TCO)
-         │ Vollständiger Blueprint (an alle Implementierer)
+    └────┬────┘  (Systemblueprint, API-Contracts, Cloud-Kosten & TCO)
+         │
     ┌────▼─────────────────────────────────────────────────────────┐
-    │ Phase 3 │  ALLE PARALLEL                                      │
-    │         │  🎨 UI/UX      💻 Frontend   ⚙️ Backend   🗄️ Database │
-    │         │  🔌 API/Integ. 🌊 Data Eng.  📱 Mobile    🤖 KI/ML    │
-    │         │  ⚡ Performance 🌍 i18n       🚀 DevOps   🧪 QA/Tester│
-    │         │  📚 Docs       🔒 Security                            │
+    │ Phase 3 │  ALLE PARALLEL IM HINTERGRUND                       │
+    │         │  💻 Frontend   ⚙️ Backend   🗄️ Database   🔌 API/Integ.│
+    │         │  🌊 Data Eng.  📱 Mobile    🤖 KI/ML     ⚡ Performance│
+    │         │  🎨 Bild/SVG   ✍️ Copywriter 📐 UI/UX    🌍 i18n       │
+    │         │  🚀 DevOps     🧪 QA/Tester 📚 Docs      🔒 Security   │
     └────┬─────────────────────────────────────────────────────────┘
-         │ Vollständige Komponenten & Codeblöcke
+         │
     ┌────▼────┐
     │ Phase 4 │  🔍 Code-Reviewer  &  🧹 Refactoring  &  ⚖️ Compliance
-    └────┬────┘  (Qualitätsprüfung, Tech-Debt, DSGVO, Lizenzen, a11y)
+    │         │  🧽 Projekt-Hygiene & Anti-Bloat  &  🎓 Ausbilder
+    └────┬────┘  (Qualitätsprüfung, Tech-Debt, Verzeichnis-Bereinigung, Prompt-Tuning)
          │
-         ├───► [Kritische Mängel?] ──► 🛠️ Automatischer Fix-Loop (Phase 3)
+         ├───► [Kritische Mängel?] ──► 🛠️ Automatischer Fix-Loop
          │
     ┌────▼────┐
-    │ Phase 5 │  💾 Workspace-Export (`workspace/<projekt>/`)
-    │Synthese │  📝 Finale Zusammenfassung & Dokumentation
-    └─────────┘
+    │ Phase 5 │  💾 Workspace-Dateispeicherung (`workspace/<projekt>/`)
+    │Synthese │  📊 Retrospektive, Lessons Learned & Token-Statistik
+    └────┬────┘
+         │
+         ▼
+    🔀 GitHub-Agent: Automatische Erlaubnis-Abfrage vor Commit & Push
 ```
 
-### Agenten-Tabelle
-
-| Phase | ID | Name | Symbol | Spezialisierung |
-|---|---|---|---|---|
-| **1** | `product_owner` | Product Owner | 🎯 | MVP-Scope, MoSCoW, Epic-Roadmap |
-| **1** | `business_analyst` | Business Analyst | 📋 | User Stories, Akzeptanzkriterien, Scope |
-| **2** | `architect` | Software-Architekt | 🏛️ | Systemarchitektur, API-Contracts, ADRs |
-| **2** | `finops` | Cost & FinOps Engineer | 💰 | Cloud-Kosten (AWS/GCP/Hetzner), TCO, AI Tokens |
-| **3** | `ui_ux` | UI/UX Designer | 🎨 | Wireframes, Design-Systeme, User Flows |
-| **3** | `frontend` | Frontend-Entwickler | 💻 | React, Vue, Next.js, HTML/CSS |
-| **3** | `backend` | Backend-Entwickler | ⚙️ | REST APIs, FastAPI, Node.js, Python |
-| **3** | `database` | Datenbank-Entwickler | 🗄️ | PostgreSQL, MongoDB, Schema, ORM |
-| **3** | `api_integration` | API & Integration Specialist | 🔌 | OpenAPI 3.1, GraphQL, Webhooks, Stripe, OAuth2 |
-| **3** | `data_engineer` | Data Engineer | 🌊 | Kafka, RabbitMQ, Redis Cache, ETL Pipelines |
-| **3** | `mobile` | Mobile-Entwickler | 📱 | Flutter, React Native, iOS, Android |
-| **3** | `ml` | KI/ML-Entwickler | 🤖 | LLM-APIs, RAG-Systeme, Embeddings, ML |
-| **3** | `performance` | Performance-Ingenieur | ⚡ | Load-Testing, Profiling, Query-Optimierung |
-| **3** | `i18n` | Internationalisierungs-Spezialist | 🌍 | Mehrsprachigkeit (i18n), RTL, Lokalisierung |
-| **3** | `devops` | DevOps-Ingenieur | 🚀 | Docker, Docker-Compose, CI/CD, K8s |
-| **3** | `tester` | QA-Tester | 🧪 | pytest, Unittests, Integrationstests |
-| **3** | `documentation` | Dokumentant | 📚 | API-Docs, Inline-Kommentare, Markdown |
-| **3** | `security` | Sicherheits-Analyst | 🔒 | OWASP Top 10, Injection, Auth-Audits |
-| **4** | `code_reviewer` | Code-Reviewer | 🔍 | Code-Qualität, Konsistenz, Scoring |
-| **4** | `refactoring` | Refactoring Specialist | 🧹 | Tech-Debt, Code Smells, Type-Hints, Clean Code |
-| **4** | `compliance` | Legal & Compliance Specialist | ⚖️ | DSGVO/GDPR, Open-Source-Lizenzen, WCAG 2.1 |
-| **U** | `readme` | README-Agent | 📝 | Projekt-README-Pflege |
-| **U** | `github` | GitHub-Agent | 🔀 | PR-Texte, Git-Strategien, Commit-Messages |
-
 ---
 
-## 🔄 5-Phasen-Workflow & Iterativer Fix-Loop
-
-1. **Phase 1 – Produkt & Anforderungen (PO & BA):** Erstellt die Produktvision, grenzt das MVP ab und liefert User Stories.
-2. **Phase 2 – Architektur & FinOps:** Entwirft den technischen Blueprint und kalkuliert die monatlichen Cloud- & Token-Kosten.
-3. **Phase 3 – Parallele Entwicklung:** Alle Frontend-, Backend-, Daten- und Infrastruktur-Experten implementieren gleichzeitig auf Basis des Blueprints.
-4. **Phase 4 – Review, Refactoring & Compliance:**
-   - **Code-Reviewer** prüft Qualität und Konsistenz.
-   - **Refactoring Agent** beseitigt Tech-Debt und optimiert Typsicherheit.
-   - **Compliance Agent** auditiert DSGVO, Barrierefreiheit und Lizenzen.
-5. **Iterativer Fix-Loop:** Werden im Review gravierende Fehler oder Inkompatibilitäten entdeckt, beauftragt der Orchestrator die betroffenen Entwickler automatisch mit gezielten Nachbesserungen.
-6. **Phase 5 – Workspace & Synthese:** Alle erstellten Dateien werden in `workspace/<projekt>/` geschrieben und dem Nutzer übersichtlich präsentiert.
-
----
-
-## 📁 Workspace Dateisystem & CLI-Befehle
-
-| Befehl | Beschreibung |
-|---|---|
-| `/team` | Zeigt alle 23 Agenten und Phasen an |
-| `/workspace [projekt]` | Zeigt den Dateibaum des generierten Projekts an |
-| `/export [projekt]` | Exportiert das gesamte Projektverzeichnis als ZIP-Archiv |
-| `/run-tests [projekt]` | Führt Unittests im Projektverzeichnis aus |
-| `/verlauf` | Zeigt den bisherigen Konversationsverlauf an |
-| `/neu` | Startet eine neue Session (löscht Verlauf) |
-| `/hilfe` | Zeigt die Befehlsübersicht an |
-| `/beenden` | Beendet die Anwendung |
-
----
-
-## 🚀 Installation & Schnellstart
+## 🚀 Schnellstart & CLI-Befehle
 
 ```bash
-# Repository klonen
+# Installation
 git clone https://github.com/Schengii/AI-Softwareentwickler-Team.git
 cd AI-Softwareentwickler-Team
-
-# Abhängigkeiten installieren
 pip install -r requirements.txt
 
-# .env konfigurieren
-cp .env.example .env  # Trage deinen GEMINI_API_KEY ein
-
-# Anwendung starten
+# Starten
 python main.py
 ```
+
+### CLI-Befehle:
+- `/team`: Zeigt alle 30 Agenten mit deren zugeordnetem KI-Modell an.
+- `/workspace [projekt]`: Listet alle im Workspace generierten Projektdateien auf.
+- `/export [projekt]`: Packt das Projektverzeichnis als ZIP-Archiv.
+- `/push`: Führt einen manuellen Git-Commit & Push aus.
+- `/run-tests [projekt]`: Führt Unittests im Projektverzeichnis aus.
+- `/verlauf`: Zeigt die Gesprächshistorie an.
+- `/neu`: Setzt die Konversation zurück.
+- `/hilfe`: Zeigt die Befehlsübersicht an.
 
 ---
 
 ## 🧪 Tests ausführen
 
 ```bash
-# Vollständige Testsuite ausführen (Agents, Core, Workspace, Sandbox & Workflows)
 python -m unittest discover -s tests -p "test_*.py"
 ```
-
----
-
-## 📝 Changelog (v2.0)
-
-- ✨ **Team-Erweiterung auf 23 Spezialisten**: Neu hinzugefügt: `Product Owner`, `Cost & FinOps`, `API & Integration Specialist`, `Data Engineer`, `Refactoring Specialist`, `Legal & Compliance Specialist`.
-- 📁 **Automatisches Workspace-Dateisystem (`core/workspace.py`)**: Parst Codeblöcke aus Agenten-Antworten und legt echte, lauffähige Projektdateien ab.
-- 🔄 **Iterativer Review- & Fix-Loop**: Automatisierte Nachbesserung von fehlerhaftem Code vor Abschluss der Synthese.
-- 🧪 **Code-Sandbox (`core/code_sandbox.py`)**: Statische Python-, JSON- & YAML-Validierung sowie isolierter Testrunner.
-- 🛠️ **Tool Registry & Vorbereitung für MCP (`core/tool_registry.py`)**: Standardisierte Werkzeug-Schnittstelle.
-- 🖥️ **Erweiterte CLI**: Neue Befehle `/workspace`, `/export`, `/run-tests`.
-- ✅ **Umfassende automatisierte Testsuite (`tests/`)**.

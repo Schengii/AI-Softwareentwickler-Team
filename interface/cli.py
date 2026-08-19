@@ -1,10 +1,10 @@
 """
 interface/cli.py – Kommandozeilen-Interface für das KI-Softwareentwickler-Team
 
-Bietet ein schönes, interaktives CLI mit:
-- Farbiger Ausgabe (Rich-Bibliothek)
-- Echtzeit-Status-Updates während Agenten arbeiten
-- Gesprächsverlauf-Anzeige
+Bietet ein interaktives CLI mit:
+- Farbiger Rich-Ausgabe
+- Live-Statusanzeige (Hintergrund-Arbeit der Agenten)
+- Automatischer GitHub-Commit & Push Abfrage nach Projektabschluss
 - Workspace- & Projekt-Dateiverwaltung (/workspace, /export)
 - Test-Runner (/run-tests)
 - Hilfe-Befehle
@@ -19,6 +19,7 @@ from rich.panel import Panel
 from rich.text import Text
 from rich.live import Live
 from rich.table import Table
+from rich.prompt import Confirm
 from rich import box
 from agents.orchestrator import Orchestrator
 from core.code_sandbox import CodeSandbox
@@ -26,15 +27,12 @@ from config import validate_config, WORKSPACE_DIR
 
 console = Console()
 
-# ──────────────────────────────────────────
-# ASCII-Banner
-# ──────────────────────────────────────────
 BANNER = """
 ╔══════════════════════════════════════════════════════════════╗
-║        🤖  KI-Softwareentwickler-Team (v2.0)  🤖            ║
+║        🤖  KI-Softwareentwickler-Team (v2.2)  🤖            ║
 ║        ─────────────────────────────────────                 ║
-║  Dein 23-köpfiges KI-Team für agile Softwareentwicklung      ║
-║  Powered by Google Gemini                                    ║
+║  Dein 24-köpfiges autonomes KI-Entwickler-Team               ║
+║  Multi-LLM: Gemini Pro & Claude 3.5 Sonnet Support           ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -43,19 +41,19 @@ HELP_TEXT = """
 
 | Befehl | Beschreibung |
 |--------|--------------|
-| `/team` | Zeigt alle 23 Spezialisten und Phasen an |
+| `/team` | Zeigt alle 24 Spezialisten und deren KI-Modelle an |
 | `/workspace [projekt]` | Listet alle generierten Dateien im Projektordner auf |
 | `/export [projekt]` | Packt das Projektverzeichnis in ein ZIP-Archiv |
 | `/run-tests [projekt]` | Führt automatische Unit-Tests im Projekt aus |
+| `/push` | Führt manuell einen Git-Commit & Push aus |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
 | `/hilfe` | Zeigt diese Hilfe an |
 | `/beenden` | Beendet das Programm |
 
-**Einfach eine Aufgabe eingeben, z.B.:**
-- *"Erstelle eine saubere FastAPI-App für eine E-Commerce-Plattform mit Stripe-Webhooks"*
-- *"Entwirf eine skalierbare Daten-Pipeline mit Redis Caching und Event-Streaming"*
-- *"Baue eine moderne React/Tailwind Web-App inklusive Barrierefreiheit und DSGVO-Check"*
+**So startest du ein Projekt:**
+Schreibe einfach deine Anforderung in den Chat (z. B. *"Erstelle eine Todo-Webapp mit FastAPI & SQLite"*).
+Der Hauptagent zerlegt die Aufgabe, lässt die Unteragenten im Hintergrund arbeiten und präsentiert dir das fertige Ergebnis.
 """
 
 
@@ -74,14 +72,14 @@ class CLIInterface:
             for error in errors:
                 console.print(f"❌ Konfigurationsfehler: {error}", style="bold red")
             console.print(
-                "\n💡 Bitte trage deinen API-Key in die .env Datei ein.",
+                "\n💡 Bitte trage deinen GEMINI_API_KEY oder ANTHROPIC_API_KEY in die .env Datei ein.",
                 style="yellow"
             )
             sys.exit(1)
 
         console.print(BANNER, style="bold cyan")
         console.print(
-            "💡 Tippe /hilfe für eine Befehlsübersicht oder starte direkt mit deiner Aufgabe!\n",
+            "💡 Schreibe einfach deine Projektidee in den Chat! (Tippe /hilfe für Befehle)\n",
             style="dim"
         )
 
@@ -112,13 +110,13 @@ class CLIInterface:
             await self._process_task(user_input)
 
     async def _process_task(self, user_input: str) -> None:
-        """Verarbeitet eine Nutzeraufgabe und zeigt das Ergebnis an."""
+        """Verarbeitet eine Nutzeraufgabe und fragt nach GitHub-Push."""
         self._status_messages = []
         status_lines = []
 
-        console.print()  # Leerzeile
+        console.print()
 
-        # Live-Status-Anzeige während Agenten arbeiten
+        # Live-Status-Anzeige während Agenten im Hintergrund arbeiten
         with Live(
             self._render_status_panel(status_lines),
             console=console,
@@ -145,18 +143,50 @@ class CLIInterface:
         console.print(
             Panel(
                 Markdown(result),
-                title="[bold blue]🤖 Hauptagent (Team-Synthese)[/bold blue]",
+                title="[bold blue]🤖 Hauptagent (Geprüftes Gesamtergebnis)[/bold blue]",
                 border_style="blue",
                 padding=(1, 2),
             )
         )
         console.print()
 
+        # GitHub-Agent: Höflich nach Erlaubnis für automatischen Commit & Push fragen
+        await self._ask_for_git_push(user_input)
+
+    async def _ask_for_git_push(self, task_summary: str) -> None:
+        """Fragt den Nutzer, ob der GitHub-Agent die Änderungen committen und pushen soll."""
+        github_agent = self._orchestrator._agents.get("github")
+        if not github_agent:
+            return
+
+        diff_status = github_agent.get_status()
+        if not diff_status:
+            return  # Keine geänderten Dateien
+
+        console.print("🔀 [bold cyan]GitHub-Agent:[/bold cyan] Ich habe ungespeicherte Änderungen im Projekt erkannt.")
+        try:
+            should_push = Confirm.ask(
+                "Möchtest du, dass ich die Änderungen automatisch committe und auf GitHub pushe?",
+                default=False,
+            )
+        except Exception:
+            should_push = False
+
+        if should_push:
+            commit_msg = f"feat: implement {task_summary[:50].strip()} via AI Developer Team"
+            success_c, out_c = github_agent.commit(commit_msg)
+            if success_c:
+                console.print(f"✅ [green]Commit erfolgreich:[/green] {commit_msg}")
+                success_p, out_p = github_agent.push()
+                if success_p:
+                    console.print("🚀 [bold green]Änderungen erfolgreich auf GitHub gepusht![/bold green]")
+                else:
+                    console.print(f"⚠️ Push fehlgeschlagen (evtl. kein Remote konfiguriert): {out_p}", style="yellow")
+            else:
+                console.print(f"⚠️ Commit nicht möglich: {out_c}", style="yellow")
+
     async def _handle_command(self, command: str) -> bool:
-        """
-        Verarbeitet einen CLI-Befehl.
-        Returns: True wenn das Programm beendet werden soll.
-        """
+        """Verarbeitet CLI-Befehle."""
         parts = command.strip().split()
         cmd = parts[0].lower()
         args = parts[1:] if len(parts) > 1 else []
@@ -179,6 +209,9 @@ class CLIInterface:
         elif cmd in ("/export", "/zip"):
             proj_name = args[0] if args else "default_project"
             self._export_workspace(proj_name)
+
+        elif cmd in ("/push", "/git"):
+            await self._ask_for_git_push("manuelles Update")
 
         elif cmd in ("/run-tests", "/test"):
             proj_name = args[0] if args else "default_project"
@@ -203,7 +236,6 @@ class CLIInterface:
         return False
 
     def _print_workspace(self, project_name: str) -> None:
-        """Listet Dateien im Workspace-Verzeichnis auf."""
         files = self._workspace.list_project_files(project_name)
         if not files:
             console.print(f"📭 Keine Dateien im Projektordner 'workspace/{project_name}/' gefunden.", style="yellow")
@@ -219,7 +251,6 @@ class CLIInterface:
         console.print(table)
 
     def _export_workspace(self, project_name: str) -> None:
-        """Exportiert das Projektverzeichnis als ZIP."""
         try:
             zip_path = self._workspace.create_project_zip(project_name)
             console.print(f"📦 Projekt erfolgreich als ZIP exportiert:\n👉 [bold green]{zip_path}[/bold green]")
@@ -227,7 +258,6 @@ class CLIInterface:
             console.print(f"❌ Fehler beim Export: {e}", style="bold red")
 
     def _run_tests(self, project_name: str) -> None:
-        """Führt Tests im Projektverzeichnis aus."""
         proj_dir = self._workspace.get_project_dir(project_name)
         console.print(f"🧪 Starte Tests in '{proj_dir}'...", style="cyan")
         res = CodeSandbox.run_command([sys.executable, "-m", "unittest", "discover"], cwd=proj_dir)
@@ -235,24 +265,22 @@ class CLIInterface:
         if res.exit_code == 0:
             console.print(f"✅ Alle Tests erfolgreich!\n{res.stdout}", style="bold green")
         else:
-            console.print(f"❌ Tests fehlgeschlagen oder keine Unittests gefunden:\n{res.stderr or res.stdout}", style="bold red")
+            console.print(f"❌ Tests fehlgeschlagen:\n{res.stderr or res.stdout}", style="bold red")
 
     def _render_status_panel(self, lines: list[str]) -> Panel:
-        """Rendert das Status-Panel mit Live-Updates."""
         if not lines:
             content = Text("🔄 Starte...", style="dim")
         else:
-            content = Text("\n".join(lines[-15:]))  # Zeige die letzten 15 Meldungen
+            content = Text("\n".join(lines[-12:]))
 
         return Panel(
             content,
-            title="[bold yellow]⚙️  Team arbeitet...[/bold yellow]",
+            title="[bold yellow]⚙️  Team arbeitet im Hintergrund...[/bold yellow]",
             border_style="yellow",
             padding=(0, 1),
         )
 
     def _print_history(self) -> None:
-        """Zeigt den Gesprächsverlauf an."""
         history = self._orchestrator.get_history()
         messages = history.get_messages(max_messages=20)
 
@@ -269,7 +297,6 @@ class CLIInterface:
         console.print()
 
     def _print_goodbye(self) -> None:
-        """Zeigt die Abschiedsnachricht an."""
         console.print(
             "\n👋 Auf Wiedersehen! Dein KI-Team freut sich auf das nächste Projekt.\n",
             style="bold cyan"

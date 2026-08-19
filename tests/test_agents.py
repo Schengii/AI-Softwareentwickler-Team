@@ -1,37 +1,39 @@
 """
-tests/test_agents.py – Unit-Tests für alle 23 Agenten und Basis-Strukturen
+tests/test_agents.py – Unit-Tests für alle 30 Agenten und Basis-Strukturen
 """
 
 import unittest
 from agents.orchestrator import Orchestrator
 from agents.base_agent import BaseAgent
 from agents import (
-    BusinessAnalystAgent, ProductOwnerAgent, ArchitectAgent, FinOpsAgent,
-    UIUXAgent, FrontendAgent, BackendAgent, DatabaseAgent, ApiIntegrationAgent,
-    DataEngineerAgent, MobileAgent, MLAgent, PerformanceAgent, I18nAgent,
-    DevOpsAgent, TesterAgent, DocumentationAgent, SecurityAgent,
-    CodeReviewerAgent, RefactoringAgent, ComplianceAgent, ReadmeAgent, GitHubAgent
+    TeamLeadAgent, ProductOwnerAgent, BusinessAnalystAgent, WebResearchAgent,
+    ArchitectAgent, FinOpsAgent, FrontendAgent, BackendAgent, DatabaseAgent,
+    ApiIntegrationAgent, DataEngineerAgent, MobileAgent, MLAgent, PerformanceAgent,
+    ImageGeneratorAgent, CopywriterAgent, UIUXAgent, I18nAgent, DocumentationAgent,
+    DevOpsAgent, TesterAgent, SecurityAgent, CodeReviewerAgent, RefactoringAgent,
+    ComplianceAgent, ProjectCleanerAgent, AgentTrainerAgent, RetrospectiveAgent, ReadmeAgent, GitHubAgent
 )
 
 
 class TestAgentSystem(unittest.TestCase):
-    """Prüft die Initialisierung und Konfiguration aller Agenten."""
+    """Prüft die Initialisierung und Konfiguration aller 30 Agenten."""
 
     def setUp(self):
         self.orchestrator = Orchestrator()
 
-    def test_all_23_agents_registered(self):
-        """Stellt sicher, dass exakt 23 Spezialisten im Team registriert sind."""
-        self.assertEqual(len(self.orchestrator._agents), 23)
+    def test_all_30_agents_registered(self):
+        """Stellt sicher, dass exakt 30 Spezialisten im Team registriert sind."""
+        self.assertEqual(len(self.orchestrator._agents), 30)
 
     def test_agent_instances_and_prompts(self):
         """Prüft, dass jeder Agent einen validen System-Prompt und eine eindeutige ID besitzt."""
         expected_agents = [
-            ("business_analyst", BusinessAnalystAgent),
+            ("team_lead", TeamLeadAgent),
             ("product_owner", ProductOwnerAgent),
+            ("business_analyst", BusinessAnalystAgent),
+            ("web_research", WebResearchAgent),
             ("architect", ArchitectAgent),
             ("finops", FinOpsAgent),
-            ("ui_ux", UIUXAgent),
             ("frontend", FrontendAgent),
             ("backend", BackendAgent),
             ("database", DatabaseAgent),
@@ -40,14 +42,20 @@ class TestAgentSystem(unittest.TestCase):
             ("mobile", MobileAgent),
             ("ml", MLAgent),
             ("performance", PerformanceAgent),
+            ("image_generator", ImageGeneratorAgent),
+            ("copywriter", CopywriterAgent),
+            ("ui_ux", UIUXAgent),
             ("i18n", I18nAgent),
+            ("documentation", DocumentationAgent),
             ("devops", DevOpsAgent),
             ("tester", TesterAgent),
-            ("documentation", DocumentationAgent),
             ("security", SecurityAgent),
             ("code_reviewer", CodeReviewerAgent),
             ("refactoring", RefactoringAgent),
             ("compliance", ComplianceAgent),
+            ("project_cleaner", ProjectCleanerAgent),
+            ("agent_trainer", AgentTrainerAgent),
+            ("retrospective", RetrospectiveAgent),
             ("readme", ReadmeAgent),
             ("github", GitHubAgent),
         ]
@@ -62,9 +70,8 @@ class TestAgentSystem(unittest.TestCase):
     def test_team_info_generation(self):
         """Prüft, dass die get_team_info-Methode eine lesbare Markdown-Struktur liefert."""
         info = self.orchestrator.get_team_info()
-        self.assertIn("Dein KI-Team (23 Spezialisten)", info)
-        self.assertIn("Phase 1: Planung & Produkt", info)
-        self.assertIn("Phase 4: Review, Refactoring & Compliance", info)
+        self.assertIn("Dein KI-Team (30 Spezialisten)", info)
+        self.assertIn("Phase 1: Führung, Planung & Recherche", info)
 
 
 if __name__ == "__main__":

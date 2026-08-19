@@ -1,8 +1,5 @@
 """
-core/task_manager.py – Analysiert Nutzeraufgaben und zerlegt sie in Teilaufgaben
-
-Der Orchestrator ruft dieses Modul auf, um zu entscheiden, welche Agenten
-für eine gegebene Aufgabe benötigt werden und was genau ihre Teilaufgabe ist.
+core/task_manager.py – Analysiert Nutzeraufgaben und zerlegt sie in Teilaufgaben (30 Spezialisten)
 """
 
 import json
@@ -14,221 +11,177 @@ import uuid
 
 
 # ──────────────────────────────────────────────────────────
-# Alle verfügbaren Agenten (23 Spezialisten)
+# Alle verfügbaren Agenten (30 Spezialisten)
 # ──────────────────────────────────────────────────────────
 
 AVAILABLE_AGENTS = {
-    # ── Phase 1: Planung & Produkt (sequentiell) ───────────
-    "business_analyst": {
-        "name": "Business Analyst",
+    # ── Phase 1: Führung, Planung & Recherche ─────────────
+    "team_lead": {
+        "name": "Teamleiter (Engineering Manager)",
         "phase": 1,
-        "description": (
-            "Analysiert und klärt Anforderungen, erstellt User Stories und Akzeptanzkriterien. "
-            "EINSETZEN wenn: Anforderungen komplex/mehrdeutig sind, Business-Kontext wichtig ist."
-        ),
+        "description": "Definiert Projektziele, DoD, Trade-Off-Entscheidungen und steuert den Team-Fokus.",
     },
     "product_owner": {
         "name": "Product Owner",
         "phase": 1,
-        "description": (
-            "Definiert Produktvision, MVP-Scope (MoSCoW), Release-Roadmap und User Journeys. "
-            "EINSETZEN wenn: Ein neues Produkt/Feature von Grund auf geplant und gescopt werden soll."
-        ),
+        "description": "Definiert Produktvision, MVP-Scope (MoSCoW), Release-Roadmap und User Journeys.",
+    },
+    "business_analyst": {
+        "name": "Business Analyst",
+        "phase": 1,
+        "description": "Analysiert Anforderungen, erstellt User Stories und Akzeptanzkriterien (Given/When/Then).",
+    },
+    "web_research": {
+        "name": "Web-Recherche Specialist",
+        "phase": 1,
+        "description": "Recherchiert aktuelle Framework-Dokumentationen, Best Practices, Open-Source-Pakete und Markttrends.",
     },
 
-    # ── Phase 2: Architektur & FinOps (sequentiell) ───────
+    # ── Phase 2: Architektur & FinOps ─────────────────────
     "architect": {
         "name": "Software-Architekt",
         "phase": 2,
-        "description": (
-            "Entwirft die Gesamtarchitektur BEVOR andere Agenten implementieren. "
-            "Erstellt Systemdiagramme, API-Contracts und Technologie-Entscheidungen. "
-            "EINSETZEN wenn: mehrere Komponenten zusammenarbeiten, Technologiewahl unklar ist."
-        ),
+        "description": "Entwirft Systemarchitektur, API-Contracts, Komponenten-Blueprints und ADRs.",
     },
     "finops": {
         "name": "Cost & FinOps Engineer",
         "phase": 2,
-        "description": (
-            "Kalkuliert Cloud- & Infrastrukturkosten (AWS, GCP, Hetzner, Serverless, AI Tokens). "
-            "EINSETZEN wenn: Budget, Cloud-Kosten, TCO oder Skalierungskosten relevant sind."
-        ),
+        "description": "Kalkuliert Cloud-Kosten (AWS/GCP/Hetzner), TCO, Serverless vs. VM und AI-Token-Budgets.",
     },
 
-    # ── Phase 3: Implementierungs-Agenten (parallel) ───────
-    "ui_ux": {
-        "name": "UI/UX Designer",
-        "phase": 3,
-        "description": (
-            "Erstellt UI-Konzepte, Wireframes, User Flows, Farbschemata und Design-Tokens. "
-            "EINSETZEN bei: Web-Apps, Mobile-Apps, Benutzeroberflächen."
-        ),
-    },
+    # ── Phase 3: Kern-Entwicklung ─────────────────────────
     "frontend": {
         "name": "Frontend-Entwickler",
         "phase": 3,
-        "description": (
-            "Implementiert HTML/CSS/JavaScript, React, Vue, Next.js Komponenten. "
-            "EINSETZEN bei: Web-Frontends, Web-Apps, Browser-Anwendungen."
-        ),
+        "description": "Implementiert React, Vue, Next.js, HTML/CSS und interaktive Web-UIs.",
     },
     "backend": {
         "name": "Backend-Entwickler",
         "phase": 3,
-        "description": (
-            "Entwickelt REST/FastAPI/Node Server-Logik, Authentifizierung, Business-Logik. "
-            "EINSETZEN bei: APIs, Server-Anwendungen, Backend-Services."
-        ),
+        "description": "Entwickelt REST/FastAPI/Node Server-Logik, Authentifizierung und APIs.",
     },
     "database": {
         "name": "Datenbank-Entwickler",
         "phase": 3,
-        "description": (
-            "Entwirft Datenbankschemas (SQL/NoSQL), Migrationen, ORM-Modelle, Abfragen. "
-            "EINSETZEN wenn: Datenpersistenz benötigt wird, Datenmodell komplex ist."
-        ),
+        "description": "Entwirft SQL/NoSQL Datenmodelle, ORM-Schemas, Indizes und Migrationen.",
     },
     "api_integration": {
         "name": "API & Integration Specialist",
         "phase": 3,
-        "description": (
-            "Erstellt OpenAPI 3.1 Specs, GraphQL Schemas, Webhooks, Idempotency & Drittanbieter-Anbindungen (Stripe/OAuth). "
-            "EINSETZEN bei: API-Schnittstellen, externen Diensten, Webhooks, Zahlungen."
-        ),
+        "description": "OpenAPI 3.1 Specs, GraphQL, Webhooks mit HMAC-Sicherheit, Stripe, OAuth2.",
     },
     "data_engineer": {
         "name": "Data Engineer",
         "phase": 3,
-        "description": (
-            "Entwickelt ETL-Pipelines, Event-Streaming (Kafka/RabbitMQ), Redis-Caching-Architektur. "
-            "EINSETZEN bei: Streaming, Pipelines, Caching, Event-Driven Architecture."
-        ),
+        "description": "Event-Streaming (Kafka/RabbitMQ), Redis Caching-Layer und ETL-Pipelines.",
     },
     "mobile": {
         "name": "Mobile-Entwickler",
         "phase": 3,
-        "description": (
-            "Entwickelt iOS- und Android-Apps mit Flutter, React Native, Swift, Kotlin. "
-            "EINSETZEN bei: Mobile-App-Entwicklung, Cross-Platform-Apps."
-        ),
+        "description": "Entwickelt Cross-Platform Apps mit Flutter, React Native, iOS & Android.",
     },
     "ml": {
         "name": "KI/ML-Entwickler",
         "phase": 3,
-        "description": (
-            "Integriert LLM-APIs, entwickelt RAG-Systeme, Embeddings, ML-Pipelines. "
-            "EINSETZEN bei: KI-Features, Chatbots, Empfehlungssystemen, Embeddings."
-        ),
+        "description": "LLM-APIs, RAG-Systeme, Embeddings, Vector Stores und ML-Pipelines.",
     },
     "performance": {
         "name": "Performance-Ingenieur",
         "phase": 3,
-        "description": (
-            "Erstellt Load-Tests, optimiert Latenzen, Bottlenecks, Profiling, Query-Optimierung. "
-            "EINSETZEN wenn: Performance-Anforderungen vorhanden sind, High-Load erwartet wird."
-        ),
+        "description": "Load-Testing, Profiling, Query-Optimierung und Latenz-Minimierung.",
+    },
+
+    # ── Phase 3: Medien, Content & Design ─────────────────
+    "image_generator": {
+        "name": "Bild- & Grafik-Designer",
+        "phase": 3,
+        "description": "Erstellt SVG-Grafiken/Logos und optimierte Bild-Prompts für Imagen 3 / Midjourney.",
+    },
+    "copywriter": {
+        "name": "Copywriter & Content Specialist",
+        "phase": 3,
+        "description": "Schreibt Landingpage-Texte, UI-Microcopy (Buttons, Errors), SEO-Texte und FAQs.",
+    },
+    "ui_ux": {
+        "name": "UI/UX Designer",
+        "phase": 3,
+        "description": "Wireframes, Design-Systeme, Farbpaletten und Design-Tokens.",
     },
     "i18n": {
         "name": "Internationalisierungs-Spezialist",
         "phase": 3,
-        "description": (
-            "Implementiert Mehrsprachigkeit (i18n/l10n), RTL-Unterstützung, Formatierung. "
-            "EINSETZEN wenn: App mehrsprachig sein soll oder international genutzt wird."
-        ),
-    },
-
-    # ── Phase 3: Infrastruktur & Qualität (parallel) ───────
-    "devops": {
-        "name": "DevOps-Ingenieur",
-        "phase": 3,
-        "description": (
-            "Erstellt Dockerfile, docker-compose, CI/CD-Pipelines (GitHub Actions), K8s Manifeste. "
-            "EINSETZEN bei: Deployment-Bedarf, CI/CD, Container-Infrastruktur."
-        ),
-    },
-    "tester": {
-        "name": "QA-Tester",
-        "phase": 3,
-        "description": (
-            "Schreibt Unit-Tests, Integrationstests, End-to-End-Testpläne (Pytest/Jest). "
-            "IMMER einsetzen wenn Code produziert wird."
-        ),
+        "description": "Mehrsprachigkeit (i18n/l10n), RTL-Unterstützung und Formatierungen.",
     },
     "documentation": {
         "name": "Dokumentant",
         "phase": 3,
-        "description": (
-            "Erstellt API-Dokumentationen, Inline-Kommentare, Architekturdokumente. "
-            "EINSETZEN bei: neuen Projekten, APIs, komplexem Code."
-        ),
+        "description": "API-Dokumentation, Inline-Kommentare und Architekturguides.",
+    },
+
+    # ── Phase 3: Infrastruktur & Qualität ─────────────────
+    "devops": {
+        "name": "DevOps-Ingenieur",
+        "phase": 3,
+        "description": "Dockerfile, docker-compose, CI/CD GitHub Actions Pipelines, K8s.",
+    },
+    "tester": {
+        "name": "QA-Tester",
+        "phase": 3,
+        "description": "Unit-Tests (pytest), Integrationstests und E2E-Testpläne.",
     },
     "security": {
         "name": "Sicherheits-Analyst",
         "phase": 3,
-        "description": (
-            "Analysiert Code auf Sicherheitslücken (OWASP Top 10, Auth-Flaws, Injection). "
-            "EINSETZEN bei: Authentifizierung, sensiblen Daten, APIs, Payment."
-        ),
+        "description": "OWASP Top 10, Auth-Audits, Input-Sanitization, Security-Headers.",
     },
 
-    # ── Phase 4: Review, Refactoring & Compliance (sequentiell)
+    # ── Phase 4: Review, Refactoring, Compliance & Hygiene
     "code_reviewer": {
         "name": "Code-Reviewer",
         "phase": 4,
-        "description": (
-            "Prüft den Code ALLER anderen Agenten auf Qualität, Konsistenz und Bugs. "
-            "IMMER einsetzen wenn Code produziert wird."
-        ),
+        "description": "Qualitätskontrolle, Konsistenzprüfung, Code-Scoring und Bug-Detektion.",
     },
     "refactoring": {
         "name": "Refactoring Specialist",
         "phase": 4,
-        "description": (
-            "Erkennt Code Smells, refaktoriert komplexe Module und stellt strikte Typsicherheit her. "
-            "EINSETZEN bei: Refactoring, Code-Modernisierung, Clean Code."
-        ),
+        "description": "Beseitigt Code Smells, refaktoriert Module und sichert strikte Typsicherheit.",
     },
     "compliance": {
         "name": "Legal & Compliance Specialist",
         "phase": 4,
-        "description": (
-            "Auditiert DSGVO/GDPR-Konformität, Open-Source-Lizenzen und Accessibility (WCAG). "
-            "EINSETZEN bei: Datenschutz, Open-Source-Lizenzprüfung, Barrierefreiheit."
-        ),
+        "description": "DSGVO/GDPR-Audits, Lizenzprüfung (GPL vs MIT), WCAG 2.1 Barrierefreiheit.",
+    },
+    "project_cleaner": {
+        "name": "Projekt-Hygiene & Struktur-Wächter",
+        "phase": 4,
+        "description": "Bereinigt alte/tote Dateien, verhindert Projekt-Bloat und optimiert Ordnerstrukturen.",
     },
 
-    # ── Utility-Agenten ────────────────────────────────────
+    # ── Phase 5: Ausbildung, Retrospektive & Utilities ────
+    "agent_trainer": {
+        "name": "Ausbilder & Agent-Optimizer",
+        "phase": 4,
+        "description": "Optimiert System-Prompts, analysiert Fehler der Agenten und bildet neue Rollen aus.",
+    },
+    "retrospective": {
+        "name": "Retrospektive & Lessons Learned Agent",
+        "phase": 4,
+        "description": "Erstellt die Abschluss-Retrospektive (Was lief gut/schlecht, Lessons Learned).",
+    },
     "readme": {
         "name": "README-Agent",
         "phase": 3,
-        "description": (
-            "Erstellt oder aktualisiert die README.md für das Projekt. "
-            "EINSETZEN wenn: Projektdokumentation für Endnutzer benötigt wird."
-        ),
+        "description": "Erstellt oder aktualisiert die Projekt-README.md.",
     },
     "github": {
         "name": "GitHub-Agent",
         "phase": 3,
-        "description": (
-            "Generiert Commit-Messages, Branch-Strategien, PR-Beschreibungen. "
-            "EINSETZEN wenn: Git-Workflow-Hilfe oder PR-Vorlagen benötigt werden."
-        ),
+        "description": "Generiert Commit-Messages und führt automatische Git-Pushes durch.",
     },
 }
 
-# ──────────────────────────────────────────────────────────
-# System-Prompt für die Task-Zerlegung
-# ──────────────────────────────────────────────────────────
-
 DECOMPOSE_SYSTEM_PROMPT = """Du bist ein erfahrener Principal Software-Architekt und Engineering Lead.
-Deine Aufgabe ist es, eine Software-Entwicklungsaufgabe zu analysieren und in konkrete
-Teilaufgaben für spezialisierte Teammitglieder aufzuteilen.
-
-WICHTIG - Phasen-Agenten (besondere Regeln):
-1. Phase 1 (business_analyst / product_owner): Einsetzen bei neuen Produktideen, User Stories, MVP-Definitionen.
-2. Phase 2 (architect / finops): Immer einsetzen wenn Systemarchitektur oder Cloud-Kosten entworfen werden.
-3. Phase 3 (frontend, backend, database, api_integration, data_engineer, etc.): Arbeiten parallel.
-4. Phase 4 (code_reviewer, refactoring, compliance): Qualitätssicherung, Code-Review & Compliance.
+Analysiere die Aufgabe und wähle NUR die wirklich notwendigen Spezialisten aus, um maximale Token-Effizienz zu gewährleisten.
 
 Antworte NUR mit einem gültigen JSON-Objekt. Keine Erklärungen davor oder danach.
 
@@ -239,31 +192,30 @@ Das JSON-Format ist exakt wie folgt:
   "required_agents": [
     {
       "agent_id": "<agent_id aus der Liste>",
-      "task": "Sehr detaillierte, spezifische Aufgabenbeschreibung für diesen Agenten"
+      "task": "Präzise, token-effiziente Aufgabenbeschreibung für diesen Agenten"
     }
   ]
 }
 
 Verfügbare Agenten-IDs:
-business_analyst, product_owner, architect, finops,
-ui_ux, frontend, backend, database, api_integration, data_engineer, mobile, ml, performance, i18n,
-devops, tester, documentation, security,
-code_reviewer, refactoring, compliance,
-readme, github
+team_lead, product_owner, business_analyst, web_research,
+architect, finops,
+frontend, backend, database, api_integration, data_engineer, mobile, ml, performance,
+image_generator, copywriter, ui_ux, i18n, documentation, devops, tester, security,
+code_reviewer, refactoring, compliance, project_cleaner, agent_trainer, readme, github
 
 Wichtige Regeln:
-- Wähle NUR die Agenten, die für die Aufgabe wirklich relevant sind
-- Jede Agenten-Aufgabe muss eigenständig und klar definiert sein
-- Sei SEHR spezifisch bei den Aufgabenbeschreibungen – je konkreter desto besser
-- code_reviewer bei jeder Coding-Aufgabe einschließen
-- architect bei Aufgaben mit mehreren Komponenten einschließen
+- Wähle NUR die zwingend erforderlichen Agenten aus (Token-Sparsamkeit)
+- Halte die Aufgabenbeschreibungen klar und fokussiert
+- code_reviewer bei Code-Generierung einschließen
+- project_cleaner einbeziehen, wenn Verzeichnisstrukturen aufgeräumt oder schlank gehalten werden sollen
 """
 
 
 class TaskManager:
     """Analysiert und zerlegt Nutzeraufgaben in parallelisierbare Teilaufgaben."""
 
-    def __init__(self, model_name: str = "gemini-3.6-flash"):
+    def __init__(self, model_name: str = "gemini-2.5-flash"):
         self._llm = LLMFactory.create_gemini(model_name)
 
     async def decompose(
@@ -271,28 +223,23 @@ class TaskManager:
         user_request: str,
         conversation_context: Optional[str] = None
     ) -> tuple[str, str, list[AgentTask]]:
-        """
-        Analysiert die Nutzeranfrage und erstellt Teilaufgaben für die Agenten.
-
-        Returns:
-            Tuple aus (task_summary, project_slug, Liste von AgentTask-Objekten)
-        """
         agents_description = "\n".join([
             f"- {agent_id} [Phase {info['phase']}]: {info['description']}"
             for agent_id, info in AVAILABLE_AGENTS.items()
+            if agent_id not in ("retrospective", "agent_trainer")
         ])
 
         context_section = ""
         if conversation_context:
-            context_section = f"\n\nVorheriger Gesprächskontext:\n{conversation_context}"
+            context_section = f"\n\nVorheriger Kontext (gekürzt):\n{conversation_context[:1000]}"
 
-        prompt = f"""Analysiere folgende Nutzeranfrage und erstelle einen Aufgabenplan:
+        prompt = f"""Analysiere folgende Nutzeranfrage und erstelle einen effizienten Aufgabenplan:
 
 NUTZERANFRAGE:
 {user_request}
 {context_section}
 
-VERFÜGBARE AGENTEN (mit Phasen):
+VERFÜGBARE AGENTEN:
 {agents_description}
 
 Erstelle jetzt das JSON mit den Teilaufgaben."""
@@ -313,13 +260,12 @@ Erstelle jetzt das JSON mit den Teilaufgaben."""
                 task_id=str(uuid.uuid4())[:8],
                 agent_id=agent_id,
                 description=agent_info.get("task", ""),
-                context=user_request,
+                context=user_request[:1500],
             ))
 
         return task_summary, project_slug, agent_tasks
 
     def _parse_plan(self, raw_json: str) -> dict:
-        """Parst den JSON-String robust."""
         try:
             return json.loads(raw_json)
         except json.JSONDecodeError:

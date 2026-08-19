@@ -1,7 +1,7 @@
 """
 core/message_bus.py – Interner Nachrichtenbus für die Agentenkommunikation
 
-Ermöglicht asynchrone, entkoppelte Kommunikation zwischen Agenten.
+Ermöglicht asynchrone, entkoppelte Kommunikation zwischen Agenten und Metriken-Tracking.
 """
 
 import asyncio
@@ -43,7 +43,7 @@ class AgentTask:
 
 @dataclass
 class AgentResult:
-    """Das Ergebnis einer Agenten-Aufgabe."""
+    """Das Ergebnis einer Agenten-Aufgabe inklusive Token- und Modellmetriken."""
     task_id: str
     agent_id: str
     agent_name: str
@@ -51,6 +51,10 @@ class AgentResult:
     content: str                         # Das eigentliche Ergebnis
     error: Optional[str] = None          # Fehlermeldung falls success=False
     duration_seconds: float = 0.0        # Wie lange die Aufgabe dauerte
+    model_used: str = ""                 # Welches KI-Modell genutzt wurde
+    prompt_tokens: int = 0               # Verbrauchte Prompt-Tokens
+    completion_tokens: int = 0           # Verbrauchte Completion-Tokens
+    total_tokens: int = 0                # Gesamt-Tokens für diese Teilaufgabe
 
 
 class MessageBus:

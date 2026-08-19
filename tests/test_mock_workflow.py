@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 from agents.orchestrator import Orchestrator
 from core.message_bus import AgentTask
+from core.llm_factory import LLMResponse
 
 
 class TestMockWorkflow(unittest.TestCase):
@@ -15,9 +16,9 @@ class TestMockWorkflow(unittest.TestCase):
         self.orchestrator = Orchestrator()
 
     @patch("core.task_manager.TaskManager.decompose")
-    @patch("agents.base_agent.GeminiClient.generate")
+    @patch("agents.base_agent.GeminiClient.generate_with_usage")
     @patch("core.result_aggregator.ResultAggregator.synthesize")
-    async def _run_mocked_process(self, mock_synthesize, mock_generate, mock_decompose):
+    async def _run_mocked_process(self, mock_synthesize, mock_generate_usage, mock_decompose):
         mock_decompose.return_value = (
             "Erstelle eine FastAPI App",
             "fastapi_app",
@@ -28,8 +29,14 @@ class TestMockWorkflow(unittest.TestCase):
                 AgentTask(task_id="t4", agent_id="code_reviewer", description="Review durchführen"),
             ]
         )
-        mock_generate.return_value = "```python:src/main.py\nfrom fastapi import FastAPI\napp = FastAPI()\n```"
-        mock_synthesize.return_value = "### Zusammenfassung: FastAPI App erfolgreich erstellt!"
+        mock_generate_usage.return_value = LLMResponse(
+            text="```python:src/main.py\nfrom fastapi import FastAPI\napp = FastAPI()\n```",
+            model_name="gemini-2.5-flash",
+            prompt_tokens=150,
+            completion_tokens=80,
+            total_tokens=230,
+        )
+        mock_synthesize.return_value = ("### Zusammenfassung: FastAPI App erfolgreich erstellt!", 120)
 
         status_logs = []
         result = await self.orchestrator.process(
@@ -38,6 +45,8 @@ class TestMockWorkflow(unittest.TestCase):
         )
 
         self.assertIn("FastAPI App", result)
+        self.assertIn("Projekt-Kennzahlen", result)
+        self.assertIn("Gesamtverbrauch Tokens", result)
         self.assertTrue(len(status_logs) > 0)
 
     def test_mocked_workflow_execution(self):

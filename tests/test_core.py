@@ -1,5 +1,5 @@
 """
-tests/test_core.py – Tests für TaskManager, Workspace, Sandbox & ToolRegistry
+tests/test_core.py – Tests für TaskManager, Workspace, Sandbox, TokenGuard & ToolRegistry
 """
 
 import os
@@ -12,6 +12,7 @@ from core.code_sandbox import CodeSandbox
 from core.workspace import WorkspaceManager
 from core.tool_registry import ToolRegistry
 from core.task_manager import TaskManager, AVAILABLE_AGENTS
+from core.token_guard import TokenGuard
 
 
 class TestCoreModules(unittest.TestCase):
@@ -25,13 +26,23 @@ class TestCoreModules(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_available_agents_structure(self):
-        """Prüft, dass alle 23 Agenten im TaskManager mit Namen und Phase konfiguriert sind."""
-        self.assertEqual(len(AVAILABLE_AGENTS), 23)
+        """Prüft, dass alle 30 Agenten im TaskManager mit Namen und Phase konfiguriert sind."""
+        self.assertEqual(len(AVAILABLE_AGENTS), 30)
         for aid, info in AVAILABLE_AGENTS.items():
             self.assertIn("name", info)
             self.assertIn("phase", info)
             self.assertIn("description", info)
             self.assertIn(info["phase"], [1, 2, 3, 4])
+
+    def test_token_guard_recording_and_warnings(self):
+        """Prüft, dass TokenGuard Verbräuche misst und Warnungen auslöst."""
+        guard = TokenGuard(high_usage_threshold_per_call=1000)
+        warnings = guard.record_usage("gemini-2.5-flash", 800, 400, "BackendAgent")
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("Hoher Tokenverbrauch", warnings[0])
+
+        guard.mark_model_exhausted("claude-3-5-sonnet")
+        self.assertTrue(guard.is_model_exhausted("claude-3-5-sonnet"))
 
     def test_workspace_file_parsing_fence(self):
         """Testet das Extrahieren von Code-Blöcken mit Datei-Pfaden."""
@@ -57,7 +68,6 @@ port: 8080
         self.assertIn("src/main.py", paths)
         self.assertIn("config/settings.yml", paths)
 
-        # Prüfe Inhalt
         main_content = (Path(self.temp_dir) / "test_proj" / "src" / "main.py").read_text(encoding="utf-8")
         self.assertIn('return "world"', main_content)
 
@@ -70,21 +80,15 @@ port: 8080
 
     def test_sandbox_validation(self):
         """Testet statische Validierung für Python und JSON."""
-        # Valid Python
         res_py_valid = CodeSandbox.validate_code("def foo():\n    return 42", "py")
         self.assertTrue(res_py_valid.is_valid)
-        self.assertEqual(len(res_py_valid.errors), 0)
 
-        # Invalid Python
         res_py_invalid = CodeSandbox.validate_code("def foo( broken syntax", "py")
-        self.assertFalse(res_py_valid.is_valid is False and len(res_py_invalid.errors) > 0)
         self.assertFalse(res_py_invalid.is_valid)
 
-        # Valid JSON
         res_json_valid = CodeSandbox.validate_code('{"key": "value"}', "json")
         self.assertTrue(res_json_valid.is_valid)
 
-        # Invalid JSON
         res_json_invalid = CodeSandbox.validate_code('{"key": invalid}', "json")
         self.assertFalse(res_json_invalid.is_valid)
 

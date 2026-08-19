@@ -53,6 +53,7 @@ providerübergreifendes Function-Calling:
 
 ---
 
+<a id="teamstruktur"></a>
 ## 🏢 Hierarchische Team- & Fachbereichsstruktur
 
 ```
@@ -115,9 +116,37 @@ providerübergreifendes Function-Calling:
 
 ---
 
+<a id="kommunikations-workflow"></a>
+## 🔄 Kommunikations- & Delegations-Workflow
+
+Was die Grafik oben zeigt, läuft technisch über zwei einfache Datenstrukturen
+(`core/message_bus.py`) und einen festen 5-Phasen-Ablauf (`agents/orchestrator.py`):
+
+1. **Zerlegung:** `TaskManager.decompose()` lässt den Hauptagenten die Nutzeranfrage in eine
+   Liste von `AgentTask`-Objekten (Agent-ID + präzise Teilaufgabe) aufteilen – nur die
+   Spezialisten, die für die Aufgabe wirklich gebraucht werden.
+2. **Phasen-Durchlauf:** Die 5 Fachbereiche laufen in fester Reihenfolge (`PHASE_ORDER`):
+   Planung → Entwicklung → Design/Content → QA/Security → Governance. Planung und
+   Governance laufen sequenziell, die anderen drei parallel (`asyncio.gather`).
+3. **Echte Delegation:** Vor jeder Phase bekommt der zuständige Teamleiter einen echten
+   LLM-Aufruf mit der Aufgabenliste seines Fachteams und liefert priorisierte
+   Arbeitsanweisungen zurück, die den Mitgliedern als Zusatzkontext mitgegeben werden.
+4. **Ausführung mit echtem Werkzeugzugriff:** Jedes Fachteam-Mitglied arbeitet über den
+   agentischen Werkzeug-Loop (siehe oben) direkt im Projektverzeichnis und liefert ein
+   `AgentResult` (Erfolg/Fehler, Inhalt, Tokens, geschriebene Dateien) zurück.
+5. **Echte Konsolidierung:** Nach jeder Phase prüft derselbe Teamleiter per weiterem
+   LLM-Aufruf die Ergebnisse seines Teams und erstellt den offiziellen Fachbereichsbericht.
+   Eine `file_owners`-Map merkt sich dabei, welcher Agent welche Datei geschrieben hat –
+   die Grundlage für die gezielte Fehlerbehebung in der Verifikationsphase (siehe unten).
+6. **Synthese:** Der Hauptagent fasst alle Fachbereichsberichte über `ResultAggregator`
+   zu einem einheitlichen Gesamtergebnis zusammen und liefert es an den Nutzer zurück.
+
+---
+
+<a id="resilience-guard"></a>
 ## 🛡️ Neuer Spezialist: Resilience-Guard (QA & Fault-Tolerance)
 
-Der [ResilienceGuardAgent (agents/resilience_guard_agent.py)](file:///c:/Users/sche-/Desktop/Programmieren%20Projekte/AI-Softwareentwickler-Team/agents/resilience_guard_agent.py) sichert Software gegen Ausfälle ab:
+Der [ResilienceGuardAgent](agents/resilience_guard_agent.py) sichert Software gegen Ausfälle ab:
 - **Circuit Breaker:** Unterbricht Anfragen an ausgefallene Fremddienste, bevor der eigene Server überlastet.
 - **Smart Retries:** Exponentielles Backoff mit Jitter gegen Thundering-Herd-Probleme.
 - **Graceful Degradation:** Fällt nahtlos auf Caches oder Fallbacks zurück.
@@ -125,6 +154,107 @@ Der [ResilienceGuardAgent (agents/resilience_guard_agent.py)](file:///c:/Users/s
 
 ---
 
+<a id="web-dashboard"></a>
+## 🌐 Modernes Web-Dashboard & Visualisierung
+
+```bash
+python main.py --dashboard [--port N]   # Standard: Port 8080
+```
+
+Ein echter, funktionsfähiger HTTP-Server (`interface/web_dashboard.py`, stdlib
+`ThreadingHTTPServer`, keine zusätzliche Web-Framework-Abhängigkeit):
+
+- **Startseite:** Dark-Mode-UI mit Eingabefeld für neue Aufgaben und Live-Übersicht aller
+  5 Fachbereiche mit ihren echten Mitgliederlisten (aus `DEPARTMENT_DEFINITIONS`, nicht
+  hart codiert).
+- **`POST /api/run`:** Nimmt eine Aufgabe entgegen und reiht sie in eine Job-Queue ein.
+  Jobs laufen **seriell** in einem einzigen Hintergrund-Worker – bewusst kein paralleler
+  Mehrfach-Betrieb, weil sich mehrere gleichzeitige Läufe sonst denselben
+  Gesprächsverlauf (`ConversationHistory`) teilen und gegenseitig verfälschen würden.
+- **`GET /api/status/<job_id>`:** Wird vom Frontend alle 2 Sekunden abgefragt und liefert
+  denselben Live-Fortschritt (Status-Zeilen je Fachbereich/Agent), den auch die CLI zeigt,
+  plus das fertige Ergebnis, sobald der Lauf abgeschlossen ist.
+- **`GET /api/status`:** Echte Team-Metadaten (Agentenanzahl, Fachbereiche, Mitglieder) aus
+  der laufenden `Orchestrator`-Instanz statt fest verdrahteter Werte.
+
+---
+
+<a id="mcp-server"></a>
+## 🔌 MCP-Server: Einbindung in Cursor, Windsurf & Antigravity
+
+`interface/mcp_server.py` ist ein Model-Context-Protocol-Server über stdio (JSON-RPC 2.0),
+mit dem jede MCP-fähige IDE das gesamte Team als Werkzeug ansprechen kann.
+
+**Start:** `python -m interface.mcp_server`
+
+**Einbindung** (Beispiel für die MCP-Client-Konfiguration, z. B. Cursor `mcp.json` oder
+Claude Desktop `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "ki-softwareentwickler-team": {
+      "command": "python",
+      "args": ["-m", "interface.mcp_server"],
+      "cwd": "/pfad/zu/AI-Softwareentwickler-Team"
+    }
+  }
+}
+```
+
+**Bereitgestellte Werkzeuge:**
+
+| Tool | Beschreibung |
+|---|---|
+| `ai_team_develop` | Führt das komplette Team für eine beliebige Aufgabe aus (`prompt`) und liefert das fertige, geprüfte Ergebnis. |
+| `ai_team_list_projects` | Listet alle vorhandenen Projekte im `workspace/`-Verzeichnis auf. |
+| `ai_team_rag_search` | Durchsucht ein konkretes Projekt (`project` + `query`) semantisch – dieselbe Gemini-Embedding-Suche wie `/rag` in der CLI. |
+
+---
+
+<a id="sandbox-validierung"></a>
+## 🧪 Sandbox-Code-Validierung & Automatische Test-Execution
+
+Zwei unabhängige Prüfebenen, die sich ergänzen:
+
+1. **Statische Validierung** (`core/code_sandbox.py`): Prüft Python-Code per `ast.parse()`
+   auf Syntaxfehler, JSON per `json.loads()`, YAML auf grobe Formatierungsfehler (z. B. Tabs
+   statt Leerzeichen) – schnell, ohne Ausführung, ohne Abhängigkeiten.
+2. **Echte dynamische Verifikation** (`core/verifier.py`, `ProjectVerifier`): Legt bei
+   vorhandener `requirements.txt` eine isolierte venv im Projekt an, installiert die
+   Abhängigkeiten wirklich per `pip`, und führt die tatsächliche Testsuite aus (`pytest`,
+   falls installiert, sonst `unittest discover`). Schlägt ein Test fehl, wird der reale
+   Traceback geparst (beide Formate: klassischer Python-Traceback und pytest-Kurzformat)
+   und der betroffene Agent anhand der `file_owners`-Map gezielt zur Korrektur beauftragt –
+   bis zu `MAX_VERIFICATION_ITERATIONS` Runden (Standard: 2).
+
+Beide Ebenen laufen automatisch als Teil jedes Orchestrator-Laufs, ohne dass der Nutzer sie
+manuell anstoßen muss. Manuell erreichbar über `/run-tests [projekt]` in der CLI.
+
+---
+
+<a id="persistente-selbstoptimierung"></a>
+## 🧠 Persistente KI-Selbstoptimierung & Langzeitgedächtnis
+
+- **Gesprächsverlauf** (`memory/conversation_history.py`): Jede Nutzer-/Assistenten-Nachricht
+  wird als JSON unter `memory/history_<session>.json` persistiert und bei künftigen Anfragen
+  als Kontext (gekürzt auf die letzten Nachrichten) mitgegeben – Konversationen überleben
+  also einen Neustart des Programms.
+- **Agenten-Wissensbasis** (`memory/agent_knowledge_base.py`): Nach jedem Lauf analysiert der
+  `agent_trainer`-Agent per LLM-Aufruf Fehler und Ineffizienzen und schlägt konkrete
+  Prompt-Schärfungen vor. Diese werden geparst und pro Agent als Liste kurzer Regeln in
+  `memory/agent_learnings.json` gespeichert (max. 5 pro Agent – älteste fällt raus) und bei
+  jedem künftigen Aufruf automatisch an dessen System-Prompt angehängt
+  (`get_augmented_prompt()`).
+- **Ehrliche Einschränkung:** Die Extraktion der Lern-Regeln aus dem Trainer-Bericht basiert
+  auf einem einfachen Textmuster (`"Betroffener Agent:"` gefolgt von Aufzählungspunkten).
+  Hält sich das Modell nicht exakt an dieses Format, geht der Lerneffekt für diesen Lauf
+  verloren – ein bekanntes, bewusst in Kauf genommenes Risiko einer leichtgewichtigen,
+  abhängigkeitsfreien Lösung statt eines strukturierten Function-Calling-Extrahierens.
+
+---
+
+<a id="codebase-rag"></a>
 ## 🔍 Lokales Codebase-RAG & Semantische Suche
 
 Agenten (über das `search_code`-Werkzeug), `/load` bestehender Projekte, der `/rag`-CLI-Befehl
@@ -143,6 +273,7 @@ eingeloggt?"* die passende `auth.py`, obwohl dort nirgends "einloggen" steht.
 
 ---
 
+<a id="die-33-spezialisten"></a>
 ## 🎯 Die 33 Spezialisten & Fachbereiche
 
 | Fachbereich | Teamleiter | Spezialisten im Team |
@@ -155,6 +286,7 @@ eingeloggt?"* die passende `auth.py`, obwohl dort nirgends "einloggen" steht.
 
 ---
 
+<a id="cli-befehle"></a>
 ## 🚀 Alle CLI-Befehle im Überblick
 
 ```bash
@@ -162,9 +294,7 @@ python main.py                          # Interaktive CLI (Standard)
 python main.py --dashboard [--port N]   # Web-Dashboard unter http://localhost:8080
 ```
 
-Das Web-Dashboard (`interface/web_dashboard.py`) ist ein echter, funktionsfähiger Server:
-Der "Start"-Button schickt die Aufgabe per POST an `/api/run`, die dann real über
-`Orchestrator.process()` läuft, mit Live-Fortschritt per Polling – kein Mockup.
+Details zum Web-Dashboard: [🌐 Modernes Web-Dashboard & Visualisierung](#web-dashboard).
 
 | Befehl | Beschreibung |
 |---|---|
@@ -183,6 +313,7 @@ Der "Start"-Button schickt die Aufgabe per POST an `/api/run`, die dann real üb
 
 ---
 
+<a id="tests"></a>
 ## 🧪 Tests ausführen
 
 ```bash

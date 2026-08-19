@@ -77,23 +77,28 @@ build/
 
 Antworte auf Deutsch. Konsequent auf Ordnung, Minimalismus und langfristige Wartbarkeit ausgerichtet."""
 
+    # Ausschließlich automatisch regenerierbare Cache-Verzeichnisse – NIE Quellcode oder
+    # vom Nutzer angelegte Ordner. Deshalb ist dies (anders als workspace.clean_project())
+    # sicher genug, um ohne Bestätigungs-Gate automatisch am Ende eines Laufs zu greifen.
+    SAFE_CACHE_DIR_NAMES = ("__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache")
+
     def clean_orphaned_files(self, project_dir: str) -> list[str]:
         """
-        Scannt ein Verzeichnis auf typischen Müll (.pyc, __pycache__, leere Ordner)
-        und entfernt diese physisch.
+        Entfernt sicher regenerierbare Cache-Verzeichnisse (__pycache__, .pytest_cache, …)
+        physisch aus einem Projektverzeichnis. Rührt nie Quellcode oder sonstige Dateien an.
         """
-        removed = []
+        removed: list[str] = []
         p = Path(project_dir)
         if not p.exists():
             return removed
 
-        # 1. Entferne __pycache__ und .pytest_cache
-        for cache_dir in p.rglob("__pycache__"):
-            try:
-                import shutil
-                shutil.rmtree(cache_dir)
-                removed.append(str(cache_dir))
-            except Exception:
-                pass
+        import shutil
+        for cache_name in self.SAFE_CACHE_DIR_NAMES:
+            for cache_dir in p.rglob(cache_name):
+                try:
+                    shutil.rmtree(cache_dir)
+                    removed.append(str(cache_dir.relative_to(p)))
+                except Exception:
+                    pass
 
         return removed

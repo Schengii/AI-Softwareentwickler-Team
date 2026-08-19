@@ -1,17 +1,18 @@
 """
-interface/cli.py – Interaktives Terminal-Interface für das KI-Softwareentwickler-Team (30 Spezialisten)
+interface/cli.py – Interaktives Terminal-Interface für das KI-Softwareentwickler-Team (33 Spezialisten)
 
 Bietet:
 - Live-Statusanzeige mit aktuellem Bearbeitungsschritt, Phasen und arbeitenden Agenten
 - Farbige Rich-Ausgabe
-- Automatischer GitHub-Commit & Push Dialog
-- Workspace- & Projekt-Dateiverwaltung (/workspace, /export)
+- Automatischer GitHub-Commit & Push Dialog (mit Bestätigungs-Gate & Diff-Vorschau)
+- Workspace- & Projekt-Dateiverwaltung (/workspace, /export, /delete-project)
 - Test-Runner (/run-tests)
 """
 
 import asyncio
 import os
 import sys
+from pathlib import Path
 from typing import Optional
 from rich.console import Console
 from rich.markdown import Markdown
@@ -49,6 +50,7 @@ HELP_TEXT = """
 | `/workspace [projekt]` | Listet alle generierten Dateien im Projektordner auf |
 | `/export [projekt]` | Packt das Projektverzeichnis in ein ZIP-Archiv |
 | `/run-tests [projekt]` | Führt automatische Unit-Tests im Projekt aus |
+| `/delete-project <name>` | Löscht ein Projekt unwiderruflich aus dem Workspace (mit Bestätigung) |
 | `/push` | Führt manuell einen Git-Commit & Push aus |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
@@ -219,6 +221,53 @@ class CLIInterface:
         else:
             console.print(f"⚠️ Commit nicht möglich: {out_c}", style="yellow")
 
+    async def _delete_project_with_confirmation(self, project_name: str) -> None:
+        """
+        Löscht ein komplettes Projektverzeichnis aus workspace/ – IRREVERSIBEL (kompletter
+        Quellcode, nicht nur Cache-Dateien). Zeigt vor der Bestätigung Pfad und Dateianzahl,
+        analog zum Bestätigungs-Gate vor Git-Push (_ask_for_git_push).
+        """
+        # WICHTIG: Existenz VOR dem Aufruf von get_project_dir() prüfen – die Methode legt
+        # das Verzeichnis bei Bedarf selbst an (mkdir(exist_ok=True)), ein Exists-Check DANACH
+        # wäre also immer True und würde jede Sicherheitsprüfung wirkungslos machen.
+        exists_before = (
+            Path(project_name).exists() if os.path.isabs(project_name)
+            else project_name in self._workspace.list_projects()
+        )
+        if not exists_before:
+            console.print(f"⚠️ Projekt `{project_name}` existiert nicht in `workspace/`.", style="yellow")
+            return
+
+        project_dir = self._workspace.get_project_dir(project_name)
+        files = self._workspace.list_project_files(project_name)
+        console.print(
+            Panel(
+                f"[bold red]Das komplette Verzeichnis wird UNWIDERRUFLICH gelöscht:[/bold red]\n\n"
+                f"  Pfad: `{project_dir}`\n"
+                f"  Dateien: {len(files)}\n",
+                title="🗑️ Projekt löschen: Vorschau",
+                border_style="red",
+            )
+        )
+        try:
+            should_delete = Confirm.ask(
+                f"Projekt `{project_name}` WIRKLICH unwiderruflich löschen?",
+                default=False,
+            )
+        except Exception:
+            should_delete = False
+
+        if not should_delete:
+            console.print("↩️ Löschung abgebrochen – nichts wurde entfernt.", style="dim")
+            return
+
+        if self._workspace.clean_project(project_name):
+            console.print(f"🗑️ [bold green]Projekt `{project_name}` wurde gelöscht.[/bold green]")
+            if self._loaded_project_dir == str(project_dir):
+                self._loaded_project_dir = None
+        else:
+            console.print(f"⚠️ Löschung von `{project_name}` fehlgeschlagen.", style="yellow")
+
     async def _handle_command(self, command: str) -> bool:
         """Verarbeitet CLI-Befehle."""
         parts = command.strip().split()
@@ -243,6 +292,12 @@ class CLIInterface:
         elif cmd in ("/export", "/zip"):
             proj_name = args[0] if args else "jobsuche-app"
             self._export_workspace(proj_name)
+
+        elif cmd in ("/delete-project", "/clean-project", "/loeschen"):
+            if not args:
+                console.print("⚠️ Bitte gib den Projektnamen an: `/delete-project <name>`", style="yellow")
+                return False
+            await self._delete_project_with_confirmation(args[0])
 
         elif cmd in ("/push", "/git"):
             await self._ask_for_git_push("manuelles Update")

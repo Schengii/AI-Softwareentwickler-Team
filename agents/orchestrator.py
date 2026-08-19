@@ -233,6 +233,16 @@ class Orchestrator:
             notify=notify,
         )
 
+        # Projekt-Hygiene: automatisch regenerierbare Caches (__pycache__, .pytest_cache, …),
+        # die die echte Testausführung gerade erzeugt hat, physisch entfernen. Bewusst OHNE
+        # Bestätigungs-Gate, da ausschließlich sicher regenerierbare Verzeichnisse betroffen
+        # sind (siehe project_cleaner_agent.SAFE_CACHE_DIR_NAMES) – nie Quellcode.
+        cleaner = self._agents.get("project_cleaner")
+        if cleaner and hasattr(cleaner, "clean_orphaned_files"):
+            removed_caches = cleaner.clean_orphaned_files(project_dir)
+            if removed_caches:
+                notify(f"🧹 [dim]Projekt-Hygiene:[/dim] {len(removed_caches)} Cache-Verzeichnis(se) entfernt ({', '.join(removed_caches[:3])}{'…' if len(removed_caches) > 3 else ''}).")
+
         # Synthese der Fachbereichs-Ergebnisse durch den Hauptagenten
         notify("🔍 [bold cyan]Phase 5/5:[/bold cyan] Hauptagent konsolidiert Berichte aller Fachbereichsleiter...")
         final_solution, synth_tokens = await self._result_aggregator.synthesize(

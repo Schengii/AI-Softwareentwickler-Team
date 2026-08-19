@@ -4,11 +4,10 @@ core/task_manager.py – Analysiert Nutzeraufgaben und zerlegt sie in Teilaufgab
 
 import json
 import re
-from typing import Optional
-from core.llm_factory import LLMFactory
-from core.message_bus import AgentTask
 import uuid
 
+from core.llm_factory import LLMFactory
+from core.message_bus import AgentTask
 
 # ──────────────────────────────────────────────────────────
 # Alle verfügbaren Agenten (30 Spezialisten)
@@ -236,7 +235,7 @@ class TaskManager:
     async def decompose(
         self,
         user_request: str,
-        conversation_context: Optional[str] = None
+        conversation_context: str | None = None
     ) -> tuple[str, str, list[AgentTask]]:
         agents_description = "\n".join([
             f"- {agent_id} [Phase {info['phase']}]: {info['description']}"

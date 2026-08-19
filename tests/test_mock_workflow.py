@@ -11,11 +11,11 @@ komplett übersprungen simuliert.
 """
 
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from agents.orchestrator import Orchestrator
-from core.message_bus import AgentTask
 from core.llm_factory import LLMResponse
+from core.message_bus import AgentTask
 from core.verifier import VerificationReport
 
 

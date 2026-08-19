@@ -8,10 +8,9 @@ Ermöglicht Agenten den Zugriff auf standardisierte Tools:
 - MCP-kompatibles Schnittstellen-Design
 """
 
-import os
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any, Callable, Coroutine, Optional
-from pathlib import Path
+from typing import Any
 
 from core.code_sandbox import CodeSandbox
 from core.workspace import WorkspaceManager
@@ -31,7 +30,7 @@ class ToolRegistry:
     Zentrale Registry für agentenfähige Werkzeuge (Tools).
     """
 
-    def __init__(self, workspace_manager: Optional[WorkspaceManager] = None):
+    def __init__(self, workspace_manager: WorkspaceManager | None = None):
         self._tools: dict[str, ToolDefinition] = {}
         self.workspace = workspace_manager or WorkspaceManager()
         self._register_default_tools()
@@ -40,7 +39,7 @@ class ToolRegistry:
         """Registriert ein neues Tool."""
         self._tools[tool.name] = tool
 
-    def get_tool(self, name: str) -> Optional[ToolDefinition]:
+    def get_tool(self, name: str) -> ToolDefinition | None:
         return self._tools.get(name)
 
     def list_tools(self) -> list[dict[str, Any]]:

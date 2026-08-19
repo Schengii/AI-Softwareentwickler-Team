@@ -10,7 +10,7 @@ NIEMALS ein Nicht-Gemini-Modellname an den echten Gemini-Client geht.
 """
 
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from core.llm_factory import GeminiClient
 from core.token_guard import token_guard

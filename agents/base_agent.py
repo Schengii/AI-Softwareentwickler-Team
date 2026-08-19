@@ -16,7 +16,6 @@ Ein-Schuss-Aufruf über generate_with_usage() erhalten.
 import json
 import time
 from abc import ABC, abstractmethod
-from typing import Optional
 
 from config import MAX_AGENT_TOOL_ITERATIONS
 from core.agent_toolbox import AgentToolbox
@@ -29,7 +28,7 @@ class BaseAgent(ABC):
     Abstrakte Basisklasse für alle Unteragenten des KI-Teams.
     """
 
-    def __init__(self, agent_id: str, name: str, model_name: Optional[str] = None):
+    def __init__(self, agent_id: str, name: str, model_name: str | None = None):
         self.agent_id = agent_id
         self.name = name
         self._llm: GeminiClient = LLMFactory.create_for_agent(agent_id) if not model_name \
@@ -48,7 +47,7 @@ class BaseAgent(ABC):
         """
         start_time = time.monotonic()
         use_tools = bool(task.project_dir) and task.allow_tools
-        toolbox: Optional[AgentToolbox] = None
+        toolbox: AgentToolbox | None = None
 
         try:
             from memory.agent_knowledge_base import agent_knowledge_base
@@ -113,7 +112,7 @@ class BaseAgent(ABC):
 
         total_prompt_tokens = 0
         total_completion_tokens = 0
-        response: Optional[LLMResponse] = None
+        response: LLMResponse | None = None
 
         for iteration in range(1, max_iterations + 1):
             response = await self._llm.generate_with_tools(turns, system_prompt, toolbox.tool_specs())

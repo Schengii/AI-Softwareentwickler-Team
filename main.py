@@ -5,8 +5,8 @@ Starte das System mit:
     python main.py
 """
 
-import sys
 import io
+import sys
 
 # Windows UTF-8 Fix: Emojis und Sonderzeichen korrekt ausgeben
 if sys.platform == "win32":

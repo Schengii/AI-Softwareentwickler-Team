@@ -8,8 +8,8 @@ Spezialisiert auf:
 - Schutz vor Projekt-Aufblähung (Project Bloat & Dependency Bloat)
 """
 
-import os
 from pathlib import Path
+
 from agents.base_agent import BaseAgent
 
 

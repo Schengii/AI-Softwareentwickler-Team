@@ -9,9 +9,9 @@ Ermöglicht:
   - `ai_team_rag_search`: Durchsucht den Codebase-Index semantisch
 """
 
+import asyncio
 import json
 import sys
-import asyncio
 from typing import Any
 
 

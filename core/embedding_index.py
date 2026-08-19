@@ -22,7 +22,6 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from config import GEMINI_API_KEY
 
@@ -126,7 +125,11 @@ class EmbeddingCodeIndex:
                 vectors = self._embed_batch([c.text for c in batch], task_type="RETRIEVAL_DOCUMENT")
             except Exception:
                 continue  # Diese Batch bleibt uneingebettet -> wird beim nächsten sync() erneut versucht
-            for chunk, vector in zip(batch, vectors):
+            # strict=True: Chunk- und Vektor-Liste MÜSSEN gleich lang sein (1 Embedding pro
+            # Chunk) – bei Längen-Mismatch lieber laut scheitern (semantic_search() faengt
+            # das ab und faellt auf BM25 zurueck), statt Chunks still mit falschen Vektoren
+            # zu verknuepfen.
+            for chunk, vector in zip(batch, vectors, strict=True):
                 chunk.embedding = vector
                 embedded_count += 1
 
@@ -170,8 +173,9 @@ class EmbeddingCodeIndex:
 
     @staticmethod
     def _embed_batch(texts: list[str], task_type: str) -> list[list[float]]:
-        from core.llm_factory import _gemini_client  # bereits initialisierter globaler Client
         from google.genai import types as genai_types
+
+        from core.llm_factory import _gemini_client  # bereits initialisierter globaler Client
 
         if not _gemini_client:
             raise RuntimeError("Gemini-Client nicht initialisiert (kein GEMINI_API_KEY).")
@@ -213,7 +217,7 @@ class EmbeddingCodeIndex:
     def _cosine_similarity(a: list[float], b: list[float]) -> float:
         if not a or not b or len(a) != len(b):
             return 0.0
-        dot = sum(x * y for x, y in zip(a, b))
+        dot = sum(x * y for x, y in zip(a, b, strict=True))  # Längen oben bereits geprüft
         norm_a = math.sqrt(sum(x * x for x in a))
         norm_b = math.sqrt(sum(y * y for y in b))
         if norm_a == 0.0 or norm_b == 0.0:

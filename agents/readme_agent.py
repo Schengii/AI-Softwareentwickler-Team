@@ -6,6 +6,7 @@ Wird vom Orchestrator aufgerufen, wenn Änderungen am Projekt vorgenommen wurden
 """
 
 import os
+
 from agents.base_agent import BaseAgent
 from config import BASE_DIR
 
@@ -51,7 +52,7 @@ Du bist sehr präzise und vergisst nie, alle betroffenen Abschnitte zu aktualisi
         """Liest die aktuelle README.md des Projekts."""
         readme_path = os.path.join(BASE_DIR, "README.md")
         if os.path.exists(readme_path):
-            with open(readme_path, "r", encoding="utf-8") as f:
+            with open(readme_path, encoding="utf-8") as f:
                 return f.read()
         return ""
 

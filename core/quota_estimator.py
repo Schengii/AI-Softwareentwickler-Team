@@ -8,8 +8,8 @@ Erfasst und berechnet:
 """
 
 from typing import Any
-from core.token_guard import token_guard
 
+from core.token_guard import token_guard
 
 # Typische monatliche/tägliche Free-Tier Kontingente
 FREE_TIER_LIMITS = {

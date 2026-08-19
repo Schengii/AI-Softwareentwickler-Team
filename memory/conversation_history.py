@@ -9,6 +9,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
+
 from config import MEMORY_DIR
 
 
@@ -95,7 +96,7 @@ class ConversationHistory:
         if not os.path.exists(self._history_file):
             return
         try:
-            with open(self._history_file, "r", encoding="utf-8") as f:
+            with open(self._history_file, encoding="utf-8") as f:
                 data = json.load(f)
             self._messages = [
                 ChatMessage(

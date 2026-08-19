@@ -8,9 +8,8 @@ core/token_guard.py – Token Guard & Intelligentes Quota-Lifecycle-Management
 """
 
 import time
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Callable, Optional
+from collections.abc import Callable
+from dataclasses import dataclass
 
 
 @dataclass
@@ -41,7 +40,7 @@ class TokenGuard:
         self,
         high_usage_threshold_per_call: int = 6000,
         default_cooldown_seconds: float = 60.0,
-        warning_callback: Optional[Callable[[str], None]] = None,
+        warning_callback: Callable[[str], None] | None = None,
     ):
         self.high_usage_threshold_per_call = high_usage_threshold_per_call
         self.default_cooldown_seconds = default_cooldown_seconds
@@ -92,7 +91,7 @@ class TokenGuard:
         self,
         model_name: str,
         reason: str = "Quota erreicht",
-        cooldown_seconds: Optional[float] = None
+        cooldown_seconds: float | None = None
     ) -> str:
         """Markiert ein Modell als temporär erschöpft mit Cooldown-Timer."""
         cooldown = cooldown_seconds if cooldown_seconds is not None else self.default_cooldown_seconds

@@ -5,7 +5,6 @@ core/result_aggregator.py – Fasst die Ergebnisse aller Unteragenten token-effi
 from core.llm_factory import LLMFactory
 from core.message_bus import AgentResult
 
-
 SYNTHESIZE_SYSTEM_PROMPT = """Du bist der Hauptagent eines professionellen KI-Softwareentwickler-Teams.
 Du hast die Teilergebnisse deines Teams gesammelt und erstellst nun die finale, konsolidierte Antwort für den Nutzer.
 

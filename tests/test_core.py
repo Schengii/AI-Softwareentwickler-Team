@@ -9,10 +9,10 @@ import unittest
 from pathlib import Path
 
 from core.code_sandbox import CodeSandbox
-from core.workspace import WorkspaceManager
-from core.tool_registry import ToolRegistry
-from core.task_manager import TaskManager, AVAILABLE_AGENTS
+from core.task_manager import AVAILABLE_AGENTS
 from core.token_guard import TokenGuard
+from core.tool_registry import ToolRegistry
+from core.workspace import WorkspaceManager
 
 
 class TestCoreModules(unittest.TestCase):
@@ -28,7 +28,7 @@ class TestCoreModules(unittest.TestCase):
     def test_available_agents_structure(self):
         """Prüft, dass alle 33 Agenten im TaskManager mit Namen und Phase konfiguriert sind."""
         self.assertEqual(len(AVAILABLE_AGENTS), 33)
-        for agent_id, data in AVAILABLE_AGENTS.items():
+        for data in AVAILABLE_AGENTS.values():
             self.assertIn("name", data)
             self.assertIn("phase", data)
             self.assertIn("description", data)

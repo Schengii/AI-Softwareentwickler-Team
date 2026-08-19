@@ -10,10 +10,8 @@ Bietet dem KI-Team:
 import ast
 import json
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 
 @dataclass
@@ -80,7 +78,7 @@ class CodeSandbox:
     @staticmethod
     def run_command(
         command: list[str],
-        cwd: Optional[Path | str] = None,
+        cwd: Path | str | None = None,
         timeout_seconds: float = 30.0,
     ) -> ExecutionResult:
         """

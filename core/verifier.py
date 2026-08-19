@@ -20,7 +20,6 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from core.code_sandbox import CodeSandbox, ExecutionResult
 
@@ -60,7 +59,7 @@ class ProjectVerifier:
             return venv_dir / "Scripts" / "python.exe"
         return venv_dir / "bin" / "python"
 
-    def _requirements_file(self) -> Optional[Path]:
+    def _requirements_file(self) -> Path | None:
         for name in ("requirements.txt", "requirements-dev.txt"):
             candidate = self.project_dir / name
             if candidate.exists() and candidate.stat().st_size > 0:

@@ -7,20 +7,21 @@ import asyncio
 import json
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
+
 import httpx
 from google import genai
 from google.genai import types as genai_types
+
 from config import (
+    ANTHROPIC_API_KEY,
+    DEEPSEEK_API_KEY,
     GEMINI_API_KEY,
     GROQ_API_KEY,
-    DEEPSEEK_API_KEY,
-    OPENROUTER_API_KEY,
-    HUGGINGFACE_API_KEY,
-    ANTHROPIC_API_KEY,
-    MAX_OUTPUT_TOKENS,
-    TEMPERATURE,
     GROQ_HEAVY_MODEL,
+    MAX_OUTPUT_TOKENS,
+    OPENROUTER_API_KEY,
+    TEMPERATURE,
 )
 from core.token_guard import token_guard
 
@@ -71,7 +72,7 @@ class ToolCall:
     # ORIGINALEN function_call-Parts unverändert mitgeschickt wird, wenn dieser Aufruf als
     # Verlaufs-Nachricht in den nächsten Request eingebettet wird – sonst 400 INVALID_ARGUMENT
     # ("Function call is missing a thought_signature"). Andere Provider setzen dies nicht.
-    thought_signature: Optional[bytes] = None
+    thought_signature: bytes | None = None
 
 
 @dataclass
@@ -110,7 +111,7 @@ class LLMResponse:
 # auf und parsen die Antwort (Text ODER tool_calls) einheitlich.
 # ──────────────────────────────────────────────────────────────────────────
 
-def _openai_build_messages(messages: list["AgentMessage"], system_prompt: Optional[str]) -> list[dict]:
+def _openai_build_messages(messages: list["AgentMessage"], system_prompt: str | None) -> list[dict]:
     payload_messages: list[dict] = []
     if system_prompt:
         payload_messages.append({"role": "system", "content": system_prompt})
@@ -171,7 +172,7 @@ class HuggingFaceClient:
         self.model_name = model_name
 
     async def generate_with_usage(
-        self, prompt: str, system_prompt: Optional[str] = None, _allow_self_fallback: bool = True,
+        self, prompt: str, system_prompt: str | None = None, _allow_self_fallback: bool = True,
     ) -> LLMResponse:
         # Fallback auf Gemini für Text-/SVG-Generierung. _allow_self_fallback=False wird von
         # GeminiClient gesetzt, wenn dieser Client bereits ALS Fallback-Ziel innerhalb einer
@@ -182,12 +183,12 @@ class HuggingFaceClient:
         fallback = GeminiClient(model_name="gemini-3.6-flash")
         return await fallback.generate_with_usage(prompt, system_prompt)
 
-    async def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    async def generate(self, prompt: str, system_prompt: str | None = None) -> str:
         res = await self.generate_with_usage(prompt, system_prompt)
         return res.text
 
     async def generate_with_tools(
-        self, messages: list["AgentMessage"], system_prompt: Optional[str], tools: list[dict],
+        self, messages: list["AgentMessage"], system_prompt: str | None, tools: list[dict],
         _allow_self_fallback: bool = True,
     ) -> LLMResponse:
         # HuggingFace-Modelle werden hier nicht mit nativem Function-Calling angebunden –
@@ -197,7 +198,7 @@ class HuggingFaceClient:
         fallback = GeminiClient(model_name="gemini-3.6-flash")
         return await fallback.generate_with_tools(messages, system_prompt, tools)
 
-    async def generate_json(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    async def generate_json(self, prompt: str, system_prompt: str | None = None) -> str:
         fallback = GeminiClient(model_name="gemini-3.6-flash")
         return await fallback.generate_json(prompt, system_prompt)
 
@@ -210,7 +211,7 @@ class OpenRouterClient:
         self.api_url = "https://openrouter.ai/api/v1/chat/completions"
 
     async def generate_with_usage(
-        self, prompt: str, system_prompt: Optional[str] = None, _allow_self_fallback: bool = True,
+        self, prompt: str, system_prompt: str | None = None, _allow_self_fallback: bool = True,
     ) -> LLMResponse:
         if not OPENROUTER_API_KEY or token_guard.is_model_exhausted(f"openrouter:{self.model_name}"):
             if not _allow_self_fallback:
@@ -273,12 +274,12 @@ class OpenRouterClient:
             fallback = GeminiClient(model_name="gemini-3.6-flash")
             return await fallback.generate_with_usage(prompt, system_prompt)
 
-    async def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    async def generate(self, prompt: str, system_prompt: str | None = None) -> str:
         res = await self.generate_with_usage(prompt, system_prompt)
         return res.text
 
     async def generate_with_tools(
-        self, messages: list["AgentMessage"], system_prompt: Optional[str], tools: list[dict],
+        self, messages: list["AgentMessage"], system_prompt: str | None, tools: list[dict],
         _allow_self_fallback: bool = True,
     ) -> LLMResponse:
         if not OPENROUTER_API_KEY or token_guard.is_model_exhausted(f"openrouter:{self.model_name}"):
@@ -338,7 +339,7 @@ class OpenRouterClient:
             fallback = GeminiClient(model_name="gemini-3.6-flash")
             return await fallback.generate_with_tools(messages, system_prompt, tools)
 
-    async def generate_json(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    async def generate_json(self, prompt: str, system_prompt: str | None = None) -> str:
         json_instruction = "\n\nAntworte AUSSCHLIESSLICH mit einem gültigen JSON-Objekt, ohne Markdown-Codeblock, ohne Erklärungen davor oder danach."
         res = await self.generate_with_usage(prompt, (system_prompt or "") + json_instruction)
         return res.text
@@ -352,7 +353,7 @@ class DeepSeekClient:
         self.api_url = "https://api.deepseek.com/chat/completions"
 
     async def generate_with_usage(
-        self, prompt: str, system_prompt: Optional[str] = None, _allow_self_fallback: bool = True,
+        self, prompt: str, system_prompt: str | None = None, _allow_self_fallback: bool = True,
     ) -> LLMResponse:
         if not DEEPSEEK_API_KEY or token_guard.is_model_exhausted(f"deepseek:{self.model_name}"):
             if not _allow_self_fallback:
@@ -413,12 +414,12 @@ class DeepSeekClient:
             fallback = GeminiClient(model_name="gemini-3.6-flash")
             return await fallback.generate_with_usage(prompt, system_prompt)
 
-    async def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    async def generate(self, prompt: str, system_prompt: str | None = None) -> str:
         res = await self.generate_with_usage(prompt, system_prompt)
         return res.text
 
     async def generate_with_tools(
-        self, messages: list["AgentMessage"], system_prompt: Optional[str], tools: list[dict],
+        self, messages: list["AgentMessage"], system_prompt: str | None, tools: list[dict],
         _allow_self_fallback: bool = True,
     ) -> LLMResponse:
         if not DEEPSEEK_API_KEY or token_guard.is_model_exhausted(f"deepseek:{self.model_name}"):
@@ -473,7 +474,7 @@ class DeepSeekClient:
             fallback = GeminiClient(model_name="gemini-3.6-flash")
             return await fallback.generate_with_tools(messages, system_prompt, tools)
 
-    async def generate_json(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    async def generate_json(self, prompt: str, system_prompt: str | None = None) -> str:
         json_instruction = "\n\nAntworte AUSSCHLIESSLICH mit einem gültigen JSON-Objekt, ohne Markdown-Codeblock, ohne Erklärungen davor oder danach."
         res = await self.generate_with_usage(prompt, (system_prompt or "") + json_instruction)
         return res.text
@@ -486,7 +487,7 @@ class GeminiClient:
         self.model_name = model_name
 
     async def generate_with_usage(
-        self, prompt: str, system_prompt: Optional[str] = None, _allow_self_fallback: bool = True,
+        self, prompt: str, system_prompt: str | None = None, _allow_self_fallback: bool = True,
     ) -> LLMResponse:
         config = genai_types.GenerateContentConfig(
             temperature=TEMPERATURE,
@@ -495,12 +496,12 @@ class GeminiClient:
         )
         return await self._call_with_retry_and_usage(prompt, config, _allow_self_fallback=_allow_self_fallback)
 
-    async def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    async def generate(self, prompt: str, system_prompt: str | None = None) -> str:
         res = await self.generate_with_usage(prompt, system_prompt)
         return res.text
 
     async def generate_with_tools(
-        self, messages: list["AgentMessage"], system_prompt: Optional[str], tools: list[dict],
+        self, messages: list["AgentMessage"], system_prompt: str | None, tools: list[dict],
         _allow_self_fallback: bool = True,
     ) -> LLMResponse:
         """
@@ -720,7 +721,7 @@ class GeminiClient:
             f"Gemini API Fehler nach allen Versuchen ({self.model_name}): {last_error}"
         ) from last_error
 
-    async def generate_json(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    async def generate_json(self, prompt: str, system_prompt: str | None = None) -> str:
         config = genai_types.GenerateContentConfig(
             temperature=0.2,
             max_output_tokens=MAX_OUTPUT_TOKENS,
@@ -738,7 +739,7 @@ class GroqClient:
         self.model_name = model_name.replace("groq:", "")
 
     async def generate_with_usage(
-        self, prompt: str, system_prompt: Optional[str] = None, _allow_self_fallback: bool = True,
+        self, prompt: str, system_prompt: str | None = None, _allow_self_fallback: bool = True,
     ) -> LLMResponse:
         if not _groq_client:
             if not _allow_self_fallback:
@@ -786,12 +787,12 @@ class GroqClient:
             gemini_fallback = GeminiClient(model_name="gemini-3.6-flash")
             return await gemini_fallback.generate_with_usage(prompt, system_prompt)
 
-    async def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    async def generate(self, prompt: str, system_prompt: str | None = None) -> str:
         res = await self.generate_with_usage(prompt, system_prompt)
         return res.text
 
     async def generate_with_tools(
-        self, messages: list["AgentMessage"], system_prompt: Optional[str], tools: list[dict],
+        self, messages: list["AgentMessage"], system_prompt: str | None, tools: list[dict],
         _allow_self_fallback: bool = True,
     ) -> LLMResponse:
         if not _groq_client:
@@ -842,7 +843,7 @@ class GroqClient:
             gemini_fallback = GeminiClient(model_name="gemini-3.6-flash")
             return await gemini_fallback.generate_with_tools(messages, system_prompt, tools)
 
-    async def generate_json(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    async def generate_json(self, prompt: str, system_prompt: str | None = None) -> str:
         json_instruction = "\n\nAntworte AUSSCHLIESSLICH mit einem gültigen JSON-Objekt, ohne Markdown-Codeblock, ohne Erklärungen davor oder danach."
         res = await self.generate_with_usage(prompt, (system_prompt or "") + json_instruction)
         return res.text
@@ -874,7 +875,7 @@ class ClaudeClient:
         return GeminiClient(model_name="gemini-3.6-flash")
 
     async def generate_with_usage(
-        self, prompt: str, system_prompt: Optional[str] = None, _allow_self_fallback: bool = True,
+        self, prompt: str, system_prompt: str | None = None, _allow_self_fallback: bool = True,
     ) -> LLMResponse:
         if not self._client:
             if not _allow_self_fallback:
@@ -914,12 +915,12 @@ class ClaudeClient:
                 raise
             return await self._free_heavy_fallback_client().generate_with_usage(prompt, system_prompt)
 
-    async def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    async def generate(self, prompt: str, system_prompt: str | None = None) -> str:
         res = await self.generate_with_usage(prompt, system_prompt)
         return res.text
 
     async def generate_with_tools(
-        self, messages: list["AgentMessage"], system_prompt: Optional[str], tools: list[dict],
+        self, messages: list["AgentMessage"], system_prompt: str | None, tools: list[dict],
         _allow_self_fallback: bool = True,
     ) -> LLMResponse:
         if not self._client:
@@ -989,7 +990,7 @@ class ClaudeClient:
                 })
         return anthropic_messages
 
-    async def generate_json(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    async def generate_json(self, prompt: str, system_prompt: str | None = None) -> str:
         json_instruction = "\n\nAntworte AUSSCHLIESSLICH mit einem gültigen JSON-Objekt, ohne Markdown-Codeblock, ohne Erklärungen davor oder danach."
         res = await self.generate_with_usage(prompt, (system_prompt or "") + json_instruction)
         return res.text

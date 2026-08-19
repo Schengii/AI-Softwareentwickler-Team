@@ -9,9 +9,8 @@ Speichert:
 
 import json
 from pathlib import Path
-from typing import Optional
-from config import BASE_DIR
 
+from config import BASE_DIR
 
 KNOWLEDGE_FILE = Path(BASE_DIR) / "memory" / "agent_learnings.json"
 
@@ -21,7 +20,7 @@ class AgentKnowledgeBase:
     Verwaltet das persistente Langzeitgedächtnis und gelernte Regeln für alle Agenten.
     """
 
-    def __init__(self, file_path: Optional[Path] = None):
+    def __init__(self, file_path: Path | None = None):
         self.file_path = file_path or KNOWLEDGE_FILE
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
         self._learnings: dict[str, list[str]] = self._load()

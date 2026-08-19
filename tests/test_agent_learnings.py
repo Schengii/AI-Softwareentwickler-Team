@@ -2,9 +2,10 @@
 tests/test_agent_learnings.py – Testet die persistente Selbstoptimierung & Wissensbasis der Agenten
 """
 
-import unittest
 import tempfile
+import unittest
 from pathlib import Path
+
 from memory.agent_knowledge_base import AgentKnowledgeBase
 
 

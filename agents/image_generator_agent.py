@@ -8,7 +8,6 @@ Spezialisiert auf:
 - Automatischer Download/Export von Bild-Assets in den Workspace
 """
 
-import os
 from agents.base_agent import BaseAgent
 
 

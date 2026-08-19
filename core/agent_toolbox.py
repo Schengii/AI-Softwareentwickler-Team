@@ -23,7 +23,6 @@ from typing import Any
 
 from core.code_sandbox import CodeSandbox
 
-
 TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "read_file",
@@ -244,6 +243,7 @@ class AgentToolbox:
 
     async def _tool_search_code(self, query: str, top_k: int = 5) -> dict:
         import asyncio
+
         from core.embedding_index import semantic_search
 
         # semantic_search versucht echte Gemini-Embeddings (persistenter Cache pro Projekt,
@@ -276,6 +276,7 @@ class AgentToolbox:
 
     async def _tool_run_tests(self) -> dict:
         import asyncio
+
         from core.verifier import ProjectVerifier
 
         verifier = ProjectVerifier(self.project_dir)

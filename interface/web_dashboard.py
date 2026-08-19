@@ -52,7 +52,7 @@ class DashboardServer:
     def __init__(self):
         self.orchestrator = Orchestrator()
         self.jobs: dict[str, Job] = {}
-        self._queue: "queue.Queue[str]" = queue.Queue()
+        self._queue: queue.Queue[str] = queue.Queue()
         self._worker = threading.Thread(target=self._run_worker, daemon=True)
         self._worker.start()
 

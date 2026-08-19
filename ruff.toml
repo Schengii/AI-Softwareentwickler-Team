@@ -1,0 +1,34 @@
+# ruff.toml – Lint-Konfiguration für das KI-Softwareentwickler-Team
+#
+# Bewusst auf den eigentlichen Framework-Code beschränkt: workspace/ enthält vom KI-Team
+# selbst generierte Beispielprojekte (nicht von uns gepflegter Code, eigener Stil je nach
+# Aufgabe) und wird deshalb ausgeschlossen.
+
+target-version = "py311"
+line-length = 120
+
+extend-exclude = [
+    "workspace",
+    "test_proj",
+    "zip_proj",
+]
+
+[lint]
+select = [
+    "E",    # pycodestyle: Fehler
+    "F",    # pyflakes: unused imports, undefined names, echte Bugs
+    "I",    # isort: konsistente Import-Reihenfolge
+    "UP",   # pyupgrade: veraltete Python-Syntax modernisieren
+    "B",    # flake8-bugbear: häufige Bug-Muster (mutable defaults, etc.)
+    "C4",   # flake8-comprehensions: ineffiziente/unnötige Comprehensions
+]
+ignore = [
+    "E402",  # Modul-Level-Imports nicht ganz oben: kommt bewusst vor (späte Imports gegen Zirkelbezüge)
+    "E501",  # Zeilenlänge: viele Dateien enthalten lange deutschsprachige Prosa in System-
+             # Prompts (Docstrings/Triple-Quoted-Strings) – Hart-Wrapping würde dort Sätze
+             # mitten im Wort umbrechen, ohne einen echten Lesbarkeits- oder Code-Qualitäts-
+             # gewinn zu bringen. Für echten Code bleibt line-length als Richtwert bestehen.
+]
+
+[lint.per-file-ignores]
+"tests/*.py" = ["B018"]  # z.B. bewusste Assert-Ausdrücke ohne Zuweisung in Tests

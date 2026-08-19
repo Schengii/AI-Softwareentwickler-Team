@@ -16,10 +16,7 @@ Aufgaben des Fachbereichs-Teamleiters:
 - Sendet den fertigen Fachbereichs-Report zurück an den Hauptagenten.
 """
 
-from typing import Optional
 from agents.base_agent import BaseAgent
-from core.message_bus import AgentTask, AgentResult
-
 
 DEPARTMENT_DEFINITIONS = {
     "planning_lead": {

@@ -16,7 +16,6 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from config import WORKSPACE_DIR
 
@@ -36,7 +35,7 @@ class WorkspaceManager:
     Verwaltet das Projektdateisystem für das KI-Entwickler-Team.
     """
 
-    def __init__(self, base_workspace_dir: Optional[str] = None):
+    def __init__(self, base_workspace_dir: str | None = None):
         self.base_dir = Path(base_workspace_dir or WORKSPACE_DIR).resolve()
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -53,7 +52,7 @@ class WorkspaceManager:
         project_path.mkdir(parents=True, exist_ok=True)
         return project_path
 
-    def read_existing_project_context(self, project_name: str, query: Optional[str] = None, max_chars: int = 12000) -> str:
+    def read_existing_project_context(self, project_name: str, query: str | None = None, max_chars: int = 12000) -> str:
         """
         Liest bestehende Projektdateien ein.
         Unterstützt automatisches RAG-Indexing & BM25-Recherche für große Repositories.
@@ -197,7 +196,7 @@ class WorkspaceManager:
                 })
         return sorted(file_list, key=lambda x: x["path"])
 
-    def create_project_zip(self, project_name: str, target_zip_path: Optional[str] = None) -> str:
+    def create_project_zip(self, project_name: str, target_zip_path: str | None = None) -> str:
         """Packt das gesamte Projektverzeichnis in ein ZIP-Archiv."""
         project_dir = self.get_project_dir(project_name)
         if target_zip_path is None:

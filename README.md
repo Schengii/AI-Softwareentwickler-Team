@@ -194,3 +194,14 @@ LLM-Aufruf** durch (verifiziert). `.github/workflows/ci.yml` führt sie bei jede
 gegen `main` automatisch aus (Python 3.11 & 3.12) – kostenlos, ohne Secrets nötig, plus
 ein Syntax-Check aller Quelldateien. Echte End-to-End-Läufe mit echten LLM-Aufrufen
 bleiben bewusst ein manueller, gezielter Schritt und sind nicht Teil der CI.
+
+## 🧹 Lint (ruff)
+
+```bash
+pip install -r requirements-dev.txt
+ruff check .
+```
+
+Konfiguration in `ruff.toml` (bewusst auf den Framework-Code beschränkt, `workspace/`
+mit den vom Team selbst generierten Beispielprojekten ist ausgeschlossen). Läuft als
+eigener, paralleler `lint`-Job in `.github/workflows/ci.yml` bei jedem Push/PR.

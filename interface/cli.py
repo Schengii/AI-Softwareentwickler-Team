@@ -13,18 +13,19 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+
+from rich import box
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.text import Text
-from rich.live import Live
-from rich.table import Table
 from rich.prompt import Confirm
-from rich import box
+from rich.table import Table
+from rich.text import Text
+
 from agents.orchestrator import Orchestrator
+from config import validate_config
 from core.code_sandbox import CodeSandbox
-from config import validate_config, WORKSPACE_DIR
 
 console = Console()
 
@@ -72,7 +73,7 @@ class CLIInterface:
     def __init__(self):
         self._orchestrator = Orchestrator()
         self._workspace = self._orchestrator.get_workspace_manager()
-        self._loaded_project_dir: Optional[str] = None  # von /load gesetzt, von /rag genutzt
+        self._loaded_project_dir: str | None = None  # von /load gesetzt, von /rag genutzt
 
     def run(self) -> None:
         """Startet das interaktive CLI."""

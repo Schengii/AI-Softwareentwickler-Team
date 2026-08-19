@@ -9,8 +9,6 @@ Ermöglicht:
 
 import math
 import re
-from pathlib import Path
-from typing import Optional
 
 
 class CodeVectorIndex:

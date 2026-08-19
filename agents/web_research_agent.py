@@ -8,9 +8,10 @@ Spezialisiert auf:
 """
 
 import httpx
+
 from agents.base_agent import BaseAgent
-from core.message_bus import AgentTask, AgentResult
 from config import TAVILY_API_KEY
+from core.message_bus import AgentResult, AgentTask
 from core.token_guard import token_guard
 
 
@@ -88,7 +89,7 @@ Antworte auf Deutsch. Faktenbasiert, auf dem neuesten Stand der Technik und sofo
                         answer = data.get("answer", "")
                         results = data.get("results", [])
                         
-                        live_search_context = f"\n\n--- ECHTE LIVE-SUCHERGEBNISSE (TAVILY) ---\n"
+                        live_search_context = "\n\n--- ECHTE LIVE-SUCHERGEBNISSE (TAVILY) ---\n"
                         if answer:
                             live_search_context += f"Direkte KI-Antwort: {answer}\n\n"
                         for item in results:

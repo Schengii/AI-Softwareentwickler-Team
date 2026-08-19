@@ -2,8 +2,9 @@
 tests/test_advanced_features.py – Unit-Tests für RAG-Indexing, MCP-Server & Web-Dashboard
 """
 
-import unittest
 import asyncio
+import unittest
+
 from core.vector_store import CodeVectorIndex
 from interface.mcp_server import MCPServer
 

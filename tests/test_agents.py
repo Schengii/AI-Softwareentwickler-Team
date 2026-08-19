@@ -3,16 +3,43 @@ tests/test_agents.py – Unit-Tests für alle 30 Agenten und Basis-Strukturen
 """
 
 import unittest
-from agents.orchestrator import Orchestrator
-from agents.base_agent import BaseAgent
+
 from agents import (
-    TeamLeadAgent, ProductOwnerAgent, BusinessAnalystAgent, WebResearchAgent,
-    ArchitectAgent, FinOpsAgent, FrontendAgent, BackendAgent, DatabaseAgent,
-    ApiIntegrationAgent, DataEngineerAgent, MobileAgent, MLAgent, PromptEngineerAgent, PerformanceAgent,
-    ImageGeneratorAgent, CopywriterAgent, UIUXAgent, AccessibilityAgent, I18nAgent, DocumentationAgent,
-    DevOpsAgent, TesterAgent, SecurityAgent, ResilienceGuardAgent, CodeReviewerAgent, RefactoringAgent,
-    ComplianceAgent, ProjectCleanerAgent, AgentTrainerAgent, RetrospectiveAgent, ReadmeAgent, GitHubAgent
+    AccessibilityAgent,
+    AgentTrainerAgent,
+    ApiIntegrationAgent,
+    ArchitectAgent,
+    BackendAgent,
+    BusinessAnalystAgent,
+    CodeReviewerAgent,
+    ComplianceAgent,
+    CopywriterAgent,
+    DatabaseAgent,
+    DataEngineerAgent,
+    DevOpsAgent,
+    DocumentationAgent,
+    FinOpsAgent,
+    FrontendAgent,
+    GitHubAgent,
+    I18nAgent,
+    ImageGeneratorAgent,
+    MLAgent,
+    MobileAgent,
+    PerformanceAgent,
+    ProductOwnerAgent,
+    ProjectCleanerAgent,
+    PromptEngineerAgent,
+    ReadmeAgent,
+    RefactoringAgent,
+    ResilienceGuardAgent,
+    RetrospectiveAgent,
+    SecurityAgent,
+    TeamLeadAgent,
+    TesterAgent,
+    UIUXAgent,
+    WebResearchAgent,
 )
+from agents.orchestrator import Orchestrator
 
 
 class TestAgentSystem(unittest.TestCase):

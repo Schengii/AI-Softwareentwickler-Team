@@ -7,8 +7,8 @@ Ermöglicht asynchrone, entkoppelte Kommunikation zwischen Agenten und Metriken-
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
 from enum import Enum
+from typing import Any
 
 
 class MessageType(Enum):
@@ -26,7 +26,7 @@ class Message:
     sender: str                          # Agent-ID des Absenders
     recipient: str                       # Agent-ID des Empfängers
     content: Any                         # Nachrichteninhalt
-    task_id: Optional[str] = None        # Zugehörige Task-ID
+    task_id: str | None = None        # Zugehörige Task-ID
     timestamp: datetime = field(default_factory=datetime.now)
     metadata: dict = field(default_factory=dict)
 
@@ -39,10 +39,10 @@ class AgentTask:
     description: str                     # Aufgabenbeschreibung für den Agenten
     context: str = ""                    # Zusätzlicher Kontext (z.B. Nutzer-Anfrage)
     priority: int = 1                    # 1 = hoch, 2 = mittel, 3 = niedrig
-    project_dir: Optional[str] = None    # Projektverzeichnis für den agentischen Werkzeug-Loop (None = kein Datei-/Tool-Zugriff)
+    project_dir: str | None = None    # Projektverzeichnis für den agentischen Werkzeug-Loop (None = kein Datei-/Tool-Zugriff)
     allow_tools: bool = True             # Ob der Agent (bei gesetztem project_dir) Werkzeuge nutzen darf
     tools_read_only: bool = False        # True = nur read_file/list_files/search_code/run_tests (kein write_file/edit_file/run_command)
-    max_tool_iterations: Optional[int] = None  # Überschreibt config.MAX_AGENT_TOOL_ITERATIONS für diese Aufgabe
+    max_tool_iterations: int | None = None  # Überschreibt config.MAX_AGENT_TOOL_ITERATIONS für diese Aufgabe
 
 
 @dataclass
@@ -53,7 +53,7 @@ class AgentResult:
     agent_name: str
     success: bool
     content: str                         # Das eigentliche Ergebnis
-    error: Optional[str] = None          # Fehlermeldung falls success=False
+    error: str | None = None          # Fehlermeldung falls success=False
     duration_seconds: float = 0.0        # Wie lange die Aufgabe dauerte
     model_used: str = ""                 # Welches KI-Modell genutzt wurde
     prompt_tokens: int = 0               # Verbrauchte Prompt-Tokens

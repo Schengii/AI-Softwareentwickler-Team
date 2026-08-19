@@ -7,7 +7,7 @@ Kann auch direkte Git-Kommandos vorschlagen.
 """
 
 import subprocess
-import os
+
 from agents.base_agent import BaseAgent
 from config import BASE_DIR
 
@@ -82,7 +82,7 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
             (Erfolg, Ausgabe)
         """
         # Staging
-        stage_result = self._run_git("add", "-A")
+        self._run_git("add", "-A")
 
         # Commit
         result = subprocess.run(

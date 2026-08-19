@@ -25,57 +25,56 @@ Workflow:
 
 import asyncio
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
 
-from agents.base_agent import BaseAgent
-from agents.team_lead_agent import TeamLeadAgent
-from agents.department_lead_agent import DepartmentLeadAgent, DEPARTMENT_DEFINITIONS
-from agents.product_owner_agent import ProductOwnerAgent
-from agents.business_analyst_agent import BusinessAnalystAgent
-from agents.web_research_agent import WebResearchAgent
+from agents.accessibility_agent import AccessibilityAgent
+from agents.agent_trainer_agent import AgentTrainerAgent
+from agents.api_integration_agent import ApiIntegrationAgent
 from agents.architect_agent import ArchitectAgent
+from agents.backend_agent import BackendAgent
+from agents.base_agent import BaseAgent
+from agents.business_analyst_agent import BusinessAnalystAgent
+from agents.code_reviewer_agent import CodeReviewerAgent
+from agents.compliance_agent import ComplianceAgent
+from agents.copywriter_agent import CopywriterAgent
+from agents.data_engineer_agent import DataEngineerAgent
+from agents.database_agent import DatabaseAgent
+from agents.department_lead_agent import DEPARTMENT_DEFINITIONS, DepartmentLeadAgent
+from agents.devops_agent import DevOpsAgent
+from agents.documentation_agent import DocumentationAgent
 from agents.finops_agent import FinOpsAgent
 from agents.frontend_agent import FrontendAgent
-from agents.backend_agent import BackendAgent
-from agents.database_agent import DatabaseAgent
-from agents.api_integration_agent import ApiIntegrationAgent
-from agents.data_engineer_agent import DataEngineerAgent
-from agents.mobile_agent import MobileAgent
-from agents.ml_agent import MLAgent
-from agents.prompt_engineer_agent import PromptEngineerAgent
-from agents.performance_agent import PerformanceAgent
-from agents.image_generator_agent import ImageGeneratorAgent
-from agents.copywriter_agent import CopywriterAgent
-from agents.ui_ux_agent import UIUXAgent
-from agents.accessibility_agent import AccessibilityAgent
-from agents.i18n_agent import I18nAgent
-from agents.documentation_agent import DocumentationAgent
-from agents.devops_agent import DevOpsAgent
-from agents.tester_agent import TesterAgent
-from agents.security_agent import SecurityAgent
-from agents.resilience_guard_agent import ResilienceGuardAgent
-from agents.code_reviewer_agent import CodeReviewerAgent
-from agents.refactoring_agent import RefactoringAgent
-from agents.compliance_agent import ComplianceAgent
-from agents.project_cleaner_agent import ProjectCleanerAgent
-from agents.agent_trainer_agent import AgentTrainerAgent
-from agents.retrospective_agent import RetrospectiveAgent
-from agents.readme_agent import ReadmeAgent
 from agents.github_agent import GitHubAgent
-
-from core.task_manager import TaskManager
-from core.result_aggregator import ResultAggregator
-from core.message_bus import AgentResult, AgentTask
-from core.workspace import WorkspaceManager
-from core.verifier import ProjectVerifier
-from memory.conversation_history import ConversationHistory
+from agents.i18n_agent import I18nAgent
+from agents.image_generator_agent import ImageGeneratorAgent
+from agents.ml_agent import MLAgent
+from agents.mobile_agent import MobileAgent
+from agents.performance_agent import PerformanceAgent
+from agents.product_owner_agent import ProductOwnerAgent
+from agents.project_cleaner_agent import ProjectCleanerAgent
+from agents.prompt_engineer_agent import PromptEngineerAgent
+from agents.readme_agent import ReadmeAgent
+from agents.refactoring_agent import RefactoringAgent
+from agents.resilience_guard_agent import ResilienceGuardAgent
+from agents.retrospective_agent import RetrospectiveAgent
+from agents.security_agent import SecurityAgent
+from agents.team_lead_agent import TeamLeadAgent
+from agents.tester_agent import TesterAgent
+from agents.ui_ux_agent import UIUXAgent
+from agents.web_research_agent import WebResearchAgent
 from config import (
-    ORCHESTRATOR_MODEL,
-    AUTO_SAVE_WORKSPACE,
-    MAX_VERIFICATION_ITERATIONS,
-    ENABLE_DEPARTMENT_LEAD_EXECUTION,
     AGENT_MAX_TOOL_ITERATIONS,
+    AUTO_SAVE_WORKSPACE,
+    ENABLE_DEPARTMENT_LEAD_EXECUTION,
+    MAX_VERIFICATION_ITERATIONS,
+    ORCHESTRATOR_MODEL,
 )
+from core.message_bus import AgentResult, AgentTask
+from core.result_aggregator import ResultAggregator
+from core.task_manager import TaskManager
+from core.verifier import ProjectVerifier
+from core.workspace import WorkspaceManager
+from memory.conversation_history import ConversationHistory
 
 # Reine Prüf-/Berichts-Agenten: sollen bestehenden Code LESEN und bewerten, aber nicht
 # selbst umschreiben (das ist Aufgabe von refactoring/backend/etc.) – spart nebenbei auch
@@ -163,7 +162,7 @@ class Orchestrator:
     async def process(
         self,
         user_request: str,
-        status_callback: Optional[StatusCallback] = None,
+        status_callback: StatusCallback | None = None,
     ) -> str:
         overall_start_time = time.monotonic()
 
@@ -554,7 +553,7 @@ class Orchestrator:
     async def _run_agents_parallel(
         self,
         agent_tasks: list[AgentTask],
-        notify: Optional[Callable[[str], None]] = None,
+        notify: Callable[[str], None] | None = None,
     ) -> list[AgentResult]:
         async def _wrapped(task: AgentTask) -> AgentResult:
             res = await self._run_single_agent(task)
@@ -574,7 +573,7 @@ class Orchestrator:
         user_request: str,
         results: list[AgentResult],
         total_duration: float,
-    ) -> Optional[AgentResult]:
+    ) -> AgentResult | None:
         retro_agent = self._agents.get("retrospective")
         if not retro_agent:
             return None
@@ -599,7 +598,7 @@ class Orchestrator:
         user_request: str,
         results: list[AgentResult],
         retro_content: str,
-    ) -> Optional[AgentResult]:
+    ) -> AgentResult | None:
         trainer = self._agents.get("agent_trainer")
         if not trainer:
             return None
@@ -630,6 +629,7 @@ class Orchestrator:
         if trainer_result and trainer_result.success and trainer_result.content:
             try:
                 import re
+
                 from memory.agent_knowledge_base import agent_knowledge_base
                 lines = trainer_result.content.splitlines()
                 current_agent = None
@@ -704,7 +704,7 @@ class Orchestrator:
             "```\n",
         ]
 
-        for dept_id, info in DEPARTMENT_DEFINITIONS.items():
+        for info in DEPARTMENT_DEFINITIONS.values():
             members = info["members"]
             member_names = [f"`{m}` ({self._agents[m].name})" for m in members if m in self._agents]
             sections.append(f"### 👔 {info['title']}")

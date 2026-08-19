@@ -2,8 +2,8 @@
 agents/orchestrator.py – Der Hauptagent (Orchestrator)
 
 Koordiniert das 30-köpfige KI-Softwareentwickler-Team mit mehrphasigem Workflow,
-iterativer Review-Schleife, automatischer Projekt-Hygiene, Workspace-Dateisystem,
-genauer Token- & Zeitauswertung und abschließender Retrospektive.
+Live-Statusmeldungen pro Agent und Phase, iterativer Review-Schleife,
+automatischer Projekt-Hygiene, Workspace-Dateisystem und abschließender Retrospektive.
 """
 
 import asyncio
@@ -130,7 +130,7 @@ class Orchestrator:
             if status_callback:
                 status_callback(msg)
 
-        notify("⚡ KI-Team aktiviert: Analysiere Aufgabenstellung...")
+        notify("⚡ [bold cyan]Phase 0/5:[/bold cyan] KI-Team aktiviert: Analysiere und plane Aufgabenstellung...")
         self._history.add_user_message(user_request)
 
         context = self._history.get_context_string(max_messages=4)
@@ -147,11 +147,10 @@ class Orchestrator:
             return response
 
         agent_names = [self._agents[t.agent_id].name for t in agent_tasks if t.agent_id in self._agents]
-        notify(f"📋 Plan: {task_summary}")
-        notify(f"👥 Eingesetzte Spezialisten ({len(agent_names)}): {', '.join(agent_names)}")
-        notify(f"⚙️  Team arbeitet im Hintergrund an der Implementierung...")
+        notify(f"📋 [bold white]Plan:[/bold white] {task_summary}")
+        notify(f"👥 [bold white]Eingesetzte Spezialisten ({len(agent_names)}):[/bold white] {', '.join(agent_names)}")
 
-        # Phasen-Ausführung
+        # Phasen-Ausführung mit Live-Status pro Agent
         results = await self._run_phased_execution(
             user_request=user_request,
             agent_tasks=agent_tasks,
@@ -172,10 +171,10 @@ class Orchestrator:
                     saved_files_count += len(files)
 
             if saved_files_count > 0:
-                notify(f"💾 {saved_files_count} Projektdateien im Workspace gespeichert.")
+                notify(f"💾 [green]Workspace:[/green] {saved_files_count} Projektdateien in `workspace/{project_slug}/` gespeichert.")
 
         # Synthese
-        notify("🔍 Hauptagent prüft und konsolidiert alle Teilergebnisse...")
+        notify("🔍 [bold cyan]Phase 5/5:[/bold cyan] Hauptagent (Orchestrator) führt Gesamtergebnis zusammen...")
         final_solution, synth_tokens = await self._result_aggregator.synthesize(
             user_request=user_request,
             task_summary=task_summary,
@@ -183,7 +182,7 @@ class Orchestrator:
         )
 
         # Retrospektive
-        notify("📊 Erstelle abschließende Projektübersicht & Lessons Learned...")
+        notify("📊 [bold cyan]Abschluss:[/bold cyan] Retrospektive-Agent erstellt Lessons Learned & Kennzahlen...")
         total_duration = time.monotonic() - overall_start_time
 
         retro_result = await self._run_retrospective(
@@ -208,7 +207,7 @@ class Orchestrator:
         )
 
         self._history.add_assistant_message(final_output)
-        notify("✅ Projekt erfolgreich abgeschlossen! Team ist wieder einsatzbereit.")
+        notify("✅ [bold green]Fertig![/bold green] Alle Agenten haben ihre Arbeit erfolgreich beendet.")
         return final_output
 
     def get_team_info(self) -> str:
@@ -283,26 +282,45 @@ class Orchestrator:
             and t.agent_id not in PHASE_4_AGENTS
         ]
 
+        # ── Phase 1: Führung, Planung & Recherche ──
         if phase1_tasks:
-            notify(f"📋 Phase 1: Führung, Planung & Recherche ({len(phase1_tasks)} Agenten)...")
+            notify(f"📋 [bold cyan]Phase 1/5: Planung & Führung[/bold cyan] ({len(phase1_tasks)} Agenten)...")
             for task in phase1_tasks:
+                agent_name = self._agents[task.agent_id].name if task.agent_id in self._agents else task.agent_id
+                notify(f"  ▶️ [yellow]Arbeitet:[/yellow] {agent_name}...")
+                start_t = time.monotonic()
                 result = await self._run_single_agent(task)
+                dur = time.monotonic() - start_t
                 all_results.append(result)
+                status_ico = "✅ [green]Fertig[/green]" if result.success else "❌ [red]Fehler[/red]"
+                notify(f"  {status_ico}: {agent_name} ({dur:.1f}s)")
                 if result.success:
                     phase1_context += f"\n\n## {result.agent_name}\n{result.content[:2000]}"
 
+        # ── Phase 2: Architektur & FinOps ──
         if phase2_tasks:
-            notify(f"🏛️  Phase 2: Architektur & FinOps ({len(phase2_tasks)} Agenten)...")
+            notify(f"🏛️  [bold cyan]Phase 2/5: Architektur & FinOps[/bold cyan] ({len(phase2_tasks)} Agenten)...")
             for task in phase2_tasks:
                 if phase1_context:
                     task.context += f"\n\n## Produkt- & Führungskontext\n{phase1_context[:2500]}"
+                agent_name = self._agents[task.agent_id].name if task.agent_id in self._agents else task.agent_id
+                notify(f"  ▶️ [yellow]Arbeitet:[/yellow] {agent_name}...")
+                start_t = time.monotonic()
                 result = await self._run_single_agent(task)
+                dur = time.monotonic() - start_t
                 all_results.append(result)
+                status_ico = "✅ [green]Fertig[/green]" if result.success else "❌ [red]Fehler[/red]"
+                notify(f"  {status_ico}: {agent_name} ({dur:.1f}s)")
                 if result.success:
                     phase2_context += f"\n\n## {result.agent_name}\n{result.content[:2000]}"
 
+        # ── Phase 3: Parallele Kern-Entwicklung ──
         if parallel_tasks:
-            notify(f"⚡ Phase 3: {len(parallel_tasks)} Spezialisten arbeiten parallel im Hintergrund...")
+            active_names = [self._agents[t.agent_id].name for t in parallel_tasks if t.agent_id in self._agents]
+            notify(f"⚡ [bold cyan]Phase 3/5: Implementierung[/bold cyan] ({len(parallel_tasks)} Spezialisten parallel)...")
+            for name in active_names:
+                notify(f"  ▶️ [yellow]Arbeitet parallel:[/yellow] {name}")
+
             combined_blueprint = ""
             if phase2_context:
                 combined_blueprint += f"\n\n## Architektur-Vorgaben:\n{phase2_context[:2000]}"
@@ -313,16 +331,23 @@ class Orchestrator:
                 for task in parallel_tasks:
                     task.context += combined_blueprint
 
-            parallel_results = await self._run_agents_parallel(parallel_tasks)
+            parallel_results = await self._run_agents_parallel(parallel_tasks, notify=notify)
             all_results.extend(parallel_results)
 
+        # ── Phase 4: Review, Hygiene & Compliance ──
         if phase4_tasks:
-            notify(f"🔍 Phase 4: Audit, Hygiene & Review ({len(phase4_tasks)} Agenten)...")
+            notify(f"🔍 [bold cyan]Phase 4/5: Review, Hygiene & Compliance[/bold cyan] ({len(phase4_tasks)} Agenten)...")
             code_context = self._format_results_for_review(all_results)
             for task in phase4_tasks:
+                agent_name = self._agents[task.agent_id].name if task.agent_id in self._agents else task.agent_id
+                notify(f"  ▶️ [yellow]Prüft Code & Struktur:[/yellow] {agent_name}...")
                 task.description += f"\n\nPrüfe die folgenden Ergebnisse:\n{code_context[:3500]}"
+                start_t = time.monotonic()
                 result = await self._run_single_agent(task)
+                dur = time.monotonic() - start_t
                 all_results.append(result)
+                status_ico = "✅ [green]Geprüft[/green]" if result.success else "❌ [red]Fehler[/red]"
+                notify(f"  {status_ico}: {agent_name} ({dur:.1f}s)")
 
         all_results = await self._run_iterative_fix_loop(
             user_request=user_request,
@@ -350,7 +375,7 @@ class Orchestrator:
         if not has_critical or MAX_REVIEW_ITERATIONS <= 0:
             return all_results
 
-        notify("🛠️  Code-Reviewer meldet Nachbesserungsbedarf – starte Fix-Schleife...")
+        notify("🛠️  [yellow]Code-Reviewer meldet Nachbesserungsbedarf[/yellow] – starte automatische Fix-Schleife...")
         tasks_to_fix = [t for t in agent_tasks if t.agent_id in CODE_PRODUCING_AGENTS]
 
         if tasks_to_fix:
@@ -363,7 +388,7 @@ class Orchestrator:
                 )
                 for t in tasks_to_fix
             ]
-            fixed_results = await self._run_agents_parallel(fix_tasks)
+            fixed_results = await self._run_agents_parallel(fix_tasks, notify=notify)
             fixed_ids = {r.agent_id for r in fixed_results if r.success}
             all_results = [r for r in all_results if r.agent_id not in fixed_ids]
             all_results.extend([r for r in fixed_results if r.success])
@@ -383,9 +408,20 @@ class Orchestrator:
             )
         return await agent.execute(task)
 
-    async def _run_agents_parallel(self, agent_tasks: list[AgentTask]) -> list[AgentResult]:
+    async def _run_agents_parallel(
+        self,
+        agent_tasks: list[AgentTask],
+        notify: Optional[Callable[[str], None]] = None,
+    ) -> list[AgentResult]:
+        async def _wrapped(task: AgentTask) -> AgentResult:
+            res = await self._run_single_agent(task)
+            if notify:
+                status_ico = "✅ [green]Abgeschlossen[/green]" if res.success else "❌ [red]Fehler[/red]"
+                notify(f"  {status_ico}: {res.agent_name} ({res.duration_seconds:.1f}s)")
+            return res
+
         results = await asyncio.gather(
-            *[self._run_single_agent(task) for task in agent_tasks],
+            *[_wrapped(task) for task in agent_tasks],
             return_exceptions=False,
         )
         return list(results)

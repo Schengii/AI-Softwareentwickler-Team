@@ -18,14 +18,11 @@ from core.token_guard import token_guard
 # Globaler Gemini-Client
 _gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Fallback-Kette: Von High-End über Standard bis Lite/Alternative
+# Aktuelle, verifizierte Fallback-Kette
 MODEL_FALLBACKS = {
-    "claude-3-7-sonnet": ["claude-3-5-haiku", "gemini-2.5-pro", "gemini-2.5-flash"],
-    "claude-3-5-sonnet": ["claude-3-5-haiku", "gemini-2.5-pro", "gemini-2.5-flash"],
-    "gemini-2.5-pro": ["gemini-2.5-flash", "gemini-2.5-flash-lite"],
-    "gemini-3.6-flash": ["gemini-2.5-flash", "gemini-2.5-flash-lite"],
-    "gemini-2.5-flash": ["gemini-2.5-flash-lite"],
-    "gemini-2.5-flash-lite": ["gemini-2.0-flash"],
+    "claude-3-5-sonnet": ["gemini-3.6-flash", "gemini-3.1-flash-lite"],
+    "gemini-3.6-flash": ["gemini-3.1-flash-lite", "gemini-flash-latest"],
+    "gemini-3.1-flash-lite": ["gemini-3.6-flash", "gemini-flash-latest"],
 }
 
 MAX_RETRIES = 3
@@ -45,7 +42,7 @@ class LLMResponse:
 class GeminiClient:
     """Wrapper für die Google Gemini API."""
 
-    def __init__(self, model_name: str = "gemini-2.5-flash"):
+    def __init__(self, model_name: str = "gemini-3.6-flash"):
         self.model_name = model_name
 
     async def generate_with_usage(
@@ -70,7 +67,6 @@ class GeminiClient:
         if not _gemini_client:
             raise RuntimeError("Gemini Client nicht initialisiert. Bitte GEMINI_API_KEY setzen.")
 
-        # Prüfe, ob das aktuelle Modell als erschöpft markiert ist
         start_model = self.model_name
         models_to_try = [start_model] + MODEL_FALLBACKS.get(start_model, [])
         models_to_try = [m for m in models_to_try if not token_guard.is_model_exhausted(m)] or [start_model]
@@ -114,10 +110,9 @@ class GeminiClient:
                 except Exception as e:
                     last_error = e
                     err_str = str(e)
-                    # Quota / ResourceExhausted Fehler erkennen
                     if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota" in err_str:
                         token_guard.mark_model_exhausted(model, "429 Quota Exceeded")
-                        break  # Sofort zum nächsten günstigeren Modell in der Fallback-Kette
+                        break
                     elif "503" in err_str or "UNAVAILABLE" in err_str:
                         wait = RETRY_DELAY_SECONDS * (attempt + 1)
                         await asyncio.sleep(wait)
@@ -157,8 +152,7 @@ class ClaudeClient:
         self, prompt: str, system_prompt: Optional[str] = None
     ) -> LLMResponse:
         if not self._client:
-            # Fallback zu Gemini wenn Claude SDK/Key nicht bereitsteht
-            gemini_fallback = GeminiClient(model_name="gemini-2.5-flash")
+            gemini_fallback = GeminiClient(model_name="gemini-3.6-flash")
             return await gemini_fallback.generate_with_usage(prompt, system_prompt)
 
         messages = [{"role": "user", "content": prompt}]
@@ -190,8 +184,7 @@ class ClaudeClient:
             err_str = str(e)
             if "429" in err_str or "rate_limit" in err_str:
                 token_guard.mark_model_exhausted(self.model_name, "Claude Rate Limit")
-            # Automatischer Failover zu Gemini
-            gemini_client = GeminiClient(model_name="gemini-2.5-flash")
+            gemini_client = GeminiClient(model_name="gemini-3.6-flash")
             return await gemini_client.generate_with_usage(prompt, system_prompt)
 
     async def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
@@ -203,7 +196,7 @@ class LLMFactory:
     """Factory zum Erstellen von LLM-Instanzen basierend auf Konfiguration."""
 
     @staticmethod
-    def create_gemini(model_name: str = "gemini-2.5-flash") -> GeminiClient:
+    def create_gemini(model_name: str = "gemini-3.6-flash") -> GeminiClient:
         return GeminiClient(model_name=model_name)
 
     @staticmethod

@@ -15,14 +15,14 @@ GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 
 # ──────────────────────────────────────────
-# Modell-Konfiguration (Tiered & Multi-Provider)
+# Modell-Konfiguration (Aktuelle Gemini v3.6 / v3.1 / Flash Modelle)
 # ──────────────────────────────────────────
-HEAVY_MODEL: str = os.getenv("HEAVY_MODEL", "gemini-2.5-pro")
-STANDARD_MODEL: str = os.getenv("STANDARD_MODEL", "gemini-2.5-flash")
-LITE_MODEL: str = os.getenv("LITE_MODEL", "gemini-2.5-flash-lite")
+HEAVY_MODEL: str = os.getenv("HEAVY_MODEL", "gemini-3.6-flash")
+STANDARD_MODEL: str = os.getenv("STANDARD_MODEL", "gemini-3.6-flash")
+LITE_MODEL: str = os.getenv("LITE_MODEL", "gemini-3.1-flash-lite")
 
-ORCHESTRATOR_MODEL: str = os.getenv("ORCHESTRATOR_MODEL", STANDARD_MODEL)
-DEFAULT_AGENT_MODEL: str = os.getenv("DEFAULT_AGENT_MODEL", STANDARD_MODEL)
+ORCHESTRATOR_MODEL: str = os.getenv("ORCHESTRATOR_MODEL", "gemini-3.6-flash")
+DEFAULT_AGENT_MODEL: str = os.getenv("DEFAULT_AGENT_MODEL", "gemini-3.6-flash")
 
 # Rollen- und aufgabengerechte Modell-Zuordnung (30 Spezialisten)
 AGENT_MODELS: dict[str, str] = {

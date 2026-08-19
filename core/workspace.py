@@ -42,11 +42,9 @@ class WorkspaceManager:
 
     def get_project_dir(self, project_name: str) -> Path:
         """Gibt den sicheren Pfad zum Projektverzeichnis zurück."""
-        # Bereinige Projektnamen gegen Directory-Traversal
         clean_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', project_name).strip('_') or "default_project"
         project_path = (self.base_dir / clean_name).resolve()
         
-        # Sicherheitscheck: Muss innerhalb des Workspace-Verzeichnisses liegen
         if not str(project_path).startswith(str(self.base_dir)):
             raise ValueError(f"Ungültiger Projektpfad: {project_name}")
 
@@ -64,55 +62,51 @@ class WorkspaceManager:
 
         Unterstützte Muster:
         1. ```python:src/main.py
-           ... code ...
-           ```
-        2. ```yaml:docker-compose.yml
-           ... code ...
-           ```
-        3. ### Datei: `src/utils/helpers.py`
-           ```python
-           ... code ...
-           ```
+        2. ### `src/main.py` \n ```python
+        3. #### `app.py` \n ```python
+        4. ### 📄 `requirements.txt` \n ```text
         """
         project_dir = self.get_project_dir(project_name)
         saved_files: list[WorkspaceFile] = []
+        matches_found: dict[str, str] = {}
 
-        # Muster 1: Code-Fence mit Doppelpunkt (z. B. ```python:path/to/file.ext oder ```:path/to/file.ext)
+        # Muster 1: Code-Fence mit Doppelpunkt (```python:src/main.py)
         pattern_fence_colon = re.compile(
             r'```(?:[a-zA-Z0-9_\-]+)?:([a-zA-Z0-9_\-\./\\]+)\r?\n(.*?)```',
             re.DOTALL
         )
-
-        # Muster 2: Header-Deklaration gefolgt von Codeblock: ### Datei: `path/to/file` \n ```...
-        pattern_header_fence = re.compile(
-            r'(?:###|\*\*|#)?\s*(?:Datei|File):\s*[`\'"]?([a-zA-Z0-9_\-\./\\]+)[`\'"]?\s*\r?\n\s*```(?:[a-zA-Z0-9_\-]+)?\r?\n(.*?)```',
-            re.IGNORECASE | re.DOTALL
-        )
-
-        matches_found: dict[str, str] = {}
-
-        # Scan nach Muster 1
         for match in pattern_fence_colon.finditer(text_content):
             rel_path = match.group(1).strip()
             content = match.group(2)
             matches_found[rel_path] = content
 
-        # Scan nach Muster 2
+        # Muster 2: Header-Deklaration gefolgt von Codeblock (### 📄 `requirements.txt` \n ```text\n...)
+        pattern_header_fence = re.compile(
+            r'(?:#{1,6}|\*\*)\s*(?:[^\n`\'"]*?)[`\'"]([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9]+)[`\'"][^\n]*?\r?\n\s*```(?:[a-zA-Z0-9_\-]+)?\r?\n(.*?)```',
+            re.IGNORECASE | re.DOTALL
+        )
         for match in pattern_header_fence.finditer(text_content):
+            rel_path = match.group(1).strip()
+            content = match.group(2)
+            matches_found[rel_path] = content
+
+        # Muster 3: Explizite Datei-Deklaration (Datei: `src/main.py`)
+        pattern_explicit_file = re.compile(
+            r'(?:###|\*\*|#)?\s*(?:Datei|File):\s*[`\'"]?([a-zA-Z0-9_\-\./\\]+)[`\'"]?\s*\r?\n\s*```(?:[a-zA-Z0-9_\-]+)?\r?\n(.*?)```',
+            re.IGNORECASE | re.DOTALL
+        )
+        for match in pattern_explicit_file.finditer(text_content):
             rel_path = match.group(1).strip()
             content = match.group(2)
             matches_found[rel_path] = content
 
         # Speichere alle gefundenen Dateien ab
         for rel_path, content in matches_found.items():
-            # Bereinige relative Pfadangabe
             clean_rel = rel_path.replace("\\", "/").lstrip("/")
-            # Vermeide .. im Pfad
             clean_rel = re.sub(r'\.\./', '', clean_rel)
 
             target_file = (project_dir / clean_rel).resolve()
 
-            # Sicherheitscheck: Datei muss im project_dir liegen
             if not str(target_file).startswith(str(project_dir)):
                 continue
 

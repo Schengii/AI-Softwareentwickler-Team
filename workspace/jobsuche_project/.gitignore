@@ -1,7 +1,0 @@
-# Projekt-Hygiene
-__pycache__/
-*.py[cod]
-.venv/
-.pytest_cache/
-.DS_Store
-*.log

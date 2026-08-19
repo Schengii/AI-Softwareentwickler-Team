@@ -26,8 +26,8 @@ class TestCoreModules(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_available_agents_structure(self):
-        """Prüft, dass alle 32 Agenten im TaskManager mit Namen und Phase konfiguriert sind."""
-        self.assertEqual(len(AVAILABLE_AGENTS), 32)
+        """Prüft, dass alle 33 Agenten im TaskManager mit Namen und Phase konfiguriert sind."""
+        self.assertEqual(len(AVAILABLE_AGENTS), 33)
         for agent_id, data in AVAILABLE_AGENTS.items():
             self.assertIn("name", data)
             self.assertIn("phase", data)

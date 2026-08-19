@@ -1,0 +1,10 @@
+# Projekt-Hygiene
+__pycache__/
+*.py[cod]
+.env
+.pytest_cache/
+.venv/
+alembic/versions/*.py # Nur Migrationen committen, keine lokalen DB-Files
+*.log
+.DS_Store
+.dockerignore

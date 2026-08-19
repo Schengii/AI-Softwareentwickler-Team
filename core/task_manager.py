@@ -144,6 +144,11 @@ AVAILABLE_AGENTS = {
         "phase": 3,
         "description": "OWASP Top 10, Auth-Audits, Input-Sanitization, Security-Headers.",
     },
+    "resilience_guard": {
+        "name": "Resilience-Guard (QA & Fault-Tolerance)",
+        "phase": 3,
+        "description": "Circuit Breaker, Retries mit Backoff/Jitter, Ausfalltoleranz, Graceful Degradation & Chaos Tests.",
+    },
 
     # ── Phase 4: Review, Refactoring, Compliance & Hygiene
     "code_reviewer": {
@@ -211,7 +216,7 @@ Verfügbare Agenten-IDs:
 team_lead, product_owner, business_analyst, web_research,
 architect, finops,
 frontend, backend, database, api_integration, data_engineer, mobile, ml, prompt_engineer, performance,
-image_generator, copywriter, ui_ux, accessibility, i18n, documentation, devops, tester, security,
+image_generator, copywriter, ui_ux, accessibility, i18n, documentation, devops, tester, security, resilience_guard,
 code_reviewer, refactoring, compliance, project_cleaner, agent_trainer, readme, github
 
 Wichtige Regeln:

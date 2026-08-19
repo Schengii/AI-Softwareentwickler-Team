@@ -42,8 +42,9 @@ HELP_TEXT = """
 |---|---|
 | `/projekte` | Listet alle bestehenden Projekte im Workspace auf |
 | `/load <pfad/name>` | Lädt ein bestehendes Projekt (Workspace oder externer Pfad) zur Weiterentwicklung |
+| `/tokens` | Zeigt den aktuellen Tokenverbrauch und verbleibende Kontingente an |
 | `/rag <begriff>` | Führt eine semantische Code-Recherche im geladenen Projekt durch |
-| `/team` | Zeigt alle 5 Fachbereiche, Teamleiter und 32 Spezialisten an |
+| `/team` | Zeigt alle 5 Fachbereiche, Teamleiter und 33 Spezialisten an |
 | `/workspace [projekt]` | Listet alle generierten Dateien im Projektordner auf |
 | `/export [projekt]` | Packt das Projektverzeichnis in ein ZIP-Archiv |
 | `/run-tests [projekt]` | Führt automatische Unit-Tests im Projekt aus |
@@ -247,6 +248,11 @@ class CLIInterface:
                     console.print(f"📄 `{r['file']}` (Zeile {r['line_start']}):\n```python\n{r['chunk'][:400]}\n```")
             else:
                 console.print(f"Keine relevanten Codeblöcke für '{query_str}' gefunden (Index ist leer oder keine Übereinstimmung). Lade zuerst ein Projekt mit `/load`.", style="yellow")
+
+        elif cmd in ("/tokens", "/token", "/verbrauch", "/quota", "/kosten"):
+            from core.quota_estimator import QuotaEstimator
+            table_md = QuotaEstimator.format_markdown_table()
+            console.print(Panel(Markdown(table_md), title="🪙 Live Token & Quota Tracker", border_style="gold1"))
 
         elif cmd in ("/projekte", "/projects", "/list"):
             self._list_all_projects()

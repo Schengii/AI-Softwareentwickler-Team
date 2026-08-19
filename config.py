@@ -74,6 +74,7 @@ AGENT_MODELS: dict[str, str] = {
     "devops":            os.getenv("DEVOPS_MODEL",         STANDARD_MODEL),
     "tester":            os.getenv("TESTER_MODEL",         "groq:openai/gpt-oss-120b"),
     "security":          os.getenv("SECURITY_MODEL",       "deepseek:deepseek-chat"),
+    "resilience_guard":  os.getenv("RESILIENCE_MODEL",     "groq:openai/gpt-oss-120b"),
 
     # ── Phase 4: Review, Refactoring, Compliance & Hygiene ──
     "code_reviewer":     os.getenv("CODE_REVIEWER_MODEL",  "deepseek:deepseek-chat"),

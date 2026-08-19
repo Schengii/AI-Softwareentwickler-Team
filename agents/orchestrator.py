@@ -46,6 +46,7 @@ from agents.documentation_agent import DocumentationAgent
 from agents.devops_agent import DevOpsAgent
 from agents.tester_agent import TesterAgent
 from agents.security_agent import SecurityAgent
+from agents.resilience_guard_agent import ResilienceGuardAgent
 from agents.code_reviewer_agent import CodeReviewerAgent
 from agents.refactoring_agent import RefactoringAgent
 from agents.compliance_agent import ComplianceAgent
@@ -113,6 +114,7 @@ class Orchestrator:
             "devops":            DevOpsAgent(),
             "tester":            TesterAgent(),
             "security":          SecurityAgent(),
+            "resilience_guard":  ResilienceGuardAgent(),
 
             # Phase 4: Review, Refactoring, Compliance & Hygiene
             "code_reviewer":     CodeReviewerAgent(),
@@ -315,7 +317,7 @@ class Orchestrator:
             notify(f"  📥 [bold green]Rückmeldung an Hauptagent:[/bold green] {lead.name} hat Assets & Texte freigegeben.")
 
         # ── 4. FACHBEREICH: Qualität, DevOps & Security (qa_lead) ──
-        qa_members = ["devops", "tester", "security", "github"]
+        qa_members = ["devops", "tester", "security", "resilience_guard", "github"]
         qa_tasks = [task_map[aid] for aid in qa_members if aid in task_map]
 
         if qa_tasks:

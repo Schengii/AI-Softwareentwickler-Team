@@ -29,6 +29,7 @@ from agents.documentation_agent import DocumentationAgent
 from agents.devops_agent import DevOpsAgent
 from agents.tester_agent import TesterAgent
 from agents.security_agent import SecurityAgent
+from agents.resilience_guard_agent import ResilienceGuardAgent
 from agents.code_reviewer_agent import CodeReviewerAgent
 from agents.refactoring_agent import RefactoringAgent
 from agents.compliance_agent import ComplianceAgent
@@ -66,6 +67,7 @@ __all__ = [
     "DevOpsAgent",
     "TesterAgent",
     "SecurityAgent",
+    "ResilienceGuardAgent",
     "CodeReviewerAgent",
     "RefactoringAgent",
     "ComplianceAgent",

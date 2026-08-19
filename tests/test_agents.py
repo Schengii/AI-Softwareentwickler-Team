@@ -10,20 +10,20 @@ from agents import (
     ArchitectAgent, FinOpsAgent, FrontendAgent, BackendAgent, DatabaseAgent,
     ApiIntegrationAgent, DataEngineerAgent, MobileAgent, MLAgent, PromptEngineerAgent, PerformanceAgent,
     ImageGeneratorAgent, CopywriterAgent, UIUXAgent, AccessibilityAgent, I18nAgent, DocumentationAgent,
-    DevOpsAgent, TesterAgent, SecurityAgent, CodeReviewerAgent, RefactoringAgent,
+    DevOpsAgent, TesterAgent, SecurityAgent, ResilienceGuardAgent, CodeReviewerAgent, RefactoringAgent,
     ComplianceAgent, ProjectCleanerAgent, AgentTrainerAgent, RetrospectiveAgent, ReadmeAgent, GitHubAgent
 )
 
 
 class TestAgentSystem(unittest.TestCase):
-    """Prüft die Initialisierung und Konfiguration aller 30 Agenten."""
+    """Prüft die Initialisierung und Konfiguration aller 33 Agenten."""
 
     def setUp(self):
         self.orchestrator = Orchestrator()
 
-    def test_all_30_agents_registered(self):
-        """Stellt sicher, dass alle 32 Spezialisten im Team registriert sind."""
-        self.assertEqual(len(self.orchestrator._agents), 32)
+    def test_all_33_agents_registered(self):
+        """Stellt sicher, dass alle 33 Spezialisten im Team registriert sind."""
+        self.assertEqual(len(self.orchestrator._agents), 33)
 
     def test_agent_instances_and_prompts(self):
         """Prüft, dass jeder Agent einen validen System-Prompt und eine eindeutige ID besitzt."""
@@ -52,6 +52,7 @@ class TestAgentSystem(unittest.TestCase):
             ("devops", DevOpsAgent),
             ("tester", TesterAgent),
             ("security", SecurityAgent),
+            ("resilience_guard", ResilienceGuardAgent),
             ("code_reviewer", CodeReviewerAgent),
             ("refactoring", RefactoringAgent),
             ("compliance", ComplianceAgent),

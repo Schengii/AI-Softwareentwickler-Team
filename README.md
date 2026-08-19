@@ -1,19 +1,19 @@
-# 🤖 KI-Softwareentwickler-Team (v4.2)
+# 🤖 KI-Softwareentwickler-Team (v4.3)
 
 <div align="center">
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Hierarchy](https://img.shields.io/badge/Fachbereichs--Hierarchie-5_Teamleiter-blue?style=for-the-badge)
-![Specialists](https://img.shields.io/badge/KI--Spezialisten-32_Agenten-success?style=for-the-badge)
+![Specialists](https://img.shields.io/badge/KI--Spezialisten-33_Agenten-success?style=for-the-badge)
+![Resilience-Guard](https://img.shields.io/badge/Resilience--Guard-Fault--Tolerance_&_CircuitBreaker-orange?style=for-the-badge)
 ![RAG](https://img.shields.io/badge/Codebase_RAG-In--Memory_BM25-orange?style=for-the-badge)
 ![MCP](https://img.shields.io/badge/MCP_Server-IDE_Ready-6941C6?style=for-the-badge)
 ![Web-UI](https://img.shields.io/badge/Web--Dashboard-Dark_Mode-2ea043?style=for-the-badge)
 ![Persistent-Learning](https://img.shields.io/badge/Persistente_Selbstoptimierung-Aktiv-success?style=for-the-badge)
 ![Sandbox-Validation](https://img.shields.io/badge/Sandbox_Auto--Validierung-Aktiv-blueviolet?style=for-the-badge)
-![Multi-Project](https://img.shields.io/badge/Multi--Projekt--Support-Aktiv-success?style=for-the-badge)
 
 **Ein autonomes, hierarchisch strukturiertes KI-Team für vollständige, token-optimierte Softwareentwicklung.**  
-32 hochspezialisierte KI-Experten – aufgeteilt in **5 Fachbereiche mit jeweils eigenem Teamleiter**, **persistantem Langzeit-Gedächtnis & automatischer Selbstoptimierung**, **Prompt-Engineering**, **WCAG 2.2 Barrierefreiheit (a11y)**, **integriertem RAG-Vektorindex**, **Model Context Protocol (MCP) für Cursor/Windsurf**, **Web-Dashboard**, **Sandbox-Code-Validierung**, **Multi-Projekt-Support**, **Tavily Live-Web-Recherche**, **DeepSeek Reasoning**, **Groq Turbo Inferenz** und Workspace-Dateisystem.
+33 hochspezialisierte KI-Experten – aufgeteilt in **5 Fachbereiche mit jeweils eigenem Teamleiter**, **Resilience-Guard (Circuit Breakers, Backoff, Graceful Degradation & Chaos Tests)**, **persistentem Langzeit-Gedächtnis & automatischer Selbstoptimierung**, **Prompt-Engineering**, **WCAG 2.2 Barrierefreiheit (a11y)**, **integriertem RAG-Vektorindex**, **Model Context Protocol (MCP)**, **Web-Dashboard**, **Sandbox-Code-Validierung**, **Tavily Live-Web-Recherche**, **DeepSeek Reasoning**, **Groq Turbo Inferenz** und Workspace-Dateisystem.
 
 </div>
 
@@ -23,13 +23,13 @@
 
 - [Hierarchische Team- & Fachbereichsstruktur (Grafik)](#teamstruktur)
 - [Kommunikations- & Delegations-Workflow](#kommunikations-workflow)
+- [🛡️ Neuer Spezialist: Resilience-Guard (QA & Fault-Tolerance)](#resilience-guard)
 - [🌐 Modernes Web-Dashboard & Visualisierung](#web-dashboard)
 - [🔌 MCP-Server: Einbindung in Cursor, Windsurf & Antigravity](#mcp-server)
 - [🔍 Lokales Codebase-RAG & Semantische Suche](#codebase-rag)
 - [🧪 Sandbox-Code-Validierung & Automatische Test-Execution](#sandbox-validierung)
 - [🧠 Persistente KI-Selbstoptimierung & Langzeitgedächtnis](#persistente-selbstoptimierung)
-- [📂 Multi-Projekt & Externe Projekte weiterentwickeln](#multi-projekt-support)
-- [🎯 Die 32 Spezialisten & Fachbereiche](#die-32-spezialisten)
+- [🎯 Die 33 Spezialisten & Fachbereiche](#die-33-spezialisten)
 - [🚀 Alle CLI-Befehle im Überblick](#cli-befehle)
 - [🧪 Automatisierte Tests](#tests)
 
@@ -64,19 +64,19 @@
  │ • Product │                   │ • Backend │                   │ • Image/  │                   │ • DevOps  │                   │ • Code-   │
  │   Owner   │                   │ • Frontend│                   │   SVG     │                   │ • Tester  │                   │   Reviewer│
  │ • Business│                   │ • Database│                   │ • Copy-   │                   │ • Security│                   │ • Refact- │
- │   Analyst │                   │ • API/Int.│                   │   writer  │                   │ • GitHub  │                   │   oring   │
- │ • Web-Res.│                   │ • DataEng.│                   │ • UI/UX   │                   └─────┬─────┘                   │ • Compli- │
- │ • Architekt                   │ • Mobile  │                   │ • a11y    │                         │                             ance    │
- │ • FinOps  │                   │ • ML / AI │                   │ • i18n    │                         │ 4. Meldet Ergebnis          │ • Cleaner │
- └─────┬─────┘                   │ • Prompt- │                   │ • Docs    │                         ▼                             │ • Trainer │
-       │                         │   Engineer│                   │ • Readme  │                   ┌───────────┐                   └─────┬─────┘
-       │ 4. Meldet Ergebnis      │ • Perform.│                   └─────┬─────┘                   │ 🛡️ Team-  │                         │
-       ▼                         └─────┬─────┘                         │                         │  leiter   │                         │ 4. Meldet Ergebnis
- ┌───────────┐                         │                               │ 4. Meldet Ergebnis      └─────┬─────┘                         ▼
- │ 👔 Team-  │                         │ 4. Meldet Ergebnis            ▼                               │                         ┌───────────┐
- │  leiter   │                         ▼                         ┌───────────┐                         │                         │ 🔍 Team-  │
- │  Planung  │                   ┌───────────┐                   │ 🎨 Team-  │                         │                         │  leiter   │
- └─────┬─────┘                   │ ⚡ Team-  │                   │  leiter   │                         │                         │Governance │
+ │   Analyst │                   │ • API/Int.│                   │   writer  │                   │ • Resil-  │                   │   oring   │
+ │ • Web-Res.│                   │ • DataEng.│                   │ • UI/UX   │                   │   ience   │                   │ • Compli- │
+ │ • Architekt                   │ • Mobile  │                   │ • a11y    │                   │   Guard   │                   │    ance   │
+ │ • FinOps  │                   │ • ML / AI │                   │ • i18n    │                   │ • GitHub  │                   │ • Cleaner │
+ └─────┬─────┘                   │ • Prompt- │                   │ • Docs    │                   └─────┬─────┘                   │ • Trainer │
+       │                         │   Engineer│                   │ • Readme  │                         │                         └─────┬─────┘
+       │ 4. Meldet Ergebnis      │ • Perform.│                   └─────┬─────┘                         │ 4. Meldet Ergebnis            │
+       ▼                         └─────┬─────┘                         │                               ▼                               │ 4. Meldet Ergebnis
+ ┌───────────┐                         │                               │ 4. Meldet Ergebnis      ┌───────────┐                         ▼
+ │ 👔 Team-  │                         │ 4. Meldet Ergebnis            ▼                         │ 🛡️ Team-  │                   ┌───────────┐
+ │  leiter   │                         ▼                         ┌───────────┐                   │  leiter   │                   │ 🔍 Team-  │
+ │  Planung  │                   ┌───────────┐                   │ 🎨 Team-  │                   │ QA/DevOps │                   │  leiter   │
+ └─────┬─────┘                   │ ⚡ Team-  │                   │  leiter   │                   └─────┬─────┘                   │Governance │
        │                         │  leiter   │                   │  Design   │                         │                         └─────┬─────┘
        │                         └─────┬─────┘                   └─────┬─────┘                         │                               │
        └───────────────────────────────┴───────────────┬───────────────┴───────────────────────────────┴───────────────────────────────┘
@@ -97,58 +97,24 @@
 
 ---
 
-## 🌐 Modernes Web-Dashboard & Visualisierung
+## 🛡️ Neuer Spezialist: Resilience-Guard (QA & Fault-Tolerance)
 
-Starte das interaktive Web-Dashboard:
-```bash
-python -m interface.web_dashboard
-```
-Öffne [http://localhost:8080](http://localhost:8080) in deinem Browser, um das 32-Agenten-Team im Dark-Mode zu visualisieren und Aufgaben direkt per Web einzugeben!
-
----
-
-## 🔌 MCP-Server: Einbindung in Cursor, Windsurf & Antigravity
-
-Stelle dein gesamtes KI-Entwicklerteam als **Model Context Protocol (MCP) Tool** für externe IDEs bereit:
-
-```json
-{
-  "mcpServers": {
-    "ai-team": {
-      "command": "python",
-      "args": ["C:/Users/sche-/Desktop/Programmieren Projekte/AI-Softwareentwickler-Team/interface/mcp_server.py"]
-    }
-  }
-}
-```
+Der [ResilienceGuardAgent (agents/resilience_guard_agent.py)](file:///c:/Users/sche-/Desktop/Programmieren%20Projekte/AI-Softwareentwickler-Team/agents/resilience_guard_agent.py) sichert Software gegen Ausfälle ab:
+- **Circuit Breaker:** Unterbricht Anfragen an ausgefallene Fremddienste, bevor der eigene Server überlastet.
+- **Smart Retries:** Exponentielles Backoff mit Jitter gegen Thundering-Herd-Probleme.
+- **Graceful Degradation:** Fällt nahtlos auf Caches oder Fallbacks zurück.
+- **Chaos Tests:** Schreibt gezielte Unit-Tests zur Simulation von Netzwerk-Timeouts und Verbindungsabbrüchen.
 
 ---
 
-## 🔍 Lokales Codebase-RAG & Semantische Suche
-
-Für sehr große bestehende Repositories (>100k Zeilen) indiziert der [CodeVectorIndex (core/vector_store.py)](file:///c:/Users/sche-/Desktop/Programmieren%20Projekte/AI-Softwareentwickler-Team/core/vector_store.py) Dateien vollautomatisch über BM25-Recherche:
-```bash
-/rag authenticate JWT
-```
-
----
-
-## 🧪 Sandbox-Code-Validierung & Schutz
-
-Direkt nach der Kern-Entwicklung durchlaufen alle generierten Python-, JSON- und YAML-Codeblöcke automatisch die [CodeSandbox (core/code_sandbox.py)](file:///c:/Users/sche-/Desktop/Programmieren%20Projekte/AI-Softwareentwickler-Team/core/code_sandbox.py):
-- **Statische Syntax-Prüfung:** AST-Parser erkennt Syntaxfehler, fehlende Imports oder Tab/Indent-Fehler sofort.
-- **Automatische Pytest-Ausführung:** Führt vorhandene `test_*.py` Dateien im Projektverzeichnis isoliert aus.
-
----
-
-## 🎯 Die 32 Spezialisten & Fachbereiche
+## 🎯 Die 33 Spezialisten & Fachbereiche
 
 | Fachbereich | Teamleiter | Spezialisten im Team |
 |---|---|---|
 | 🔵 **Planung, Analyse & Architektur** | `planning_lead` | `product_owner`, `business_analyst`, `web_research`, `architect`, `finops`, `team_lead` |
 | 🟢 **Software-Entwicklung** | `dev_lead` | `backend`, `frontend`, `database`, `api_integration`, `data_engineer`, `mobile`, `ml`, `prompt_engineer`, `performance` |
 | 🎨 **Design, Media & Content** | `creative_lead` | `image_generator`, `copywriter`, `ui_ux`, `accessibility`, `i18n`, `documentation`, `readme` |
-| 🟡 **Qualität, DevOps & Security** | `qa_lead` | `devops`, `tester`, `security`, `github` |
+| 🟡 **Qualität, DevOps & Security** | `qa_lead` | `devops`, `tester`, `security`, `resilience_guard`, `github` |
 | 🔴 **Excellence & Governance** | `governance_lead` | `code_reviewer`, `refactoring`, `compliance`, `project_cleaner`, `agent_trainer`, `retrospective` |
 
 ---
@@ -164,7 +130,7 @@ python main.py
 | `/projekte` | Listet alle bestehenden Projekte im Workspace auf |
 | `/load <pfad/name>` | Lädt ein bestehendes Projekt (Workspace oder externer Pfad) zur Weiterentwicklung |
 | `/rag <begriff>` | Führt eine semantische Code-Recherche im geladenen Projekt durch |
-| `/team` | Zeigt alle 5 Fachbereiche, Teamleiter und 32 Spezialisten an |
+| `/team` | Zeigt alle 5 Fachbereiche, Teamleiter und 33 Spezialisten an |
 | `/workspace [projekt]` | Listet alle generierten Dateien im Projektordner auf |
 | `/export [projekt]` | Packt das Projektverzeichnis in ein ZIP-Archiv |
 | `/run-tests [projekt]` | Führt automatische Unit-Tests im Projekt aus |

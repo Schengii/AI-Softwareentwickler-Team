@@ -39,8 +39,8 @@ DEPARTMENT_DEFINITIONS = {
     },
     "qa_lead": {
         "title": "Teamleiter Qualität, DevOps & Security (QA & Operations Lead)",
-        "members": ["devops", "tester", "security", "github"],
-        "description": "Führt das Infrastruktur- und Qualitäts-Team. Koordiniert CI/CD, Pytest-Testsuiten, Security-Audits und Git-Automatisierung."
+        "members": ["devops", "tester", "security", "resilience_guard", "github"],
+        "description": "Führt das Infrastruktur- und Qualitäts-Team. Koordiniert CI/CD, Pytest-Testsuiten, Security-Audits, Chaos Engineering (Resilience-Guard) und Git-Automatisierung."
     },
     "governance_lead": {
         "title": "Teamleiter Excellence, Hygiene & Evolution (Governance Lead)",

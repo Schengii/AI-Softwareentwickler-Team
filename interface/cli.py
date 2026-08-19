@@ -159,7 +159,15 @@ class CLIInterface:
         await self._ask_for_git_push(user_input)
 
     async def _ask_for_git_push(self, task_summary: str) -> None:
-        """Fragt den Nutzer, ob der GitHub-Agent Änderungen committen und pushen soll."""
+        """
+        Fragt den Nutzer, ob der GitHub-Agent Änderungen committen und pushen soll.
+
+        Zeigt VOR der Bestätigung die konkret betroffenen Dateien, den Diff-Umfang und die
+        exakte Commit-Message – nicht nur ein blindes Ja/Nein. Das ist wichtig, weil
+        github_agent.commit() intern `git add -A` ausführt und damit den GESAMTEN
+        Repo-Stand staged, nicht nur die Dateien des gerade bearbeiteten Projekts – der
+        Nutzer soll das vor einer irreversiblen Aktion (Push) wirklich sehen können.
+        """
         github_agent = self._orchestrator._agents.get("github")
         if not github_agent:
             return
@@ -168,27 +176,46 @@ class CLIInterface:
         if not diff_status:
             return
 
-        console.print("🔀 [bold cyan]GitHub-Agent:[/bold cyan] Ich habe ungespeicherte Änderungen im Projekt erkannt.")
+        changed_files = [line.strip() for line in diff_status.splitlines() if line.strip()]
+        diff_stat = github_agent.get_diff()
+        commit_msg = f"feat: implement {task_summary[:50].strip()} via AI Developer Team"
+
+        console.print(
+            Panel(
+                (
+                    f"[bold]{len(changed_files)} Datei(en) betroffen[/bold] "
+                    f"(git add -A staged den GESAMTEN Repo-Stand, nicht nur dieses Projekt):\n\n"
+                    + "\n".join(f"  {f}" for f in changed_files[:25])
+                    + (f"\n  … und {len(changed_files) - 25} weitere" if len(changed_files) > 25 else "")
+                    + (f"\n\n[dim]{diff_stat}[/dim]" if diff_stat else "")
+                    + f"\n\n[bold]Geplante Commit-Message:[/bold]\n  {commit_msg}"
+                ),
+                title="🔀 GitHub-Agent: Vorschau vor Commit & Push",
+                border_style="cyan",
+            )
+        )
         try:
             should_push = Confirm.ask(
-                "Möchtest du, dass ich die Änderungen automatisch committe und auf GitHub pushe?",
+                "Möchtest du, dass ich GENAU DIESE Änderungen committe und auf GitHub pushe?",
                 default=False,
             )
         except Exception:
             should_push = False
 
-        if should_push:
-            commit_msg = f"feat: implement {task_summary[:50].strip()} via AI Developer Team"
-            success_c, out_c = github_agent.commit(commit_msg)
-            if success_c:
-                console.print(f"✅ [green]Commit erfolgreich:[/green] {commit_msg}")
-                success_p, out_p = github_agent.push()
-                if success_p:
-                    console.print("🚀 [bold green]Änderungen erfolgreich auf GitHub gepusht![/bold green]")
-                else:
-                    console.print(f"⚠️ Push nicht abgeschlossen: {out_p}", style="yellow")
+        if not should_push:
+            console.print("↩️ Push übersprungen – nichts wurde committet oder gepusht.", style="dim")
+            return
+
+        success_c, out_c = github_agent.commit(commit_msg)
+        if success_c:
+            console.print(f"✅ [green]Commit erfolgreich:[/green] {commit_msg}")
+            success_p, out_p = github_agent.push()
+            if success_p:
+                console.print("🚀 [bold green]Änderungen erfolgreich auf GitHub gepusht![/bold green]")
             else:
-                console.print(f"⚠️ Commit nicht möglich: {out_c}", style="yellow")
+                console.print(f"⚠️ Push nicht abgeschlossen: {out_p}", style="yellow")
+        else:
+            console.print(f"⚠️ Commit nicht möglich: {out_c}", style="yellow")
 
     async def _handle_command(self, command: str) -> bool:
         """Verarbeitet CLI-Befehle."""

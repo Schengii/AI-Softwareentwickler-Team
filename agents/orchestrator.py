@@ -163,6 +163,11 @@ class Orchestrator:
         self._history = ConversationHistory()
         self._workspace = WorkspaceManager()
 
+        # Vom TaskManager erzeugte, kurze Zusammenfassung der zuletzt verarbeiteten Aufgabe
+        # (nicht die rohe Nutzereingabe) – von interface/cli.py für die Commit-Message
+        # verwendet, siehe _ask_for_git_push(). Leer, solange noch kein Lauf abgeschlossen ist.
+        self.last_task_summary: str = ""
+
     async def process(
         self,
         user_request: str,
@@ -186,6 +191,11 @@ class Orchestrator:
         task_summary, project_slug, agent_tasks = await self._task_manager.decompose(
             user_request, conversation_context=context
         )
+        # Für die Commit-Message-Vorschau in interface/cli.py: eine ECHTE, vom Modell erstellte
+        # Kurzfassung statt der rohen (oft konversationellen) Nutzereingabe. Wird auch bei einem
+        # Abbruch unten (keine Aufgaben ableitbar) nicht überschrieben, bleibt dann leer/alt.
+        if agent_tasks:
+            self.last_task_summary = task_summary
 
         if not agent_tasks:
             # task_summary enthaelt bei einem echten Provider-Ausfall bereits den konkreten
@@ -197,6 +207,23 @@ class Orchestrator:
             return response
 
         notify(f"📋 [bold white]Gesamtplan:[/bold white] {task_summary}")
+
+        # Frühwarnung vor stillschweigend doppelter Arbeit: project_slug wird pro Lauf neu vom
+        # Modell geraten und unterscheidet sich oft, selbst wenn die Aufgabe inhaltlich dieselbe
+        # ist wie ein früherer Lauf – real beobachtet u.a. bei "calculator_service" vs.
+        # "simple_calculator" und "notes_tasks_api" vs. "personal_notes_tasks": zwei komplette,
+        # separat bezahlte Läufe für praktisch dieselbe Anwendung. Rein informativ (keine
+        # Heuristik/kein LLM-Aufruf, also kostenlos) – der Mensch entscheidet, ob `/load <name>`
+        # statt eines neuen Projekts die bessere Wahl gewesen wäre.
+        existing_projects = self._workspace.list_projects()
+        if project_slug not in existing_projects and existing_projects:
+            shown = ", ".join(existing_projects[:10])
+            more = f" (+{len(existing_projects) - 10} weitere)" if len(existing_projects) > 10 else ""
+            notify(
+                f"🗂️ [dim]Neues Projekt '{project_slug}' wird angelegt. Bereits vorhanden: "
+                f"{shown}{more} – falls du an einem davon weiterarbeiten wolltest, nutze "
+                f"stattdessen `/load <name>`.[/dim]"
+            )
 
         # Jede Teilaufgabe bekommt ab hier echten Zugriff auf das Projektverzeichnis
         # (read_file/write_file/edit_file/run_command/run_tests via agents/base_agent.py).

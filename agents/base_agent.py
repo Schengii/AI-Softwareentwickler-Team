@@ -122,7 +122,25 @@ class BaseAgent(ABC):
         Historie stillschweigend über einen weiteren, ebenfalls fremden Provider zu beschädigen.
         """
         max_iterations = task.max_tool_iterations or MAX_AGENT_TOOL_ITERATIONS
-        turns: list[AgentMessage] = [AgentMessage(role="user", text=self._build_prompt(task))]
+        initial_prompt = self._build_prompt(task)
+
+        # Aktuellen Dateibaum EINMALIG synchron voranstellen, statt darauf zu vertrauen, dass
+        # das Modell von sich aus zuerst list_files aufruft. Spart eine ganze Loop-Iteration
+        # (Prompt+Response-Tokens) UND verringert das Risiko, dass ein Agent unwissentlich eine
+        # bereits von einem anderen Teammitglied dieser Phase geschriebene Datei unter anderem
+        # Namen doppelt neu implementiert (real beobachtet: `app.py`/`test_app.py` UND separat
+        # `main.py`/`test_main.py` für denselben trivialen Health-Check-Endpoint).
+        existing_files = await toolbox.list_files_snapshot()
+        if existing_files:
+            initial_prompt += (
+                "\n\n**BEREITS VORHANDENE DATEIEN IM PROJEKT (von dir oder Teamkollegen):**\n"
+                + "\n".join(f"- {f}" for f in existing_files)
+                + "\n\nPrüfe VOR jedem write_file, ob die gewünschte Funktionalität hier bereits "
+                "(ggf. unter anderem Dateinamen) existiert. Erweitere/nutze bestehenden Code statt "
+                "eine zweite, parallele Implementierung derselben Sache anzulegen."
+            )
+
+        turns: list[AgentMessage] = [AgentMessage(role="user", text=initial_prompt)]
 
         total_prompt_tokens = 0
         total_completion_tokens = 0

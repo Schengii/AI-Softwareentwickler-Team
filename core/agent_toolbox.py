@@ -149,6 +149,13 @@ class AgentToolbox:
         self.call_count = 0
         self.call_log: list[dict[str, Any]] = []
 
+    async def list_files_snapshot(self, subdir: str = "") -> list[str]:
+        """Wie das `list_files`-Werkzeug, aber OHNE call_count/call_log zu erhöhen – für einen
+        harness-seitigen Blick auf den Dateibaum (siehe agents/base_agent.py), der nicht als
+        vom Agenten selbst initiierter Werkzeug-Aufruf in den Kennzahlen auftauchen soll."""
+        result = await self._tool_list_files(subdir=subdir)
+        return result.get("files") or []
+
     def tool_specs(self) -> list[dict[str, Any]]:
         if self.read_only:
             return [t for t in TOOL_SPECS if t["name"] in READ_ONLY_TOOL_NAMES or t["name"] == "run_tests"]

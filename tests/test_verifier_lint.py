@@ -1,0 +1,257 @@
+"""
+tests/test_verifier_lint.py – Testet die echte Lint-/Type-Check-Prüfung generierten Codes
+(core/verifier.py.check_lint())
+
+Realer Fund: ruff.toml lief bisher AUSSCHLIESSLICH gegen den Framework-Code selbst -
+workspace/ ist dort bewusst ausgeschlossen. Generierter Code (den das Team tatsächlich
+ausliefert) hatte dadurch überhaupt keine automatische Stil-/Fehlerprüfung.
+
+`ruff`/`eslint`/`tsc` werden dabei ECHT über `shutil.which()`/`CodeSandbox.run_command`
+gemockt (wie bei den bestehenden Docker-Build-/Dependency-Audit-Tests) - die Fixture-JSON-
+Strings sind wortgetreu aus echten `ruff --output-format=json`- bzw. `eslint --format=json`-
+Läufen übernommen, das tsc-Fixture aus einem echten `tsc --pretty false`-Lauf, damit der
+Parser gegen die tatsächliche Tool-Ausgabe geprüft wird, ohne dass diese Tools in der CI
+installiert sein müssen.
+"""
+
+import json
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from core.code_sandbox import ExecutionResult
+from core.verifier import ProjectVerifier
+
+
+# Wortgetreue Fixture-Struktur aus einem echten `ruff check --isolated --output-format=json`-
+# Lauf (siehe tests/test_verifier_dependency_audit.py für dasselbe Vorgehen bei pip-audit/npm
+# audit). "filename" wird pro Test mit dem tatsächlichen Projektpfad gefüllt (echte ruff-/
+# ESLint-Läufe liefern immer ABSOLUTE Pfade), damit die Pfad-Relativierungslogik selbst
+# echt mitgeprüft wird, statt sie durch einen bereits-relativen Fixture-Pfad zu umgehen.
+def _ruff_json(project_dir: Path, filename: str = "app.py") -> str:
+    return json.dumps([
+        {
+            "filename": str(project_dir / filename),
+            "location": {"row": 1, "column": 8},
+            "code": "F401",
+            "message": "`os` imported but unused",
+        },
+    ])
+
+
+def _eslint_json(project_dir: Path, filename: str = "bad.js") -> str:
+    return json.dumps([
+        {
+            "filePath": str(project_dir / filename),
+            "messages": [
+                {"ruleId": "no-unused-vars", "severity": 2, "message": "'x' is assigned a value but never used.", "line": 1, "column": 7},
+                {"ruleId": "no-console", "severity": 1, "message": "Unexpected console statement.", "line": 2, "column": 1},
+            ],
+        },
+    ])
+
+
+_REAL_ESLINT_CLEAN = json.dumps([{"filePath": "clean.js", "messages": []}])
+
+
+def _tsc_output(filename: str = "bad.ts") -> str:
+    # tsc gibt Pfade relativ zum cwd des Aufrufs aus (hier: node_dir) - genau das simuliert
+    # dieses Fixture wortgetreu (echter Lauf: "bad.ts(1,7): error TS2322: ...").
+    return f"{filename}(1,7): error TS2322: Type 'string' is not assignable to type 'number'.\n"
+
+
+class TestPythonLintViaRuff(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_dir = Path(self.temp_dir)
+        (self.project_dir / "app.py").write_text("import os\nx = 1\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
+    def test_reports_real_ruff_issues(self, mock_which, mock_run):
+        mock_run.return_value = ExecutionResult(
+            exit_code=1, stdout=_ruff_json(self.project_dir.resolve()), stderr="", duration_seconds=0.2,
+        )
+        verifier = ProjectVerifier(self.project_dir)
+
+        reports = verifier.check_lint()
+
+        self.assertEqual(len(reports), 1)
+        report = reports[0]
+        self.assertTrue(report.attempted)
+        self.assertFalse(report.passed)
+        self.assertEqual(report.tool, "ruff")
+        self.assertEqual(len(report.issues), 1)
+        self.assertEqual(report.issues[0].rule, "F401")
+        # Der absolute Pfad aus dem echten ruff-Output wird auf einen Projekt-relativen
+        # Pfad zurückgerechnet (nicht der rohe absolute Pfad durchgereicht).
+        self.assertEqual(report.issues[0].file_path, "app.py")
+        # --isolated darf niemals fehlen - sonst würde die Framework-eigene ruff.toml
+        # (E501-Ausnahme etc.) generierten Projekten aufgezwungen.
+        self.assertIn("--isolated", mock_run.call_args[0][0])
+
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
+    def test_reports_clean_when_no_issues_found(self, mock_which, mock_run):
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="[]", stderr="", duration_seconds=0.1)
+        verifier = ProjectVerifier(self.project_dir)
+
+        report = verifier.check_lint()[0]
+
+        self.assertTrue(report.attempted)
+        self.assertTrue(report.passed)
+        self.assertEqual(report.issues, [])
+
+    @patch("core.verifier.shutil.which", return_value=None)
+    def test_skipped_gracefully_when_ruff_not_installed(self, mock_which):
+        verifier = ProjectVerifier(self.project_dir)
+        report = verifier.check_lint()[0]
+
+        self.assertFalse(report.attempted)
+        self.assertIn("nicht installiert", report.reason_skipped)
+
+    def test_no_report_without_python_files(self):
+        empty_project = tempfile.mkdtemp()
+        try:
+            verifier = ProjectVerifier(empty_project)
+            self.assertEqual(verifier.check_lint(), [])
+        finally:
+            shutil.rmtree(empty_project, ignore_errors=True)
+
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
+    def test_technical_failure_is_never_reported_as_clean(self, mock_which, mock_run):
+        mock_run.return_value = ExecutionResult(exit_code=2, stdout="", stderr="ruff: internal error", duration_seconds=0.1)
+        verifier = ProjectVerifier(self.project_dir)
+
+        report = verifier.check_lint()[0]
+
+        self.assertFalse(report.attempted)
+        self.assertTrue(report.passed)  # neutraler Skip-Default, keine echte Aussage
+
+
+class TestNodeEslintIntegration(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_dir = Path(self.temp_dir)
+        (self.project_dir / "package.json").write_text(
+            json.dumps({"name": "sample", "scripts": {"test": "node test.js"}}), encoding="utf-8",
+        )
+        (self.project_dir / "test.js").write_text("process.exit(0);\n", encoding="utf-8")
+        (self.project_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+        (self.project_dir / ".eslintrc.json").write_text("{}", encoding="utf-8")
+        bin_dir = self.project_dir / "node_modules" / ".bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "eslint").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    @patch("core.verifier.CodeSandbox.run_command")
+    def test_reports_real_eslint_issues_ignoring_warnings(self, mock_run):
+        mock_run.return_value = ExecutionResult(
+            exit_code=1, stdout=_eslint_json(self.project_dir.resolve()), stderr="", duration_seconds=0.2,
+        )
+        verifier = ProjectVerifier(self.project_dir)
+
+        reports = [r for r in verifier.check_lint() if r.tool == "eslint"]
+
+        self.assertEqual(len(reports), 1)
+        report = reports[0]
+        self.assertTrue(report.attempted)
+        self.assertFalse(report.passed)
+        # Nur severity=2 (Fehler) zählt - severity=1 (Warnung, no-console) darf NICHT
+        # als "nicht bestanden" durchgehen.
+        self.assertEqual(len(report.issues), 1)
+        self.assertEqual(report.issues[0].rule, "no-unused-vars")
+        self.assertEqual(report.issues[0].file_path, "bad.js")
+
+    @patch("core.verifier.CodeSandbox.run_command")
+    def test_reports_clean_when_only_warnings_or_nothing_found(self, mock_run):
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout=_REAL_ESLINT_CLEAN, stderr="", duration_seconds=0.1)
+        verifier = ProjectVerifier(self.project_dir)
+
+        report = next(r for r in verifier.check_lint() if r.tool == "eslint")
+
+        self.assertTrue(report.attempted)
+        self.assertTrue(report.passed)
+
+    def test_skipped_when_no_eslint_config_present(self):
+        (self.project_dir / ".eslintrc.json").unlink()
+        verifier = ProjectVerifier(self.project_dir)
+
+        self.assertFalse(any(r.tool == "eslint" for r in verifier.check_lint()))
+
+    def test_skipped_gracefully_when_eslint_not_locally_installed(self):
+        shutil.rmtree(self.project_dir / "node_modules")
+        verifier = ProjectVerifier(self.project_dir)
+
+        report = next(r for r in verifier.check_lint() if r.tool == "eslint")
+        self.assertFalse(report.attempted)
+        self.assertIn("nicht", report.reason_skipped)
+
+
+class TestNodeTscIntegration(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_dir = Path(self.temp_dir)
+        (self.project_dir / "package.json").write_text(
+            json.dumps({"name": "sample", "scripts": {"test": "node test.js"}}), encoding="utf-8",
+        )
+        (self.project_dir / "test.js").write_text("process.exit(0);\n", encoding="utf-8")
+        (self.project_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+        (self.project_dir / "tsconfig.json").write_text("{}", encoding="utf-8")
+        bin_dir = self.project_dir / "node_modules" / ".bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "tsc").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    @patch("core.verifier.CodeSandbox.run_command")
+    def test_reports_real_tsc_type_errors(self, mock_run):
+        mock_run.return_value = ExecutionResult(exit_code=2, stdout=_tsc_output(), stderr="", duration_seconds=0.3)
+        verifier = ProjectVerifier(self.project_dir)
+
+        report = next(r for r in verifier.check_lint() if r.tool == "tsc")
+
+        self.assertTrue(report.attempted)
+        self.assertFalse(report.passed)
+        self.assertEqual(len(report.issues), 1)
+        self.assertEqual(report.issues[0].rule, "TS2322")
+        self.assertEqual(report.issues[0].line_number, 1)
+        # tsc gibt den Pfad relativ zum cwd (node_dir) aus - muss auf den Projekt-relativen
+        # Pfad zurückgerechnet werden (node_dir == project_dir in diesem Testfall).
+        self.assertEqual(report.issues[0].file_path, "bad.ts")
+
+    @patch("core.verifier.CodeSandbox.run_command")
+    def test_reports_clean_on_empty_output_and_exit_zero(self, mock_run):
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="", stderr="", duration_seconds=0.1)
+        verifier = ProjectVerifier(self.project_dir)
+
+        report = next(r for r in verifier.check_lint() if r.tool == "tsc")
+
+        self.assertTrue(report.attempted)
+        self.assertTrue(report.passed)
+
+    def test_skipped_when_no_tsconfig_present(self):
+        (self.project_dir / "tsconfig.json").unlink()
+        verifier = ProjectVerifier(self.project_dir)
+
+        self.assertFalse(any(r.tool == "tsc" for r in verifier.check_lint()))
+
+    def test_skipped_gracefully_when_tsc_not_locally_installed(self):
+        shutil.rmtree(self.project_dir / "node_modules")
+        verifier = ProjectVerifier(self.project_dir)
+
+        report = next(r for r in verifier.check_lint() if r.tool == "tsc")
+        self.assertFalse(report.attempted)
+
+
+if __name__ == "__main__":
+    unittest.main()

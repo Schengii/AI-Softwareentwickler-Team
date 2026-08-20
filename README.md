@@ -20,6 +20,35 @@
 
 ---
 
+## 🎨 Echtes Lint-/Type-Check-Gate für generierten Code
+
+`ruff.toml` lief bisher AUSSCHLIESSLICH gegen den Framework-Code selbst – `workspace/` ist
+dort bewusst ausgeschlossen (richtig für den eigenen Lint-Job). Dadurch gab es für den vom
+Team tatsächlich AUSGELIEFERTEN Code aber gar keine automatische Stil-/Fehlerprüfung.
+
+- `core/verifier.py`: neue `check_lint()` – Python wird IMMER geprüft (`ruff check
+  --isolated`), wenn `.py`-Dateien existieren; braucht keine Projekt-Konfiguration und läuft
+  bewusst isoliert von der eigenen `ruff.toml` des Frameworks (die für den Framework-Code
+  kuratierten Regeln, z. B. die E501-Ausnahme für deutschsprachige Docstrings, sollen einem
+  beliebigen generierten Projekt nicht aufgezwungen werden). ESLint/`tsc` laufen dagegen NUR,
+  wenn das jeweilige Node-Projekt sie selbst bereits als Dev-Abhängigkeit UND Konfiguration
+  mitbringt (`.eslintrc*`/`eslint.config.*` bzw. `tsconfig.json` + lokal in `node_modules/
+  .bin` installiert) – keine ungefragte Meinungsänderung an einem Projekt, das sich nie für
+  diese Tools entschieden hat. Bei ESLint zählen nur echte Fehler (severity 2), keine
+  Warnungen, als "nicht bestanden".
+- Wie bei Docker-Build/Dependency-Audit gilt: fehlendes Tool oder ein technischer
+  Fehlschlag des Lint-Laufs selbst sind KEIN Fehler, nur nicht prüfbar (`attempted=False`)
+  und werden NIEMALS fälschlich als "keine Probleme" gemeldet.
+- `agents/orchestrator.py`: `_run_verification_loop()` ruft den Scan nach dem Dependency-
+  Audit auf (übersprungen bei Budget-Abbruch) und zeigt Funde (Datei, Zeile, Regel) im
+  Verifikations-Protokoll – rein informativ, beeinflusst `verification_ok` nicht.
+- 17 neue Tests (Parser gegen wortgetreue echte `ruff`-/ESLint-JSON- bzw. `tsc`-Text-
+  Ausschnitte inkl. der Pfad-Relativierung, alle Skip-Fälle, Orchestrator-Integration);
+  zusätzlich ein echter, ungemockter End-to-End-Nachweis gegen echten fehlerhaften und
+  sauberen Python-Code während der Entwicklung. Volle Suite (239 Tests) grün, ruff sauber.
+
+---
+
 ## 🔓 Echter Dependency-Vulnerability-Scan statt LLM-Einschätzung
 
 Der `security`-Agent konnte Abhängigkeits-Risiken bisher nur "plausibel" per LLM einschätzen

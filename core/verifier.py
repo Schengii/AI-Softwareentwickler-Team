@@ -26,6 +26,14 @@ Zusätzlich: check_dependency_vulnerabilities() ersetzt die bisherige rein
 LLM-basierte Einschätzung des security-Agenten zu Abhängigkeits-Risiken durch
 einen echten Scan (pip-audit/npm audit) gegen eine öffentliche Advisory-
 Datenbank – kein Raten mehr, ob eine gepinnte Paketversion bekannte CVEs hat.
+
+Und: check_lint() prüft generierten Code jetzt auch tatsächlich mit echten
+Tools (ruff für Python – immer, braucht keine Projekt-Konfiguration; ESLint/
+tsc für Node – nur wenn das Projekt sie selbst bereits als Dev-Abhängigkeit +
+Konfiguration mitbringt, keine ungefragte Meinungsänderung am Projekt-Stil).
+Bisher lief ruff.toml NUR gegen den Framework-Code selbst (workspace/ dort
+bewusst ausgeschlossen) – generierter Code hatte dadurch überhaupt keine
+automatische Stil-/Fehlerprüfung.
 """
 
 import json
@@ -51,6 +59,18 @@ _IGNORED_DIRS = {VENV_DIRNAME, ".venv", "venv", "__pycache__", "node_modules", "
 # _parse_python_failures unten) – kein Anspruch, jedes Framework exakt zu parsen.
 _NODE_FAIL_FILE_PATTERN = re.compile(r"^(?:FAIL|✕|×)\s+(\S+\.(?:js|jsx|ts|tsx))", re.MULTILINE)
 _NODE_STACK_FILE_PATTERN = re.compile(r"\(([^():\n]+\.(?:js|jsx|ts|tsx)):\d+:\d+\)")
+
+# tsc hat kein natives JSON-Format – `--pretty false` liefert stattdessen dieses stabile,
+# grep-bare Zeilenformat: "pfad(zeile,spalte): error TSxxxx: nachricht".
+_TSC_ERROR_PATTERN = re.compile(r"^(.+?)\((\d+),(\d+)\): (error|warning) (TS\d+): (.+)$", re.MULTILINE)
+
+# ESLint-Konfigurationsdateien, deren Vorhandensein signalisiert, dass das Projekt ESLint
+# selbst bewusst eingerichtet hat – nur DANN wird gelintet, um keine ungefragte Meinung
+# über den Code-Stil eines Projekts durchzusetzen, das sich nie für ESLint entschieden hat.
+_ESLINT_CONFIG_NAMES = (
+    "eslint.config.js", "eslint.config.mjs", "eslint.config.cjs", "eslint.config.ts",
+    ".eslintrc", ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.json", ".eslintrc.yml", ".eslintrc.yaml",
+)
 
 
 @dataclass
@@ -118,6 +138,40 @@ class DependencyAuditReport:
     vulnerable: bool
     tool: str
     vulnerabilities: list[DependencyVulnerability] = field(default_factory=list)
+    reason_skipped: str = ""
+
+
+@dataclass
+class LintIssue:
+    """Ein einzelnes, aus einer echten ruff-/ESLint-/tsc-Ausgabe geparstes Fundstück."""
+    file_path: str
+    line_number: int
+    message: str
+    rule: str = ""
+
+
+@dataclass
+class LintReport:
+    """
+    Ergebnis eines echten Lint-/Type-Check-Laufs (ruff für Python; ESLint/tsc für Node) –
+    ersetzt keine LLM-Einschätzung, sondern liefert erstmals überhaupt eine automatische
+    Stil-/Fehlerprüfung für generierten Code (ruff.toml lief bisher NUR gegen den
+    Framework-Code selbst, workspace/ dort bewusst ausgeschlossen).
+
+    Python wird IMMER geprüft, wenn .py-Dateien existieren und ruff verfügbar ist – ruff
+    braucht keine Projekt-Konfiguration. ESLint/tsc laufen dagegen NUR, wenn das Projekt
+    sie selbst bereits als Dev-Abhängigkeit UND Konfiguration mitbringt (siehe
+    _ESLINT_CONFIG_NAMES) – keine ungefragte Meinungsänderung an einem Projekt, das sich
+    nie für diese Tools entschieden hat.
+
+    Wie bei DockerBuildReport/DependencyAuditReport gilt: fehlendes Tool oder ein
+    technischer Fehlschlag des Lint-Laufs selbst sind KEIN Fehler, nur nicht prüfbar
+    (attempted=False) – und werden NIEMALS fälschlich als "keine Probleme" gemeldet.
+    """
+    attempted: bool
+    passed: bool
+    tool: str
+    issues: list[LintIssue] = field(default_factory=list)
     reason_skipped: str = ""
 
 
@@ -424,6 +478,171 @@ class ProjectVerifier:
         return DependencyAuditReport(
             attempted=True, vulnerable=total > 0, tool="npm audit", vulnerabilities=vulnerabilities,
         )
+
+    def check_lint(self, timeout_seconds: float = 60.0) -> list[LintReport]:
+        """
+        Prüft generierten Code JEDES gefundenen Stacks mit echten Tools statt LLM-Meinung:
+        - Python: IMMER per ruff, wenn .py-Dateien existieren (braucht keine Projekt-
+          Konfiguration, läuft isoliert von der eigenen ruff.toml des Frameworks).
+        - Node: ESLint/tsc NUR, wenn das jeweilige Projekt sie selbst bereits als Dev-
+          Abhängigkeit UND Konfiguration mitbringt – keine ungefragte Meinungsänderung an
+          einem Projekt, das sich nie für diese Tools entschieden hat.
+        Gibt eine Liste zurück (mehrere Stacks/Node-Unterprojekte, ESLint UND tsc möglich).
+        """
+        reports: list[LintReport] = []
+        if self._has_python_files():
+            reports.append(self._lint_python(timeout_seconds))
+        for node_dir in self._find_node_projects():
+            eslint_report = self._lint_node_eslint(node_dir, timeout_seconds)
+            if eslint_report is not None:
+                reports.append(eslint_report)
+            tsc_report = self._typecheck_node_tsc(node_dir, timeout_seconds)
+            if tsc_report is not None:
+                reports.append(tsc_report)
+        return reports
+
+    def _has_python_files(self) -> bool:
+        return any(
+            f for f in self.project_dir.rglob("*.py")
+            if not any(part in _IGNORED_DIRS for part in f.parts)
+        )
+
+    def _lint_python(self, timeout_seconds: float) -> LintReport:
+        if shutil.which("ruff") is None:
+            return LintReport(
+                attempted=False, passed=True, tool="ruff",
+                reason_skipped="`ruff` ist auf diesem System nicht installiert/verfügbar (`pip install ruff`).",
+            )
+        # --isolated: ignoriert JEDE gefundene Konfigurationsdatei (auch die eigene
+        # ruff.toml des Frameworks, falls das Projekt innerhalb des Repos liegt) und nutzt
+        # ruffs neutrale Standardregeln – die eigenen, für den Framework-Code kuratierten
+        # Regeln (z. B. E501-Ausnahme für deutschsprachige Docstrings) sollen einem
+        # beliebigen generierten Projekt nicht aufgezwungen werden.
+        command = ["ruff", "check", str(self.project_dir), "--isolated", "--output-format=json"]
+        command += [f"--extend-exclude={d}" for d in sorted(_IGNORED_DIRS)]
+        result = CodeSandbox.run_command(command, cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        return self._parse_ruff_result(result)
+
+    def _parse_ruff_result(self, result: ExecutionResult) -> LintReport:
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            tail = (result.stdout + result.stderr).strip()[-800:]
+            return LintReport(
+                attempted=False, passed=True, tool="ruff",
+                reason_skipped=f"ruff lieferte kein gültiges Ergebnis: {tail}",
+            )
+
+        issues: list[LintIssue] = []
+        for entry in data:
+            raw_path = entry.get("filename", "?")
+            try:
+                rel = str(Path(raw_path).resolve().relative_to(self.project_dir)).replace("\\", "/")
+            except (ValueError, OSError):
+                rel = raw_path
+            issues.append(LintIssue(
+                file_path=rel,
+                line_number=entry.get("location", {}).get("row", 0),
+                message=entry.get("message", ""),
+                rule=entry.get("code") or "",
+            ))
+        return LintReport(attempted=True, passed=len(issues) == 0, tool="ruff", issues=issues)
+
+    def _node_bin(self, node_dir: Path, name: str) -> Path | None:
+        """Löst ein lokal in node_modules/.bin installiertes Node-Tool auf (kein globales npx-
+        Auto-Install, kein interaktiver Prompt) – nur, wenn das Projekt es selbst installiert hat."""
+        candidates = [node_dir / "node_modules" / ".bin" / name]
+        if sys.platform == "win32":
+            candidates.append(node_dir / "node_modules" / ".bin" / f"{name}.cmd")
+        return next((c for c in candidates if c.exists()), None)
+
+    def _lint_node_eslint(self, node_dir: Path, timeout_seconds: float) -> LintReport | None:
+        if not any((node_dir / name).exists() for name in _ESLINT_CONFIG_NAMES):
+            return None  # Projekt nutzt erkennbar kein ESLint - keine ungefragte Meinungsänderung
+        rel = self._relative_label(node_dir)
+        eslint_bin = self._node_bin(node_dir, "eslint")
+        if eslint_bin is None:
+            return LintReport(
+                attempted=False, passed=True, tool="eslint",
+                reason_skipped=f"ESLint-Konfiguration gefunden, aber ESLint nicht in node_modules "
+                               f"installiert ({rel}).",
+            )
+        result = CodeSandbox.run_command(
+            [str(eslint_bin), ".", "--format=json"], cwd=node_dir, timeout_seconds=timeout_seconds,
+        )
+        return self._parse_eslint_result(result, node_dir)
+
+    def _parse_eslint_result(self, result: ExecutionResult, node_dir: Path) -> LintReport:
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            tail = (result.stdout + result.stderr).strip()[-800:]
+            return LintReport(
+                attempted=False, passed=True, tool="eslint",
+                reason_skipped=f"ESLint lieferte kein gültiges Ergebnis: {tail}",
+            )
+
+        issues: list[LintIssue] = []
+        for file_entry in data:
+            raw_path = file_entry.get("filePath", "?")
+            try:
+                rel = str(Path(raw_path).resolve().relative_to(self.project_dir)).replace("\\", "/")
+            except (ValueError, OSError):
+                rel = raw_path
+            for msg in file_entry.get("messages", []):
+                if msg.get("severity", 0) < 2:
+                    continue  # severity 1 = Warnung, nur echte Fehler (2) zählen als "nicht bestanden"
+                issues.append(LintIssue(
+                    file_path=rel, line_number=msg.get("line", 0),
+                    message=msg.get("message", ""), rule=msg.get("ruleId") or "",
+                ))
+        return LintReport(attempted=True, passed=len(issues) == 0, tool="eslint", issues=issues)
+
+    def _typecheck_node_tsc(self, node_dir: Path, timeout_seconds: float) -> LintReport | None:
+        if not (node_dir / "tsconfig.json").exists():
+            return None  # Projekt nutzt erkennbar kein TypeScript - nichts zu typprüfen
+        rel = self._relative_label(node_dir)
+        tsc_bin = self._node_bin(node_dir, "tsc")
+        if tsc_bin is None:
+            return LintReport(
+                attempted=False, passed=True, tool="tsc",
+                reason_skipped=f"tsconfig.json gefunden, aber TypeScript nicht in node_modules "
+                               f"installiert ({rel}).",
+            )
+        result = CodeSandbox.run_command(
+            [str(tsc_bin), "--noEmit", "--pretty", "false"], cwd=node_dir, timeout_seconds=timeout_seconds,
+        )
+        return self._parse_tsc_result(result, node_dir)
+
+    def _parse_tsc_result(self, result: ExecutionResult, node_dir: Path) -> LintReport:
+        # tsc hat kein natives JSON-Format (anders als ruff/ESLint) - ein leerer Output bei
+        # exit_code 0 bedeutet "keine Fehler", jedes andere Ergebnis wird per _TSC_ERROR_PATTERN
+        # geparst. Kein strukturiertes Muster gefunden trotz Fehlschlag -> generischer Fallback,
+        # analog zu den anderen best-effort geparsten Ausgaben (z. B. _parse_node_failures).
+        output = f"{result.stdout}\n{result.stderr}"
+        matches = list(_TSC_ERROR_PATTERN.finditer(output))
+
+        if not matches:
+            if result.exit_code == 0:
+                return LintReport(attempted=True, passed=True, tool="tsc")
+            tail = output.strip()[-800:]
+            return LintReport(
+                attempted=False, passed=True, tool="tsc",
+                reason_skipped=f"tsc lieferte kein auswertbares Ergebnis (exit_code={result.exit_code}): {tail}",
+            )
+
+        issues: list[LintIssue] = []
+        for m in matches:
+            raw_path, line_no, _col, _level, code, message = m.groups()
+            path = Path(raw_path)
+            try:
+                abs_path = path if path.is_absolute() else (node_dir / path)
+                rel = str(abs_path.resolve().relative_to(self.project_dir)).replace("\\", "/")
+            except (ValueError, OSError):
+                rel = raw_path
+            issues.append(LintIssue(file_path=rel, line_number=int(line_no), message=message.strip(), rule=code))
+
+        return LintReport(attempted=True, passed=False, tool="tsc", issues=issues)
 
     def _run_pytest_or_unittest(self, python_exe: str, timeout_seconds: float) -> ExecutionResult:
         pytest_check = CodeSandbox.run_command([python_exe, "-c", "import pytest"], cwd=self.project_dir, timeout_seconds=10.0)

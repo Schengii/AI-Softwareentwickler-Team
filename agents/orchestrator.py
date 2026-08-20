@@ -906,6 +906,30 @@ class Orchestrator:
                     notify(f"  🔒 [bold green]{audit.tool}: keine bekannten Schwachstellen in Abhängigkeiten.[/bold green]")
                     summary_lines.append(f"- 🔒 {audit.tool}: keine bekannten Schwachstellen in Abhängigkeiten gefunden.")
 
+        # Erstmals überhaupt eine automatische Stil-/Fehlerprüfung für generierten Code -
+        # ruff.toml lief bisher NUR gegen den Framework-Code selbst (workspace/ dort bewusst
+        # ausgeschlossen). Python wird immer geprüft (ruff braucht keine Projekt-Konfiguration),
+        # ESLint/tsc nur, wenn das Projekt sie selbst bereits mitbringt (keine ungefragte
+        # Meinungsänderung an einem Projekt, das sich nie dafür entschieden hat). Rein
+        # informativ, beeinflusst verification_ok nicht - anders als ein Testfehler hat ein
+        # Lint-Fund oft keine unmittelbare Ein-Zeilen-Lösung.
+        if not budget_aborted:
+            lint_reports = await asyncio.to_thread(verifier.check_lint)
+            for lint in lint_reports:
+                if not lint.attempted:
+                    continue
+                if not lint.passed:
+                    top = "; ".join(
+                        f"{i.file_path}:{i.line_number} [{i.rule}]" for i in lint.issues[:5]
+                    )
+                    if len(lint.issues) > 5:
+                        top += f" … und {len(lint.issues) - 5} weitere"
+                    notify(f"  🎨 [bold yellow]{lint.tool}: {len(lint.issues)} Lint-Fund(e).[/bold yellow]")
+                    summary_lines.append(f"- 🎨 ⚠️ {lint.tool}: {len(lint.issues)} Lint-Fund(e): {top}")
+                else:
+                    notify(f"  🎨 [bold green]{lint.tool}: keine Lint-Funde.[/bold green]")
+                    summary_lines.append(f"- 🎨 {lint.tool}: keine Lint-Funde.")
+
         verification_summary = "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n" + (
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."
         )

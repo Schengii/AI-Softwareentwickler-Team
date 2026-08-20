@@ -45,6 +45,23 @@ class TestCoreModules(unittest.TestCase):
         guard.mark_model_exhausted("claude-3-5-sonnet")
         self.assertTrue(guard.is_model_exhausted("claude-3-5-sonnet"))
 
+    def test_get_summary_returns_an_independent_snapshot_not_a_live_reference(self):
+        """
+        Realer Fund: get_summary()["models"] nutzte vars(v) - das liefert v.__dict__ direkt
+        zurück, KEINE Kopie. Ein Aufrufer, der sich einen frühen Stand für eine spätere
+        Differenzberechnung merkt (z.B. agents/orchestrator.py._model_usage_deltas() für
+        memory/cost_history.py), sah durch spätere record_usage()-Aufrufe unbemerkt den
+        AKTUELLEN Stand statt des gemerkten - jede Delta-Berechnung wäre fälschlich 0 gewesen.
+        """
+        guard = TokenGuard()
+        guard.record_usage("gemini-3.6-flash", 100, 50)
+        snapshot = guard.get_summary()["models"]
+
+        guard.record_usage("gemini-3.6-flash", 900, 900)  # nach dem Snapshot
+
+        self.assertEqual(snapshot["gemini-3.6-flash"]["total_tokens"], 150)  # unverändert
+        self.assertEqual(guard.get_summary()["models"]["gemini-3.6-flash"]["total_tokens"], 1950)  # echter aktueller Stand
+
     def test_seconds_until_available_returns_zero_for_unknown_or_recovered_models(self):
         guard = TokenGuard()
         # Unbekanntes Modell -> sofort verfügbar.

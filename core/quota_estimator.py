@@ -130,12 +130,30 @@ class QuotaEstimator:
                 lines.append(f"| **{info['name']}** | `{used:,}` Tokens | {status_badge} | ca. `{remaining:,}` Tokens übrig ({info['limit_desc']}) |")
 
         if report["models_detail"]:
-            lines.append("\n### 📊 Detail-Verbrauch nach Modell:")
+            lines.append("\n### 📊 Detail-Verbrauch nach Modell (diese Sitzung):")
             lines.append("| Modell | Aufrufe | Prompt Tokens | Completion Tokens | Gesamt |")
             lines.append("|---|---|---|---|---|")
             for m_name, stat in report["models_detail"].items():
                 lines.append(
                     f"| `{m_name}` | {stat['total_calls']} | {stat['prompt_tokens']:,} | {stat['completion_tokens']:,} | **{stat['total_tokens']:,}** |"
                 )
+
+        # Kumulierte, sitzungsübergreifende Historie (memory/cost_history.py) - anders als
+        # alles oben (reiner In-Memory-Zähler dieses Prozesses, bei jedem Neustart wieder bei
+        # Null) bleibt das über JEDEN künftigen Prozess-Neustart erhalten. Bewusst nur echte
+        # Tokenzahlen, kein geschätzter $-Betrag (siehe memory/cost_history.py-Docstring).
+        from memory.cost_history import get_lifetime_totals
+        lifetime = get_lifetime_totals()
+        lifetime_models = lifetime.get("models", {})
+        if lifetime_models:
+            lifetime_total = sum(s.get("total_tokens", 0) for s in lifetime_models.values())
+            lines.append(
+                f"\n### 🗓️ Kumulierter Verbrauch (ALLE Sitzungen seit {lifetime.get('first_recorded_at', '?')[:10]}):"
+            )
+            lines.append(f"**Gesamt über {lifetime.get('runs_recorded', 0)} Lauf/Läufe:** `{lifetime_total:,}` Tokens\n")
+            lines.append("| Modell | Aufrufe | Gesamt |")
+            lines.append("|---|---|---|")
+            for m_name, stat in sorted(lifetime_models.items(), key=lambda kv: -kv[1].get("total_tokens", 0)):
+                lines.append(f"| `{m_name}` | {stat.get('total_calls', 0)} | **{stat.get('total_tokens', 0):,}** |")
 
         return "\n".join(lines)

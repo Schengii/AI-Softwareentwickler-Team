@@ -150,13 +150,22 @@ class TokenGuard:
         return min(waits) if waits else 0.0
 
     def get_summary(self) -> dict:
-        """Gibt aggregierte Verbrauchsdaten zurück."""
+        """
+        Gibt aggregierte Verbrauchsdaten zurück – ein echter SNAPSHOT, kein Live-Blick auf den
+        internen Zustand. Realer Fund: `vars(v)` liefert direkt `v.__dict__` zurück (keine
+        Kopie) – ein Aufrufer, der sich `get_summary()["models"]` als "Stand zu diesem
+        Zeitpunkt" merkt (z.B. für eine Delta-Berechnung, siehe
+        agents/orchestrator.py._model_usage_deltas()), sah durch nachfolgende record_usage()-
+        Aufrufe unbemerkt den STAND ZUM SPÄTEREN ZEITPUNKT, weil beide Referenzen auf
+        dasselbe Dict zeigten – jede berechnete Differenz wäre dadurch fälschlich 0 gewesen.
+        `dict(vars(v))` erzeugt eine echte flache Kopie.
+        """
         # Bereinige abgelaufene Modelle
         for m in list(self._exhausted_models.keys()):
             self.is_model_exhausted(m)
 
         return {
-            "models": {k: vars(v) for k, v in self._stats.items()},
+            "models": {k: dict(vars(v)) for k, v in self._stats.items()},
             "exhausted_models": list(self._exhausted_models.keys()),
             "grand_total_tokens": sum(v.total_tokens for v in self._stats.values()),
         }

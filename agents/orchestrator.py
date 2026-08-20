@@ -90,6 +90,7 @@ from core.token_guard import token_guard
 from core.verifier import ProjectVerifier
 from core.workspace import WorkspaceManager
 from memory.conversation_history import ConversationHistory
+from memory.cost_history import record_run_usage
 
 # Reine Prüf-/Berichts-Agenten: sollen bestehenden Code LESEN und bewerten, aber nicht
 # selbst umschreiben (das ist Aufgabe von refactoring/backend/etc.) – spart nebenbei auch
@@ -254,6 +255,10 @@ class Orchestrator:
         # Der Verbrauch DIESES Laufs ergibt sich aus der Differenz zum aktuellen Stand (siehe
         # _tokens_used_since()) und ist die Grundlage für das harte MAX_RUN_TOKENS-Budget.
         run_start_tokens = token_guard.get_summary()["grand_total_tokens"]
+        # Zusätzlich die Pro-Modell-Aufschlüsselung sichern (nicht nur den Gesamtwert) – Basis
+        # für die persistente, sitzungsübergreifende Kosten-Historie (memory/cost_history.py),
+        # die pro Modell/Provider mitschreibt, nicht nur einen einzelnen Gesamtwert.
+        run_start_model_stats = token_guard.get_summary()["models"]
 
         def notify(msg: str):
             if status_callback:
@@ -527,6 +532,15 @@ class Orchestrator:
             cancelled=manually_cancelled,
             files_written_count=len({f for r in results for f in r.files_written}),
         )
+
+        # Kumulierte, sitzungsübergreifende Kosten-Historie (memory/cost_history.py) - anders
+        # als core/token_guard.py (reiner In-Memory-Zähler, bei jedem Neustart wieder bei
+        # Null) bleibt das über JEDEN künftigen Prozess-Neustart erhalten. Rein additiv wie
+        # record_run() oben, darf also niemals einen sonst erfolgreichen Lauf zum Scheitern
+        # bringen. Nutzt den Pro-Modell-DELTA seit Laufbeginn, nicht den Gesamtzähler des
+        # Prozesses - sonst würde ein zweiter Lauf in derselben Sitzung den ersten erneut
+        # mitzählen.
+        record_run_usage(self._model_usage_deltas(run_start_model_stats))
 
         # Realer Fund: bisher endete JEDER Lauf mit demselben uneingeschränkten "✅ Fertig!",
         # auch wenn die Verifikation nie bestätigt werden konnte (keine Tests gefunden,
@@ -820,6 +834,25 @@ class Orchestrator:
     def _tokens_used_since(start_tokens: int) -> int:
         """Tokenverbrauch SEIT dem Schnappschuss start_tokens (nicht der globale Gesamtzähler)."""
         return token_guard.get_summary()["grand_total_tokens"] - start_tokens
+
+    @staticmethod
+    def _model_usage_deltas(start_model_stats: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
+        """
+        Pro-Modell-Verbrauch SEIT dem Schnappschuss start_model_stats (Pendant zu
+        _tokens_used_since(), nur pro Modell statt als einzelner Gesamtwert) – Grundlage für
+        memory/cost_history.py.record_run_usage(). Ein Modell, das erst WÄHREND dieses Laufs
+        zum ersten Mal genutzt wurde, hatte in start_model_stats naturgemäß noch keinen
+        Eintrag (Delta = voller aktueller Wert, nicht 0).
+        """
+        end_stats = token_guard.get_summary()["models"]
+        deltas: dict[str, dict[str, int]] = {}
+        for model_name, end_stat in end_stats.items():
+            start_stat = start_model_stats.get(model_name, {})
+            deltas[model_name] = {
+                key: end_stat.get(key, 0) - start_stat.get(key, 0)
+                for key in ("total_calls", "prompt_tokens", "completion_tokens", "total_tokens")
+            }
+        return deltas
 
     @classmethod
     def _run_budget_exceeded(cls, start_tokens: int) -> bool:

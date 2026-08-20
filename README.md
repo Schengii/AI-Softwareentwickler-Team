@@ -20,6 +20,40 @@
 
 ---
 
+## 🗓️ Kumulierte Kosten-Historie über ALLE Sitzungen hinweg
+
+`core/token_guard.py` ist eine reine In-Memory-Instanz – bei jedem Neustart (neues
+CLI-Terminal, neuer Dashboard-Prozess) beginnt der von `/tokens` gezeigte Tokenverbrauch
+wieder bei Null. Es gab keinen Weg zu sehen, wie viele Tokens das Team INSGESAMT seit Beginn
+der Nutzung verbraucht hat – der eigentlich relevante Wert für die Kosteneinschätzung eines
+wiederkehrend genutzten Teams.
+
+- `memory/cost_history.py` (neu): schreibt/liest eine persistente `memory/cost_history.json`
+  – Pro-Modell-Aufschlüsselung (Aufrufe, Prompt-/Completion-/Gesamt-Tokens) über die gesamte
+  Nutzungsgeschichte. Bewusst NUR echte Tokenzahlen, kein geschätzter $-Betrag: echte Preise
+  unterscheiden sich pro Modell/Provider und ändern sich laufend – ein erfundener $-Wert ohne
+  verlässliche, aktuelle Preistabelle wäre eine Falschaussage (dieselbe "echt statt
+  geraten"-Philosophie wie beim Dependency-Audit/Docker-Build).
+- **Kritischer Fund währenddessen:** `core/token_guard.py.get_summary()["models"]` lieferte
+  über `vars(v)` eine LIVE-Referenz auf den internen Zustand statt einer Kopie – ein
+  Aufrufer, der sich einen frühen Stand für eine spätere Differenzberechnung merkt (genau der
+  neue Anwendungsfall hier), sah durch nachfolgende `record_usage()`-Aufrufe unbemerkt den
+  SPÄTEREN Stand, weil beide Referenzen auf dasselbe Dict zeigten – jede berechnete Differenz
+  wäre fälschlich `0` gewesen. Gefixt mit einer echten flachen Kopie (`dict(vars(v))`).
+- `agents/orchestrator.py`: `process()` berechnet am Laufende den Pro-Modell-DELTA seit
+  Laufbeginn (`_model_usage_deltas()`, dasselbe Prinzip wie das bestehende
+  `_tokens_used_since()` fürs Budget) und schreibt ihn additiv in die Historie – ein zweiter
+  Lauf in derselben Sitzung zählt den ersten dadurch nicht erneut mit.
+- `core/quota_estimator.py`: `/tokens` zeigt jetzt zusätzlich zur aktuellen Sitzung einen
+  "Kumulierter Verbrauch"-Abschnitt mit dem Gesamtwert über alle bisher aufgezeichneten
+  Läufe, sortiert nach Modell.
+- 19 neue Tests (Kosten-Historie: Aufzeichnen/Akkumulieren/Persistenz/Edge-Cases; die
+  Live-Referenz-Regression direkt an `TokenGuard`; Orchestrator-Integration inkl. echtem
+  Zwei-Läufe-Beweis, dass NICHT doppelt gezählt wird; `/tokens`-Anzeige); volle Suite
+  (318 Tests) grün, ruff sauber.
+
+---
+
 ## 📜 Projekt-Konstitution: feste Tech-Stack-Präferenzen über Sitzungen hinweg
 
 `project_slug`/Architektur/Tech-Stack werden pro Lauf frisch vom Modell geraten – selbst am

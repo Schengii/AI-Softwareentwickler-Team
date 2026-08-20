@@ -20,6 +20,28 @@
 
 ---
 
+## 🔀 Push pusht den echten Branch + echter CI-Feedback-Loop (P2)
+
+Zwei zusammenhängende Funde beim Review von `agents/github_agent.py`:
+
+1. **`push()` hatte den Ziel-Branch fest auf `"main"` verdrahtet.** Jeder Aufruf (immer ohne
+   explizites `branch=...`) pushte damit IMMER den lokalen `main`-Branch zum Remote –
+   unabhängig davon, welcher Branch tatsächlich ausgecheckt war. Besonders relevant nach der
+   Einführung isolierter Worktree-Branches für Selbstverbesserungsläufe (siehe oben).
+   `push()` ermittelt den Ziel-Branch jetzt automatisch (`get_current_branch()`) und setzt
+   bei Bedarf das Upstream-Tracking (`-u`, wichtig für neue/noch nie gepushte Branches).
+2. **Kein CI-Feedback-Loop.** `push()` war bisher "fire and forget" – ob die echte
+   CI-Pipeline (`.github/workflows/ci.yml`, läuft bei jedem Push) tatsächlich grün wird, hat
+   das Team nie erfahren. Neue `wait_for_ci_status()` pollt den echten `gh run list`-Status
+   (max. 90s) und meldet ehrlich `passed`/`failed`/`timeout`/`no_run` (kein `gh`/kein
+   GitHub-Remote ist dabei kein Fehler, nur nicht prüfbar) – `interface/cli.py` zeigt das
+   Ergebnis direkt nach einem erfolgreichen Push.
+
+8 neue Tests (echtes lokales Bare-Repo für den Branch-Fix, gemockte `gh`-Aufrufe für den
+Polling-Loop inkl. Timeout); volle Suite (146 Tests) grün, ruff sauber.
+
+---
+
 ## 👥 Kleine Fachbereiche laufen jetzt sequenziell statt blind parallel
 
 Realer Fund: Für eine triviale Aufgabe entstanden zwei parallele Implementierungen derselben

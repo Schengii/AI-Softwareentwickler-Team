@@ -295,10 +295,30 @@ class CLIInterface:
             success_p, out_p = github_agent.push()
             if success_p:
                 console.print("🚀 [bold green]Änderungen erfolgreich auf GitHub gepusht![/bold green]")
+                await self._report_ci_status(github_agent)
             else:
                 console.print(f"⚠️ Push nicht abgeschlossen: {out_p}", style="yellow")
         else:
             console.print(f"⚠️ Commit nicht möglich: {out_c}", style="yellow")
+
+    async def _report_ci_status(self, github_agent) -> None:
+        """
+        Wartet auf die echte CI-Pipeline (.github/workflows/ci.yml, läuft bei jedem Push) und
+        meldet das tatsächliche Ergebnis – realer Fund: push() war bisher "fire and forget",
+        ob CI tatsächlich grün wurde, hat das Team nie erfahren. Ein `no_run`-Ergebnis (kein
+        `gh` verfügbar, kein GitHub-Remote, ...) ist dabei kein Fehler, nur nicht prüfbar.
+        """
+        branch = github_agent.get_current_branch()
+        console.print(f"🔄 [dim]Warte auf CI-Status für `{branch}` (max. 90s)...[/dim]")
+        status, detail = await github_agent.wait_for_ci_status(branch)
+        if status == "passed":
+            console.print(f"✅ [bold green]CI grün:[/bold green] {detail}")
+        elif status == "failed":
+            console.print(f"❌ [bold red]CI fehlgeschlagen:[/bold red] {detail}", style="red")
+        elif status == "timeout":
+            console.print(f"⏳ [yellow]{detail}[/yellow] – prüfe den Status später manuell.")
+        else:  # "no_run"
+            console.print(f"ℹ️ [dim]CI-Status nicht prüfbar: {detail}[/dim]")
 
     async def _delete_project_with_confirmation(self, project_name: str) -> None:
         """

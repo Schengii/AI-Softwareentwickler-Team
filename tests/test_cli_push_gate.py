@@ -9,7 +9,7 @@ Stellt sicher, dass CLIInterface._ask_for_git_push():
 
 import asyncio
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from interface.cli import CLIInterface
 
@@ -22,6 +22,10 @@ class TestPushConfirmationGate(unittest.TestCase):
         self.fake_github.get_diff.return_value = "some_file.py | 3 +--"
         self.fake_github.commit.return_value = (True, "commit ok")
         self.fake_github.push.return_value = (True, "push ok")
+        self.fake_github.get_current_branch.return_value = "main"
+        # wait_for_ci_status() ist async (siehe agents/github_agent.py) - MagicMock kennt das
+        # nicht automatisch, ohne AsyncMock würde `await` mit TypeError fehlschlagen.
+        self.fake_github.wait_for_ci_status = AsyncMock(return_value=("no_run", "kein CI im Test"))
         self.cli._orchestrator._agents["github"] = self.fake_github
         # Reines Terminal-Rendering ist hier nicht Testgegenstand (und Emoji-Ausgabe crasht
         # unter der Standard-Windows-cp1252-Konsole ohne main.py's UTF-8-Wrapper) – wir testen

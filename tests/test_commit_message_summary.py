@@ -15,7 +15,7 @@ Diese Tests stellen sicher, dass:
 
 import asyncio
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from agents.orchestrator import Orchestrator
 from core.message_bus import AgentTask
@@ -131,6 +131,8 @@ class TestRawRequestEchoFallback(unittest.TestCase):
         fake_github.get_diff.return_value = "new_file.py | 1 +"
         fake_github.commit.return_value = (True, "commit ok")
         fake_github.push.return_value = (True, "push ok")
+        fake_github.get_current_branch.return_value = "main"
+        fake_github.wait_for_ci_status = AsyncMock(return_value=("no_run", "kein CI im Test"))
         cli._orchestrator._agents["github"] = fake_github
         cli._orchestrator.last_project_slug = "modular_calculator_gui"
 

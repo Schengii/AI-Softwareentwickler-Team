@@ -10,7 +10,7 @@ und eine andere Bestätigungsfrage, wenn Orchestrator.last_verification_ok False
 
 import asyncio
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from interface.cli import CLIInterface
 
@@ -23,6 +23,8 @@ class TestPushGateVerificationWarning(unittest.TestCase):
         self.fake_github.get_diff.return_value = "some_file.py | 3 +--"
         self.fake_github.commit.return_value = (True, "commit ok")
         self.fake_github.push.return_value = (True, "push ok")
+        self.fake_github.get_current_branch.return_value = "main"
+        self.fake_github.wait_for_ci_status = AsyncMock(return_value=("no_run", "kein CI im Test"))
         self.cli._orchestrator._agents["github"] = self.fake_github
         self._print_patcher = patch("interface.cli.console.print")
         self._print_patcher.start()

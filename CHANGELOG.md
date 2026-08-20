@@ -7,6 +7,37 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🛠️ Zwei Resilienz-Fixes im agentischen Werkzeug-Loop (aus demselben Testlauf)
+
+Derselbe echte End-to-End-Testlauf (siehe Eintrag unten) deckte zwei weitere, unabhängige
+Probleme im Werkzeug-Loop auf, die beide den `dev_lead`/`qa_lead` in genau diesem Lauf trafen:
+
+1. **Halluzinierter, nicht deklarierter Werkzeug-Aufruf:** Groq (der Fallback für
+   HEAVY-Rollen ohne `ANTHROPIC_API_KEY`) lehnte einen rein lesenden Konsolidierungs-Aufruf
+   (`tools_read_only=True`, also KEIN `write_file` im deklarierten Tool-Set) hart mit `400`
+   ab, weil das Modell selbst trotzdem versuchte, `write_file` aufzurufen – der Request war
+   korrekt, nur die Modell-Ausgabe nicht. Der komplette Fachbereichsbericht ging verloren.
+   `agents/base_agent.py`: `_run_agentic_loop()` erkennt diese konkrete Fehler-Signatur jetzt
+   (`tool_use_failed` / `which was not in request.tools`) und unternimmt GENAU EINEN Retry
+   mit explizitem Korrektur-Hinweis, statt die ganze Aufgabe zu verwerfen. Bewusst NICHT
+   jede Exception abgefangen – echte Rate-Limit-/Auth-Fehler haben bereits eigene,
+   spezifischere Behandlung in `core/llm_factory.py` und sollen dort bleiben.
+2. **Letzte Iteration verschwendet:** Auf der letzten erlaubten Iteration durfte das Modell
+   bisher weiterhin frei zwischen Werkzeug-Aufruf und Text wählen – entschied es sich
+   nochmal für ein Werkzeug (real beobachtet bei ZWEI Fachbereichs-Teamleiter-Aufrufen in
+   einem einzigen Lauf), wurde dieser Aufruf VERWORFEN (die Schleife bricht ab, bevor er
+   ausgeführt wird) und der Nutzer sah nur "Maximale Werkzeug-Iterationen erreicht" statt
+   einer echten Zusammenfassung. `_run_agentic_loop()` fügt vor der letzten Iteration jetzt
+   eine explizite "Dies ist deine letzte Gelegenheit"-Aufforderung ein. Zusätzlich:
+   `agents/orchestrator.py` hebt die Iterations-Caps für Fachbereichs-Delegation (3→4) und
+   -Konsolidierung (4→5) moderat an – weiterhin deutlich unter dem vollen
+   Entwickler-Budget, da es sich um rein lesende Aufrufe handelt.
+3. 7 neue Tests (Retry-Mechanik inkl. Ausschluss unbekannter Exceptions und der
+   Randbedingung "kein Retry auf der letzten Iteration"; explizite Stop-Aufforderung inkl.
+   Randfall `max_tool_iterations=1`); volle Suite (337 Tests) grün, ruff sauber.
+
+---
+
 ## 🪞 Finale Antwort zeigt jetzt echten statt vom LLM erfundenen Code
 
 Erster echter End-to-End-Testlauf dieser Session (reale FastAPI-Notizen-API, echte

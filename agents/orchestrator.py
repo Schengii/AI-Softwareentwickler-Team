@@ -794,7 +794,12 @@ class Orchestrator:
             project_dir=project_dir,
             allow_tools=True,
             tools_read_only=True,  # Delegation darf bestehenden Code lesen, aber nicht verändern
-            max_tool_iterations=3,
+            # Realer Fund: 3 Iterationen wurden in einem echten Lauf tatsächlich ausgeschöpft,
+            # bevor eine finale Zusammenfassung entstand (siehe agents/base_agent.py für die
+            # begleitende "letzte Gelegenheit"-Aufforderung, die dasselbe Problem zusätzlich
+            # abmildert) - moderat auf 4 angehoben, ohne die Rolle mit vollem Entwickler-Budget
+            # (Standard 6) auszustatten, da es sich weiterhin um einen rein lesenden Aufruf handelt.
+            max_tool_iterations=4,
         )
         return await lead.execute(task)
 
@@ -819,7 +824,10 @@ class Orchestrator:
             project_dir=project_dir,
             allow_tools=True,
             tools_read_only=True,  # Konsolidierung prüft und berichtet, ändert keinen Code
-            max_tool_iterations=4,
+            # Realer Fund: 4 Iterationen wurden in einem echten Lauf tatsächlich ausgeschöpft,
+            # bevor eine finale Zusammenfassung entstand - moderat auf 5 angehoben (siehe
+            # dieselbe Begründung wie bei _run_department_delegation oben).
+            max_tool_iterations=5,
         )
         return await lead.execute(task)
 

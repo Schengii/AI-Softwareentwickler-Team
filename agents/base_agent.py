@@ -22,6 +22,24 @@ from core.agent_toolbox import AgentToolbox
 from core.llm_factory import AgentMessage, GeminiClient, LLMFactory, LLMResponse
 from core.message_bus import AgentResult, AgentTask
 
+# Realer Fund aus einem echten Lauf: Groq (häufig der Fallback für HEAVY-Rollen ohne
+# ANTHROPIC_API_KEY, siehe config.py) lehnte einen rein lesenden Konsolidierungs-Aufruf
+# (tools_read_only=True, also KEIN write_file im deklarierten Tool-Set) hart mit 400 ab,
+# weil das Modell selbst trotzdem versuchte, `write_file` aufzurufen – der Request war
+# korrekt, nur die Modell-AUSGABE nicht. Bewusst an der konkreten Fehler-Signatur erkannt
+# (nicht jede Exception), um echte Rate-Limits/Auth-Fehler NICHT versehentlich mitzufangen
+# und blind zu wiederholen – die haben bereits eigene, spezifischere Behandlung
+# (core/llm_factory.py Cooldown/Fallback-Kette).
+_DISALLOWED_TOOL_CALL_ERROR_MARKERS = (
+    "tool_use_failed",
+    "which was not in request.tools",
+)
+
+
+def _is_disallowed_tool_call_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in _DISALLOWED_TOOL_CALL_ERROR_MARKERS)
+
 
 class BaseAgent(ABC):
     """
@@ -146,12 +164,52 @@ class BaseAgent(ABC):
         total_completion_tokens = 0
         response: LLMResponse | None = None
         active_llm = self._llm
+        disallowed_tool_call_retry_used = False
 
         for iteration in range(1, max_iterations + 1):
+            if iteration == max_iterations and max_iterations > 1:
+                # Realer Fund: auf der letzten erlaubten Iteration durfte das Modell bisher
+                # weiterhin frei zwischen Werkzeug-Aufruf und Text wählen – entschied es sich
+                # (real beobachtet bei zwei Fachbereichs-Teamleiter-Aufrufen in einem Lauf)
+                # nochmal für ein Werkzeug, wurde dieser Aufruf VERWORFEN (die Schleife bricht
+                # unten ab, bevor er ausgeführt wird) und der Nutzer sah nur die generische
+                # "Maximale Werkzeug-Iterationen erreicht"-Notiz statt einer echten
+                # Zusammenfassung. Eine explizite letzte Aufforderung erhöht die Chance auf
+                # eine echte finale Antwort, statt die Iteration zu verschwenden.
+                turns.append(AgentMessage(
+                    role="user",
+                    text=(
+                        "Dies ist deine LETZTE Gelegenheit zu antworten. Rufe KEIN weiteres "
+                        "Werkzeug mehr auf – liefere jetzt deine finale Textantwort basierend "
+                        "auf allem, was du bisher gesehen hast."
+                    ),
+                ))
+
             allow_fallback = active_llm is self._llm
-            response = await active_llm.generate_with_tools(
-                turns, system_prompt, toolbox.tool_specs(), _allow_self_fallback=allow_fallback,
-            )
+            try:
+                response = await active_llm.generate_with_tools(
+                    turns, system_prompt, toolbox.tool_specs(), _allow_self_fallback=allow_fallback,
+                )
+            except Exception as e:
+                # Ein Retry verbraucht die aktuelle Iteration mit - auf der ohnehin letzten
+                # erlaubten Iteration NICHT mehr retryen, sonst bliebe `response` auf None
+                # (siehe assert unten). Echte Rate-Limit-/Auth-Fehler haben bereits eigene,
+                # spezifischere Behandlung in core/llm_factory.py und werden hier bewusst NICHT
+                # gefangen (_is_disallowed_tool_call_error grenzt gezielt ein).
+                if iteration < max_iterations and not disallowed_tool_call_retry_used and _is_disallowed_tool_call_error(e):
+                    disallowed_tool_call_retry_used = True
+                    turns.append(AgentMessage(
+                        role="user",
+                        text=(
+                            "HINWEIS: Dein letzter Versuch wurde vom Provider abgelehnt, weil "
+                            "ein nicht verfügbares Werkzeug aufgerufen wurde. Nutze "
+                            "AUSSCHLIESSLICH die dir bereitgestellten Werkzeuge oder antworte "
+                            "direkt mit Text, falls du keines benötigst."
+                        ),
+                    ))
+                    continue
+                raise
+
             total_prompt_tokens += response.prompt_tokens
             total_completion_tokens += response.completion_tokens
 

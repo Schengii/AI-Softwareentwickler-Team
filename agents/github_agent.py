@@ -12,6 +12,7 @@ import subprocess
 
 from agents.base_agent import BaseAgent
 from config import BASE_DIR
+from core.secret_scanner import SecretFinding, scan_diff
 
 
 class GitHubAgent(BaseAgent):
@@ -75,6 +76,18 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
     def get_diff(self) -> str:
         """Gibt die aktuellen Änderungen zurück."""
         return self._run_git("diff", "--stat")
+
+    def scan_for_secrets(self) -> list[SecretFinding]:
+        """
+        Staged alle Änderungen (git add -A – dasselbe, was commit() ohnehin gleich danach
+        tut, hier vorgezogen) und durchsucht den vollständigen Diff (inkl. neuer, noch nicht
+        getrackter Dateien) nach möglichen Secrets, BEVOR committet wird. Siehe
+        core/secret_scanner.py für die Erkennungslogik. Rein lesend im Ergebnis – blockiert
+        nichts selbst, der Aufrufer (interface/cli.py) entscheidet, was mit dem Fund passiert.
+        """
+        self._run_git("add", "-A")
+        diff = self._run_git("diff", "--cached")
+        return scan_diff(diff)
 
     def commit(self, message: str) -> tuple[bool, str]:
         """

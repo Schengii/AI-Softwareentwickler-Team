@@ -7,14 +7,23 @@ backend/frontend/database neu beauftragte). Stattdessen:
 
 1. Legt bei Bedarf eine isolierte virtuelle Umgebung im Projekt an und
    installiert requirements.txt wirklich (echte Dependency-Installation).
+   Für Node/npm-Projekte (package.json) läuft dieselbe echte Installation
+   über `npm ci`/`npm install`.
 2. Führt die tatsächliche Testsuite aus (pytest, falls verfügbar, sonst
-   unittest discover) und liest das reale Ergebnis (exit_code/stdout/stderr).
-3. Parst bei Fehlschlägen die echten pytest-/unittest-Ausgaben und
+   unittest discover; für Node-Projekte `npm test`) und liest das reale
+   Ergebnis (exit_code/stdout/stderr).
+3. Parst bei Fehlschlägen die echten pytest-/unittest-/npm-test-Ausgaben und
    Tracebacks, um herauszufinden, WELCHE Quelldateien betroffen sind –
    als Grundlage dafür, den Fix gezielt an den Agenten zurückzuspielen,
    der genau diese Datei geschrieben hat (statt an alle Dev-Agenten blind).
+
+Realer Fund: bisher wurde AUSSCHLIESSLICH Python-Code echt verifiziert
+(test_*.py). Ein vom frontend/mobile-Agenten erzeugtes JS/TS-Projekt lief nie
+durch einen echten `npm test` – "keine Tests gefunden" tauchte selbst dann
+auf, wenn eine vollständige, echt ausführbare npm-Testsuite existierte.
 """
 
+import json
 import re
 import shutil
 import sys
@@ -25,6 +34,18 @@ from pathlib import Path
 from core.code_sandbox import CodeSandbox, ExecutionResult
 
 VENV_DIRNAME = ".ai_team_venv"
+
+# Verzeichnisse, die weder als Python- noch als Node-Testquelle zählen – Build-/Umgebungs-
+# Artefakte, keine vom Team geschriebenen Projektdateien.
+_IGNORED_DIRS = {VENV_DIRNAME, ".venv", "venv", "__pycache__", "node_modules", ".git"}
+
+# Best-effort-Erkennung fehlgeschlagener npm-Tests: Jest/Vitest melden fehlgeschlagene
+# Testdateien als "FAIL <pfad>" bzw. mit "✕"/"×" vor dem Testnamen. Da es kein einheitliches
+# Node-Test-Ausgabeformat gibt (anders als Python mit pytest/unittest), ist das bewusst ein
+# Best-Effort wie bei allen anderen nicht strukturiert geparsten Fehlschlägen (siehe
+# _parse_python_failures unten) – kein Anspruch, jedes Framework exakt zu parsen.
+_NODE_FAIL_FILE_PATTERN = re.compile(r"^(?:FAIL|✕|×)\s+(\S+\.(?:js|jsx|ts|tsx))", re.MULTILINE)
+_NODE_STACK_FILE_PATTERN = re.compile(r"\(([^():\n]+\.(?:js|jsx|ts|tsx)):\d+:\d+\)")
 
 
 @dataclass
@@ -84,14 +105,23 @@ class ProjectVerifier:
 
     def ensure_environment(self, timeout_seconds: float = 120.0) -> str:
         """
-        Legt bei vorhandener requirements.txt eine isolierte venv an und installiert
-        die Abhängigkeiten wirklich per pip. Gibt eine kurze Statuszeile zurück
-        (leer, wenn keine requirements.txt existiert und daher nichts zu tun war).
+        Installiert echte Abhängigkeiten für JEDEN im Projekt gefundenen Stack:
+        - Python: legt bei vorhandener requirements.txt eine isolierte venv an und
+          installiert per pip.
+        - Node: für jedes gefundene package.json mit "test"-Skript per `npm ci`
+          (bei vorhandener package-lock.json, deterministisch) oder `npm install`.
+        Gibt eine kombinierte Statuszeile zurück (leer, wenn nichts zu tun war, z.B.
+        ein reines Textprojekt ohne requirements.txt/package.json).
         """
+        logs: list[str] = []
         req_file = self._requirements_file()
-        if not req_file:
-            return ""
+        if req_file:
+            logs.append(self._ensure_python_environment(req_file, timeout_seconds))
+        for node_dir in self._find_node_projects():
+            logs.append(self._ensure_node_environment(node_dir, timeout_seconds))
+        return "\n".join(log for log in logs if log)
 
+    def _ensure_python_environment(self, req_file: Path, timeout_seconds: float) -> str:
         venv_python = self._venv_python()
         if not venv_python.exists():
             create_result = CodeSandbox.run_command(
@@ -112,40 +142,111 @@ class ProjectVerifier:
         tail = (install_result.stdout + install_result.stderr).strip()[-800:]
         return f"{status} pip install -r {req_file.name} (exit_code={install_result.exit_code})" + (f"\n{tail}" if install_result.exit_code != 0 else "")
 
+    def _ensure_node_environment(self, node_dir: Path, timeout_seconds: float) -> str:
+        rel = self._relative_label(node_dir)
+        if shutil.which("npm") is None:
+            return f"⚠️ `npm` ist auf diesem System nicht installiert/verfügbar – Node-Abhängigkeiten ({rel}) übersprungen."
+
+        command = ["npm", "ci"] if (node_dir / "package-lock.json").exists() else ["npm", "install"]
+        install_result = CodeSandbox.run_command(command, cwd=node_dir, timeout_seconds=timeout_seconds)
+        status = "✅" if install_result.exit_code == 0 else "⚠️"
+        tail = (install_result.stdout + install_result.stderr).strip()[-800:]
+        label = f"{' '.join(command)} ({rel})"
+        return f"{status} {label} (exit_code={install_result.exit_code})" + (f"\n{tail}" if install_result.exit_code != 0 else "")
+
+    def _relative_label(self, directory: Path) -> str:
+        rel = directory.relative_to(self.project_dir)
+        return "." if str(rel) == "." else str(rel).replace("\\", "/")
+
+    def _find_node_projects(self) -> list[Path]:
+        """
+        Findet alle package.json-Verzeichnisse im Projekt (node_modules & Co. ausgeschlossen),
+        die ein "test"-Skript deklarieren – nur solche sind über `npm test` echt ausführbar.
+        Ein package.json ohne "test"-Skript wird bewusst ignoriert statt eines Fehlschlags,
+        genau wie ein Python-Projekt ohne test_*.py-Dateien.
+        """
+        projects: list[Path] = []
+        for pkg_json in self.project_dir.rglob("package.json"):
+            if any(part in _IGNORED_DIRS for part in pkg_json.relative_to(self.project_dir).parts):
+                continue
+            try:
+                data = json.loads(pkg_json.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if isinstance(data.get("scripts"), dict) and data["scripts"].get("test"):
+                projects.append(pkg_json.parent)
+        return projects
+
     def _resolve_python(self) -> str:
         venv_python = self._venv_python()
         return str(venv_python) if venv_python.exists() else sys.executable
 
-    def run_tests(self, timeout_seconds: float = 60.0) -> VerificationReport:
-        """Führt die echte Testsuite aus. Kein Keyword-Matching – reales exit_code/stdout/stderr."""
-        start = time.monotonic()
-        ignored = {VENV_DIRNAME, ".venv", "venv", "__pycache__", "node_modules"}
-        test_files = [
+    def _find_python_test_files(self) -> list[Path]:
+        return [
             f for f in list(self.project_dir.rglob("test_*.py")) + list(self.project_dir.rglob("*_test.py"))
-            if not any(part in ignored for part in f.parts)
+            if not any(part in _IGNORED_DIRS for part in f.parts)
         ]
 
-        if not test_files:
+    def run_tests(self, timeout_seconds: float = 60.0) -> VerificationReport:
+        """
+        Führt die echte Testsuite JEDES im Projekt gefundenen Stacks aus. Kein Keyword-
+        Matching – reales exit_code/stdout/stderr, kombiniert über alle Stacks. Ein Projekt
+        gilt insgesamt als bestanden, wenn ALLE gefundenen Testsuiten (Python UND/ODER Node)
+        bestehen – ein grüner Backend-Test bei rotem Frontend-Test darf nicht als "bestanden"
+        durchgehen.
+        """
+        start = time.monotonic()
+        python_test_files = self._find_python_test_files()
+        node_projects = self._find_node_projects()
+        npm_available = shutil.which("npm") is not None
+        runnable_node_projects = node_projects if npm_available else []
+
+        if not python_test_files and not runnable_node_projects:
+            if node_projects and not npm_available:
+                reason = "npm-Test-Skript(e) gefunden, aber `npm` ist auf diesem System nicht installiert/verfügbar – Verifikation übersprungen."
+            else:
+                reason = 'Keine Testdateien (test_*.py) und kein npm-Test-Skript (package.json mit "scripts.test") im Projekt gefunden – Verifikation übersprungen.'
             return VerificationReport(
                 ran=False, passed=True, exit_code=0, stdout="", stderr="",
-                duration_seconds=time.monotonic() - start,
-                reason_skipped="Keine Testdateien (test_*.py) im Projekt gefunden – Verifikation übersprungen.",
+                duration_seconds=time.monotonic() - start, reason_skipped=reason,
             )
 
-        python_exe = self._resolve_python()
-        exec_result = self._run_pytest_or_unittest(python_exe, timeout_seconds)
+        passed = True
+        exit_code = 0
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+        failures: list[TestFailure] = []
 
-        report = VerificationReport(
-            ran=True,
-            passed=exec_result.exit_code == 0,
-            exit_code=exec_result.exit_code,
-            stdout=exec_result.stdout,
-            stderr=exec_result.stderr,
-            duration_seconds=time.monotonic() - start,
+        if python_test_files:
+            python_exe = self._resolve_python()
+            exec_result = self._run_pytest_or_unittest(python_exe, timeout_seconds)
+            stdout_chunks.append(f"--- Python (pytest/unittest) ---\n{exec_result.stdout}")
+            stderr_chunks.append(exec_result.stderr)
+            if exec_result.exit_code != 0:
+                passed = False
+                exit_code = exit_code or exec_result.exit_code
+                failures.extend(self._parse_python_failures(exec_result))
+
+        for node_dir in runnable_node_projects:
+            exec_result = CodeSandbox.run_command(
+                ["npm", "test", "--silent"], cwd=node_dir, timeout_seconds=timeout_seconds,
+            )
+            rel = self._relative_label(node_dir)
+            stdout_chunks.append(f"--- npm test ({rel}) ---\n{exec_result.stdout}")
+            stderr_chunks.append(exec_result.stderr)
+            if exec_result.exit_code != 0:
+                passed = False
+                exit_code = exit_code or exec_result.exit_code
+                failures.extend(self._parse_node_failures(exec_result, node_dir))
+
+        if node_projects and not npm_available:
+            stdout_chunks.insert(0, "⚠️ npm nicht verfügbar – gefundene npm-Test-Skripte wurden übersprungen.")
+
+        return VerificationReport(
+            ran=True, passed=passed, exit_code=exit_code,
+            stdout="\n".join(stdout_chunks), stderr="\n".join(stderr_chunks),
+            duration_seconds=time.monotonic() - start, failures=failures,
         )
-        if not report.passed:
-            report.failures = self._parse_failures(exec_result)
-        return report
 
     def check_docker_build(self, timeout_seconds: float = 180.0) -> DockerBuildReport:
         """
@@ -183,7 +284,7 @@ class ProjectVerifier:
             cwd=self.project_dir, timeout_seconds=timeout_seconds,
         )
 
-    def _parse_failures(self, exec_result: ExecutionResult) -> list[TestFailure]:
+    def _parse_python_failures(self, exec_result: ExecutionResult) -> list[TestFailure]:
         """Parst echte pytest-/unittest-Ausgaben – keine Schlagwortsuche in Freitext."""
         output = f"{exec_result.stdout}\n{exec_result.stderr}"
         failures: dict[str, TestFailure] = {}
@@ -222,6 +323,42 @@ class ProjectVerifier:
             # Kein strukturiertes FAILED/FAIL/ERROR-Muster erkannt (z.B. Sammel-/Importfehler
             # beim Einsammeln der Tests) – trotzdem als generischer Fehlschlag mit realem Output melden.
             failures["<Testlauf>"] = TestFailure(test_id="<Testlauf>", message=output.strip()[-800:])
+
+        for failure in failures.values():
+            failure.files = implicated_files
+
+        return list(failures.values())
+
+    def _parse_node_failures(self, exec_result: ExecutionResult, node_dir: Path) -> list[TestFailure]:
+        """
+        Best-effort-Parsing echter `npm test`-Ausgaben – anders als bei pytest/unittest gibt
+        es kein einheitliches Node-Test-Ausgabeformat (Jest, Vitest, Mocha, ... unterscheiden
+        sich). Erkennt das verbreitete "FAIL <datei>"-Muster (Jest/Vitest) sowie Dateipfade
+        aus Stack-Traces; liefert sonst denselben generischen Fallback wie bei unparsbarer
+        Python-Ausgabe (siehe _parse_python_failures).
+        """
+        output = f"{exec_result.stdout}\n{exec_result.stderr}"
+        failures: dict[str, TestFailure] = {}
+
+        for m in _NODE_FAIL_FILE_PATTERN.finditer(output):
+            test_id = m.group(1)
+            failures.setdefault(test_id, TestFailure(test_id=test_id, message=""))
+
+        implicated_files: list[str] = []
+        for fp in _NODE_STACK_FILE_PATTERN.findall(output):
+            path = Path(fp)
+            if "node_modules" in path.parts:
+                continue
+            try:
+                abs_path = path if path.is_absolute() else (node_dir / path)
+                rel = str(abs_path.resolve().relative_to(self.project_dir)).replace("\\", "/")
+            except ValueError:
+                continue
+            if rel not in implicated_files:
+                implicated_files.append(rel)
+
+        if not failures:
+            failures["<npm test>"] = TestFailure(test_id="<npm test>", message=output.strip()[-800:])
 
         for failure in failures.values():
             failure.files = implicated_files

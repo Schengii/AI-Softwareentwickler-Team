@@ -26,6 +26,9 @@ class TestPushConfirmationGate(unittest.TestCase):
         # wait_for_ci_status() ist async (siehe agents/github_agent.py) - MagicMock kennt das
         # nicht automatisch, ohne AsyncMock würde `await` mit TypeError fehlschlagen.
         self.fake_github.wait_for_ci_status = AsyncMock(return_value=("no_run", "kein CI im Test"))
+        # Secret-Scan ist hier nicht Testgegenstand (siehe test_secret_scan_before_push.py) -
+        # ohne explizite Konfiguration liefert MagicMock() kein leeres list zurück.
+        self.fake_github.scan_for_secrets.return_value = []
         self.cli._orchestrator._agents["github"] = self.fake_github
         # Reines Terminal-Rendering ist hier nicht Testgegenstand (und Emoji-Ausgabe crasht
         # unter der Standard-Windows-cp1252-Konsole ohne main.py's UTF-8-Wrapper) – wir testen

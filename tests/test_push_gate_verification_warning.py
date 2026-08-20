@@ -25,6 +25,8 @@ class TestPushGateVerificationWarning(unittest.TestCase):
         self.fake_github.push.return_value = (True, "push ok")
         self.fake_github.get_current_branch.return_value = "main"
         self.fake_github.wait_for_ci_status = AsyncMock(return_value=("no_run", "kein CI im Test"))
+        # Secret-Scan ist hier nicht Testgegenstand (siehe test_secret_scan_before_push.py).
+        self.fake_github.scan_for_secrets.return_value = []
         self.cli._orchestrator._agents["github"] = self.fake_github
         self._print_patcher = patch("interface.cli.console.print")
         self._print_patcher.start()

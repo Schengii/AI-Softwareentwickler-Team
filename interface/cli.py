@@ -239,6 +239,27 @@ class CLIInterface:
         changed_files = [line.strip() for line in diff_status.splitlines() if line.strip()]
         diff_stat = github_agent.get_diff()
 
+        # Realer Fund: commit()/push() prüften den Inhalt nie – ein Agent, der versehentlich
+        # einen echten API-Key/ein Passwort in eine generierte Datei schreibt, hätte diesen
+        # Secret unbemerkt auf GitHub gepusht. scan_for_secrets() staged (git add -A, dasselbe
+        # tut commit() ohnehin gleich danach) und durchsucht den vollen Diff regelbasiert
+        # (core/secret_scanner.py) – rein lesend, blockiert hier noch nichts selbst.
+        secret_findings = github_agent.scan_for_secrets()
+        secret_note = ""
+        if secret_findings:
+            finding_lines = "\n".join(
+                f"  {f.file_path}:{f.line_number} [{f.rule}] {f.snippet}"
+                for f in secret_findings[:10]
+            )
+            if len(secret_findings) > 10:
+                finding_lines += f"\n  … und {len(secret_findings) - 10} weitere Funde"
+            secret_note = (
+                f"\n\n[bold red]🔑 Möglicher Secret-Fund ({len(secret_findings)}):[/bold red]\n"
+                f"{finding_lines}\n"
+                "[dim]Vor dem Pushen prüfen – ein erfolgter Push entfernt diese Werte NICHT "
+                "mehr rückwirkend aus der Historie.[/dim]"
+            )
+
         if self._looks_like_raw_user_request(task_summary):
             # task_summary ist erkennbar keine Zusammenfassung, sondern die an das Team
             # gerichtete Anfrage selbst – der (immer kurze, bereits sanitierte) Projektordner-
@@ -270,17 +291,19 @@ class CLIInterface:
                     + (f"\n\n[dim]{diff_stat}[/dim]" if diff_stat else "")
                     + f"\n\n[bold]Geplante Commit-Message:[/bold]\n  {commit_msg}"
                     + verification_note
+                    + secret_note
                 ),
                 title="🔀 GitHub-Agent: Vorschau vor Commit & Push",
-                border_style="cyan" if verification_ok else "yellow",
+                border_style="red" if secret_findings else ("cyan" if verification_ok else "yellow"),
             )
         )
         try:
-            prompt = (
-                "Möchtest du, dass ich GENAU DIESE Änderungen committe und auf GitHub pushe?"
-                if verification_ok else
-                "Trotz NICHT bestandener/fehlender Verifikation committen und pushen?"
-            )
+            if secret_findings:
+                prompt = "🔑 Trotz möglicher Secret-Funde (siehe oben) wirklich committen und pushen?"
+            elif verification_ok:
+                prompt = "Möchtest du, dass ich GENAU DIESE Änderungen committe und auf GitHub pushe?"
+            else:
+                prompt = "Trotz NICHT bestandener/fehlender Verifikation committen und pushen?"
             should_push = Confirm.ask(prompt, default=False)
         except Exception:
             should_push = False

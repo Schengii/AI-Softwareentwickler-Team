@@ -11,6 +11,7 @@ import ast
 import json
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -104,14 +105,25 @@ class CodeSandbox:
         dieses Frameworks (siehe _restricted_env()) – keiner der bisherigen Aufrufer (Tests,
         pip/venv-Installation, npm/node) braucht echte API-Keys, um zu funktionieren. Nur für
         einen bewussten Sonderfall auf False setzen, der die volle Umgebung wirklich benötigt.
+
+        Realer Fund: `npm`/`npx`/`yarn` & Co. sind unter Windows keine echten .exe, sondern
+        .cmd-Batch-Wrapper – `subprocess.run(["npm", ...], shell=False)` scheitert dort IMMER
+        mit `WinError 2` (Datei nicht gefunden), selbst wenn `npm` im PATH steht, weil
+        CreateProcess ohne Shell keine .cmd/.bat-Dateien direkt ausführen kann. Löst command[0]
+        deshalb vorab über shutil.which() auf DEN TATSÄCHLICHEN, vollständigen Pfad (inkl.
+        Endung) auf – unter Linux/macOS bereits ein regulärer Pfad zur echten Binärdatei, daher
+        ein no-op. Kein Treffer (Kommando existiert schlicht nicht) fällt auf den rohen Namen
+        zurück, damit die Fehlermeldung weiterhin "Datei nicht gefunden" statt eines stillen
+        Verhaltensunterschieds bleibt.
         """
         import time
         start_time = time.monotonic()
         env = CodeSandbox._restricted_env() if restrict_env else None
+        resolved_command = [shutil.which(command[0]) or command[0], *command[1:]] if command else command
 
         try:
             process = subprocess.run(
-                command,
+                resolved_command,
                 cwd=cwd,
                 capture_output=True,
                 text=True,

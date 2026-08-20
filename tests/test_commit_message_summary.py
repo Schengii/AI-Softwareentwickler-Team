@@ -133,6 +133,7 @@ class TestRawRequestEchoFallback(unittest.TestCase):
         fake_github.push.return_value = (True, "push ok")
         fake_github.get_current_branch.return_value = "main"
         fake_github.wait_for_ci_status = AsyncMock(return_value=("no_run", "kein CI im Test"))
+        fake_github.scan_for_secrets.return_value = []
         cli._orchestrator._agents["github"] = fake_github
         cli._orchestrator.last_project_slug = "modular_calculator_gui"
 

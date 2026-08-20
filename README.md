@@ -20,6 +20,67 @@
 
 ---
 
+## 🧪 Echte npm-Verifikation für Frontend/Node-Projekte
+
+`core/verifier.py` verifizierte bisher AUSSCHLIESSLICH Python-Code (`test_*.py`) – ein vom
+`frontend`/`mobile`-Agenten erzeugtes JS/TS-Projekt lief nie durch einen echten `npm test`.
+"Keine Tests gefunden" tauchte selbst dann auf, wenn eine vollständige, echt ausführbare
+npm-Testsuite existierte – generierter Frontend-Code wurde also faktisch nie verifiziert.
+
+- `core/verifier.py`: `ensure_environment()`/`run_tests()` erkennen jetzt zusätzlich jedes
+  `package.json` mit einem `"test"`-Skript (node_modules ausgeschlossen) und installieren
+  per `npm ci` (bei vorhandener `package-lock.json`, deterministisch) bzw. `npm install`,
+  dann echtes `npm test`. Ein Projekt gilt insgesamt nur als bestanden, wenn ALLE gefundenen
+  Stacks (Python UND/ODER Node) bestehen – ein grüner Backend-Test darf ein rotes Frontend
+  nicht überdecken. Fehlschläge werden best-effort geparst (Jest/Vitest-`FAIL <datei>` +
+  Stack-Trace-Pfade), mit demselben generischen Fallback wie bei unparsbarer Python-Ausgabe,
+  falls kein bekanntes Muster erkannt wird – kein Anspruch, jedes Node-Test-Framework exakt
+  zu parsen.
+- **Kritischer Fund währenddessen:** `core/code_sandbox.py.run_command()` scheiterte unter
+  Windows für JEDEN echten `npm`-Aufruf mit `WinError 2` ("Datei nicht gefunden") – `npm`
+  (wie `npx`/`yarn`/`pnpm`) ist dort ein `.cmd`-Batch-Wrapper statt einer echten `.exe`, und
+  `subprocess.run([...], shell=False)` kann `.cmd`/`.bat`-Dateien nicht direkt starten, auch
+  wenn der Befehl im PATH steht. `run_command()` löst `command[0]` jetzt vorab über
+  `shutil.which()` auf den tatsächlich ausführbaren Pfad auf (unter Linux/macOS ein No-op,
+  da dort bereits reguläre Binärpfade zurückkommen) – betrifft nicht nur die neue
+  npm-Verifikation, sondern jeden künftigen `.cmd`/`.bat`-basierten Kommandoaufruf über
+  diesen Pfad.
+- 21 neue Tests (echte, abhängigkeitsfreie `npm install`/`npm test`-Läufe – offline-sicher,
+  kein Netzwerkzugriff nötig; `npm ci`-Kommandowahl gemockt analog zu den bestehenden
+  Docker-Build-Tests; ein echter `npm --version`-Regressionstest für den Windows-`.cmd`-Fund);
+  volle Suite (208 Tests) grün, ruff sauber.
+
+---
+
+## 🔑 Secret-Scan vor Commit & Push
+
+`agents/github_agent.py.commit()`/`push()` prüften den zu committenden Inhalt bisher nie –
+ein Agent, der versehentlich einen echten API-Key, ein Passwort oder einen Private Key in
+eine generierte Datei schreibt (z. B. eine Beispiel-`.env`, eine Konfigurationsdatei), hätte
+diesen Secret unbemerkt auf ein – möglicherweise öffentliches – GitHub-Repo gepusht.
+Dieselbe Prüf-Philosophie wie der bereits bestehende Umgebungsvariablen-Filter für
+Subprozesse (`core/code_sandbox.py`), nur für den umgekehrten Fall.
+
+- `core/secret_scanner.py` (neu): regelbasierter, rein lokaler Scan (kein Netzwerk, kein
+  LLM-Aufruf) über `scan_diff()` – erkennt bekannte Provider-Key-Formate (AWS, Google,
+  GitHub, Slack, Stripe, Anthropic, private PEM-Keys) sowie generische
+  `key/secret/token/password = "..."`-Zuweisungen in neu HINZUGEFÜGTEN Diff-Zeilen.
+  Offensichtliche Platzhalter (`"changeme"`, `"your-api-key-here"`, Doku-Beispielwerte wie
+  AWS' eigenes `AKIAIOSFODNN7EXAMPLE`) werden bewusst nicht gemeldet, um bei einem echten
+  Fund ernst genommen zu werden. Gefundene Werte werden vor der Anzeige geschwärzt
+  (`***REDACTED***`) – nie der volle Secret-Wert im Terminal/Log.
+- `agents/github_agent.py`: neue `scan_for_secrets()` – staged (git add -A) und durchsucht
+  den vollständigen `git diff --cached` (inkl. neuer, noch nicht getrackter Dateien).
+- `interface/cli.py`: `_ask_for_git_push()` zeigt bei einem Fund eine deutliche
+  rot umrandete Warnung mit Datei:Zeile, Regel und geschwärztem Ausschnitt sowie eine
+  eigene Bestätigungsfrage – blockiert nichts hart (der Mensch kann bewusst trotzdem
+  committen/pushen), analog zur bestehenden Verifikations-Warnung.
+- 13 neue Tests (Erkennung aller bekannten Muster, Platzhalter-Ausschluss, echtes
+  temporäres Git-Repo für `scan_for_secrets()`, CLI-Warn-Gate); volle Suite (195 Tests)
+  grün, ruff sauber.
+
+---
+
 ## 🐳 Echte Docker-Build-Prüfung (ein Schritt Richtung echtem Deployment)
 
 "Echtes Deployment" im vollen Sinn (Push zu einer konkreten Cloud/einem Server) setzt eine

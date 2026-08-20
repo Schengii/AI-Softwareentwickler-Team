@@ -166,5 +166,18 @@ def works():
         self.assertEqual(result.exit_code, 0, msg=result.stderr)
         self.assertIn("SECRET=sk-visible-when-opted-out", result.stdout)
 
+    @unittest.skipUnless(shutil.which("npm"), "npm nicht installiert - Windows-.cmd-Regressionstest übersprungen")
+    def test_sandbox_run_command_resolves_windows_cmd_style_executables(self):
+        """
+        Realer Fund: core/verifier.py's neue npm-Verifikation schlug unter Windows IMMER mit
+        `WinError 2` fehl – `npm` (und npx/yarn/pnpm) sind dort .cmd-Batch-Wrapper, keine
+        echten .exe, und subprocess.run(["npm", ...], shell=False) kann .cmd/.bat-Dateien
+        nicht direkt starten. run_command() löst command[0] jetzt vorab über shutil.which()
+        auf den vollständigen, tatsächlich ausführbaren Pfad auf.
+        """
+        result = CodeSandbox.run_command(["npm", "--version"], timeout_seconds=15)
+        self.assertEqual(result.exit_code, 0, msg=f"stdout={result.stdout}\nstderr={result.stderr}")
+        self.assertRegex(result.stdout.strip(), r"^\d+\.\d+\.\d+$")
+
 if __name__ == "__main__":
     unittest.main()

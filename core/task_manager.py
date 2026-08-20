@@ -224,6 +224,9 @@ Wichtige Regeln:
 - code_reviewer bei Code-Generierung einschließen
 - tester einbeziehen, wenn echte Programmlogik entsteht (Funktionen/Klassen mit Verhalten,
   nicht nur Konfiguration/Text) - ausgelieferter Code ohne jeden Test ist nicht Ziel dieses Teams
+- security einbeziehen, sobald Authentifizierung/Autorisierung, Nutzer-/Personendaten,
+  Zahlungsdaten, Datei-Uploads oder ein nach außen erreichbarer Netzwerk-Endpunkt entstehen -
+  das ist NICHT optional, sondern genauso verpflichtend wie code_reviewer bei Code-Generierung
 - project_cleaner einbeziehen, wenn Verzeichnisstrukturen aufgeräumt oder schlank gehalten werden sollen
 """
 

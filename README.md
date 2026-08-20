@@ -20,6 +20,17 @@
 
 ---
 
+## 🛡️ Security-Review nicht mehr optional bei Auth/Nutzerdaten (P2)
+
+`security` lief bisher nur mit, wenn der Planer ihn im Einzelfall auswählte – bei einer
+Aufgabe mit Login, Zahlungsdaten oder einem öffentlich erreichbaren Endpunkt war das reiner
+Zufall. `DECOMPOSE_SYSTEM_PROMPT` (`core/task_manager.py`) verlangt jetzt explizit, `security`
+einzubeziehen, sobald Authentifizierung/Autorisierung, Nutzer-/Personendaten, Zahlungsdaten,
+Datei-Uploads oder ein nach außen erreichbarer Netzwerk-Endpunkt entstehen – gleichrangig mit
+der bereits bestehenden Pflicht-Regel für `code_reviewer`.
+
+---
+
 ## 🔀 Push pusht den echten Branch + echter CI-Feedback-Loop (P2)
 
 Zwei zusammenhängende Funde beim Review von `agents/github_agent.py`:

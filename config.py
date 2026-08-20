@@ -180,6 +180,21 @@ ENABLE_DEPARTMENT_LEAD_EXECUTION: bool = os.getenv("ENABLE_DEPARTMENT_LEAD_EXECU
 MAX_RUN_TOKENS: int = int(os.getenv("MAX_RUN_TOKENS", "0"))
 
 # ──────────────────────────────────────────
+# Plan-Freigabe-Gate (Vorschau + Bestätigung VOR Tokenverbrauch)
+# ──────────────────────────────────────────
+# Bisher sah der Nutzer den zerlegten Aufgabenplan (welche Spezialisten, welche Teilaufgabe)
+# erst im FERTIGEN Ergebnis – bei einer größeren, vom Modell großzügig interpretierten
+# Anfrage gab es keine Möglichkeit, vor dem eigentlichen (kostenpflichtigen) Lauf gegenzu-
+# steuern. interface/cli.py zeigt den Plan jetzt vorab und lässt ihn bestätigen, WENN er
+# mindestens PLAN_CONFIRMATION_MIN_TASKS Teilaufgaben umfasst – kleinere, klar umrissene
+# Aufgaben (z.B. "aktualisiere die README") laufen weiterhin ohne Zusatz-Klick durch, um den
+# Alltagsfall nicht mit unnötiger Rückfrage zu belasten. Rein CLI-seitig (siehe
+# Orchestrator.process(plan_confirmation_callback=...)) – Dashboard/MCP-Aufrufe reichen
+# keinen Callback durch und bleiben dadurch unverändert nicht-interaktiv.
+ENABLE_PLAN_CONFIRMATION: bool = os.getenv("ENABLE_PLAN_CONFIRMATION", "true").lower() in ("true", "1", "yes")
+PLAN_CONFIRMATION_MIN_TASKS: int = int(os.getenv("PLAN_CONFIRMATION_MIN_TASKS", "3"))
+
+# ──────────────────────────────────────────
 # Web-Dashboard: sichere Standardwerte (nur lokal, optionaler Token für Netzwerkzugriff)
 # ──────────────────────────────────────────
 # Standardmäßig NUR auf localhost erreichbar (siehe interface/web_dashboard.py). Wer das

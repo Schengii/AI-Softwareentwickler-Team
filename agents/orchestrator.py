@@ -27,7 +27,7 @@ import asyncio
 import json
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from agents.accessibility_agent import AccessibilityAgent
@@ -73,6 +73,7 @@ from config import (
     MAX_RUN_TOKENS,
     MAX_VERIFICATION_ITERATIONS,
     ORCHESTRATOR_MODEL,
+    PLAN_CONFIRMATION_MIN_TASKS,
 )
 from core.git_isolation import (
     GitIsolationError,
@@ -110,6 +111,14 @@ CODE_WRITING_AGENT_IDS = {
 }
 
 StatusCallback = Callable[[str], None]
+
+# Optionaler Aufrufer-Hook: bekommt den zerlegten Plan (Zusammenfassung, Projekt-Ordnername,
+# vollständige Teilaufgaben-Liste) NACH TaskManager.decompose(), aber VOR jeder Ausführung
+# (kein Agent hat zu diesem Zeitpunkt bereits Tokens verbraucht) und entscheidet per Rückgabe-
+# wert, ob der Lauf fortgesetzt wird. None (Standard) = kein Gate, unverändertes Verhalten -
+# nur interface/cli.py reicht aktuell einen echten Callback durch (Dashboard/MCP bleiben
+# dadurch bewusst nicht-interaktiv, siehe config.ENABLE_PLAN_CONFIRMATION).
+PlanConfirmationCallback = Callable[[str, str, list[AgentTask]], Awaitable[bool]]
 
 # Reihenfolge & Anzeige der 5 Fachbereichs-Phasen. Die Mitgliederlisten stammen
 # zentral aus DEPARTMENT_DEFINITIONS (agents/department_lead_agent.py), damit
@@ -211,8 +220,15 @@ class Orchestrator:
         user_request: str,
         status_callback: StatusCallback | None = None,
         forced_project_dir: str | None = None,
+        plan_confirmation_callback: PlanConfirmationCallback | None = None,
     ) -> str:
         """
+        plan_confirmation_callback: Wenn gesetzt, wird NACH der Aufgaben-Zerlegung, aber VOR
+        jeder Ausführung aufgerufen, WENN der Plan mindestens PLAN_CONFIRMATION_MIN_TASKS
+        Teilaufgaben umfasst (kleine, klar umrissene Aufgaben laufen ohne Rückfrage durch) -
+        lehnt der Callback ab, bricht der Lauf sauber ab, OHNE dass auch nur ein Agent
+        gestartet wurde (kein Tokenverbrauch für einen möglicherweise zu groß geratenen Plan).
+
         forced_project_dir: Wenn gesetzt (von interface/cli.py nach `/load <projekt>` befüllt),
         arbeitet dieser Lauf IMMER in diesem Verzeichnis statt in einem frisch vom Modell
         geratenen project_slug. Behebt einen realen Fund: `/load` setzte bisher zwar
@@ -256,6 +272,21 @@ class Orchestrator:
             return response
 
         notify(f"📋 [bold white]Gesamtplan:[/bold white] {task_summary}")
+
+        # Plan-Freigabe-Gate: NACH der Zerlegung, aber VOR jeder Ausführung - noch kein Agent
+        # hat zu diesem Zeitpunkt auch nur einen Token verbraucht. Nur ab einer gewissen
+        # Plangröße (PLAN_CONFIRMATION_MIN_TASKS), damit kleine, klar umrissene Aufgaben
+        # weiterhin ohne Rückfrage durchlaufen - dieselbe "kein Overhead im Alltagsfall"-
+        # Abwägung wie bei der sequenziellen Ausführung kleiner Fachbereiche.
+        if plan_confirmation_callback and len(agent_tasks) >= PLAN_CONFIRMATION_MIN_TASKS:
+            approved = await plan_confirmation_callback(task_summary, project_slug, agent_tasks)
+            if not approved:
+                response = (
+                    "↩️ Abgebrochen – der geplante Aufgaben-Umfang wurde nicht bestätigt. "
+                    "Beschreibe die Aufgabe bei Bedarf enger, dann versuche ich es erneut."
+                )
+                self._history.add_assistant_message(response)
+                return response
 
         if forced_project_dir:
             # Explizit per /load geladenes (externes/Workspace-)Projekt: project_slug (vom

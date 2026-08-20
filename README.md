@@ -20,6 +20,37 @@
 
 ---
 
+## 📋 Plan-Freigabe-Gate: den Aufgaben-Umfang VOR Tokenverbrauch sehen & bestätigen
+
+Bisher sah der Nutzer den von `TaskManager.decompose()` erstellten Plan (welche Spezialisten,
+welche Teilaufgabe) erst im FERTIGEN Ergebnis – bei einer größeren, vom Modell großzügig
+interpretierten Anfrage gab es keine Möglichkeit, vor dem eigentlichen, kostenpflichtigen
+Lauf gegenzusteuern. Dieselbe Rückfrage-Philosophie wie bei unklaren Anforderungen (siehe
+oben), jetzt für den Fall "Anforderung ist klar, aber der abgeleitete Umfang könnte größer
+sein, als beabsichtigt".
+
+- `agents/orchestrator.py`: `process()` akzeptiert jetzt einen optionalen
+  `plan_confirmation_callback` – wird NACH der Zerlegung, aber VOR jeder Ausführung
+  aufgerufen (kein Agent hat zu diesem Zeitpunkt auch nur einen Token verbraucht), NUR wenn
+  der Plan mindestens `PLAN_CONFIRMATION_MIN_TASKS` Teilaufgaben umfasst (Standard: `3`) –
+  kleine, klar umrissene Aufgaben (z. B. "aktualisiere die README") laufen weiterhin ohne
+  Rückfrage durch. Lehnt der Callback ab, bricht der Lauf sauber ab, exakt wie bei der
+  bestehenden "leere agent_tasks"-Behandlung.
+- `interface/cli.py`: zeigt bei Bedarf eine nach Fachbereich gruppierte Vorschau (genau die
+  Spezialisten/Teilaufgaben, die gleich wirklich beauftragt würden – keine Schätzung) und
+  lässt sie bestätigen. `Confirm.ask()` ist ein blockierender Terminal-Prompt – während die
+  Live-Statusanzeige aktiv rendert, würde sich das mit deren Auto-Refresh-Thread beißen;
+  `live.stop()`/`live.start()` pausiert die Anzeige exakt für die Dauer der Abfrage.
+- Bewusst NUR CLI-seitig verdrahtet (`config.ENABLE_PLAN_CONFIRMATION`, Standard aktiv):
+  Dashboard/MCP-Aufrufe reichen keinen Callback durch und bleiben dadurch unverändert
+  nicht-interaktiv (kein Caller-Bruch für nicht-interaktive Integrationen).
+- 12 neue Tests (Gate-Schwelle inkl. Callback wird bei kleinen Plänen NIE gefragt, Ablehnung
+  stoppt nachweislich VOR jeder Fachbereichs-Ausführung, Zustimmung läuft normal weiter, CLI-
+  Gruppierung nach Fachbereich, `ENABLE_PLAN_CONFIRMATION`-Umschaltung); volle Suite
+  (251 Tests) grün, ruff sauber.
+
+---
+
 ## 🎨 Echtes Lint-/Type-Check-Gate für generierten Code
 
 `ruff.toml` lief bisher AUSSCHLIESSLICH gegen den Framework-Code selbst – `workspace/` ist

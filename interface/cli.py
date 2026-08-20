@@ -23,11 +23,23 @@ from rich.prompt import Confirm
 from rich.table import Table
 from rich.text import Text
 
-from agents.orchestrator import Orchestrator
-from config import validate_config
+from agents.department_lead_agent import DEPARTMENT_DEFINITIONS
+from agents.orchestrator import PHASE_ORDER, Orchestrator
+from config import ENABLE_PLAN_CONFIRMATION, validate_config
 from core.code_sandbox import CodeSandbox
+from core.message_bus import AgentTask
+from core.task_manager import AVAILABLE_AGENTS
 
 console = Console()
+
+# agent_id -> Fachbereichs-ID (z.B. "backend" -> "dev_lead"), einmalig aus
+# DEPARTMENT_DEFINITIONS abgeleitet - Grundlage für die nach Fachbereich gruppierte
+# Plan-Vorschau (siehe _render_and_confirm_plan).
+_AGENT_TO_DEPARTMENT: dict[str, str] = {
+    agent_id: dept_id
+    for dept_id, info in DEPARTMENT_DEFINITIONS.items()
+    for agent_id in info["members"]
+}
 
 BANNER = """
 ╔══════════════════════════════════════════════════════════════╗
@@ -140,6 +152,18 @@ class CLIInterface:
                 status_lines.append(msg)
                 live.update(self._render_status_panel(status_lines))
 
+            async def confirm_plan(task_summary: str, project_slug: str, agent_tasks: list[AgentTask]) -> bool:
+                # Confirm.ask() ist ein blockierender Terminal-Prompt - während die Live-
+                # Anzeige aktiv rendert, würde sich das mit deren Auto-Refresh-Thread beißen.
+                # live.stop()/live.start() pausiert die Anzeige exakt für die Dauer der Abfrage
+                # (dasselbe Muster wie der bereits bestehende Git-Push-Gate, nur DORT läuft die
+                # Abfrage bereits außerhalb des Live-Blocks, hier mitten im laufenden Lauf).
+                live.stop()
+                try:
+                    return self._render_and_confirm_plan(task_summary, project_slug, agent_tasks)
+                finally:
+                    live.start()
+
             try:
                 # Nach /load reicht jede folgende Chat-Nachricht das geladene Projektverzeichnis
                 # durch, statt (wie zuvor) einen neuen project_slug erraten und einen neuen
@@ -150,6 +174,7 @@ class CLIInterface:
                     user_request=user_input,
                     status_callback=on_status,
                     forced_project_dir=self._loaded_project_dir,
+                    plan_confirmation_callback=confirm_plan if ENABLE_PLAN_CONFIRMATION else None,
                 )
             except Exception as e:
                 console.print(
@@ -622,6 +647,51 @@ class CLIInterface:
             border_style="yellow",
             padding=(0, 1),
         )
+
+    def _render_and_confirm_plan(
+        self, task_summary: str, project_slug: str, agent_tasks: list[AgentTask],
+    ) -> bool:
+        """
+        Zeigt den von TaskManager.decompose() erstellten Plan (Zusammenfassung + genau die
+        Spezialisten/Teilaufgaben, die gleich wirklich beauftragt würden - keine Schätzung,
+        keine Zusammenfassung, der reale Plan) gruppiert nach Fachbereich, und lässt ihn
+        bestätigen, BEVOR auch nur ein Agent startet.
+        """
+        dept_meta = {dept_id: (icon, label) for dept_id, label, icon, _mode in PHASE_ORDER}
+        grouped: dict[str, list[AgentTask]] = {}
+        for task in agent_tasks:
+            grouped.setdefault(_AGENT_TO_DEPARTMENT.get(task.agent_id, "?"), []).append(task)
+
+        lines: list[str] = [f"[dim]Projekt: {project_slug}[/dim]\n"]
+        # In derselben Reihenfolge wie die tatsächliche Ausführung (PHASE_ORDER), damit die
+        # Vorschau exakt widerspiegelt, was gleich passiert.
+        ordered_dept_ids = [d for d, _, _, _ in PHASE_ORDER] + [d for d in grouped if d not in dept_meta]
+        for dept_id in ordered_dept_ids:
+            tasks = grouped.get(dept_id)
+            if not tasks:
+                continue
+            icon, label = dept_meta.get(dept_id, ("❔", DEPARTMENT_DEFINITIONS.get(dept_id, {}).get("title", dept_id)))
+            lines.append(f"{icon} [bold]{label}[/bold]")
+            for t in tasks:
+                agent_name = AVAILABLE_AGENTS.get(t.agent_id, {}).get("name", t.agent_id)
+                desc = t.description if len(t.description) <= 110 else t.description[:107] + "..."
+                lines.append(f"  • [cyan]{agent_name}[/cyan]: {desc}")
+            lines.append("")
+
+        console.print(
+            Panel(
+                "\n".join(lines).rstrip(),
+                title=f"📋 Geplanter Aufgaben-Umfang: {task_summary}",
+                border_style="cyan",
+            )
+        )
+        try:
+            return Confirm.ask(
+                f"Team mit {len(agent_tasks)} Spezialist(en) aus {len(grouped)} Fachbereich(en) loslassen?",
+                default=True,
+            )
+        except Exception:
+            return False
 
     def _print_history(self) -> None:
         history = self._orchestrator.get_history()

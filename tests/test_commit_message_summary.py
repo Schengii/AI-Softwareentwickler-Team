@@ -13,8 +13,9 @@ Diese Tests stellen sicher, dass:
 2. interface/cli.py._truncate_at_word() niemals mitten in einem Wort abschneidet.
 """
 
+import asyncio
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from agents.orchestrator import Orchestrator
 from core.message_bus import AgentTask
@@ -72,9 +73,9 @@ class TestCommitMessageUsesRealSummary(unittest.TestCase):
         # NICHT die rohe, konversationelle Nutzereingabe.
         self.assertEqual(self.orchestrator.last_task_summary, "Health-Check-Endpoint für FastAPI implementiert")
         self.assertNotIn("Okay ich möchte", self.orchestrator.last_task_summary)
+        self.assertEqual(self.orchestrator.last_project_slug, "fastapi_health_check")
 
     def test_last_task_summary_is_real_summary_not_raw_input(self):
-        import asyncio
         asyncio.run(self._run())
 
 
@@ -93,6 +94,60 @@ class TestTruncateAtWord(unittest.TestCase):
         self.assertEqual(
             CLIInterface._truncate_at_word("Zeile 1\n\nZeile   2", 50), "Zeile 1 Zeile 2"
         )
+
+
+class TestRawRequestEchoFallback(unittest.TestCase):
+    """
+    Realer Fund (2. Vorkommen trotz vorherigem Fix): task_summary war erneut faktisch eine
+    Kopie der rohen Nutzeranfrage ("Ich möchte das ihr ein neues Projekt erstellt. Es" als
+    Commit-Betreff) – diesmal, weil das Modell den (bereits verschärften) Zusammenfassungs-
+    Auftrag im DECOMPOSE_SYSTEM_PROMPT selbst nicht befolgt hat. Deterministische Absicherung
+    ohne weiteren LLM-Aufruf: erkennbare Anrede-/Bitte-Formeln lösen einen Fallback auf den
+    (immer kurzen) Projektordnernamen statt eines weiteren rohen [:50]-Schnitts aus.
+    """
+
+    def test_detects_common_raw_request_openers(self):
+        for text in (
+            "Ich möchte das ihr ein neues Projekt erstellt. Es soll...",
+            "ich will einen Taschenrechner",
+            "Könnt ihr bitte eine README schreiben",
+            "Bitte baut mir eine API",
+            "Okay, macht weiter",
+        ):
+            self.assertTrue(CLIInterface._looks_like_raw_user_request(text), text)
+
+    def test_does_not_flag_real_summaries(self):
+        for text in (
+            "Health-Check-Endpoint für FastAPI implementiert",
+            "Taschenrechner-GUI mit Core/GUI-Trennung erstellt",
+            "README aktualisiert",
+        ):
+            self.assertFalse(CLIInterface._looks_like_raw_user_request(text), text)
+
+    def test_commit_message_falls_back_to_project_slug_when_summary_looks_raw(self):
+        cli = CLIInterface()
+        fake_github = MagicMock()
+        fake_github.get_status.return_value = "?? new_file.py"
+        fake_github.get_diff.return_value = "new_file.py | 1 +"
+        fake_github.commit.return_value = (True, "commit ok")
+        fake_github.push.return_value = (True, "push ok")
+        cli._orchestrator._agents["github"] = fake_github
+        cli._orchestrator.last_project_slug = "modular_calculator_gui"
+
+        with patch("interface.cli.console.print"), patch("interface.cli.Confirm.ask", return_value=False):
+            asyncio.run(cli._ask_for_git_push("Ich möchte das ihr ein neues Projekt erstellt. Es"))
+
+        # Confirm.ask=False -> commit() wird nicht aufgerufen, aber die Vorschau-Message wurde
+        # bereits gebaut und an console.print übergeben; wir prüfen sie über den nächsten echten
+        # Aufruf mit Confirm.ask=True, um den tatsächlich verwendeten commit_msg zu erhalten.
+        fake_github.reset_mock()
+        with patch("interface.cli.console.print"), patch("interface.cli.Confirm.ask", return_value=True):
+            asyncio.run(cli._ask_for_git_push("Ich möchte das ihr ein neues Projekt erstellt. Es"))
+
+        fake_github.commit.assert_called_once()
+        commit_msg = fake_github.commit.call_args[0][0]
+        self.assertIn("modular_calculator_gui", commit_msg)
+        self.assertNotIn("Ich möchte", commit_msg)
 
 
 if __name__ == "__main__":

@@ -201,6 +201,23 @@ class CLIInterface:
         last_space = cut.rfind(" ")
         return (cut[:last_space] if last_space > 0 else cut).strip()
 
+    # Marker, an denen ein task_summary erkennbar noch die rohe, an das Team GERICHTETE
+    # Nutzeranfrage ist statt einer Zusammenfassung dessen, was entstanden ist – real
+    # beobachtet trotz verschärftem DECOMPOSE_SYSTEM_PROMPT (core/task_manager.py), z.B.
+    # "Ich möchte das ihr ein neues Projekt erstellt. Es" als Commit-Betreff. Deterministische
+    # Absicherung ohne weiteren LLM-Aufruf – bewusst nur eindeutige Anrede-/Bitte-Formeln,
+    # um echte (auch mal umgangssprachlich formulierte) Zusammenfassungen nicht fälschlich
+    # zu verwerfen.
+    _RAW_REQUEST_PREFIXES = (
+        "ich möchte", "ich will", "ich hätte gern", "könnt ihr", "könntest du", "kannst du",
+        "bitte ", "okay,", "okay ", "hallo", "hi,", "hi ",
+    )
+
+    @classmethod
+    def _looks_like_raw_user_request(cls, text: str) -> bool:
+        normalized = text.strip().lower()
+        return normalized.startswith(cls._RAW_REQUEST_PREFIXES)
+
     async def _ask_for_git_push(self, task_summary: str) -> None:
         """
         Fragt den Nutzer, ob der GitHub-Agent Änderungen committen und pushen soll.
@@ -221,7 +238,15 @@ class CLIInterface:
 
         changed_files = [line.strip() for line in diff_status.splitlines() if line.strip()]
         diff_stat = github_agent.get_diff()
-        commit_msg = f"feat: implement {self._truncate_at_word(task_summary, 50)} via AI Developer Team"
+
+        if self._looks_like_raw_user_request(task_summary):
+            # task_summary ist erkennbar keine Zusammenfassung, sondern die an das Team
+            # gerichtete Anfrage selbst – der (immer kurze, bereits sanitierte) Projektordner-
+            # name ist hier ein zuverlässigerer Commit-Betreff als ein weiteres hartes [:50].
+            fallback_slug = getattr(self._orchestrator, "last_project_slug", "") or "projekt"
+            commit_msg = f"feat: {fallback_slug} weiterentwickelt via AI Developer Team"
+        else:
+            commit_msg = f"feat: implement {self._truncate_at_word(task_summary, 50)} via AI Developer Team"
 
         console.print(
             Panel(

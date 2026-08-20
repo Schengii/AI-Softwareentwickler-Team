@@ -28,6 +28,7 @@ import json
 import re
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 from agents.accessibility_agent import AccessibilityAgent
 from agents.agent_trainer_agent import AgentTrainerAgent
@@ -182,6 +183,12 @@ class Orchestrator:
         # (nicht die rohe Nutzereingabe) – von interface/cli.py für die Commit-Message
         # verwendet, siehe _ask_for_git_push(). Leer, solange noch kein Lauf abgeschlossen ist.
         self.last_task_summary: str = ""
+        # Kurzer, garantiert saniertes Projekt-Slug (siehe core/workspace.py) des letzten Laufs -
+        # zuverlässiger Fallback fuer die Commit-Message, falls last_task_summary trotz
+        # verschärftem DECOMPOSE_SYSTEM_PROMPT (core/task_manager.py) doch nur ein Echo der
+        # rohen, oft konversationellen Nutzereingabe ist (real beobachtet, z.B. "Ich möchte
+        # das ihr ein neues Projekt erstellt. Es" als Commit-Betreff).
+        self.last_project_slug: str = ""
 
     async def process(
         self,
@@ -260,6 +267,11 @@ class Orchestrator:
             # Jede Teilaufgabe bekommt ab hier echten Zugriff auf das Projektverzeichnis
             # (read_file/write_file/edit_file/run_command/run_tests via agents/base_agent.py).
             project_dir = str(self._workspace.get_project_dir(project_slug))
+
+        # Der TATSÄCHLICH verwendete Ordnername (nicht der u.U. verworfene project_slug bei
+        # forced_project_dir) – zuverlässiger Commit-Message-Fallback, siehe last_project_slug oben.
+        self.last_project_slug = Path(project_dir).name
+
         for t in agent_tasks:
             t.project_dir = project_dir
             t.max_tool_iterations = AGENT_MAX_TOOL_ITERATIONS.get(t.agent_id)  # None = config.MAX_AGENT_TOOL_ITERATIONS
@@ -627,8 +639,14 @@ class Orchestrator:
             report = await asyncio.to_thread(verifier.run_tests)
 
             if not report.ran:
-                notify(f"  ℹ️ [dim]{report.reason_skipped}[/dim]")
-                summary_lines.append(f"- ℹ️ {report.reason_skipped}")
+                # Bewusst ⚠️ statt ℹ️: "keine Tests gefunden" bedeutet, dass generierter Code
+                # UNGEPRÜFT ausgeliefert wird – real beobachtet an einem Taschenrechner-Projekt
+                # ohne jeden Test, dessen "+"-Button sofort mit TypeError abstürzte (Add.execute()
+                # verlangte zwei Argumente, die GUI übergab nur eines). Reine Sichtbarkeit, kein
+                # automatischer Abbruch – DECOMPOSE_SYSTEM_PROMPT (core/task_manager.py) weist das
+                # Modell inzwischen an, den tester-Agenten bei echter Programmlogik einzubeziehen.
+                notify(f"  ⚠️ [yellow]{report.reason_skipped}[/yellow]")
+                summary_lines.append(f"- ⚠️ {report.reason_skipped} Generierter Code wurde NICHT automatisch verifiziert.")
                 break
 
             if report.passed:

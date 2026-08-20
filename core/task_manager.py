@@ -201,7 +201,7 @@ Antworte NUR mit einem gültigen JSON-Objekt. Keine Erklärungen davor oder dana
 
 Das JSON-Format ist exakt wie folgt:
 {
-  "task_summary": "Kurze Zusammenfassung der Gesamtaufgabe",
+  "task_summary": "3-8 Wörter, technischer Imperativ im Perfekt (z.B. 'FastAPI Health-Check-Endpoint implementiert', 'Taschenrechner-GUI mit Core/GUI-Trennung erstellt'). NIEMALS die Nutzeranfrage wörtlich wiederholen, zitieren oder paraphrasieren, auch nicht in Teilen - beschreibe WAS entstehen wird, nicht WAS der Nutzer geschrieben hat. Dieser Text erscheint u.a. als Git-Commit-Message.",
   "project_slug": "kurzer_projekt_ordnername_ohne_sonderzeichen",
   "required_agents": [
     {
@@ -222,6 +222,8 @@ Wichtige Regeln:
 - Wähle NUR die zwingend erforderlichen Agenten aus (Token-Sparsamkeit)
 - Halte die Aufgabenbeschreibungen klar und fokussiert
 - code_reviewer bei Code-Generierung einschließen
+- tester einbeziehen, wenn echte Programmlogik entsteht (Funktionen/Klassen mit Verhalten,
+  nicht nur Konfiguration/Text) - ausgelieferter Code ohne jeden Test ist nicht Ziel dieses Teams
 - project_cleaner einbeziehen, wenn Verzeichnisstrukturen aufgeräumt oder schlank gehalten werden sollen
 """
 

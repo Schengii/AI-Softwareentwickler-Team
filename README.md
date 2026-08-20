@@ -20,6 +20,28 @@
 
 ---
 
+## 🪙 Commit-Message-Fallback & Test-Pflicht (Runde 2)
+
+Ein echter Team-Lauf zeigte trotz des vorherigen Fixes erneut eine Commit-Message wie *"Ich
+möchte das ihr ein neues Projekt erstellt. Es"* – diesmal, weil das Modell den (bereits
+präzisierten) Zusammenfassungs-Auftrag im `DECOMPOSE_SYSTEM_PROMPT` selbst nicht befolgte,
+nicht wegen eines Verdrahtungsfehlers. Zwei Gegenmaßnahmen:
+
+- `core/task_manager.py`: `task_summary` im JSON-Schema jetzt explizit als "3-8 Wörter,
+  technischer Imperativ … NIEMALS die Nutzeranfrage wörtlich wiederholen" spezifiziert.
+- `interface/cli.py`: erkennt deterministisch (ohne weiteren LLM-Aufruf) typische
+  Anrede-/Bitte-Formeln ("Ich möchte …", "Könnt ihr …", "Bitte …") am Anfang von
+  `task_summary` und nutzt in diesem Fall `Orchestrator.last_project_slug` (immer kurz,
+  bereits sanitiert) als Commit-Betreff statt eines weiteren rohen `[:50]`-Schnitts.
+
+Derselbe Lauf lieferte außerdem ein Taschenrechner-Projekt **ohne einen einzigen Test** aus –
+dessen `+`-Button beim ersten Klick mit `TypeError` abgestürzt wäre. `DECOMPOSE_SYSTEM_PROMPT`
+weist das Modell jetzt an, den `tester`-Agenten bei echter Programmlogik einzubeziehen, und
+die "keine Tests gefunden"-Zeile im Verifikations-Report ist von ℹ️ auf ⚠️ hochgestuft, damit
+ungeprüft ausgelieferter Code sichtbar auffällt statt wie ein normaler Status durchzurutschen.
+
+---
+
 ## 🔗 `/load` arbeitet jetzt wirklich am geladenen Projekt weiter
 
 Der Hilfetext versprach schon immer: *"Lade das Projekt mit `/load <name>`, gib dem Team dann

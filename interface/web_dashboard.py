@@ -14,11 +14,18 @@ Jetzt:
   (dieselben, die auch die CLI anzeigt) und dem finalen Ergebnis.
 - /api/status liefert echte Werte aus der laufenden Orchestrator-Instanz statt Konstanten.
 
-Bewusste Design-Entscheidung: Jobs laufen SERIELL in einem einzigen Worker-Thread (nicht
-mehrere gleichzeitig), weil Orchestrator._history (ConversationHistory) sonst bei parallelen
-Anfragen aus verschiedenen Threads inkonsistent würde. Für eine lokale Einzelnutzer-Anwendung
-ist das die richtige, einfache und sichere Grundannahme – wie ein CLI-Terminal kann jeweils
-ein Auftrag aktiv sein, weitere werden eingereiht.
+Mehrere Jobs können jetzt tatsächlich GLEICHZEITIG laufen (config.DASHBOARD_MAX_CONCURRENT_JOBS,
+Standard 2) – bewusst NICHT über mehrere OS-Threads (das würde echte Thread-Sicherheits-Arbeit
+an allen geteilten globalen Zuständen erfordern: token_guard, agent_knowledge_base,
+memory/cost_history.json, ...), sondern über EINEN persistenten asyncio-Event-Loop in einem
+einzigen Hintergrund-Thread, in dem mehrere process()-Coroutinen nebeneinander laufen (siehe
+_dispatch_loop/_execute_job) – Python/asyncio garantiert dabei, dass jede synchrone Operation
+(z.B. ein Dict-Update) ungestört zu Ende läuft, bevor die nächste Coroutine an die Reihe kommt.
+Jeder Job bekommt dabei eine FRISCHE, isolierte Orchestrator-Instanz (eigene
+ConversationHistory) statt einer geteilten – das war der eigentliche Grund für die frühere
+Serialisierung (eine geteilte ConversationHistory hätte sich bei gleichzeitigen Jobs vermischt).
+`self.orchestrator` bleibt als EINE feste Instanz nur für /api/status-Metadaten (Agentenliste)
+erhalten, wird aber nie für echte Jobs verwendet.
 
 Sicherheit (siehe config.DASHBOARD_HOST/DASHBOARD_AUTH_TOKEN): Vorher band der Server per
 `ThreadingHTTPServer(("", port), ...)` auf ALLE Netzwerk-Interfaces, ohne jede Authentifizierung
@@ -32,7 +39,7 @@ JEDER Request einen gültigen "Authorization: Bearer <token>"-Header (oder "?tok
 import asyncio
 import hmac
 import json
-import queue
+import re
 import threading
 import time
 import uuid
@@ -41,7 +48,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from agents.orchestrator import Orchestrator
-from config import DASHBOARD_AUTH_TOKEN, DASHBOARD_HOST
+from config import DASHBOARD_AUTH_TOKEN, DASHBOARD_HOST, DASHBOARD_MAX_CONCURRENT_JOBS
 
 MAX_LOG_LINES_KEPT = 500
 # Adressen, die als "nur von diesem Rechner erreichbar" gelten – hier darf das Dashboard
@@ -66,26 +73,57 @@ class Job:
 
 
 class DashboardServer:
-    """Hält die geteilte Orchestrator-Instanz, die Job-Queue und den seriellen Worker."""
+    """
+    Hält die Job-Liste und einen persistenten Hintergrund-Event-Loop, in dem bis zu
+    config.DASHBOARD_MAX_CONCURRENT_JOBS Jobs gleichzeitig laufen können. `self.orchestrator`
+    ist eine feste Instanz NUR für /api/status-Metadaten (Agentenliste) – echte Jobs bekommen
+    in _execute_job() jeweils eine frische, isolierte Instanz.
+    """
 
-    def __init__(self):
+    def __init__(self, max_concurrent_jobs: int = DASHBOARD_MAX_CONCURRENT_JOBS):
         self.orchestrator = Orchestrator()
         self.jobs: dict[str, Job] = {}
-        self._queue: queue.Queue[str] = queue.Queue()
-        self._worker = threading.Thread(target=self._run_worker, daemon=True)
-        self._worker.start()
+        self._max_concurrent_jobs = max_concurrent_jobs
+        self._loop = asyncio.new_event_loop()
+        self._async_queue: asyncio.Queue[str] | None = None  # im Loop-Thread erzeugt, siehe _run_event_loop
+        loop_ready = threading.Event()
+        self._thread = threading.Thread(target=self._run_event_loop, args=(loop_ready,), daemon=True)
+        self._thread.start()
+        loop_ready.wait(timeout=5)
+
+    def _run_event_loop(self, loop_ready: threading.Event) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._async_queue = asyncio.Queue()
+        loop_ready.set()
+        self._loop.create_task(self._dispatch_loop())
+        self._loop.run_forever()
+
+    async def _dispatch_loop(self) -> None:
+        """Zieht Job-IDs von der Queue und startet für jede eine eigene Task, gedeckelt durch
+        ein Semaphore auf max_concurrent_jobs gleichzeitig LAUFENDE (nicht wartende) Jobs."""
+        semaphore = asyncio.Semaphore(self._max_concurrent_jobs)
+
+        async def _run_with_semaphore(job_id: str) -> None:
+            async with semaphore:
+                await self._execute_job(job_id)
+
+        while True:
+            job_id = await self._async_queue.get()
+            self._loop.create_task(_run_with_semaphore(job_id))
 
     def enqueue(self, prompt: str) -> str:
         job_id = uuid.uuid4().hex[:12]
         self.jobs[job_id] = Job(job_id=job_id, prompt=prompt)
-        self._queue.put(job_id)
+        # call_soon_threadsafe: enqueue() wird vom HTTP-Handler-Thread aufgerufen, die Queue
+        # gehört aber dem Event-Loop-Thread - asyncio.Queue.put_nowait() ist NICHT threadsafe.
+        self._loop.call_soon_threadsafe(self._async_queue.put_nowait, job_id)
         return job_id
 
     def cancel(self, job_id: str) -> bool:
-        """Markiert einen Job zum Abbruch - der Worker (falls dieser Job gerade läuft) sieht
-        das beim nächsten Prüfpunkt (vor jeder Fachbereichs-Phase/jedem Fixversuch). Ein noch
-        in der Warteschlange stehender Job wird direkt als abgebrochen markiert, ohne je zu
-        starten. Gibt False zurück, wenn die job_id unbekannt oder der Job bereits fertig ist."""
+        """Markiert einen Job zum Abbruch - eine laufende Ausführung sieht das beim nächsten
+        Prüfpunkt (vor jeder Fachbereichs-Phase/jedem Fixversuch). Ein noch wartender Job wird
+        direkt als abgebrochen markiert, ohne je zu starten. Gibt False zurück, wenn die
+        job_id unbekannt oder der Job bereits abgeschlossen ist."""
         job = self.jobs.get(job_id)
         if not job or job.status in ("done", "error", "cancelled"):
             return False
@@ -94,34 +132,36 @@ class DashboardServer:
             job.status = "cancelled"
         return True
 
-    def _run_worker(self) -> None:
-        while True:
-            job_id = self._queue.get()
-            job = self.jobs.get(job_id)
-            if not job or job.status == "cancelled":
-                continue  # bereits vor dem Start abgebrochen (siehe cancel())
-            job.status = "running"
+    async def _execute_job(self, job_id: str) -> None:
+        job = self.jobs.get(job_id)
+        if not job or job.status == "cancelled":
+            return  # bereits vor dem Start abgebrochen (siehe cancel())
+        job.status = "running"
+        # Frische, isolierte Orchestrator-Instanz PRO JOB - der eigentliche Grund für die
+        # frühere Serialisierung war eine GETEILTE ConversationHistory, die sich bei
+        # gleichzeitigen Jobs vermischt hätte. Jeder Job bekommt jetzt sein eigenes
+        # Gespräch, teilt sich aber weiterhin denselben workspace/-Ordner (Standardpfad).
+        job_orchestrator = Orchestrator()
 
-            def on_status(msg: str, _job=job):
-                import re
-                clean = re.sub(r"\[/?[a-zA-Z0-9 _]+\]", "", msg)  # rich-Markup entfernen
-                _job.log.append(clean)
-                if len(_job.log) > MAX_LOG_LINES_KEPT:
-                    del _job.log[: len(_job.log) - MAX_LOG_LINES_KEPT]
+        def on_status(msg: str, _job=job):
+            clean = re.sub(r"\[/?[a-zA-Z0-9 _]+\]", "", msg)  # rich-Markup entfernen
+            _job.log.append(clean)
+            if len(_job.log) > MAX_LOG_LINES_KEPT:
+                del _job.log[: len(_job.log) - MAX_LOG_LINES_KEPT]
 
-            try:
-                result = asyncio.run(self.orchestrator.process(
-                    job.prompt, status_callback=on_status,
-                    cancel_requested=lambda _job=job: _job.cancel_requested,
-                ))
-                job.result = result
-                # cancel_requested war gesetzt UND der Lauf hat sich tatsächlich vorzeitig
-                # beendet (statt zufällig kurz danach ganz normal fertig zu werden) - der
-                # Orchestrator-Status im Ergebnistext selbst ist die verlässliche Quelle.
-                job.status = "cancelled" if job.cancel_requested and "Manuell abgebrochen" in result else "done"
-            except Exception as e:
-                job.error = str(e)
-                job.status = "error"
+        try:
+            result = await job_orchestrator.process(
+                job.prompt, status_callback=on_status,
+                cancel_requested=lambda _job=job: _job.cancel_requested,
+            )
+            job.result = result
+            # cancel_requested war gesetzt UND der Lauf hat sich tatsächlich vorzeitig
+            # beendet (statt zufällig kurz danach ganz normal fertig zu werden) - der
+            # Orchestrator-Status im Ergebnistext selbst ist die verlässliche Quelle.
+            job.status = "cancelled" if job.cancel_requested and "Manuell abgebrochen" in result else "done"
+        except Exception as e:
+            job.error = str(e)
+            job.status = "error"
 
 
 HTML_DASHBOARD = """<!DOCTYPE html>

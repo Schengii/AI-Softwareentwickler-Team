@@ -205,6 +205,15 @@ PLAN_CONFIRMATION_MIN_TASKS: int = int(os.getenv("PLAN_CONFIRMATION_MIN_TASKS", 
 DASHBOARD_HOST: str = os.getenv("DASHBOARD_HOST", "127.0.0.1")
 DASHBOARD_AUTH_TOKEN: str = os.getenv("DASHBOARD_AUTH_TOKEN", "")
 
+# Läuft in EINEM persistenten Event-Loop (siehe interface/web_dashboard.py) – mehrere Jobs
+# können dadurch gefahrlos nebeneinander laufen (jeder mit einer FRISCHEN, isolierten
+# Orchestrator-Instanz, damit sich Gesprächsverläufe nicht mischen), ohne die
+# Thread-Sicherheits-Risiken echter OS-Thread-Parallelität für geteilte globale Zustände
+# (token_guard, agent_knowledge_base, memory/cost_history.json, ...) einzugehen. Konservativer
+# Standardwert (2), um kostenlose Provider-Rate-Limits nicht durch zu viele gleichzeitige
+# Läufe unnötig zu strapazieren – bei Bedarf über .env erhöhen.
+DASHBOARD_MAX_CONCURRENT_JOBS: int = int(os.getenv("DASHBOARD_MAX_CONCURRENT_JOBS", "2"))
+
 # ──────────────────────────────────────────
 # Pfade
 # ──────────────────────────────────────────

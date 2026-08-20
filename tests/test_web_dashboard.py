@@ -6,6 +6,12 @@ serverseitig nichts aus. Dieser Test startet den echten HTTP-Server auf einem lo
 Port und prueft den kompletten realen Request/Response-Zyklus (POST /api/run -> Polling
 via GET /api/status/<job_id> -> fertiges Ergebnis) – Orchestrator.process() wird gemockt,
 um echte API-Kosten im Test zu vermeiden, aber Threading/Job-Queue/HTTP-Handling laufen echt.
+
+Realer Fund: Jobs bekommen seit der Parallel-Jobs-Umstellung (siehe
+tests/test_dashboard_concurrency.py) jeweils eine FRISCHE Orchestrator-Instanz statt der
+einen geteilten `server_state.orchestrator` - ein Mock auf DIESER einen Instanz hätte also
+keine Wirkung mehr auf echte Jobs. Orchestrator.process() wird deshalb auf KLASSENEBENE
+gepatcht (patch.object(Orchestrator, "process", ...)), betrifft dadurch JEDE Instanz.
 """
 
 import json
@@ -15,13 +21,15 @@ import unittest
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+from unittest.mock import patch
 
+from agents.orchestrator import Orchestrator
 from interface.web_dashboard import DashboardServer, make_handler
 
 PORT = 8199  # dediziert für Tests, um Konflikte mit einer evtl. laufenden echten Instanz zu vermeiden
 
 
-async def _fake_process(prompt, status_callback=None, cancel_requested=None):
+async def _fake_process(self, prompt, status_callback=None, cancel_requested=None):
     if status_callback:
         status_callback("Phase 1: Starte...")
         status_callback("Phase 2: Fertig.")
@@ -31,8 +39,9 @@ async def _fake_process(prompt, status_callback=None, cancel_requested=None):
 class TestWebDashboard(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls._process_patcher = patch.object(Orchestrator, "process", _fake_process)
+        cls._process_patcher.start()
         cls.server_state = DashboardServer()
-        cls.server_state.orchestrator.process = _fake_process  # keine echten API-Aufrufe im Test
         handler_cls = make_handler(cls.server_state)
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", PORT), handler_cls)
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
@@ -43,6 +52,7 @@ class TestWebDashboard(unittest.TestCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.thread.join(timeout=2)
+        cls._process_patcher.stop()
 
     def _get_json(self, path: str) -> dict:
         with urllib.request.urlopen(f"http://127.0.0.1:{PORT}{path}") as r:

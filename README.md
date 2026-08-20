@@ -20,6 +20,38 @@
 
 ---
 
+## 🔀 Echte parallele Dashboard-Jobs
+
+Jobs liefen im Dashboard bisher SERIELL in einem einzigen Hintergrund-Worker – ein zweiter
+Job musste komplett warten, selbst wenn beide unabhängige Projekte betrafen und nichts
+miteinander zu tun hatten.
+
+- `interface/web_dashboard.py`: `DashboardServer` läuft jetzt in EINEM persistenten
+  asyncio-Event-Loop (ein Hintergrund-Thread), in dem bis zu
+  `config.DASHBOARD_MAX_CONCURRENT_JOBS` (Standard: `2`, konservativ gegen kostenlose
+  Provider-Rate-Limits) Jobs gleichzeitig laufen können. Bewusst NICHT über mehrere echte
+  OS-Threads – das hätte eine echte Thread-Sicherheits-Absicherung aller geteilten globalen
+  Zustände erfordert (`token_guard`, `agent_knowledge_base`,
+  `memory/cost_history.json`, …). Ein einzelner Event-Loop garantiert dagegen, dass jede
+  synchrone Operation (z. B. ein Dict-Update) ungestört zu Ende läuft, bevor die nächste
+  Coroutine an die Reihe kommt.
+- Jeder Job bekommt eine FRISCHE, isolierte `Orchestrator`-Instanz statt der bisher einen
+  geteilten – das war der eigentliche Grund für die frühere Serialisierung (eine geteilte
+  `ConversationHistory` hätte sich bei gleichzeitigen Jobs sonst vermischt). Alle Jobs teilen
+  sich weiterhin denselben `workspace/`-Ordner.
+- Cross-Thread-Zustellung neuer Jobs vom HTTP-Handler-Thread in den Event-Loop-Thread über
+  `loop.call_soon_threadsafe()` (Standardmuster für genau diesen Fall – `asyncio.Queue` ist
+  selbst nicht thread-safe).
+- 20 neue Tests, davon 3 als echter, deterministischer Beweis (kein Timing-Raten): zwei Jobs
+  werden nachweislich GLEICHZEITIG "running", ein dritter Job wartet nachweislich bei
+  erreichtem Limit, und zwei parallele Jobs bekommen nachweislich zwei verschiedene
+  `ConversationHistory`-Objekte. Bestehende Dashboard-Tests wurden auf klassen- statt
+  instanzweites Mocking von `Orchestrator.process()` umgestellt (patcht dadurch JEDE frisch
+  erzeugte Instanz). Volle Suite (321 Tests) grün, ruff sauber; ein echter
+  (nicht gemockter) Server-Start im Anschluss zusätzlich manuell verifiziert.
+
+---
+
 ## 🗓️ Kumulierte Kosten-Historie über ALLE Sitzungen hinweg
 
 `core/token_guard.py` ist eine reine In-Memory-Instanz – bei jedem Neustart (neues

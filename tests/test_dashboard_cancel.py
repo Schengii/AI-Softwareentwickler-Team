@@ -9,7 +9,10 @@ Budget, siehe tests/test_run_cancellation.py für die Orchestrator-Seite selbst)
 
 Nutzt einen ECHTEN HTTP-Server auf einem dedizierten Port (kein Mock des Request/Response-
 Zyklus) - Orchestrator.process() wird durch eine schnelle, cancel_requested-bewusste Fake-
-Funktion ersetzt, um echte API-Kosten im Test zu vermeiden.
+Funktion ersetzt, um echte API-Kosten im Test zu vermeiden. Realer Fund: Jobs bekommen seit
+der Parallel-Jobs-Umstellung jeweils eine FRISCHE Orchestrator-Instanz - process() wird
+deshalb auf KLASSENEBENE gepatcht (betrifft dadurch JEDE Instanz), nicht auf der einen
+`server_state.orchestrator`-Instanz, die für echte Jobs gar nicht mehr verwendet wird.
 """
 
 import asyncio
@@ -20,13 +23,15 @@ import unittest
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+from unittest.mock import patch
 
+from agents.orchestrator import Orchestrator
 from interface.web_dashboard import DashboardServer, make_handler
 
 PORT = 8231  # dediziert, um Konflikte mit test_web_dashboard.py (8199) / test_dashboard_security.py (8220) zu vermeiden
 
 
-async def _fake_cancellable_process(prompt, status_callback=None, cancel_requested=None):
+async def _fake_cancellable_process(self, prompt, status_callback=None, cancel_requested=None):
     """Simuliert einen Lauf, der kooperativ auf cancel_requested() reagiert - wie der echte
     Orchestrator, der das vor jeder Fachbereichs-Phase abfragt."""
     for _ in range(50):  # max. ~5s, mehr als genug Zeit für einen Cancel-Request im Test
@@ -39,8 +44,13 @@ async def _fake_cancellable_process(prompt, status_callback=None, cancel_request
 class TestDashboardCancel(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server_state = DashboardServer()
-        cls.server_state.orchestrator.process = _fake_cancellable_process
+        cls._process_patcher = patch.object(Orchestrator, "process", _fake_cancellable_process)
+        cls._process_patcher.start()
+        # max_concurrent_jobs=1: test_cancel_queued_job_never_runs verlässt sich darauf, dass
+        # ein zweiter enqueue()ter Job garantiert wartet, statt mit dem Standard-Limit (2)
+        # gleich mitzulaufen - echte Parallelität wird separat in
+        # tests/test_dashboard_concurrency.py geprüft.
+        cls.server_state = DashboardServer(max_concurrent_jobs=1)
         handler_cls = make_handler(cls.server_state)
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", PORT), handler_cls)
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
@@ -51,6 +61,7 @@ class TestDashboardCancel(unittest.TestCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.thread.join(timeout=2)
+        cls._process_patcher.stop()
 
     def _get_json(self, path: str) -> dict:
         with urllib.request.urlopen(f"http://127.0.0.1:{PORT}{path}") as r:

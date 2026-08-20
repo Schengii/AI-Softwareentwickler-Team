@@ -248,6 +248,18 @@ class CLIInterface:
         else:
             commit_msg = f"feat: implement {self._truncate_at_word(task_summary, 50)} via AI Developer Team"
 
+        # Realer Fund: JEDER Lauf endete bisher mit demselben "✅ Fertig!", egal ob die echte
+        # Testsuite tatsächlich bestanden hatte, nie gefunden wurde, oder nach Fixversuchen
+        # weiter fehlschlug – wer nur die letzte Statuszeile sah, hielt ungeprüften Code für
+        # verifiziert. last_verification_ok (Orchestrator._run_verification_loop) macht den
+        # Unterschied jetzt genau HIER sichtbar, wo eine irreversible Aktion (Push) ansteht.
+        verification_ok = getattr(self._orchestrator, "last_verification_ok", False)
+        verification_note = (
+            "\n\n[bold yellow]⚠️ Nicht verifiziert:[/bold yellow] Die echte Testsuite hat diesen "
+            "Code NICHT bestätigt bestanden (siehe Verifikations-Protokoll im Ergebnis oben)."
+            if not verification_ok else ""
+        )
+
         console.print(
             Panel(
                 (
@@ -257,16 +269,19 @@ class CLIInterface:
                     + (f"\n  … und {len(changed_files) - 25} weitere" if len(changed_files) > 25 else "")
                     + (f"\n\n[dim]{diff_stat}[/dim]" if diff_stat else "")
                     + f"\n\n[bold]Geplante Commit-Message:[/bold]\n  {commit_msg}"
+                    + verification_note
                 ),
                 title="🔀 GitHub-Agent: Vorschau vor Commit & Push",
-                border_style="cyan",
+                border_style="cyan" if verification_ok else "yellow",
             )
         )
         try:
-            should_push = Confirm.ask(
-                "Möchtest du, dass ich GENAU DIESE Änderungen committe und auf GitHub pushe?",
-                default=False,
+            prompt = (
+                "Möchtest du, dass ich GENAU DIESE Änderungen committe und auf GitHub pushe?"
+                if verification_ok else
+                "Trotz NICHT bestandener/fehlender Verifikation committen und pushen?"
             )
+            should_push = Confirm.ask(prompt, default=False)
         except Exception:
             should_push = False
 

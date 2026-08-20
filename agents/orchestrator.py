@@ -195,6 +195,10 @@ class Orchestrator:
         # core/git_isolation.py) – None, solange noch kein solcher Lauf stattfand. Wird NICHT
         # automatisch entfernt; der Mensch reviewt/merged/löscht ihn bewusst selbst.
         self.last_isolated_worktree = None
+        # True NUR, wenn die echte Testsuite des letzten Laufs tatsächlich gelaufen UND
+        # bestanden ist (siehe _run_verification_loop) – von interface/cli.py genutzt, um vor
+        # dem Git-Push-Gate zu warnen, statt unkommentiert "fertig" wirken zu lassen.
+        self.last_verification_ok: bool = False
 
     async def process(
         self,
@@ -359,14 +363,19 @@ class Orchestrator:
                 f"- 🚫 Übersprungen: Lauf-Budget (`MAX_RUN_TOKENS={MAX_RUN_TOKENS:,}`) wurde bereits "
                 "während der Fachbereichs-Phasen erreicht."
             )
+            verification_ok = False
         else:
-            results, verification_summary, budget_aborted = await self._run_verification_loop(
+            results, verification_summary, budget_aborted, verification_ok = await self._run_verification_loop(
                 project_dir=project_dir,
                 all_results=results,
                 file_owners=file_owners,
                 run_start_tokens=run_start_tokens,
                 notify=notify,
             )
+        # Von interface/cli.py vor dem Git-Push-Gate abgefragt (siehe _ask_for_git_push) - eine
+        # klare Warnung statt eines unbedingten "alles ok", wenn Code committet werden soll,
+        # dessen Tests nie bestätigt bestanden haben.
+        self.last_verification_ok = verification_ok
 
         # Projekt-Hygiene: automatisch regenerierbare Caches (__pycache__, .pytest_cache, …),
         # die die echte Testausführung gerade erzeugt hat, physisch entfernen. Bewusst OHNE
@@ -436,7 +445,19 @@ class Orchestrator:
         )
 
         self._history.add_assistant_message(final_output)
-        notify("✅ [bold green]Fertig![/bold green] Alle Fachbereiche haben ihre Aufgaben erfolgreich abgeschlossen.")
+        # Realer Fund: bisher endete JEDER Lauf mit demselben uneingeschränkten "✅ Fertig!",
+        # auch wenn die Verifikation nie bestätigt werden konnte (keine Tests gefunden,
+        # Testfehler blieben ungelöst, Budget während der Fixversuche erreicht) - nicht zu
+        # unterscheiden von einem echten, verifizierten Erfolg. verification_ok macht das jetzt
+        # im allerletzten, am ehesten wahrgenommenen Status sichtbar statt nur im Kleingedruckten
+        # des Verifikations-Protokolls weiter oben.
+        if verification_ok:
+            notify("✅ [bold green]Fertig![/bold green] Alle Fachbereiche haben ihre Aufgaben erfolgreich abgeschlossen.")
+        else:
+            notify(
+                "⚠️ [bold yellow]Fertig, aber NICHT verifiziert![/bold yellow] Die echte Testsuite hat den "
+                "Code nicht bestätigt (siehe Verifikations-Protokoll oben) – prüfe das Ergebnis, bevor du es übernimmst."
+            )
         return final_output
 
     # ──────────────────────────────────────────────────────────────
@@ -643,7 +664,7 @@ class Orchestrator:
         file_owners: dict[str, str],
         notify: Callable[[str], None],
         run_start_tokens: int | None = None,
-    ) -> tuple[list[AgentResult], str, bool]:
+    ) -> tuple[list[AgentResult], str, bool, bool]:
         """
         Ersetzt die alte Keyword-basierte Fix-Schleife. Installiert Abhängigkeiten
         in einer isolierten Umgebung, führt die echte Testsuite aus und schickt bei
@@ -651,11 +672,19 @@ class Orchestrator:
         Dateien laut echtem Traceback betroffen sind.
 
         Gibt zusätzlich zurück, ob das harte Lauf-Budget (MAX_RUN_TOKENS) während der
-        Fixversuche erreicht wurde (run_start_tokens=None -> Budget-Prüfung deaktiviert).
+        Fixversuche erreicht wurde (run_start_tokens=None -> Budget-Prüfung deaktiviert),
+        sowie verification_ok: True NUR, wenn die echte Testsuite tatsächlich gelaufen UND
+        bestanden ist – False bei jedem anderen Ausgang (keine Tests gefunden, Testfehler
+        blieben ungelöst, Budget während der Fixversuche erreicht). Realer Fund: bisher
+        endete JEDER Lauf mit einem uneingeschränkten "✅ Fertig!", selbst wenn die
+        Verifikation nie bestätigt werden konnte – verification_ok macht diesen Unterschied
+        jetzt im finalen Status sichtbar (siehe process()) statt ihn im Kleingedruckten des
+        Verifikations-Protokolls zu verstecken.
         """
         verifier = ProjectVerifier(project_dir)
         summary_lines: list[str] = []
         budget_aborted = False
+        verification_ok = False
 
         notify("🧪 [bold cyan]Verifikation:[/bold cyan] Installiere Abhängigkeiten in isolierter Umgebung...")
         install_log = await asyncio.to_thread(verifier.ensure_environment)
@@ -687,6 +716,7 @@ class Orchestrator:
             if report.passed:
                 notify(f"  ✅ [bold green]Alle Tests bestanden[/bold green] (Versuch {attempt}, {report.duration_seconds:.1f}s).")
                 summary_lines.append(f"- ✅ Echte Testsuite bestanden nach {attempt} Durchlauf/Durchläufen ({report.duration_seconds:.1f}s).")
+                verification_ok = True
                 break
 
             notify(f"  ❌ [bold red]{len(report.failures)} Testfehler[/bold red] – ermittle betroffene Agenten aus dem echten Traceback...")
@@ -737,7 +767,7 @@ class Orchestrator:
         verification_summary = "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n" + (
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."
         )
-        return all_results, verification_summary, budget_aborted
+        return all_results, verification_summary, budget_aborted, verification_ok
 
     # ──────────────────────────────────────────────────────────────
     # Ausführungs-Helfer

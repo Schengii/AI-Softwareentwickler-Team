@@ -20,6 +20,29 @@
 
 ---
 
+## ✅❓ Ehrlicher Abschluss-Status: "Fertig!" bedeutet jetzt wirklich verifiziert
+
+Bisher endete JEDER Lauf mit demselben uneingeschränkten "✅ Fertig! Alle Fachbereiche haben
+ihre Aufgaben erfolgreich abgeschlossen." – egal ob die echte Testsuite tatsächlich bestanden
+hatte, nie gefunden wurde, oder nach mehreren Fixversuchen weiter fehlschlug. Wer nur die
+letzte Statuszeile oder die Push-Bestätigung sah, hatte keinen Hinweis darauf, dass der zu
+committende Code nie verifiziert wurde.
+
+- `agents/orchestrator.py`: `_run_verification_loop()` gibt jetzt zusätzlich
+  `verification_ok: bool` zurück – `True` NUR, wenn die echte Testsuite tatsächlich gelaufen
+  UND bestanden ist (nicht bei "keine Tests gefunden", nicht bei ungelösten Testfehlern,
+  nicht bei Budget-Abbruch während der Fixversuche). `Orchestrator.last_verification_ok`
+  hält das Ergebnis für den Aufrufer fest; der allerletzte Status meldet entsprechend
+  "✅ Fertig!" oder unmissverständlich "⚠️ Fertig, aber NICHT verifiziert!".
+- `interface/cli.py`: Die Push-Bestätigung zeigt jetzt eine deutliche Warnung und eine
+  andere Bestätigungsfrage, wenn `last_verification_ok` False ist – blockiert nichts hart
+  (der Mensch kann bewusst trotzdem committen/pushen), macht das Risiko aber unübersehbar
+  statt es im Kleingedruckten des Verifikations-Protokolls zu verstecken.
+- 6 neue Tests (alle drei Ausgänge: bestanden / keine Tests / fehlgeschlagen, plus die
+  Push-Gate-Warnung selbst); volle Suite (136 Tests) grün, ruff sauber.
+
+---
+
 ## 🌳 Selbstverbesserungsläufe arbeiten jetzt in einem isolierten Git-Worktree
 
 Bisher schrieb ein Selbstverbesserungslauf (Team arbeitet am Framework selbst,

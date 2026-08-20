@@ -56,6 +56,12 @@ CLAUDE_HEAVY_MODEL: str = os.getenv("CLAUDE_HEAVY_MODEL", "claude-opus-5")
 # Kostenlose Ausweich-Stufe für HEAVY-Aufgaben, falls kein ANTHROPIC_API_KEY vorhanden ist.
 GROQ_HEAVY_MODEL: str = os.getenv("GROQ_HEAVY_MODEL", "groq:openai/gpt-oss-120b")
 
+# Proaktive Rate-Begrenzung (core/rate_limiter.py): verhindert, dass viele parallele Agenten
+# (asyncio.gather bei 3+-Mitglieder-Fachbereichen) Gemini gleichzeitig anstürmen und dessen
+# Minutenlimit dadurch ERST auslösen. Bewusst konservativ unter typischen kostenlosen
+# Gemini-RPM-Limits gehalten (Reserve für gleichzeitige Nutzung außerhalb dieses Frameworks).
+GEMINI_MAX_CALLS_PER_MINUTE: int = int(os.getenv("GEMINI_MAX_CALLS_PER_MINUTE", "12"))
+
 # Primäre Zuordnung pro Komplexitätsstufe: Standard/Lite laufen primär über Gemini
 # (schnell & günstig), Heavy primär über Claude (stärkeres Trade-off-Reasoning).
 LITE_MODEL: str = GEMINI_LITE_MODEL

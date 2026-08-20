@@ -95,6 +95,30 @@ class TestLLMRouting(unittest.TestCase):
         self.assertGreater(waited, 0.0)
         self.assertLessEqual(waited, 3.0)
 
+    @patch("core.llm_factory._gemini_rate_limiter")
+    @patch("core.llm_factory._gemini_client")
+    def test_real_gemini_calls_go_through_the_proactive_rate_limiter(self, mock_gemini_client, mock_limiter):
+        """
+        Realer Fund: 3+-Mitglieder-Fachbereiche schicken über asyncio.gather ihre erste
+        Anfrage praktisch zeitgleich an Gemini - core/rate_limiter.py entzerrt das. Stellt
+        sicher, dass jeder ECHTE Gemini-API-Aufruf tatsächlich durch den Rate-Limiter geht,
+        nicht nur, dass die Klasse irgendwo existiert.
+        """
+        from unittest.mock import AsyncMock
+        mock_limiter.acquire = AsyncMock()
+        mock_gemini_client.models.generate_content.return_value = _FakeGenAIResponse(text="ok")
+
+        client = GeminiClient(model_name="gemini-3.6-flash")
+
+        async def run():
+            return await client.generate_with_usage("Sag nur 'ok'.", None)
+
+        import asyncio
+        result = asyncio.run(run())
+
+        self.assertEqual(result.text, "ok")
+        mock_limiter.acquire.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

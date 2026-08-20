@@ -20,6 +20,28 @@
 
 ---
 
+## 🚦 Proaktive Rate-Begrenzung gegen Gemini
+
+Die vorherige Runde ließ die Provider-Kette bei Totalerschöpfung kurz warten (REAKTIV,
+nachdem das Limit bereits erreicht war). Der eigentliche Auslöser blieb aber unadressiert:
+3+-Mitglieder-Fachbereiche schicken über `asyncio.gather` ihre erste Anfrage praktisch
+zeitgleich los – ohne Entzerrung stürmen mehrere Agenten gleichzeitig denselben Provider an
+und lösen dessen Minutenlimit dadurch erst aus, statt es organisch über die Zeit verteilt zu
+erreichen (genau das Muster, das zur Totalerschöpfung in einem echten Lauf führte).
+
+- `core/rate_limiter.py` (neu): einfacher Sliding-Window-Rate-Limiter (`RateLimiter.acquire()`)
+  – reines In-Process-Pacing, kein externer State.
+- `core/llm_factory.py`: EINE geteilte `_gemini_rate_limiter`-Instanz (alle Gemini-Aufrufe
+  dieses Prozesses teilen sich dasselbe Kontingent) vor jedem echten Gemini-API-Aufruf in
+  beiden Haupt-Codepfaden (`generate_with_tools`, `generate_with_usage`/`generate_json`).
+  Konfigurierbar über `GEMINI_MAX_CALLS_PER_MINUTE` (Standard: `12`, bewusst konservativ
+  unter typischen kostenlosen RPM-Limits).
+- 4 neue Tests (Pacing innerhalb des Limits ohne Wartezeit, Warten bei Überschreitung, echte
+  Entzerrung bei vielen gleichzeitigen `asyncio.gather`-Aufrufern, Nachweis dass der echte
+  Gemini-Aufruf tatsächlich durch den Limiter geht); volle Suite (151 Tests) grün, ruff sauber.
+
+---
+
 ## 🛡️ Security-Review nicht mehr optional bei Auth/Nutzerdaten (P2)
 
 `security` lief bisher nur mit, wenn der Planer ihn im Einzelfall auswählte – bei einer

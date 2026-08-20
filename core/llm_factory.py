@@ -17,12 +17,14 @@ from config import (
     ANTHROPIC_API_KEY,
     DEEPSEEK_API_KEY,
     GEMINI_API_KEY,
+    GEMINI_MAX_CALLS_PER_MINUTE,
     GROQ_API_KEY,
     GROQ_HEAVY_MODEL,
     MAX_OUTPUT_TOKENS,
     OPENROUTER_API_KEY,
     TEMPERATURE,
 )
+from core.rate_limiter import RateLimiter
 from core.token_guard import token_guard
 
 # Globaler Gemini-Client
@@ -68,6 +70,15 @@ RETRY_DELAY_SECONDS = 1.5
 # Aufrufs aktuell erschöpft, wird auf den kürzesten bekannten Cooldown gewartet – gedeckelt,
 # damit ein Lauf dadurch nie unbegrenzt hängt.
 MAX_EXHAUSTION_WAIT_SECONDS = 20.0
+
+# Proaktive Rate-Begrenzung (core/rate_limiter.py): reduziert, WIE OFT ein Minutenlimit
+# überhaupt erst erreicht wird – ergänzt MAX_EXHAUSTION_WAIT_SECONDS oben (das nur REAGIERT,
+# nachdem das Limit schon erreicht ist). Realer Fund: 3+-Mitglieder-Fachbereiche schicken über
+# asyncio.gather (agents/orchestrator.py) ihre erste Anfrage praktisch zeitgleich los – ohne
+# Entzerrung stürmen alle Agenten gleichzeitig denselben Provider an. EINE geteilte Instanz für
+# alle Gemini-Aufrufe dieses Prozesses (nicht pro Client), da sich alle dasselbe Kontingent
+# teilen.
+_gemini_rate_limiter = RateLimiter(max_calls=GEMINI_MAX_CALLS_PER_MINUTE, window_seconds=60.0)
 
 
 @dataclass
@@ -578,6 +589,7 @@ class GeminiClient:
                     continue
 
             try:
+                await _gemini_rate_limiter.acquire()
                 response = await asyncio.to_thread(
                     _gemini_client.models.generate_content, model=model, contents=contents, config=config,
                 )
@@ -695,6 +707,7 @@ class GeminiClient:
 
             for attempt in range(MAX_RETRIES):
                 try:
+                    await _gemini_rate_limiter.acquire()
                     response = await asyncio.to_thread(
                         _gemini_client.models.generate_content,
                         model=model,

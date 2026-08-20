@@ -11,6 +11,8 @@ entsprechend "✅ Fertig!" NUR bei tatsächlich bestandener Verifikation, sonst
 """
 
 import asyncio
+import shutil
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -18,6 +20,7 @@ from agents.orchestrator import Orchestrator
 from core.llm_factory import LLMResponse
 from core.message_bus import AgentTask
 from core.verifier import VerificationReport
+from core.workspace import WorkspaceManager
 
 
 class _FakeToolCapableLLM:
@@ -36,9 +39,16 @@ class _FakeToolCapableLLM:
 
 class TestVerificationStatusReflectsReality(unittest.TestCase):
     def setUp(self):
+        # Isolierter Workspace statt des echten workspace/-Ordners - sonst legt
+        # get_project_dir("test_proj") real workspace/test_proj/ im Repo an.
+        self.temp_workspace = tempfile.mkdtemp()
         self.orchestrator = Orchestrator()
+        self.orchestrator._workspace = WorkspaceManager(self.temp_workspace)
         for agent in list(self.orchestrator._agents.values()) + list(self.orchestrator._dept_leads.values()):
             agent._llm = _FakeToolCapableLLM()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_workspace, ignore_errors=True)
 
     def _run(self, verifier_report: VerificationReport):
         @patch("agents.orchestrator.ProjectVerifier")

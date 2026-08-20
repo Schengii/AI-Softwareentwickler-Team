@@ -10,6 +10,8 @@ das sofort mit finalem Text antwortet (tool_calls=[]) – und ProjectVerifier wi
 komplett übersprungen simuliert.
 """
 
+import shutil
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -17,6 +19,7 @@ from agents.orchestrator import Orchestrator
 from core.llm_factory import LLMResponse
 from core.message_bus import AgentTask
 from core.verifier import VerificationReport
+from core.workspace import WorkspaceManager
 
 
 class _FakeToolCapableLLM:
@@ -43,12 +46,22 @@ class TestMockWorkflow(unittest.TestCase):
     """Testet den mehrphasigen Orchestrator-Workflow ohne echte API-Aufrufe oder Subprozesse."""
 
     def setUp(self):
+        # Realer Fund: trotz der Behauptung oben ("keine Schreibzugriffe auf das reale
+        # workspace/-Verzeichnis") schrieb dieser Test über den Text-Fallback
+        # (core/workspace.py.parse_and_save_files, ausgelöst durch den ```python:src/main.py```
+        # -Codeblock im Fake-Antworttext) tatsächlich real nach workspace/fastapi_app/ - ohne
+        # explizit isolierten WorkspaceManager nutzte Orchestrator() den ECHTEN Workspace.
+        self.temp_workspace = tempfile.mkdtemp()
         self.orchestrator = Orchestrator()
+        self.orchestrator._workspace = WorkspaceManager(self.temp_workspace)
         fake_text = "```python:src/main.py\nfrom fastapi import FastAPI\napp = FastAPI()\n```"
         # Jeden Fachagenten UND jeden Fachbereichs-Teamleiter mit einem Fake-LLM ausstatten,
         # unabhängig davon, welcher Provider (Gemini/DeepSeek/Groq/...) ihm sonst zugeordnet wäre.
         for agent in list(self.orchestrator._agents.values()) + list(self.orchestrator._dept_leads.values()):
             agent._llm = _FakeToolCapableLLM(fake_text)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_workspace, ignore_errors=True)
 
     @patch("agents.orchestrator.ProjectVerifier")
     @patch("core.task_manager.TaskManager.decompose")

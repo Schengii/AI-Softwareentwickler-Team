@@ -51,5 +51,74 @@ class TestAgentKnowledgeBase(unittest.TestCase):
         self.assertIn("async def", augmented)
 
 
+class TestEditableLearnings(unittest.TestCase):
+    """
+    Realer Bedarf: der agent_trainer analysiert Läufe automatisch per LLM-Aufruf - eine
+    einzelne falsche oder überholte Regel würde sonst erst nach 5 neueren Regeln automatisch
+    verdrängt (siehe add_learning) und bis dahin bei JEDEM Aufruf des Agenten den
+    System-Prompt verzerren. Der Mensch muss das gezielt korrigieren können.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.file_path = Path(self.temp_dir.name) / "test_learnings.json"
+        self.kb = AgentKnowledgeBase(file_path=self.file_path)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_get_all_learnings_returns_everything_grouped_by_agent(self):
+        self.kb.add_learning("backend", "Regel A")
+        self.kb.add_learning("frontend", "Regel B")
+        self.kb.add_learning("backend", "Regel C")
+
+        all_learnings = self.kb.get_all_learnings()
+
+        self.assertEqual(all_learnings["backend"], ["Regel A", "Regel C"])
+        self.assertEqual(all_learnings["frontend"], ["Regel B"])
+
+    def test_get_all_learnings_returns_a_copy_not_a_live_reference(self):
+        self.kb.add_learning("backend", "Regel A")
+        snapshot = self.kb.get_all_learnings()
+        snapshot["backend"].append("Manipuliert von außen")
+
+        self.assertEqual(self.kb.get_learnings("backend"), ["Regel A"])
+
+    def test_remove_learning_deletes_exactly_the_requested_rule(self):
+        self.kb.add_learning("backend", "Regel A")
+        self.kb.add_learning("backend", "Regel B (falsch gelernt)")
+        self.kb.add_learning("backend", "Regel C")
+
+        removed = self.kb.remove_learning("backend", 2)  # 1-basiert, wie im /learnings-Befehl
+
+        self.assertEqual(removed, "Regel B (falsch gelernt)")
+        self.assertEqual(self.kb.get_learnings("backend"), ["Regel A", "Regel C"])
+
+    def test_remove_learning_persists_across_reload(self):
+        self.kb.add_learning("backend", "Regel A")
+        self.kb.add_learning("backend", "Regel B")
+        self.kb.remove_learning("backend", 1)
+
+        reloaded = AgentKnowledgeBase(file_path=self.file_path)
+        self.assertEqual(reloaded.get_learnings("backend"), ["Regel B"])
+
+    def test_remove_last_rule_of_an_agent_cleans_up_the_entry_entirely(self):
+        self.kb.add_learning("backend", "Einzige Regel")
+        self.kb.remove_learning("backend", 1)
+
+        self.assertEqual(self.kb.get_learnings("backend"), [])
+        self.assertNotIn("backend", self.kb.get_all_learnings())
+
+    def test_remove_learning_returns_none_for_unknown_agent(self):
+        self.assertIsNone(self.kb.remove_learning("does_not_exist", 1))
+
+    def test_remove_learning_returns_none_for_out_of_range_index(self):
+        self.kb.add_learning("backend", "Regel A")
+        self.assertIsNone(self.kb.remove_learning("backend", 0))
+        self.assertIsNone(self.kb.remove_learning("backend", 2))
+        # Nichts wurde verändert trotz der ungültigen Versuche.
+        self.assertEqual(self.kb.get_learnings("backend"), ["Regel A"])
+
+
 if __name__ == "__main__":
     unittest.main()

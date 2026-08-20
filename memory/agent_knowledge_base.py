@@ -75,6 +75,33 @@ class AgentKnowledgeBase:
         """Gibt alle gelernten Regeln für einen Agenten zurück."""
         return self._learnings.get(agent_id, [])
 
+    def get_all_learnings(self) -> dict[str, list[str]]:
+        """Gibt eine Kopie ALLER gespeicherten Learnings zurück (agent_id -> Regeln) – für
+        Anzeige-/Audit-Zwecke, z. B. den /learnings-CLI-Befehl. Kopie statt Referenz, damit
+        der Aufrufer die interne Struktur nicht versehentlich mutieren kann."""
+        return {agent_id: list(rules) for agent_id, rules in self._learnings.items()}
+
+    def remove_learning(self, agent_id: str, rule_index: int) -> str | None:
+        """
+        Entfernt eine einzelne gelernte Regel anhand ihres 1-basierten Index (wie im
+        /learnings-CLI-Befehl angezeigt). Gibt den entfernten Regeltext zurück, oder None bei
+        unbekanntem agent_id/ungültigem Index (kein Fehler).
+
+        Realer Bedarf: der agent_trainer analysiert Läufe automatisch per LLM-Aufruf - eine
+        einzelne falsche oder inzwischen überholte Regel würde sonst erst nach 5 neueren
+        Regeln automatisch verdrängt (siehe add_learning) und bis dahin bei JEDEM Aufruf
+        dieses Agenten den System-Prompt verzerren. Der Mensch muss das gezielt korrigieren
+        können, statt darauf zu warten.
+        """
+        rules = self._learnings.get(agent_id)
+        if not rules or not (1 <= rule_index <= len(rules)):
+            return None
+        removed = rules.pop(rule_index - 1)
+        if not rules:
+            del self._learnings[agent_id]
+        self._save()
+        return removed
+
     def get_augmented_prompt(self, agent_id: str, base_system_prompt: str) -> str:
         """Reichert den System-Prompt eines Agenten mit seinen gelernten Regeln an."""
         learnings = self.get_learnings(agent_id)

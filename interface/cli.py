@@ -67,6 +67,8 @@ HELP_TEXT = """
 | `/run-tests [projekt]` | Führt automatische Unit-Tests im Projekt aus |
 | `/delete-project <name>` | Löscht ein Projekt unwiderruflich aus dem Workspace (mit Bestätigung) |
 | `/audit-projekt [projekt]` | Lässt den Projekt-Hygiene-Agenten das Framework (oder ein Projekt) wirklich durchsehen; Löschungen nur nach Bestätigung |
+| `/learnings` | Zeigt alle von den Agenten gelernten Regeln (persistentes Gedächtnis) mit Nummer je Agent an |
+| `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
 | `/push` | Führt manuell einen Git-Commit & Push aus |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
@@ -480,6 +482,76 @@ class CLIInterface:
         else:
             console.print(f"⚠️ Löschung von `{project_name}` fehlgeschlagen.", style="yellow")
 
+    def _show_learnings(self) -> None:
+        """
+        Zeigt memory/agent_learnings.json (persistentes Gedächtnis) für ALLE Agenten an -
+        bisher eine reine Black Box, die bei JEDEM künftigen Aufruf eines Agenten automatisch
+        in dessen System-Prompt einfließt (siehe agent_knowledge_base.get_augmented_prompt),
+        ohne dass der Mensch je einsehen konnte, was dort eigentlich gelernt wurde.
+        """
+        from memory.agent_knowledge_base import agent_knowledge_base
+
+        all_learnings = agent_knowledge_base.get_all_learnings()
+        if not all_learnings:
+            console.print("📭 Noch keine gelernten Regeln vorhanden (memory/agent_learnings.json ist leer).", style="dim")
+            return
+
+        table = Table(title="🧠 Gelernte Regeln (persistentes Gedächtnis)", box=box.ROUNDED)
+        table.add_column("Agent", style="cyan")
+        table.add_column("Nr.", justify="right", style="dim")
+        table.add_column("Regel")
+
+        for agent_id in sorted(all_learnings):
+            for i, rule in enumerate(all_learnings[agent_id], start=1):
+                table.add_row(agent_id, str(i), rule)
+
+        console.print(table)
+        console.print(
+            "💡 [dim]Eine falsche/überholte Regel entfernen: `/delete-learning <agent> <nr>`[/dim]"
+        )
+
+    async def _delete_learning_with_confirmation(self, agent_id: str, index_str: str) -> None:
+        """Entfernt eine einzelne gelernte Regel - IRREVERSIBEL, mit Bestätigung analog zu
+        /delete-project und dem Git-Push-Gate. Kein Crash bei ungültiger Eingabe (z.B. Buchstaben
+        statt einer Nummer, unbekannter Agent) - klare Fehlermeldung statt Traceback."""
+        from memory.agent_knowledge_base import agent_knowledge_base
+
+        try:
+            index = int(index_str)
+        except ValueError:
+            console.print(f"⚠️ '{index_str}' ist keine gültige Nummer. Siehe `/learnings` für die richtigen Nummern.", style="yellow")
+            return
+
+        rules = agent_knowledge_base.get_learnings(agent_id)
+        if not rules or not (1 <= index <= len(rules)):
+            console.print(f"⚠️ Keine Regel Nr. {index} für Agent `{agent_id}` gefunden. Siehe `/learnings`.", style="yellow")
+            return
+
+        rule_text = rules[index - 1]
+        console.print(
+            Panel(
+                f"[bold red]Diese gelernte Regel wird UNWIDERRUFLICH entfernt:[/bold red]\n\n"
+                f"  Agent: `{agent_id}` (Regel Nr. {index})\n"
+                f"  Regel: {rule_text}\n",
+                title="🧠 Gelernte Regel entfernen: Vorschau",
+                border_style="red",
+            )
+        )
+        try:
+            should_delete = Confirm.ask(f"Regel Nr. {index} von `{agent_id}` WIRKLICH entfernen?", default=False)
+        except Exception:
+            should_delete = False
+
+        if not should_delete:
+            console.print("↩️ Entfernung abgebrochen – nichts wurde geändert.", style="dim")
+            return
+
+        removed = agent_knowledge_base.remove_learning(agent_id, index)
+        if removed is not None:
+            console.print(f"🗑️ [bold green]Regel entfernt:[/bold green] {removed}")
+        else:
+            console.print(f"⚠️ Regel Nr. {index} von `{agent_id}` konnte nicht entfernt werden (evtl. zwischenzeitlich geändert).", style="yellow")
+
     async def _audit_project(self, target_path: str | None) -> None:
         """
         Lässt den project_cleaner-Agenten mit ECHTEM Lesezugriff (list_files/read_file/
@@ -588,6 +660,15 @@ class CLIInterface:
 
         elif cmd in ("/audit-projekt", "/audit", "/hygiene"):
             await self._audit_project(args[0] if args else None)
+
+        elif cmd in ("/learnings", "/gelernt", "/knowledge"):
+            self._show_learnings()
+
+        elif cmd in ("/delete-learning", "/forget", "/vergessen"):
+            if len(args) < 2:
+                console.print("⚠️ Bitte gib Agent und Nummer an: `/delete-learning <agent> <nr>` (siehe `/learnings`)", style="yellow")
+                return False
+            await self._delete_learning_with_confirmation(args[0], args[1])
 
         elif cmd in ("/push", "/git"):
             await self._ask_for_git_push("manuelles Update")

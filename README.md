@@ -20,6 +20,29 @@
 
 ---
 
+## 🧠 Editierbare Agent-Learnings: `/learnings` & `/delete-learning`
+
+`memory/agent_learnings.json` war bisher eine reine Black Box – jede vom `agent_trainer`
+per LLM-Aufruf automatisch gelernte Regel floss ab sofort bei JEDEM künftigen Aufruf des
+betroffenen Agenten in dessen System-Prompt ein (siehe `get_augmented_prompt()`), ohne dass
+der Mensch je einsehen oder eine falsche/überholte Regel gezielt entfernen konnte – sie wäre
+erst nach 5 neueren Regeln automatisch verdrängt worden.
+
+- `memory/agent_knowledge_base.py`: neue `get_all_learnings()` (Kopie aller Regeln aller
+  Agenten, für Anzeigezwecke) und `remove_learning(agent_id, index)` (entfernt eine
+  einzelne Regel anhand ihres 1-basierten Index, räumt den Agenten-Eintrag komplett auf,
+  wenn keine Regel mehr übrig ist).
+- `interface/cli.py`: `/learnings` zeigt alle gelernten Regeln aller Agenten nummeriert in
+  einer Tabelle; `/delete-learning <agent> <nr>` entfernt eine einzelne Regel – IRREVERSIBEL,
+  mit derselben Vorschau-+Bestätigungs-Logik wie `/delete-project` und das Git-Push-Gate.
+  Ungültige Eingaben (unbekannter Agent, Nummer außerhalb des Bereichs, keine Zahl) geben
+  eine klare Fehlermeldung statt eines Absturzes.
+- 18 neue Tests (Wissensbasis-Seite: Hinzufügen/Entfernen/Persistenz/Edge-Cases; CLI-Seite:
+  Anzeige, Bestätigung annehmen/ablehnen, alle ungültigen Eingaben); volle Suite
+  (285 Tests) grün, ruff sauber.
+
+---
+
 ## ⏹️ Abbruch/Pause eines laufenden Runs (Strg+C in der CLI, Cancel-Button im Dashboard)
 
 Bisher gab es keinen Weg, einen sichtbar falsch laufenden Lauf gezielt zu stoppen – nur das

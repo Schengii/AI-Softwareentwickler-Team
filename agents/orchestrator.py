@@ -68,11 +68,13 @@ from agents.web_research_agent import WebResearchAgent
 from config import (
     AGENT_MAX_TOOL_ITERATIONS,
     AUTO_SAVE_WORKSPACE,
+    BASE_DIR,
     ENABLE_DEPARTMENT_LEAD_EXECUTION,
     MAX_RUN_TOKENS,
     MAX_VERIFICATION_ITERATIONS,
     ORCHESTRATOR_MODEL,
 )
+from core.git_isolation import GitIsolationError, create_isolated_worktree
 from core.message_bus import AgentResult, AgentTask
 from core.result_aggregator import ResultAggregator
 from core.task_manager import TaskManager
@@ -189,6 +191,10 @@ class Orchestrator:
         # rohen, oft konversationellen Nutzereingabe ist (real beobachtet, z.B. "Ich möchte
         # das ihr ein neues Projekt erstellt. Es" als Commit-Betreff).
         self.last_project_slug: str = ""
+        # Zuletzt für einen Selbstverbesserungslauf angelegter, isolierter Git-Worktree (siehe
+        # core/git_isolation.py) – None, solange noch kein solcher Lauf stattfand. Wird NICHT
+        # automatisch entfernt; der Mensch reviewt/merged/löscht ihn bewusst selbst.
+        self.last_isolated_worktree = None
 
     async def process(
         self,
@@ -241,11 +247,40 @@ class Orchestrator:
         notify(f"📋 [bold white]Gesamtplan:[/bold white] {task_summary}")
 
         if forced_project_dir:
-            # Explizit per /load geladenes Projekt: project_slug (vom Modell geraten) wird
-            # bewusst ignoriert – die Frühwarnung unten ist hier unnötig, weil der Mensch das
-            # Zielverzeichnis bereits selbst gewählt hat.
-            project_dir = forced_project_dir
-            notify(f"📂 [dim]Arbeite im geladenen Projekt: {project_dir}[/dim]")
+            is_self_targeting = str(Path(forced_project_dir).resolve()) == str(Path(BASE_DIR).resolve())
+            if is_self_targeting:
+                # Selbstverbesserungslauf (Team arbeitet am Framework selbst): NIE direkt im
+                # echten Arbeitsverzeichnis des Nutzers schreiben. Realer Fund: genau das ließ
+                # den backend-Agenten main.py + interface/cli.py mit kaputtem Inhalt
+                # überschreiben, während der Nutzer nichtsahnend daneben saß. Läuft stattdessen
+                # in einem komplett separaten Git-Worktree (core/git_isolation.py) – der Mensch
+                # reviewt/merged die Änderungen danach selbst per `git diff`, analog zum
+                # bestehenden Push-Bestätigungs-Gate. Schlägt die Isolation fehl (kein Git-Repo,
+                # git fehlt), wird der Lauf bewusst ABGEBROCHEN statt unsicher fortzufahren.
+                try:
+                    worktree = create_isolated_worktree(BASE_DIR, task_summary)
+                except GitIsolationError as e:
+                    response = (
+                        f"⚠️ Selbstverbesserungslauf abgebrochen: Isolierter Git-Worktree konnte "
+                        f"nicht angelegt werden ({e}). Aus Sicherheitsgründen wird NICHT direkt im "
+                        "echten Arbeitsverzeichnis geschrieben."
+                    )
+                    self._history.add_assistant_message(response)
+                    return response
+
+                self.last_isolated_worktree = worktree
+                project_dir = worktree.path
+                notify(
+                    f"🌳 [bold cyan]Isolierter Git-Worktree:[/bold cyan] `{worktree.path}` "
+                    f"(Branch `{worktree.branch}`) – dein echtes Arbeitsverzeichnis bleibt "
+                    "während des gesamten Laufs unberührt."
+                )
+            else:
+                # Explizit per /load geladenes (externes/Workspace-)Projekt: project_slug (vom
+                # Modell geraten) wird bewusst ignoriert – die Frühwarnung unten ist hier
+                # unnötig, weil der Mensch das Zielverzeichnis bereits selbst gewählt hat.
+                project_dir = forced_project_dir
+                notify(f"📂 [dim]Arbeite im geladenen Projekt: {project_dir}[/dim]")
         else:
             # Frühwarnung vor stillschweigend doppelter Arbeit: project_slug wird pro Lauf neu vom
             # Modell geraten und unterscheidet sich oft, selbst wenn die Aufgabe inhaltlich dieselbe

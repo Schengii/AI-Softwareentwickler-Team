@@ -20,6 +20,30 @@
 
 ---
 
+## 🌳 Selbstverbesserungsläufe arbeiten jetzt in einem isolierten Git-Worktree
+
+Bisher schrieb ein Selbstverbesserungslauf (Team arbeitet am Framework selbst,
+`Orchestrator.process(forced_project_dir=<Framework-Root>)`) DIREKT im echten
+Arbeitsverzeichnis des Nutzers – genau das ließ den `backend`-Agenten `main.py` UND
+`interface/cli.py` mit kaputtem Inhalt überschreiben (siehe Syntax-Gate-Fund oben), während
+das reale Arbeitsverzeichnis offen dalag.
+
+- `core/git_isolation.py` (neu): legt für jeden Selbstverbesserungslauf einen komplett
+  separaten Git-Worktree an – eigenes Verzeichnis (`../​.ai-team-worktrees/<slug>-<id>`),
+  eigener Branch (`ai-team/<slug>-<id>`) vom aktuellen HEAD abgezweigt.
+- `agents/orchestrator.py`: erkennt automatisch, wenn `forced_project_dir` auf das
+  Framework-Root selbst zeigt, und leitet den Lauf transparent in den isolierten Worktree
+  um. Schlägt die Isolation fehl (kein Git-Repo, `git` fehlt), bricht der Lauf bewusst ab,
+  statt unsicher direkt im echten Verzeichnis zu schreiben.
+- Nach dem Lauf entscheidet der Mensch selbst per `git diff`/`git merge` (oder Löschen des
+  Worktrees), ob die Änderungen übernommen werden – analog zum bestehenden
+  Git-Push-Bestätigungs-Gate.
+- 9 neue Tests (echte temporäre Git-Repos, kein Mock, inkl. Nachweis dass Schreiben im
+  Worktree das reale Arbeitsverzeichnis nachweislich nie berührt); volle Suite (130 Tests)
+  grün, ruff sauber.
+
+---
+
 ## ⏳ Kurzes Warten statt Sofort-Scheitern bei komplett erschöpfter Provider-Kette
 
 Realer Fund aus einem echten Lauf: als an einem Tag alle Gemini-Kontingente gleichzeitig an

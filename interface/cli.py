@@ -45,9 +45,9 @@ _AGENT_TO_DEPARTMENT: dict[str, str] = {
 
 BANNER = """
 ╔══════════════════════════════════════════════════════════════╗
-║        🤖  KI-Softwareentwickler-Team (v4.2)  🤖            ║
+║        🤖  KI-Softwareentwickler-Team (v4.3)  🤖            ║
 ║        ─────────────────────────────────────                 ║
-║  Dein 32-köpfiges autonomes KI-Entwickler-Team               ║
+║  Dein 33-köpfiges autonomes KI-Entwickler-Team               ║
 ║  5 Fachbereiche • RAG • Sandbox • MCP & Web-Dashboard        ║
 ╚══════════════════════════════════════════════════════════════╝
 """

@@ -1,8 +1,14 @@
-google-genai>=2.0.0
-anthropic>=0.40.0
-groq>=0.11.0
-huggingface_hub>=0.28.0
-httpx>=0.27.0
-python-dotenv>=1.0.0
-rich>=13.7.0
-aiofiles>=23.2.0
+# Obergrenzen (<nächste Major-Version) bewusst ergänzt: reine ">="-Untergrenzen liefern bei
+# jedem `pip install` die jeweils neueste Version aus – ein Breaking Change in einem SDK-Major-
+# Release (z.B. core/llm_factory.py verwendet interne Response-Strukturen von google-genai/
+# anthropic/groq) würde sonst erst bei einem echten Lauf auffallen, nicht schon bei CI/Install,
+# da die Testsuite komplett gemockt läuft (siehe README, Abschnitt "Automatisierte Tests").
+# Untergrenzen bleiben auf den zuletzt gegen dieses Projekt verifizierten Versionen.
+google-genai>=2.7.0,<3.0.0
+anthropic>=0.122.0,<1.0.0
+groq>=1.6.0,<2.0.0
+huggingface_hub>=1.28.0,<2.0.0
+httpx>=0.28.1,<1.0.0
+python-dotenv>=1.2.2,<2.0.0
+rich>=15.0.0,<16.0.0
+aiofiles>=25.1.0,<26.0.0

@@ -46,6 +46,7 @@ providerübergreifendes Function-Calling:
 - [🔌 MCP-Server: Einbindung in Cursor, Windsurf & Antigravity](#mcp-server)
 - [🔍 Lokales Codebase-RAG & Semantische Suche](#codebase-rag)
 - [🧪 Sandbox-Code-Validierung & Automatische Test-Execution](#sandbox-validierung)
+- [🪙 Hartes Lauf-Budget (MAX_RUN_TOKENS)](#lauf-budget)
 - [🧠 Persistente KI-Selbstoptimierung & Langzeitgedächtnis](#persistente-selbstoptimierung)
 - [🎯 Die 33 Spezialisten & Fachbereiche](#die-33-spezialisten)
 - [🚀 Alle CLI-Befehle im Überblick](#cli-befehle)
@@ -158,7 +159,7 @@ Der [ResilienceGuardAgent](agents/resilience_guard_agent.py) sichert Software ge
 ## 🌐 Modernes Web-Dashboard & Visualisierung
 
 ```bash
-python main.py --dashboard [--port N]   # Standard: Port 8080
+python main.py --dashboard [--port N] [--host ADRESSE]   # Standard: Port 8080, nur localhost
 ```
 
 Ein echter, funktionsfähiger HTTP-Server (`interface/web_dashboard.py`, stdlib
@@ -176,6 +177,14 @@ Ein echter, funktionsfähiger HTTP-Server (`interface/web_dashboard.py`, stdlib
   plus das fertige Ergebnis, sobald der Lauf abgeschlossen ist.
 - **`GET /api/status`:** Echte Team-Metadaten (Agentenanzahl, Fachbereiche, Mitglieder) aus
   der laufenden `Orchestrator`-Instanz statt fest verdrahteter Werte.
+
+**🔒 Sicherheit standardmäßig aktiv:** Der Server bindet per Default nur auf `127.0.0.1`
+(`config.DASHBOARD_HOST`) – aus dem Netzwerk nicht erreichbar. Wer das Dashboard bewusst im
+Netzwerk freigeben will (`--host 0.0.0.0` oder `DASHBOARD_HOST` in der `.env`), MUSS
+zusätzlich `DASHBOARD_AUTH_TOKEN` setzen; ohne Token verweigert `run_dashboard()` den Start
+mit einer klaren Fehlermeldung, statt unauthentifiziert im Netzwerk zu lauschen. Ist ein
+Token gesetzt, verlangt jeder Request (auch `GET /`) entweder den Header
+`Authorization: Bearer <token>` oder `?token=<token>` in der URL – sonst `401 Unauthorized`.
 
 ---
 
@@ -230,6 +239,34 @@ Zwei unabhängige Prüfebenen, die sich ergänzen:
 
 Beide Ebenen laufen automatisch als Teil jedes Orchestrator-Laufs, ohne dass der Nutzer sie
 manuell anstoßen muss. Manuell erreichbar über `/run-tests [projekt]` in der CLI.
+
+**🔒 Secrets bleiben vor Subprozessen verborgen:** `run_command`/`run_tests` (und damit jede
+von einem Agenten ausgelöste `pip install`/`npm install`) starten den Kindprozess NICHT mit
+der vollen Prozessumgebung dieses Frameworks – `core/code_sandbox.py` filtert vorher alles
+heraus, dessen Variablenname nach einem Secret aussieht (`*_API_KEY`, `*_TOKEN`, …). Ein
+bösartiges oder kompromittiertes Paket, das per Install-Skript Umgebungsvariablen ausliest,
+bekommt so keine echten API-Keys zu sehen.
+
+---
+
+<a id="lauf-budget"></a>
+## 🪙 Hartes Lauf-Budget (MAX_RUN_TOKENS)
+
+`core/quota_estimator.py` zeigt den Tokenverbrauch live an – vorher aber nur als Anzeige,
+ohne dass ein außer Kontrolle geratener Lauf (z. B. durch mehrere Verifikations-Fixversuche
+mit kostenpflichtigen Heavy-Modellen wie Claude) je automatisch gestoppt wurde. `agents/orchestrator.py`
+bricht Läufe jetzt tatsächlich ab, sobald das per `.env` konfigurierte `MAX_RUN_TOKENS`
+(Standard: `0` = deaktiviert, bestehende Läufe bleiben unangetastet) erreicht wird:
+
+- Die Prüfung erfolgt vor jeder der 5 Fachbereichs-Phasen sowie vor jedem Verifikations-Fixversuch
+  (`_run_budget_exceeded()`), nicht mitten in einer laufenden Phase – bereits begonnene Arbeit
+  wird also nicht abgewürgt.
+- Bei Überschreitung werden verbleibende Fachbereiche, weitere Verifikations-Fixversuche sowie
+  Retrospektive & Selbstoptimierung übersprungen – die bis dahin erarbeiteten Ergebnisse werden
+  trotzdem synthetisiert und ausgeliefert, nicht verworfen (Graceful Degradation statt Abbruch
+  ohne Ergebnis).
+- Die `### 📈 Projekt-Kennzahlen`-Tabelle zeigt bei aktivem Budget zusätzlich `Lauf-Budget: X / Y
+  Tokens` an, sodass der Verbrauch schon während des Laufs sichtbar ist (nicht erst danach).
 
 ---
 

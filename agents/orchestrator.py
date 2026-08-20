@@ -68,12 +68,14 @@ from config import (
     AGENT_MAX_TOOL_ITERATIONS,
     AUTO_SAVE_WORKSPACE,
     ENABLE_DEPARTMENT_LEAD_EXECUTION,
+    MAX_RUN_TOKENS,
     MAX_VERIFICATION_ITERATIONS,
     ORCHESTRATOR_MODEL,
 )
 from core.message_bus import AgentResult, AgentTask
 from core.result_aggregator import ResultAggregator
 from core.task_manager import TaskManager
+from core.token_guard import token_guard
 from core.verifier import ProjectVerifier
 from core.workspace import WorkspaceManager
 from memory.conversation_history import ConversationHistory
@@ -167,6 +169,11 @@ class Orchestrator:
         status_callback: StatusCallback | None = None,
     ) -> str:
         overall_start_time = time.monotonic()
+        # Schnappschuss des GLOBALEN Tokenzählers (core/token_guard.py) vor diesem Lauf – nicht
+        # der Zähler selbst, da der Prozess (CLI-Sitzung/Dashboard-Worker) mehrere Läufe teilt.
+        # Der Verbrauch DIESES Laufs ergibt sich aus der Differenz zum aktuellen Stand (siehe
+        # _tokens_used_since()) und ist die Grundlage für das harte MAX_RUN_TOKENS-Budget.
+        run_start_tokens = token_guard.get_summary()["grand_total_tokens"]
 
         def notify(msg: str):
             if status_callback:
@@ -201,11 +208,12 @@ class Orchestrator:
                 t.tools_read_only = True
 
         # Führe hierarchische Fachbereichs-Ausführung durch
-        results, file_owners = await self._run_department_hierarchy(
+        results, file_owners, budget_aborted = await self._run_department_hierarchy(
             user_request=user_request,
             task_summary=task_summary,
             agent_tasks=agent_tasks,
             project_dir=project_dir,
+            run_start_tokens=run_start_tokens,
             notify=notify,
         )
 
@@ -231,12 +239,22 @@ class Orchestrator:
 
         # Echte Verifikation: Abhängigkeiten installieren, Tests wirklich ausführen,
         # bei Fehlschlägen gezielt den verantwortlichen Agenten korrigieren lassen.
-        results, verification_summary = await self._run_verification_loop(
-            project_dir=project_dir,
-            all_results=results,
-            file_owners=file_owners,
-            notify=notify,
-        )
+        # Bei bereits während der Fachbereichs-Phasen überschrittenem Lauf-Budget wird die
+        # (potenziell token-intensive) Fix-Schleife komplett übersprungen.
+        if budget_aborted:
+            verification_summary = (
+                "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n"
+                f"- 🚫 Übersprungen: Lauf-Budget (`MAX_RUN_TOKENS={MAX_RUN_TOKENS:,}`) wurde bereits "
+                "während der Fachbereichs-Phasen erreicht."
+            )
+        else:
+            results, verification_summary, budget_aborted = await self._run_verification_loop(
+                project_dir=project_dir,
+                all_results=results,
+                file_owners=file_owners,
+                run_start_tokens=run_start_tokens,
+                notify=notify,
+            )
 
         # Projekt-Hygiene: automatisch regenerierbare Caches (__pycache__, .pytest_cache, …),
         # die die echte Testausführung gerade erzeugt hat, physisch entfernen. Bewusst OHNE
@@ -256,28 +274,42 @@ class Orchestrator:
             results=results,
         )
 
-        # Retrospektive & Automatische Selbstoptimierung
-        notify("📊 [bold cyan]Abschluss:[/bold cyan] Retrospektive & KI-Selbstoptimierung werden durchgeführt...")
+        # Retrospektive & Automatische Selbstoptimierung – werden bei überschrittenem
+        # Lauf-Budget ausgelassen, da sie selbst weitere (nicht-kritische) LLM-Aufrufe kosten.
         total_duration = time.monotonic() - overall_start_time
+        retro_result = None
+        trainer_result = None
 
-        retro_result = await self._run_retrospective(
-            user_request=user_request,
-            results=results,
-            total_duration=total_duration,
-        )
-
-        trainer_result = await self._run_agent_trainer_self_optimization(
-            user_request=user_request,
-            results=results,
-            retro_content=retro_result.content if retro_result else "",
-        )
+        if budget_aborted:
+            notify(f"🚫 [bold red]Lauf-Budget erreicht:[/bold red] Retrospektive & Selbstoptimierung werden übersprungen ({self._tokens_used_since(run_start_tokens):,}/{MAX_RUN_TOKENS:,} Tokens).")
+        else:
+            notify("📊 [bold cyan]Abschluss:[/bold cyan] Retrospektive & KI-Selbstoptimierung werden durchgeführt...")
+            retro_result = await self._run_retrospective(
+                user_request=user_request,
+                results=results,
+                total_duration=total_duration,
+            )
+            trainer_result = await self._run_agent_trainer_self_optimization(
+                user_request=user_request,
+                results=results,
+                retro_content=retro_result.content if retro_result else "",
+            )
 
         stats_table = self._build_metrics_summary(
             results=results,
             synth_tokens=synth_tokens,
             total_duration=total_duration,
             project_slug=project_slug,
+            run_start_tokens=run_start_tokens,
         )
+        if budget_aborted:
+            stats_table += (
+                f"\n\n> 🚫 **Lauf-Budget erreicht:** Dieser Lauf wurde nach "
+                f"`{self._tokens_used_since(run_start_tokens):,}` von `{MAX_RUN_TOKENS:,}` erlaubten Tokens "
+                "vorzeitig beendet (siehe `MAX_RUN_TOKENS` in config.py). Restliche Fachbereiche, "
+                "Verifikations-Fixversuche und/oder Retrospektive/Selbstoptimierung wurden übersprungen; "
+                "die bis dahin erarbeiteten Ergebnisse wurden trotzdem oben zusammengefasst."
+            )
 
         final_output = (
             f"{final_solution}\n\n"
@@ -306,19 +338,34 @@ class Orchestrator:
         agent_tasks: list[AgentTask],
         project_dir: str,
         notify: Callable[[str], None],
-    ) -> tuple[list[AgentResult], dict[str, str]]:
+        run_start_tokens: int | None = None,
+    ) -> tuple[list[AgentResult], dict[str, str], bool]:
         """
         Führt alle 5 Fachbereichs-Phasen aus. Jede Phase lässt (sofern
         ENABLE_DEPARTMENT_LEAD_EXECUTION aktiv ist) den zuständigen Teamleiter
         per echtem LLM-Aufruf delegieren und konsolidieren – keine simulierten
         Statusmeldungen mehr, sondern echte Leitungs-Ergebnisse im Report.
+
+        Gibt zusätzlich zurück, ob das harte Lauf-Budget (MAX_RUN_TOKENS) erreicht wurde und
+        verbleibende Fachbereiche deshalb übersprungen wurden (run_start_tokens=None -> Budget-
+        Prüfung deaktiviert, z.B. für bestehende Aufrufer/Tests ohne Budget-Bezug).
         """
         all_results: list[AgentResult] = []
         file_owners: dict[str, str] = {}
         task_map = {t.agent_id: t for t in agent_tasks}
         running_context = ""  # Kompakter Kontext aus vorherigen Phasen (z.B. Planungsergebnisse)
+        budget_aborted = False
 
         for dept_id, phase_label, icon, run_mode in PHASE_ORDER:
+            if run_start_tokens is not None and self._run_budget_exceeded(run_start_tokens):
+                budget_aborted = True
+                notify(
+                    f"🚫 [bold red]Lauf-Budget erreicht:[/bold red] {self._tokens_used_since(run_start_tokens):,}/"
+                    f"{MAX_RUN_TOKENS:,} Tokens verbraucht – überspringe verbleibende Fachbereiche "
+                    f"ab '{phase_label}' und liefere die bisherigen Ergebnisse aus."
+                )
+                break
+
             member_ids = DEPARTMENT_DEFINITIONS[dept_id]["members"]
             member_tasks = [task_map[aid] for aid in member_ids if aid in task_map]
             if not member_tasks:
@@ -376,7 +423,7 @@ class Orchestrator:
             else:
                 notify(f"  📥 [dim]{phase_label} abgeschlossen ({len(member_results)} Ergebnisse).[/dim]")
 
-        return all_results, file_owners
+        return all_results, file_owners, budget_aborted
 
     async def _run_department_delegation(
         self,
@@ -435,6 +482,18 @@ class Orchestrator:
         return (first[:max_chars] + "…") if len(first) > max_chars else first
 
     @staticmethod
+    def _tokens_used_since(start_tokens: int) -> int:
+        """Tokenverbrauch SEIT dem Schnappschuss start_tokens (nicht der globale Gesamtzähler)."""
+        return token_guard.get_summary()["grand_total_tokens"] - start_tokens
+
+    @classmethod
+    def _run_budget_exceeded(cls, start_tokens: int) -> bool:
+        """MAX_RUN_TOKENS<=0 deaktiviert das harte Budget (Standard) – siehe config.py."""
+        if MAX_RUN_TOKENS <= 0:
+            return False
+        return cls._tokens_used_since(start_tokens) >= MAX_RUN_TOKENS
+
+    @staticmethod
     def _update_file_owners(file_owners: dict[str, str], results: list[AgentResult]) -> None:
         """Merkt sich, welcher Agent welche Datei tatsächlich geschrieben hat (für die Verifikationsschleife)."""
         for res in results:
@@ -459,15 +518,20 @@ class Orchestrator:
         all_results: list[AgentResult],
         file_owners: dict[str, str],
         notify: Callable[[str], None],
-    ) -> tuple[list[AgentResult], str]:
+        run_start_tokens: int | None = None,
+    ) -> tuple[list[AgentResult], str, bool]:
         """
         Ersetzt die alte Keyword-basierte Fix-Schleife. Installiert Abhängigkeiten
         in einer isolierten Umgebung, führt die echte Testsuite aus und schickt bei
         Fehlschlägen einen GEZIELTEN Korrekturauftrag an genau die Agenten, deren
         Dateien laut echtem Traceback betroffen sind.
+
+        Gibt zusätzlich zurück, ob das harte Lauf-Budget (MAX_RUN_TOKENS) während der
+        Fixversuche erreicht wurde (run_start_tokens=None -> Budget-Prüfung deaktiviert).
         """
         verifier = ProjectVerifier(project_dir)
         summary_lines: list[str] = []
+        budget_aborted = False
 
         notify("🧪 [bold cyan]Verifikation:[/bold cyan] Installiere Abhängigkeiten in isolierter Umgebung...")
         install_log = await asyncio.to_thread(verifier.ensure_environment)
@@ -476,6 +540,12 @@ class Orchestrator:
             summary_lines.append(f"- 📦 {install_log.splitlines()[0]}")
 
         for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
+            if run_start_tokens is not None and self._run_budget_exceeded(run_start_tokens):
+                budget_aborted = True
+                notify("  🚫 [bold red]Lauf-Budget erreicht[/bold red] – weitere Verifikations-/Fixversuche werden übersprungen.")
+                summary_lines.append(f"- 🚫 Lauf-Budget (`MAX_RUN_TOKENS={MAX_RUN_TOKENS:,}`) erreicht – Verifikation nach Versuch {attempt - 1} abgebrochen.")
+                break
+
             notify(f"  🧪 [yellow]Testlauf {attempt}/{MAX_VERIFICATION_ITERATIONS}:[/yellow] Führe echte Tests aus...")
             report = await asyncio.to_thread(verifier.run_tests)
 
@@ -537,7 +607,7 @@ class Orchestrator:
         verification_summary = "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n" + (
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."
         )
-        return all_results, verification_summary
+        return all_results, verification_summary, budget_aborted
 
     # ──────────────────────────────────────────────────────────────
     # Ausführungs-Helfer
@@ -696,6 +766,7 @@ class Orchestrator:
         synth_tokens: int,
         total_duration: float,
         project_slug: str,
+        run_start_tokens: int | None = None,
     ) -> str:
         total_prompt_tokens = sum(r.prompt_tokens for r in results)
         total_completion_tokens = sum(r.completion_tokens for r in results) + synth_tokens
@@ -707,6 +778,18 @@ class Orchestrator:
             "### 📈 Projekt-Kennzahlen & Ressourcen-Verbrauch\n",
             f"- ⏱️ **Gesamtdauer:** `{total_duration:.2f} Sekunden`",
             f"- 🪙 **Gesamtverbrauch Tokens:** `{grand_total_tokens:,}` (Prompt: `{total_prompt_tokens:,}` | Completion: `{total_completion_tokens:,}`)",
+        ]
+
+        # Nur anzeigen, wenn ein hartes Lauf-Budget konfiguriert ist (config.MAX_RUN_TOKENS) –
+        # nutzt den GLOBALEN Token-Guard-Zähler (inkl. aller Fallback-Hops), nicht nur die Summe
+        # der einzelnen AgentResult.total_tokens, da diese Fehlschläge vor Ergebnis nicht erfasst.
+        if MAX_RUN_TOKENS > 0 and run_start_tokens is not None:
+            used = self._tokens_used_since(run_start_tokens)
+            pct = min(100, round(used / MAX_RUN_TOKENS * 100))
+            budget_icon = "🚨" if used >= MAX_RUN_TOKENS else "🪙"
+            lines.append(f"- {budget_icon} **Lauf-Budget:** `{used:,} / {MAX_RUN_TOKENS:,}` Tokens (`{pct}%`)")
+
+        lines += [
             f"- 🛠️ **Werkzeug-Aufrufe (echte Datei-/Testoperationen):** `{total_tool_calls:,}` | **Dateien geschrieben/geändert:** `{total_files_written}`",
             f"- 📁 **Projektverzeichnis:** `workspace/{project_slug}/`\n",
             "| KI-Agent | Rolle / Fachbereich | Modell | Dauer | Tokens | Tool-Calls | Status |",

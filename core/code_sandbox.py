@@ -9,9 +9,19 @@ Bietet dem KI-Team:
 
 import ast
 import json
+import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+# run_command() führt vom Modell ausgewählte pip-/npm-/node-Kommandos aus (siehe
+# core/agent_toolbox.py). Ohne explizites `env=` erbt subprocess.run() die KOMPLETTE
+# Prozessumgebung – inklusive aller in config.py geladenen API-Keys (GEMINI_API_KEY,
+# ANTHROPIC_API_KEY, ...). Ein bösartiges (oder kompromittiertes) Paket könnte über ein
+# setup.py-/postinstall-Skript versuchen, diese auszulesen. Dieses Muster filtert alles heraus,
+# dessen Variablenname nach einem Secret aussieht, BEVOR der Kindprozess gestartet wird.
+_SENSITIVE_ENV_NAME_PATTERN = re.compile(r"(key|token|secret|password|credential)", re.IGNORECASE)
 
 
 @dataclass
@@ -76,16 +86,28 @@ class CodeSandbox:
         )
 
     @staticmethod
+    def _restricted_env() -> dict[str, str]:
+        """Prozessumgebung ohne alles, dessen Name nach einem Secret aussieht (siehe oben)."""
+        return {k: v for k, v in os.environ.items() if not _SENSITIVE_ENV_NAME_PATTERN.search(k)}
+
+    @staticmethod
     def run_command(
         command: list[str],
         cwd: Path | str | None = None,
         timeout_seconds: float = 30.0,
+        restrict_env: bool = True,
     ) -> ExecutionResult:
         """
         Führt ein Terminal-Kommando (z. B. pytest oder python -m unittest) sicher aus.
+
+        restrict_env=True (Standard): der Kindprozess bekommt NICHT die volle Prozessumgebung
+        dieses Frameworks (siehe _restricted_env()) – keiner der bisherigen Aufrufer (Tests,
+        pip/venv-Installation, npm/node) braucht echte API-Keys, um zu funktionieren. Nur für
+        einen bewussten Sonderfall auf False setzen, der die volle Umgebung wirklich benötigt.
         """
         import time
         start_time = time.monotonic()
+        env = CodeSandbox._restricted_env() if restrict_env else None
 
         try:
             process = subprocess.run(
@@ -95,6 +117,7 @@ class CodeSandbox:
                 text=True,
                 timeout=timeout_seconds,
                 shell=False,
+                env=env,
             )
             duration = time.monotonic() - start_time
             return ExecutionResult(

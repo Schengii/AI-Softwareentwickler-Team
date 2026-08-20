@@ -19,9 +19,18 @@ mehrere gleichzeitig), weil Orchestrator._history (ConversationHistory) sonst be
 Anfragen aus verschiedenen Threads inkonsistent würde. Für eine lokale Einzelnutzer-Anwendung
 ist das die richtige, einfache und sichere Grundannahme – wie ein CLI-Terminal kann jeweils
 ein Auftrag aktiv sein, weitere werden eingereiht.
+
+Sicherheit (siehe config.DASHBOARD_HOST/DASHBOARD_AUTH_TOKEN): Vorher band der Server per
+`ThreadingHTTPServer(("", port), ...)` auf ALLE Netzwerk-Interfaces, ohne jede Authentifizierung
+– jeder im selben Netzwerk konnte über POST /api/run einen vollen Agentenlauf mit echtem
+Datei-/Kommandozugriff (run_command/pip/npm) auslösen. Jetzt: Standard-Bind ist 127.0.0.1
+(nur lokal erreichbar), und run_dashboard() verweigert den Start auf einer nicht-lokalen
+Adresse, solange kein DASHBOARD_AUTH_TOKEN gesetzt ist. Ist ein Token gesetzt, verlangt
+JEDER Request einen gültigen "Authorization: Bearer <token>"-Header (oder "?token=").
 """
 
 import asyncio
+import hmac
 import json
 import queue
 import threading
@@ -29,10 +38,15 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 from agents.orchestrator import Orchestrator
+from config import DASHBOARD_AUTH_TOKEN, DASHBOARD_HOST
 
 MAX_LOG_LINES_KEPT = 500
+# Adressen, die als "nur von diesem Rechner erreichbar" gelten – hier darf das Dashboard
+# auch ohne Token starten, weil ein entfernter Angreifer den Server so nicht erreichen kann.
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 @dataclass
@@ -245,18 +259,49 @@ def make_handler(server: DashboardServer):
             self.end_headers()
             self.wfile.write(body)
 
+        def _check_auth(self) -> bool:
+            """
+            Ohne konfiguriertes DASHBOARD_AUTH_TOKEN bleibt das Verhalten unverändert (kein
+            Auth-Zwang – sicher, solange der Server wie standardmäßig nur auf 127.0.0.1 bindet).
+            Ist ein Token gesetzt, muss JEDER Request (auch GET /) ihn per Header oder
+            Query-Parameter mitliefern, sonst 401 – konstant in der Vergleichszeit
+            (hmac.compare_digest), um Timing-Angriffe auf den Token-Vergleich zu vermeiden.
+            """
+            if not DASHBOARD_AUTH_TOKEN:
+                return True
+
+            provided = ""
+            auth_header = self.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                provided = auth_header[len("Bearer "):]
+            else:
+                query = parse_qs(urlparse(self.path).query)
+                provided = (query.get("token") or [""])[0]
+
+            if provided and hmac.compare_digest(provided, DASHBOARD_AUTH_TOKEN):
+                return True
+
+            self._send_json({"error": "Unauthorized – gültiger Token via 'Authorization: Bearer <token>' oder '?token=' erforderlich."}, status=401)
+            return False
+
         def do_GET(self):
-            if self.path in ("/", "/index.html"):
+            if not self._check_auth():
+                return
+            # Routing bewusst ohne Query-String: seit _check_auth() auch "?token=<token>" als
+            # Auth-Weg akzeptiert, würde ein exakter Vergleich von self.path (inkl. Query) hier
+            # sonst z.B. "/api/status?token=..." nicht mehr auf "/api/status" matchen.
+            path_only = urlparse(self.path).path
+            if path_only in ("/", "/index.html"):
                 body = HTML_DASHBOARD.encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-            elif self.path == "/api/status":
+            elif path_only == "/api/status":
                 self._send_json(_build_status_payload(server))
-            elif self.path.startswith("/api/status/"):
-                job_id = self.path.rsplit("/", 1)[-1]
+            elif path_only.startswith("/api/status/"):
+                job_id = path_only.rsplit("/", 1)[-1]
                 job = server.jobs.get(job_id)
                 if not job:
                     self._send_json({"error": "Unbekannte job_id"}, status=404)
@@ -269,7 +314,9 @@ def make_handler(server: DashboardServer):
                 self._send_json({"error": "Not found"}, status=404)
 
         def do_POST(self):
-            if self.path == "/api/run":
+            if not self._check_auth():
+                return
+            if urlparse(self.path).path == "/api/run":
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                     payload = json.loads(self.rfile.read(length) or b"{}")
@@ -288,11 +335,23 @@ def make_handler(server: DashboardServer):
     return DashboardHandler
 
 
-def run_dashboard(port: int = 8080) -> None:
+def run_dashboard(port: int = 8080, host: str | None = None) -> None:
+    resolved_host = host or DASHBOARD_HOST
+
+    if resolved_host not in LOOPBACK_HOSTS and not DASHBOARD_AUTH_TOKEN:
+        raise SystemExit(
+            f"🚫 Sicherheitssperre: Das Dashboard soll auf '{resolved_host}' laufen (nicht nur lokal "
+            "erreichbar), aber DASHBOARD_AUTH_TOKEN ist nicht gesetzt. Ohne Token könnte jeder im "
+            "Netzwerk über POST /api/run einen vollen Agentenlauf mit echtem Datei-/Kommandozugriff "
+            "auslösen.\n   Setze DASHBOARD_AUTH_TOKEN in der .env-Datei, bevor du das Dashboard im "
+            "Netzwerk erreichbar machst."
+        )
+
     server = DashboardServer()
     handler_cls = make_handler(server)
-    with ThreadingHTTPServer(("", port), handler_cls) as httpd:
-        print(f"🚀 Web-Dashboard läuft unter: http://localhost:{port} ({len(server.orchestrator._agents)} Agenten geladen)")
+    with ThreadingHTTPServer((resolved_host, port), handler_cls) as httpd:
+        bind_note = "🔒 nur lokal erreichbar" if resolved_host in LOOPBACK_HOSTS else "🌐 im Netzwerk erreichbar (Token-Auth aktiv)"
+        print(f"🚀 Web-Dashboard läuft unter: http://{resolved_host}:{port} ({len(server.orchestrator._agents)} Agenten geladen) [{bind_note}]")
         httpd.serve_forever()
 
 

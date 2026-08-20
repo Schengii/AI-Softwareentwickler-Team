@@ -1,3 +1,6 @@
 # requirements-dev.txt – Nur für Entwicklung/CI benötigt (Linting), nicht zur Laufzeit.
 # Installation: pip install -r requirements.txt -r requirements-dev.txt
-ruff>=0.16.0
+# Obergrenze <0.17.0: eine neue Minor-Version kann neue Standard-Lint-Regeln aktivieren und
+# den `lint`-Job in .github/workflows/ci.yml unerwartet fehlschlagen lassen (siehe requirements.txt
+# für dieselbe Pinning-Begründung bei den Laufzeit-Abhängigkeiten).
+ruff>=0.16.3,<0.17.0

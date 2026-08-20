@@ -162,6 +162,29 @@ TEST_RUN_TIMEOUT_SECONDS: float = float(os.getenv("TEST_RUN_TIMEOUT_SECONDS", "6
 ENABLE_DEPARTMENT_LEAD_EXECUTION: bool = os.getenv("ENABLE_DEPARTMENT_LEAD_EXECUTION", "true").lower() in ("true", "1", "yes")
 
 # ──────────────────────────────────────────
+# Hartes Lauf-Budget (echter Abbruch statt nur Reporting)
+# ──────────────────────────────────────────
+# core/quota_estimator.py zeigt den Tokenverbrauch nur an – ohne Obergrenze kann ein
+# einzelner Lauf (z.B. durch mehrere Verifikations-Fixversuche mit dem kostenpflichtigen
+# ORCHESTRATOR_MODEL/Heavy-Agenten) unbegrenzt weiterlaufen. MAX_RUN_TOKENS=0 (Standard)
+# lässt bestehende Läufe unangetastet; setze z.B. MAX_RUN_TOKENS=300000 in der .env, um
+# agents/orchestrator.py nach Erreichen dieses Werts die verbleibenden Fachbereichs-Phasen,
+# Verifikations-Fixversuche sowie Retrospektive/Selbstoptimierung übersprungen ausliefern
+# zu lassen (die bis dahin erarbeiteten Ergebnisse werden trotzdem synthetisiert).
+MAX_RUN_TOKENS: int = int(os.getenv("MAX_RUN_TOKENS", "0"))
+
+# ──────────────────────────────────────────
+# Web-Dashboard: sichere Standardwerte (nur lokal, optionaler Token für Netzwerkzugriff)
+# ──────────────────────────────────────────
+# Standardmäßig NUR auf localhost erreichbar (siehe interface/web_dashboard.py). Wer das
+# Dashboard im Netzwerk erreichbar machen will (DASHBOARD_HOST auf eine nicht-lokale
+# Adresse oder "0.0.0.0" setzen), MUSS zusätzlich DASHBOARD_AUTH_TOKEN setzen – sonst
+# verweigert run_dashboard() bewusst den Start, weil sonst jeder im Netzwerk über
+# POST /api/run einen vollen Agentenlauf mit echtem Datei-/Kommandozugriff auslösen könnte.
+DASHBOARD_HOST: str = os.getenv("DASHBOARD_HOST", "127.0.0.1")
+DASHBOARD_AUTH_TOKEN: str = os.getenv("DASHBOARD_AUTH_TOKEN", "")
+
+# ──────────────────────────────────────────
 # Pfade
 # ──────────────────────────────────────────
 BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))

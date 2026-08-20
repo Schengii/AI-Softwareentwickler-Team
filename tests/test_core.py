@@ -4,6 +4,7 @@ tests/test_core.py – Tests für TaskManager, Workspace, Sandbox, TokenGuard & 
 
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -92,6 +93,38 @@ port: 8080
 
         res_json_invalid = CodeSandbox.validate_code('{"key": invalid}', "json")
         self.assertFalse(res_json_invalid.is_valid)
+
+    def test_sandbox_run_command_strips_sensitive_env_vars(self):
+        """
+        run_command() startet vom Modell gewählte pip-/npm-Kommandos (siehe
+        core/agent_toolbox.py) – ein bösartiges Paket könnte per Install-Skript versuchen,
+        Umgebungsvariablen auszulesen. Diese dürfen daher NIE echte Secrets sehen, PATH &
+        Co. müssen aber weiter funktionieren (sonst schlägt jede echte pip/npm-Ausführung fehl).
+        """
+        os.environ["TEST_FAKE_GEMINI_API_KEY"] = "sk-should-never-leak"
+        self.addCleanup(os.environ.pop, "TEST_FAKE_GEMINI_API_KEY", None)
+
+        probe = (
+            "import os; "
+            "print('SECRET=' + os.environ.get('TEST_FAKE_GEMINI_API_KEY', 'MISSING')); "
+            "print('PATH_OK=' + ('yes' if os.environ.get('PATH') else 'no'))"
+        )
+        result = CodeSandbox.run_command([sys.executable, "-c", probe], timeout_seconds=15)
+
+        self.assertEqual(result.exit_code, 0, msg=result.stderr)
+        self.assertIn("SECRET=MISSING", result.stdout)  # Secret wurde NICHT durchgereicht
+        self.assertIn("PATH_OK=yes", result.stdout)     # PATH funktioniert weiterhin
+
+    def test_sandbox_run_command_restrict_env_false_keeps_full_env(self):
+        """restrict_env=False bleibt als bewusster Opt-out verfügbar (kein Verhaltensbruch)."""
+        os.environ["TEST_FAKE_GEMINI_API_KEY"] = "sk-visible-when-opted-out"
+        self.addCleanup(os.environ.pop, "TEST_FAKE_GEMINI_API_KEY", None)
+
+        probe = "import os; print('SECRET=' + os.environ.get('TEST_FAKE_GEMINI_API_KEY', 'MISSING'))"
+        result = CodeSandbox.run_command([sys.executable, "-c", probe], timeout_seconds=15, restrict_env=False)
+
+        self.assertEqual(result.exit_code, 0, msg=result.stderr)
+        self.assertIn("SECRET=sk-visible-when-opted-out", result.stdout)
 
     def test_tool_registry(self):
         """Testet die ToolRegistry und die integrierten Tools."""

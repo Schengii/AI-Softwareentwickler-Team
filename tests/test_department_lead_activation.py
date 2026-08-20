@@ -81,13 +81,14 @@ class TestDepartmentLeadActivation(unittest.TestCase):
             AgentTask(task_id="t1", agent_id="product_owner", description="Scope"),
             AgentTask(task_id="t2", agent_id="backend", description="API"),
         ]
-        results, file_owners = asyncio.run(self.orchestrator._run_department_hierarchy(
+        results, file_owners, budget_aborted = asyncio.run(self.orchestrator._run_department_hierarchy(
             user_request="Baue eine Todo-App",
             task_summary="Todo-App mit Backend",
             agent_tasks=agent_tasks,
             project_dir=".",
             notify=lambda msg: None,
         ))
+        self.assertFalse(budget_aborted)  # kein MAX_RUN_TOKENS in diesem Test konfiguriert
 
         result_agent_ids = [r.agent_id for r in results]
         # planning_lead und dev_lead müssen als ECHTE Teilnehmer mit eigenem Ergebnis auftauchen

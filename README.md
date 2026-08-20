@@ -20,6 +20,39 @@
 
 ---
 
+## 🔓 Echter Dependency-Vulnerability-Scan statt LLM-Einschätzung
+
+Der `security`-Agent konnte Abhängigkeits-Risiken bisher nur "plausibel" per LLM einschätzen
+– ohne echten Abgleich, ob eine gepinnte Paketversion in `requirements.txt`/`package.json`
+tatsächlich bekannte CVEs hat. Dieselbe "echt prüfen statt raten"-Philosophie wie bei der
+Docker-Build-Prüfung, jetzt für Sicherheits-Advisories.
+
+- `core/verifier.py`: neue `check_dependency_vulnerabilities()` – führt `pip-audit -r
+  requirements.txt` (braucht keine lokale Paket-Installation, löst Versionen direkt aus der
+  Datei auf) bzw. `npm audit` (für dieselben Node-Projekte wie die npm-Verifikation, inkl.
+  der dort bereits angelegten `package-lock.json`) gegen die öffentliche PyPI-/OSV- bzw.
+  npm-Advisory-Datenbank aus. Ein Projekt kann mehrere Stacks/Node-Unterprojekte haben,
+  daher eine Liste von Berichten.
+- **Technischer Fehlschlag ≠ "sauber":** fehlt das Scan-Tool, fehlt eine `package-lock.json`,
+  oder schlägt der Scan selbst fehl (z. B. keine Netzwerkverbindung zur Advisory-Datenbank),
+  ist das wie beim Docker-Build KEIN Fehler, nur nicht prüfbar (`attempted=False`) – und
+  wird NIEMALS fälschlich als "keine Schwachstellen gefunden" ausgegeben. `npm audit`s
+  `{"error": {...}}`-Antwort (z. B. bei nicht erreichbarer Registry) wird dafür explizit
+  erkannt statt als leeres, sauberes Ergebnis fehlinterpretiert zu werden.
+- `agents/orchestrator.py`: `_run_verification_loop()` ruft den Scan nach der Docker-Build-
+  Prüfung auf (übersprungen bei Budget-Abbruch) und macht Funde (Paket, Version, Advisory-ID)
+  im Verifikations-Protokoll sichtbar – rein informativ, beeinflusst `verification_ok` nicht
+  (ein Fund hat oft keine unmittelbare Ein-Zeilen-Lösung, anders als ein Testfehler).
+- `requirements-dev.txt`: `pip-audit` als neue Dev-Abhängigkeit (wie `ruff`) – ohne
+  installiertes `pip-audit` wird der Python-Scan pro Projekt übersprungen, kein Fehler.
+- 14 neue Tests (Parser gegen wortgetreue echte `pip-audit`-/`npm audit`-JSON-Ausschnitte,
+  alle "nicht prüfbar statt falsch sauber"-Fälle, Orchestrator-Integration); zusätzlich ein
+  echter, ungemockter End-to-End-Nachweis gegen ein absichtlich verwundbares Paket
+  (`urllib3==1.24.1`, 14 echte gefundene CVEs) während der Entwicklung. Volle Suite
+  (222 Tests) grün, ruff sauber.
+
+---
+
 ## 🧪 Echte npm-Verifikation für Frontend/Node-Projekte
 
 `core/verifier.py` verifizierte bisher AUSSCHLIESSLICH Python-Code (`test_*.py`) – ein vom

@@ -21,6 +21,11 @@ Realer Fund: bisher wurde AUSSCHLIESSLICH Python-Code echt verifiziert
 (test_*.py). Ein vom frontend/mobile-Agenten erzeugtes JS/TS-Projekt lief nie
 durch einen echten `npm test` – "keine Tests gefunden" tauchte selbst dann
 auf, wenn eine vollständige, echt ausführbare npm-Testsuite existierte.
+
+Zusätzlich: check_dependency_vulnerabilities() ersetzt die bisherige rein
+LLM-basierte Einschätzung des security-Agenten zu Abhängigkeits-Risiken durch
+einen echten Scan (pip-audit/npm audit) gegen eine öffentliche Advisory-
+Datenbank – kein Raten mehr, ob eine gepinnte Paketversion bekannte CVEs hat.
 """
 
 import json
@@ -81,6 +86,38 @@ class DockerBuildReport:
     attempted: bool
     success: bool
     output: str
+    reason_skipped: str = ""
+
+
+@dataclass
+class DependencyVulnerability:
+    """Eine einzelne, aus einem echten pip-audit-/npm-audit-Scan geparste Schwachstelle."""
+    package: str
+    version: str
+    vulnerability_id: str
+    description: str
+    severity: str = ""
+
+
+@dataclass
+class DependencyAuditReport:
+    """
+    Ergebnis eines echten Dependency-Vulnerability-Scans (`pip-audit` für Python,
+    `npm audit` für Node) – ersetzt die bisherige rein LLM-basierte Einschätzung des
+    security-Agenten, der Abhängigkeiten nur "plausibel" bewerten konnte, durch einen
+    echten Abgleich gegen eine öffentliche CVE-/Advisory-Datenbank.
+
+    Wie bei DockerBuildReport gilt: eine fehlende Abhängigkeitsdatei, ein fehlendes
+    Scan-Tool ODER ein technischer Fehlschlag des Scans selbst (z. B. keine
+    Netzwerkverbindung zur Advisory-Datenbank) sind KEIN Fehler, nur nicht prüfbar
+    (attempted=False) – und werden NIEMALS fälschlich als "keine Schwachstellen gefunden"
+    gemeldet. Das wäre ein gefährlicher falscher Sicherheitsanspruch: ein technischer
+    Fehlschlag des Scans ist etwas anderes als ein sauberes Scan-Ergebnis.
+    """
+    attempted: bool
+    vulnerable: bool
+    tool: str
+    vulnerabilities: list[DependencyVulnerability] = field(default_factory=list)
     reason_skipped: str = ""
 
 
@@ -271,6 +308,122 @@ class ProjectVerifier:
         )
         output = (result.stdout + result.stderr).strip()[-2000:]
         return DockerBuildReport(attempted=True, success=result.exit_code == 0, output=output)
+
+    def check_dependency_vulnerabilities(self, timeout_seconds: float = 120.0) -> list[DependencyAuditReport]:
+        """
+        Führt für JEDEN im Projekt gefundenen Stack einen echten Vulnerability-Scan gegen
+        eine öffentliche Advisory-Datenbank aus: `pip-audit` für Python (requirements.txt),
+        `npm audit` für Node (dieselben package.json-Verzeichnisse wie run_tests(), inkl.
+        derselben package-lock.json, die ensure_environment() dort bereits angelegt hat).
+        Ersetzt die rein LLM-basierte Sicherheitseinschätzung durch einen echten Abgleich –
+        gibt eine Liste zurück, da ein Projekt mehrere Stacks/Node-Unterprojekte haben kann.
+        """
+        reports: list[DependencyAuditReport] = []
+        req_file = self._requirements_file()
+        if req_file:
+            reports.append(self._audit_python_dependencies(req_file, timeout_seconds))
+        for node_dir in self._find_node_projects():
+            reports.append(self._audit_node_dependencies(node_dir, timeout_seconds))
+        return reports
+
+    def _audit_python_dependencies(self, req_file: Path, timeout_seconds: float) -> DependencyAuditReport:
+        if shutil.which("pip-audit") is None:
+            return DependencyAuditReport(
+                attempted=False, vulnerable=False, tool="pip-audit",
+                reason_skipped="`pip-audit` ist auf diesem System nicht installiert/verfügbar "
+                               "(`pip install pip-audit`).",
+            )
+        # `-r <requirements.txt>` löst Versionen direkt aus der Datei auf – braucht KEINE
+        # lokale Installation der Pakete, funktioniert also unabhängig von der isolierten
+        # venv (die für ein frisches Projekt evtl. noch gar nicht existiert).
+        result = CodeSandbox.run_command(
+            ["pip-audit", "-r", str(req_file), "-f", "json"],
+            cwd=self.project_dir, timeout_seconds=timeout_seconds,
+        )
+        return self._parse_pip_audit_result(result)
+
+    def _parse_pip_audit_result(self, result: ExecutionResult) -> DependencyAuditReport:
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            tail = (result.stdout + result.stderr).strip()[-800:]
+            return DependencyAuditReport(
+                attempted=False, vulnerable=False, tool="pip-audit",
+                reason_skipped=f"pip-audit lieferte kein gültiges Ergebnis (z. B. keine "
+                               f"Netzwerkverbindung zur Advisory-Datenbank): {tail}",
+            )
+
+        vulnerabilities = [
+            DependencyVulnerability(
+                package=dep.get("name", "?"),
+                version=dep.get("version", "?"),
+                vulnerability_id=vuln.get("id", "?"),
+                description=(vuln.get("description") or "").strip()[:300],
+            )
+            for dep in data.get("dependencies", [])
+            for vuln in dep.get("vulns", [])
+        ]
+        return DependencyAuditReport(
+            attempted=True, vulnerable=len(vulnerabilities) > 0, tool="pip-audit",
+            vulnerabilities=vulnerabilities,
+        )
+
+    def _audit_node_dependencies(self, node_dir: Path, timeout_seconds: float) -> DependencyAuditReport:
+        rel = self._relative_label(node_dir)
+        if shutil.which("npm") is None:
+            return DependencyAuditReport(
+                attempted=False, vulnerable=False, tool="npm audit",
+                reason_skipped=f"`npm` ist auf diesem System nicht installiert/verfügbar ({rel}).",
+            )
+        if not (node_dir / "package-lock.json").exists():
+            return DependencyAuditReport(
+                attempted=False, vulnerable=False, tool="npm audit",
+                reason_skipped=f"Keine package-lock.json ({rel}) – `npm audit` benötigt eine Lockfile "
+                               f"(wird normalerweise von ensure_environment() angelegt).",
+            )
+
+        result = CodeSandbox.run_command(
+            ["npm", "audit", "--json"], cwd=node_dir, timeout_seconds=timeout_seconds,
+        )
+        return self._parse_npm_audit_result(result, rel)
+
+    def _parse_npm_audit_result(self, result: ExecutionResult, label: str) -> DependencyAuditReport:
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            tail = (result.stdout + result.stderr).strip()[-800:]
+            return DependencyAuditReport(
+                attempted=False, vulnerable=False, tool="npm audit",
+                reason_skipped=f"`npm audit` ({label}) lieferte kein gültiges Ergebnis: {tail}",
+            )
+
+        # `npm audit` meldet einen technischen Fehlschlag (z. B. Registry nicht erreichbar)
+        # als {"error": {...}} OHNE "vulnerabilities"-Schlüssel – das darf NIE stillschweigend
+        # als "keine Schwachstellen" durchgehen.
+        if "error" in data and "vulnerabilities" not in data:
+            error_detail = json.dumps(data.get("error", {}))[:500]
+            return DependencyAuditReport(
+                attempted=False, vulnerable=False, tool="npm audit",
+                reason_skipped=f"`npm audit` ({label}) meldete einen Fehler statt eines Scan-Ergebnisses: {error_detail}",
+            )
+
+        vulnerabilities: list[DependencyVulnerability] = []
+        for pkg_name, pkg_info in data.get("vulnerabilities", {}).items():
+            for via in pkg_info.get("via", []):
+                if not isinstance(via, dict):
+                    continue  # String-Eintrag = Verweis auf eine andere betroffene Abhängigkeit, keine eigene Advisory
+                vuln_id = via.get("url", "").rsplit("/", 1)[-1] or via.get("title", "?")
+                vulnerabilities.append(DependencyVulnerability(
+                    package=pkg_name,
+                    version=pkg_info.get("range", "?"),
+                    vulnerability_id=vuln_id,
+                    description=(via.get("title") or "").strip()[:300],
+                    severity=via.get("severity", ""),
+                ))
+        total = data.get("metadata", {}).get("vulnerabilities", {}).get("total", len(vulnerabilities))
+        return DependencyAuditReport(
+            attempted=True, vulnerable=total > 0, tool="npm audit", vulnerabilities=vulnerabilities,
+        )
 
     def _run_pytest_or_unittest(self, python_exe: str, timeout_seconds: float) -> ExecutionResult:
         pytest_check = CodeSandbox.run_command([python_exe, "-c", "import pytest"], cwd=self.project_dir, timeout_seconds=10.0)

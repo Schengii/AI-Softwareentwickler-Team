@@ -1,6 +1,12 @@
-# requirements-dev.txt – Nur für Entwicklung/CI benötigt (Linting), nicht zur Laufzeit.
+# requirements-dev.txt – Nur für Entwicklung/CI benötigt (Linting, Dependency-Audit), nicht zur Laufzeit.
 # Installation: pip install -r requirements.txt -r requirements-dev.txt
 # Obergrenze <0.17.0: eine neue Minor-Version kann neue Standard-Lint-Regeln aktivieren und
 # den `lint`-Job in .github/workflows/ci.yml unerwartet fehlschlagen lassen (siehe requirements.txt
 # für dieselbe Pinning-Begründung bei den Laufzeit-Abhängigkeiten).
 ruff>=0.16.3,<0.17.0
+
+# core/verifier.py.check_dependency_vulnerabilities() nutzt `pip-audit`, um generierte
+# Python-Projekte echt gegen die PyPI-/OSV-Advisory-Datenbank zu prüfen (statt einer rein
+# LLM-basierten Einschätzung des security-Agenten). Ohne installiertes pip-audit wird dieser
+# Scan pro Projekt übersprungen (attempted=False), kein Fehler - siehe DependencyAuditReport.
+pip-audit>=2.7.0

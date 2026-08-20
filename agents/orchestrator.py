@@ -883,6 +883,29 @@ class Orchestrator:
                     notify("  🐳 [bold red]Docker-Build fehlgeschlagen.[/bold red]")
                     summary_lines.append(f"- 🐳 ❌ Docker-Build fehlgeschlagen: {docker_report.output[:500]}")
 
+        # Ersetzt die rein LLM-basierte Einschätzung des security-Agenten zu Abhängigkeits-
+        # Risiken durch einen echten Abgleich gegen eine öffentliche Advisory-Datenbank
+        # (pip-audit/npm audit) – kein Raten mehr, ob eine gepinnte Paketversion bekannte
+        # CVEs hat. Ein technischer Fehlschlag des Scans (Tool fehlt, kein Netzwerk zur
+        # Advisory-Datenbank) ist NIE ein Fehler, nur nicht prüfbar (attempted=False) und
+        # wird deshalb bewusst NICHT als "keine Schwachstellen" ausgegeben.
+        if not budget_aborted:
+            audit_reports = await asyncio.to_thread(verifier.check_dependency_vulnerabilities)
+            for audit in audit_reports:
+                if not audit.attempted:
+                    continue
+                if audit.vulnerable:
+                    top = "; ".join(
+                        f"{v.package} {v.version} ({v.vulnerability_id})" for v in audit.vulnerabilities[:5]
+                    )
+                    if len(audit.vulnerabilities) > 5:
+                        top += f" … und {len(audit.vulnerabilities) - 5} weitere"
+                    notify(f"  🔓 [bold red]{audit.tool}: {len(audit.vulnerabilities)} bekannte Schwachstelle(n) in Abhängigkeiten.[/bold red]")
+                    summary_lines.append(f"- 🔓 ❌ {audit.tool}: {len(audit.vulnerabilities)} bekannte Schwachstelle(n) in Abhängigkeiten: {top}")
+                else:
+                    notify(f"  🔒 [bold green]{audit.tool}: keine bekannten Schwachstellen in Abhängigkeiten.[/bold green]")
+                    summary_lines.append(f"- 🔒 {audit.tool}: keine bekannten Schwachstellen in Abhängigkeiten gefunden.")
+
         verification_summary = "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n" + (
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."
         )

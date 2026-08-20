@@ -81,7 +81,7 @@ class TestDepartmentLeadActivation(unittest.TestCase):
             AgentTask(task_id="t1", agent_id="product_owner", description="Scope"),
             AgentTask(task_id="t2", agent_id="backend", description="API"),
         ]
-        results, file_owners, budget_aborted = asyncio.run(self.orchestrator._run_department_hierarchy(
+        results, file_owners, budget_aborted, _cancelled = asyncio.run(self.orchestrator._run_department_hierarchy(
             user_request="Baue eine Todo-App",
             task_summary="Todo-App mit Backend",
             agent_tasks=agent_tasks,

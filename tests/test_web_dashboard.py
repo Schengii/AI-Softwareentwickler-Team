@@ -21,7 +21,7 @@ from interface.web_dashboard import DashboardServer, make_handler
 PORT = 8199  # dediziert für Tests, um Konflikte mit einer evtl. laufenden echten Instanz zu vermeiden
 
 
-async def _fake_process(prompt, status_callback=None):
+async def _fake_process(prompt, status_callback=None, cancel_requested=None):
     if status_callback:
         status_callback("Phase 1: Starte...")
         status_callback("Phase 2: Fertig.")

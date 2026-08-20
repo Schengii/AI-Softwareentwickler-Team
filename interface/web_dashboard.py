@@ -53,11 +53,16 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 class Job:
     job_id: str
     prompt: str
-    status: str = "queued"  # queued -> running -> done | error
+    status: str = "queued"  # queued -> running -> done | error | cancelled
     log: list[str] = field(default_factory=list)
     result: str = ""
     error: str = ""
     created_at: float = field(default_factory=time.monotonic)
+    # Von POST /api/cancel/<job_id> gesetzt - der Worker fragt das an DENSELBEN Prüfpunkten
+    # ab wie das bestehende MAX_RUN_TOKENS-Budget (siehe Orchestrator.process(
+    # cancel_requested=...)), kein hartes Kill mitten in einer laufenden Datei-/Subprozess-
+    # Operation.
+    cancel_requested: bool = False
 
 
 class DashboardServer:
@@ -76,12 +81,25 @@ class DashboardServer:
         self._queue.put(job_id)
         return job_id
 
+    def cancel(self, job_id: str) -> bool:
+        """Markiert einen Job zum Abbruch - der Worker (falls dieser Job gerade läuft) sieht
+        das beim nächsten Prüfpunkt (vor jeder Fachbereichs-Phase/jedem Fixversuch). Ein noch
+        in der Warteschlange stehender Job wird direkt als abgebrochen markiert, ohne je zu
+        starten. Gibt False zurück, wenn die job_id unbekannt oder der Job bereits fertig ist."""
+        job = self.jobs.get(job_id)
+        if not job or job.status in ("done", "error", "cancelled"):
+            return False
+        job.cancel_requested = True
+        if job.status == "queued":
+            job.status = "cancelled"
+        return True
+
     def _run_worker(self) -> None:
         while True:
             job_id = self._queue.get()
             job = self.jobs.get(job_id)
-            if not job:
-                continue
+            if not job or job.status == "cancelled":
+                continue  # bereits vor dem Start abgebrochen (siehe cancel())
             job.status = "running"
 
             def on_status(msg: str, _job=job):
@@ -92,9 +110,15 @@ class DashboardServer:
                     del _job.log[: len(_job.log) - MAX_LOG_LINES_KEPT]
 
             try:
-                result = asyncio.run(self.orchestrator.process(job.prompt, status_callback=on_status))
+                result = asyncio.run(self.orchestrator.process(
+                    job.prompt, status_callback=on_status,
+                    cancel_requested=lambda _job=job: _job.cancel_requested,
+                ))
                 job.result = result
-                job.status = "done"
+                # cancel_requested war gesetzt UND der Lauf hat sich tatsächlich vorzeitig
+                # beendet (statt zufällig kurz danach ganz normal fertig zu werden) - der
+                # Orchestrator-Status im Ergebnistext selbst ist die verlässliche Quelle.
+                job.status = "cancelled" if job.cancel_requested and "Manuell abgebrochen" in result else "done"
             except Exception as e:
                 job.error = str(e)
                 job.status = "error"
@@ -127,6 +151,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     textarea { width: 100%; height: 90px; background: #0d1117; border: 1px solid var(--card-border); border-radius: 8px; color: #f0f6fc; padding: 12px; font-family: inherit; resize: vertical; margin-top: 10px; }
     button { background: var(--accent-green); color: white; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; margin-top: 12px; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #cancelBtn { background: #da3633; margin-left: 10px; display: none; }
     #logPanel { display: none; background: #010409; border: 1px solid var(--card-border); border-radius: 12px; padding: 16px; margin-bottom: 28px; }
     #logOutput { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; white-space: pre-wrap; max-height: 340px; overflow-y: auto; color: var(--text-main); }
     #resultOutput { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; white-space: pre-wrap; margin-top: 12px; color: var(--text-white); }
@@ -142,6 +167,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     <h3>⚡ Neue Projekt-Aufgabe an das KI-Team</h3>
     <textarea id="promptInput" placeholder="z. B. Entwickle ein FastAPI Backend mit Authentifizierung und PostgreSQL..."></textarea>
     <button id="startBtn" onclick="startTask()">Projekt-Entwicklung starten</button>
+    <button id="cancelBtn" onclick="cancelTask()">⏹️ Lauf abbrechen</button>
     <span id="taskStatus" style="margin-left: 15px; font-size: 13px; color: var(--accent);"></span>
   </div>
 
@@ -156,6 +182,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
   <script>
     let pollTimer = null;
+    let currentJobId = null;
 
     async function loadStatus() {
       const res = await fetch('/api/status');
@@ -193,7 +220,16 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         document.getElementById('startBtn').disabled = false;
         return;
       }
+      currentJobId = data.job_id;
+      document.getElementById('cancelBtn').style.display = 'inline-block';
       pollJob(data.job_id);
+    }
+
+    async function cancelTask() {
+      if (!currentJobId) return;
+      document.getElementById('cancelBtn').disabled = true;
+      document.getElementById('taskStatus').innerText = '⏹️ Abbruch angefordert…';
+      await fetch(`/api/cancel/${currentJobId}`, { method: 'POST' });
     }
 
     function pollJob(jobId) {
@@ -204,6 +240,14 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         document.getElementById('logOutput').innerText = data.log.join('\\n');
         document.getElementById('logOutput').scrollTop = document.getElementById('logOutput').scrollHeight;
 
+        const finish = () => {
+          document.getElementById('startBtn').disabled = false;
+          document.getElementById('cancelBtn').style.display = 'none';
+          document.getElementById('cancelBtn').disabled = false;
+          currentJobId = null;
+          clearInterval(pollTimer);
+        };
+
         if (data.status === 'queued') {
           document.getElementById('taskStatus').innerText = '⏳ In Warteschlange…';
         } else if (data.status === 'running') {
@@ -211,12 +255,14 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         } else if (data.status === 'done') {
           document.getElementById('taskStatus').innerText = '✅ Fertig!';
           document.getElementById('resultOutput').innerText = data.result;
-          document.getElementById('startBtn').disabled = false;
-          clearInterval(pollTimer);
+          finish();
+        } else if (data.status === 'cancelled') {
+          document.getElementById('taskStatus').innerText = '⏹️ Abgebrochen.';
+          document.getElementById('resultOutput').innerText = data.result;
+          finish();
         } else if (data.status === 'error') {
           document.getElementById('taskStatus').innerText = '❌ Fehler: ' + data.error;
-          document.getElementById('startBtn').disabled = false;
-          clearInterval(pollTimer);
+          finish();
         }
       }, 2000);
     }
@@ -329,6 +375,12 @@ def make_handler(server: DashboardServer):
                     return
                 job_id = server.enqueue(prompt)
                 self._send_json({"job_id": job_id, "status": "queued"}, status=202)
+            elif urlparse(self.path).path.startswith("/api/cancel/"):
+                job_id = urlparse(self.path).path.rsplit("/", 1)[-1]
+                if server.cancel(job_id):
+                    self._send_json({"job_id": job_id, "cancel_requested": True})
+                else:
+                    self._send_json({"error": "Unbekannte job_id oder Job bereits abgeschlossen."}, status=404)
             else:
                 self._send_json({"error": "Not found"}, status=404)
 

@@ -221,6 +221,7 @@ class Orchestrator:
         status_callback: StatusCallback | None = None,
         forced_project_dir: str | None = None,
         plan_confirmation_callback: PlanConfirmationCallback | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> str:
         """
         plan_confirmation_callback: Wenn gesetzt, wird NACH der Aufgaben-Zerlegung, aber VOR
@@ -228,6 +229,15 @@ class Orchestrator:
         Teilaufgaben umfasst (kleine, klar umrissene Aufgaben laufen ohne Rückfrage durch) -
         lehnt der Callback ab, bricht der Lauf sauber ab, OHNE dass auch nur ein Agent
         gestartet wurde (kein Tokenverbrauch für einen möglicherweise zu groß geratenen Plan).
+
+        cancel_requested: Wenn gesetzt, wird VOR jeder Fachbereichs-Phase und VOR jedem
+        Verifikations-/Fixversuch abgefragt (dieselben Prüfpunkte wie das bestehende
+        MAX_RUN_TOKENS-Budget) – liefert er zu einem dieser Zeitpunkte True, wird der Lauf
+        wie beim Budget graceful beendet: verbleibende Arbeit übersprungen, bereits
+        Erarbeitetes trotzdem synthetisiert und ausgeliefert (kein bereits investierter
+        Tokenverbrauch verpufft ungenutzt). None (Standard) = kein Abbruch-Mechanismus
+        verfügbar – nur interface/cli.py (Strg+C) und interface/web_dashboard.py
+        (Job-Cancel-Endpunkt) reichen aktuell einen echten Callback durch.
 
         forced_project_dir: Wenn gesetzt (von interface/cli.py nach `/load <projekt>` befüllt),
         arbeitet dieser Lauf IMMER in diesem Verzeichnis statt in einem frisch vom Modell
@@ -352,13 +362,14 @@ class Orchestrator:
                 t.context += f"\n\n{project_history_context}"
 
         # Führe hierarchische Fachbereichs-Ausführung durch
-        results, file_owners, budget_aborted = await self._run_department_hierarchy(
+        results, file_owners, budget_aborted, manually_cancelled = await self._run_department_hierarchy(
             user_request=user_request,
             task_summary=task_summary,
             agent_tasks=agent_tasks,
             project_dir=project_dir,
             run_start_tokens=run_start_tokens,
             notify=notify,
+            cancel_requested=cancel_requested,
         )
 
         # Fallback-Dateispeicherung: Falls ein Agent trotz Werkzeug-Zugriff Code nur im
@@ -389,22 +400,28 @@ class Orchestrator:
 
         # Echte Verifikation: Abhängigkeiten installieren, Tests wirklich ausführen,
         # bei Fehlschlägen gezielt den verantwortlichen Agenten korrigieren lassen.
-        # Bei bereits während der Fachbereichs-Phasen überschrittenem Lauf-Budget wird die
-        # (potenziell token-intensive) Fix-Schleife komplett übersprungen.
-        if budget_aborted:
+        # Bei bereits während der Fachbereichs-Phasen überschrittenem Lauf-Budget ODER
+        # manuellem Abbruch wird die (potenziell token-/zeitintensive) Fix-Schleife komplett
+        # übersprungen.
+        if budget_aborted or manually_cancelled:
+            reason = (
+                f"Lauf-Budget (`MAX_RUN_TOKENS={MAX_RUN_TOKENS:,}`) wurde bereits während der "
+                "Fachbereichs-Phasen erreicht" if budget_aborted else
+                "Lauf wurde bereits während der Fachbereichs-Phasen manuell abgebrochen"
+            )
             verification_summary = (
                 "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n"
-                f"- 🚫 Übersprungen: Lauf-Budget (`MAX_RUN_TOKENS={MAX_RUN_TOKENS:,}`) wurde bereits "
-                "während der Fachbereichs-Phasen erreicht."
+                f"- 🚫 Übersprungen: {reason}."
             )
             verification_ok = False
         else:
-            results, verification_summary, budget_aborted, verification_ok = await self._run_verification_loop(
+            results, verification_summary, budget_aborted, manually_cancelled, verification_ok = await self._run_verification_loop(
                 project_dir=project_dir,
                 all_results=results,
                 file_owners=file_owners,
                 run_start_tokens=run_start_tokens,
                 notify=notify,
+                cancel_requested=cancel_requested,
             )
         # Von interface/cli.py vor dem Git-Push-Gate abgefragt (siehe _ask_for_git_push) - eine
         # klare Warnung statt eines unbedingten "alles ok", wenn Code committet werden soll,
@@ -430,13 +447,16 @@ class Orchestrator:
         )
 
         # Retrospektive & Automatische Selbstoptimierung – werden bei überschrittenem
-        # Lauf-Budget ausgelassen, da sie selbst weitere (nicht-kritische) LLM-Aufrufe kosten.
+        # Lauf-Budget ODER manuellem Abbruch ausgelassen, da sie selbst weitere
+        # (nicht-kritische) LLM-Aufrufe kosten.
         total_duration = time.monotonic() - overall_start_time
         retro_result = None
         trainer_result = None
 
         if budget_aborted:
             notify(f"🚫 [bold red]Lauf-Budget erreicht:[/bold red] Retrospektive & Selbstoptimierung werden übersprungen ({self._tokens_used_since(run_start_tokens):,}/{MAX_RUN_TOKENS:,} Tokens).")
+        elif manually_cancelled:
+            notify("⏹️ [bold red]Lauf manuell abgebrochen:[/bold red] Retrospektive & Selbstoptimierung werden übersprungen.")
         else:
             notify("📊 [bold cyan]Abschluss:[/bold cyan] Retrospektive & KI-Selbstoptimierung werden durchgeführt...")
             retro_result = await self._run_retrospective(
@@ -465,6 +485,12 @@ class Orchestrator:
                 "Verifikations-Fixversuche und/oder Retrospektive/Selbstoptimierung wurden übersprungen; "
                 "die bis dahin erarbeiteten Ergebnisse wurden trotzdem oben zusammengefasst."
             )
+        elif manually_cancelled:
+            stats_table += (
+                "\n\n> ⏹️ **Manuell abgebrochen:** Dieser Lauf wurde auf Nutzerwunsch vorzeitig beendet. "
+                "Restliche Fachbereiche, Verifikations-Fixversuche und/oder Retrospektive/Selbstoptimierung "
+                "wurden übersprungen; die bis dahin erarbeiteten Ergebnisse wurden trotzdem oben zusammengefasst."
+            )
 
         final_output = (
             f"{final_solution}\n\n"
@@ -488,6 +514,7 @@ class Orchestrator:
             task_summary=task_summary,
             verification_ok=verification_ok,
             budget_aborted=budget_aborted,
+            cancelled=manually_cancelled,
             files_written_count=len({f for r in results for f in r.files_written}),
         )
 
@@ -496,8 +523,15 @@ class Orchestrator:
         # Testfehler blieben ungelöst, Budget während der Fixversuche erreicht) - nicht zu
         # unterscheiden von einem echten, verifizierten Erfolg. verification_ok macht das jetzt
         # im allerletzten, am ehesten wahrgenommenen Status sichtbar statt nur im Kleingedruckten
-        # des Verifikations-Protokolls weiter oben.
-        if verification_ok:
+        # des Verifikations-Protokolls weiter oben. manually_cancelled bekommt einen eigenen,
+        # dritten Status statt in "NICHT verifiziert" mitzulaufen – der Nutzer hat den Lauf
+        # bewusst gestoppt, das ist etwas anderes als ein fehlgeschlagener Test.
+        if manually_cancelled:
+            notify(
+                "⏹️ [bold yellow]Manuell abgebrochen.[/bold yellow] Die bis dahin erarbeiteten Ergebnisse "
+                "wurden zusammengefasst – prüfe das Ergebnis, es ist mit hoher Wahrscheinlichkeit unvollständig."
+            )
+        elif verification_ok:
             notify("✅ [bold green]Fertig![/bold green] Alle Fachbereiche haben ihre Aufgaben erfolgreich abgeschlossen.")
         else:
             notify(
@@ -594,22 +628,28 @@ class Orchestrator:
         project_dir: str,
         notify: Callable[[str], None],
         run_start_tokens: int | None = None,
-    ) -> tuple[list[AgentResult], dict[str, str], bool]:
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> tuple[list[AgentResult], dict[str, str], bool, bool]:
         """
         Führt alle 5 Fachbereichs-Phasen aus. Jede Phase lässt (sofern
         ENABLE_DEPARTMENT_LEAD_EXECUTION aktiv ist) den zuständigen Teamleiter
         per echtem LLM-Aufruf delegieren und konsolidieren – keine simulierten
         Statusmeldungen mehr, sondern echte Leitungs-Ergebnisse im Report.
 
-        Gibt zusätzlich zurück, ob das harte Lauf-Budget (MAX_RUN_TOKENS) erreicht wurde und
-        verbleibende Fachbereiche deshalb übersprungen wurden (run_start_tokens=None -> Budget-
-        Prüfung deaktiviert, z.B. für bestehende Aufrufer/Tests ohne Budget-Bezug).
+        Gibt zusätzlich zurück, ob (1) das harte Lauf-Budget (MAX_RUN_TOKENS) erreicht wurde
+        (run_start_tokens=None -> Budget-Prüfung deaktiviert, z.B. für bestehende Aufrufer/
+        Tests ohne Budget-Bezug) und (2) ob der Lauf manuell abgebrochen wurde
+        (cancel_requested=None -> kein Abbruch-Mechanismus verfügbar) – in beiden Fällen
+        werden verbleibende Fachbereiche übersprungen, die bisherigen Ergebnisse aber
+        trotzdem ausgeliefert (dieselbe Graceful-Degradation, nur mit unterschiedlichem, für
+        den Nutzer ehrlich benanntem Grund).
         """
         all_results: list[AgentResult] = []
         file_owners: dict[str, str] = {}
         task_map = {t.agent_id: t for t in agent_tasks}
         running_context = ""  # Kompakter Kontext aus vorherigen Phasen (z.B. Planungsergebnisse)
         budget_aborted = False
+        manually_cancelled = False
 
         for dept_id, phase_label, icon, run_mode in PHASE_ORDER:
             if run_start_tokens is not None and self._run_budget_exceeded(run_start_tokens):
@@ -618,6 +658,13 @@ class Orchestrator:
                     f"🚫 [bold red]Lauf-Budget erreicht:[/bold red] {self._tokens_used_since(run_start_tokens):,}/"
                     f"{MAX_RUN_TOKENS:,} Tokens verbraucht – überspringe verbleibende Fachbereiche "
                     f"ab '{phase_label}' und liefere die bisherigen Ergebnisse aus."
+                )
+                break
+            if cancel_requested and cancel_requested():
+                manually_cancelled = True
+                notify(
+                    f"⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – überspringe verbleibende "
+                    f"Fachbereiche ab '{phase_label}' und liefere die bisherigen Ergebnisse aus."
                 )
                 break
 
@@ -688,7 +735,7 @@ class Orchestrator:
             else:
                 notify(f"  📥 [dim]{phase_label} abgeschlossen ({len(member_results)} Ergebnisse).[/dim]")
 
-        return all_results, file_owners, budget_aborted
+        return all_results, file_owners, budget_aborted, manually_cancelled
 
     async def _run_department_delegation(
         self,
@@ -797,7 +844,8 @@ class Orchestrator:
         file_owners: dict[str, str],
         notify: Callable[[str], None],
         run_start_tokens: int | None = None,
-    ) -> tuple[list[AgentResult], str, bool, bool]:
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> tuple[list[AgentResult], str, bool, bool, bool]:
         """
         Ersetzt die alte Keyword-basierte Fix-Schleife. Installiert Abhängigkeiten
         in einer isolierten Umgebung, führt die echte Testsuite aus und schickt bei
@@ -805,18 +853,20 @@ class Orchestrator:
         Dateien laut echtem Traceback betroffen sind.
 
         Gibt zusätzlich zurück, ob das harte Lauf-Budget (MAX_RUN_TOKENS) während der
-        Fixversuche erreicht wurde (run_start_tokens=None -> Budget-Prüfung deaktiviert),
+        Fixversuche erreicht wurde bzw. der Lauf manuell abgebrochen wurde
+        (run_start_tokens/cancel_requested=None -> jeweiliger Mechanismus deaktiviert),
         sowie verification_ok: True NUR, wenn die echte Testsuite tatsächlich gelaufen UND
         bestanden ist – False bei jedem anderen Ausgang (keine Tests gefunden, Testfehler
-        blieben ungelöst, Budget während der Fixversuche erreicht). Realer Fund: bisher
-        endete JEDER Lauf mit einem uneingeschränkten "✅ Fertig!", selbst wenn die
-        Verifikation nie bestätigt werden konnte – verification_ok macht diesen Unterschied
-        jetzt im finalen Status sichtbar (siehe process()) statt ihn im Kleingedruckten des
-        Verifikations-Protokolls zu verstecken.
+        blieben ungelöst, Budget während der Fixversuche erreicht, manuell abgebrochen).
+        Realer Fund: bisher endete JEDER Lauf mit einem uneingeschränkten "✅ Fertig!", selbst
+        wenn die Verifikation nie bestätigt werden konnte – verification_ok macht diesen
+        Unterschied jetzt im finalen Status sichtbar (siehe process()) statt ihn im
+        Kleingedruckten des Verifikations-Protokolls zu verstecken.
         """
         verifier = ProjectVerifier(project_dir)
         summary_lines: list[str] = []
         budget_aborted = False
+        manually_cancelled = False
         verification_ok = False
 
         notify("🧪 [bold cyan]Verifikation:[/bold cyan] Installiere Abhängigkeiten in isolierter Umgebung...")
@@ -830,6 +880,11 @@ class Orchestrator:
                 budget_aborted = True
                 notify("  🚫 [bold red]Lauf-Budget erreicht[/bold red] – weitere Verifikations-/Fixversuche werden übersprungen.")
                 summary_lines.append(f"- 🚫 Lauf-Budget (`MAX_RUN_TOKENS={MAX_RUN_TOKENS:,}`) erreicht – Verifikation nach Versuch {attempt - 1} abgebrochen.")
+                break
+            if cancel_requested and cancel_requested():
+                manually_cancelled = True
+                notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – weitere Verifikations-/Fixversuche werden übersprungen.")
+                summary_lines.append(f"- ⏹️ Manuell abgebrochen – Verifikation nach Versuch {attempt - 1} beendet.")
                 break
 
             notify(f"  🧪 [yellow]Testlauf {attempt}/{MAX_VERIFICATION_ITERATIONS}:[/yellow] Führe echte Tests aus...")
@@ -904,7 +959,7 @@ class Orchestrator:
         # nur die Build-Fähigkeit wird geprüft. Übersprungen bei Budget-Abbruch (kostet zwar
         # keine LLM-Tokens, aber echte Zeit) und generell kein Fehler, wenn kein Dockerfile
         # existiert oder Docker lokal nicht verfügbar ist (siehe DockerBuildReport).
-        if not budget_aborted:
+        if not (budget_aborted or manually_cancelled):
             docker_report = await asyncio.to_thread(verifier.check_docker_build)
             if docker_report.attempted:
                 if docker_report.success:
@@ -920,7 +975,7 @@ class Orchestrator:
         # CVEs hat. Ein technischer Fehlschlag des Scans (Tool fehlt, kein Netzwerk zur
         # Advisory-Datenbank) ist NIE ein Fehler, nur nicht prüfbar (attempted=False) und
         # wird deshalb bewusst NICHT als "keine Schwachstellen" ausgegeben.
-        if not budget_aborted:
+        if not (budget_aborted or manually_cancelled):
             audit_reports = await asyncio.to_thread(verifier.check_dependency_vulnerabilities)
             for audit in audit_reports:
                 if not audit.attempted:
@@ -944,7 +999,7 @@ class Orchestrator:
         # Meinungsänderung an einem Projekt, das sich nie dafür entschieden hat). Rein
         # informativ, beeinflusst verification_ok nicht - anders als ein Testfehler hat ein
         # Lint-Fund oft keine unmittelbare Ein-Zeilen-Lösung.
-        if not budget_aborted:
+        if not (budget_aborted or manually_cancelled):
             lint_reports = await asyncio.to_thread(verifier.check_lint)
             for lint in lint_reports:
                 if not lint.attempted:
@@ -964,7 +1019,7 @@ class Orchestrator:
         verification_summary = "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n" + (
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."
         )
-        return all_results, verification_summary, budget_aborted, verification_ok
+        return all_results, verification_summary, budget_aborted, manually_cancelled, verification_ok
 
     # ──────────────────────────────────────────────────────────────
     # Ausführungs-Helfer

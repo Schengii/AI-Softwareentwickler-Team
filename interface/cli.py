@@ -11,7 +11,9 @@ Bietet:
 
 import asyncio
 import os
+import signal
 import sys
+import threading
 from pathlib import Path
 
 from rich import box
@@ -90,6 +92,9 @@ class CLIInterface:
         self._workspace = self._orchestrator.get_workspace_manager()
         self._loaded_project_dir: str | None = None  # von /load gesetzt, von /rag genutzt
         self._tasks_since_audit_reminder = 0
+        # Gesetzt/geleert bei jedem Lauf (siehe _process_task) - Grundlage für den
+        # kooperativen Strg+C-Abbruch (Orchestrator.process(cancel_requested=...)).
+        self._cancel_event = threading.Event()
 
     def run(self) -> None:
         """Startet das interaktive CLI."""
@@ -132,8 +137,57 @@ class CLIInterface:
                     break
                 continue
 
-            # Aufgabe an das Team übergeben
-            await self._process_task(user_input)
+            # Aufgabe an das Team übergeben. _process_task() fängt ein ERSTES Strg+C
+            # kooperativ ab (siehe _install_cancel_handler) - dieser äußere Block bleibt als
+            # Sicherheitsventil für ein ERZWUNGENES ZWEITES Strg+C während desselben Laufs
+            # (der Nutzer will wirklich sofort raus): sauberer Rücksprung zum Prompt statt
+            # eines rohen Tracebacks/Programmabsturzes.
+            try:
+                await self._process_task(user_input)
+            except KeyboardInterrupt:
+                console.print("\n⏹️ [bold red]Lauf hart abgebrochen.[/bold red]", style="red")
+
+    def _install_cancel_handler(self):
+        """
+        Installiert für die Dauer EINES Laufs einen eigenen SIGINT-Handler und gibt den
+        vorherigen zurück (MUSS vom Aufrufer wiederhergestellt werden, siehe _process_task).
+
+        Strg+C setzt beim ERSTEN Druck nur self._cancel_event (kooperativer Abbruch – siehe
+        Orchestrator.process(cancel_requested=...), das dieselben Prüfpunkte wie das
+        bestehende MAX_RUN_TOKENS-Budget nutzt), statt sofort einen KeyboardInterrupt
+        auszulösen, der den laufenden Werkzeug-Loop/Subprozess (z. B. mitten in einem
+        write_file oder einer laufenden npm-Installation) abrupt abwürgen könnte. Ein
+        ZWEITES Strg+C während desselben, bereits abbrechenden Laufs ruft bewusst den
+        ursprünglichen Handler auf – ein Sicherheitsventil für einen wirklich hängenden Lauf,
+        der auf den ersten kooperativen Versuch nicht reagiert.
+
+        Bekannte Grenze: ein bereits per asyncio.to_thread() gestarteter Subprozess (pip/npm
+        install, Testlauf) lässt sich dadurch nicht sofort beenden – er läuft im Hintergrund
+        zu Ende, während der sichtbare Lauf bereits als abgebrochen gilt. Dasselbe gilt
+        grundsätzlich für jedes Python-CLI-Tool, das Subprozesse startet.
+        """
+        self._cancel_event.clear()
+        original_handler = signal.getsignal(signal.SIGINT)
+
+        def handler(signum, frame):
+            if self._cancel_event.is_set():
+                # original_handler ist normalerweise signal.default_int_handler (Python
+                # installiert den standardmäßig) - defensiv trotzdem gegen SIG_DFL/SIG_IGN
+                # (nicht aufrufbar) abgesichert, statt dort selbst mit TypeError zu crashen.
+                if callable(original_handler):
+                    original_handler(signum, frame)
+                else:
+                    raise KeyboardInterrupt()
+                return
+            self._cancel_event.set()
+            console.print(
+                "\n⏹️ [bold yellow]Abbruch angefordert[/bold yellow] – Team beendet die laufende "
+                "Phase und liefert den bisherigen Stand aus (nochmal Strg+C für Sofort-Abbruch)...",
+                style="yellow",
+            )
+
+        signal.signal(signal.SIGINT, handler)
+        return original_handler
 
     async def _process_task(self, user_input: str) -> None:
         """Verarbeitet eine Nutzeraufgabe mit detailliertem Live-Status."""
@@ -164,24 +218,35 @@ class CLIInterface:
                 finally:
                     live.start()
 
+            # Strg+C setzt beim ERSTEN Druck nur self._cancel_event (kooperativer Abbruch an
+            # denselben Prüfpunkten wie das bestehende MAX_RUN_TOKENS-Budget), statt sofort
+            # einen KeyboardInterrupt auszulösen, der den laufenden Werkzeug-Loop/Subprozess
+            # mitten in einer Datei-Operation abwürgen könnte. Der Handler MUSS in jedem Fall
+            # wiederhergestellt werden (siehe finally), sonst bliebe Strg+C für den Rest der
+            # Sitzung verändert.
+            original_sigint_handler = self._install_cancel_handler()
             try:
-                # Nach /load reicht jede folgende Chat-Nachricht das geladene Projektverzeichnis
-                # durch, statt (wie zuvor) einen neuen project_slug erraten und einen neuen
-                # workspace/-Ordner anlegen zu lassen. Vorher hatte _loaded_project_dir nur
-                # Auswirkung auf /rag – die im Hilfetext dokumentierte "So entwickelst du ein
-                # bestehendes Projekt weiter"-Anleitung funktionierte real also nicht.
-                result = await self._orchestrator.process(
-                    user_request=user_input,
-                    status_callback=on_status,
-                    forced_project_dir=self._loaded_project_dir,
-                    plan_confirmation_callback=confirm_plan if ENABLE_PLAN_CONFIRMATION else None,
-                )
-            except Exception as e:
-                console.print(
-                    f"\n❌ Fehler bei der Verarbeitung: {e}",
-                    style="bold red"
-                )
-                return
+                try:
+                    # Nach /load reicht jede folgende Chat-Nachricht das geladene Projektverzeichnis
+                    # durch, statt (wie zuvor) einen neuen project_slug erraten und einen neuen
+                    # workspace/-Ordner anlegen zu lassen. Vorher hatte _loaded_project_dir nur
+                    # Auswirkung auf /rag – die im Hilfetext dokumentierte "So entwickelst du ein
+                    # bestehendes Projekt weiter"-Anleitung funktionierte real also nicht.
+                    result = await self._orchestrator.process(
+                        user_request=user_input,
+                        status_callback=on_status,
+                        forced_project_dir=self._loaded_project_dir,
+                        plan_confirmation_callback=confirm_plan if ENABLE_PLAN_CONFIRMATION else None,
+                        cancel_requested=self._cancel_event.is_set,
+                    )
+                except Exception as e:
+                    console.print(
+                        f"\n❌ Fehler bei der Verarbeitung: {e}",
+                        style="bold red"
+                    )
+                    return
+            finally:
+                signal.signal(signal.SIGINT, original_sigint_handler)
 
         # Gesamtergebnis ausgeben
         console.print()

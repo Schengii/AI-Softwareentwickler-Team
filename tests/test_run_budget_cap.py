@@ -69,7 +69,7 @@ class TestRunBudgetCap(unittest.TestCase):
             AgentTask(task_id="t2", agent_id="compliance", description="DSGVO-Check"),
         ]
         with patch.object(orch_module, "MAX_RUN_TOKENS", 0):
-            results, _, budget_aborted = asyncio.run(self.orchestrator._run_department_hierarchy(
+            results, _, budget_aborted, _cancelled = asyncio.run(self.orchestrator._run_department_hierarchy(
                 user_request="Baue eine App", task_summary="App", agent_tasks=agent_tasks,
                 project_dir=".", run_start_tokens=0, notify=lambda msg: None,
             ))
@@ -91,7 +91,7 @@ class TestRunBudgetCap(unittest.TestCase):
         # (Delegation + product_owner + Konsolidierung) -> übersteigt das 8.000-Budget deutlich,
         # sodass ALLE nachfolgenden Phasen übersprungen werden müssen.
         with patch.object(orch_module, "MAX_RUN_TOKENS", 8000):
-            results, file_owners, budget_aborted = asyncio.run(self.orchestrator._run_department_hierarchy(
+            results, file_owners, budget_aborted, _cancelled = asyncio.run(self.orchestrator._run_department_hierarchy(
                 user_request="Baue eine Todo-App", task_summary="Todo-App", agent_tasks=agent_tasks,
                 project_dir=".", run_start_tokens=0, notify=lambda msg: None,
             ))

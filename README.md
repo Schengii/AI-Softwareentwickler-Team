@@ -20,6 +20,43 @@
 
 ---
 
+## ⏹️ Abbruch/Pause eines laufenden Runs (Strg+C in der CLI, Cancel-Button im Dashboard)
+
+Bisher gab es keinen Weg, einen sichtbar falsch laufenden Lauf gezielt zu stoppen – nur das
+komplette Programm zu killen (CLI: Strg+C während eines laufenden Teams stürzte mit einem
+rohen `KeyboardInterrupt`-Traceback ab, da `interface/cli.py` das nur am Eingabe-Prompt
+abfing) bzw. die Browser-Seite wegzuklicken, während der Dashboard-Job im Hintergrund-Worker
+unbeeinflusst weiterlief.
+
+- `agents/orchestrator.py`: `process()` akzeptiert jetzt einen optionalen
+  `cancel_requested`-Callback – wird an DENSELBEN Prüfpunkten wie das bestehende
+  `MAX_RUN_TOKENS`-Budget abgefragt (vor jeder Fachbereichs-Phase, vor jedem Verifikations-/
+  Fixversuch): dieselbe Graceful-Degradation (verbleibende Arbeit überspringen, bereits
+  Erarbeitetes trotzdem synthetisieren und ausliefern), nur mit einem manuellen statt einem
+  Budget-Grund im finalen Status/Protokoll und in der persistenten Lauf-Historie
+  (`core/project_status.py`, neues `cancelled`-Feld – eigenes Icon `⏹️`, nicht mit `🚫`
+  Budget-Abbruch verwechselbar).
+- `interface/cli.py`: **Erstes Strg+C** setzt nur ein Flag (kooperativer Abbruch – der
+  laufende Werkzeug-Loop/Subprozess wird nicht mitten in einer Datei-Operation abgewürgt).
+  **Zweites Strg+C** während desselben, bereits abbrechenden Laufs erzwingt den echten
+  Programm-Abbruch als Sicherheitsventil für einen wirklich hängenden Lauf – sauber
+  abgefangen (kein roher Traceback), zurück zum Prompt statt Programmabsturz. Der
+  ursprüngliche SIGINT-Handler wird danach in JEDEM Fall wiederhergestellt.
+- `interface/web_dashboard.py`: neuer `POST /api/cancel/<job_id>`-Endpunkt + "⏹️ Lauf
+  abbrechen"-Button im UI – markiert einen Job zum Abbruch; ein noch wartender Job wird
+  direkt als abgebrochen markiert, ohne je zu starten (serieller Worker, siehe bestehende
+  Design-Entscheidung).
+- Bekannte Grenze, bewusst dokumentiert statt verschwiegen: ein bereits per
+  `asyncio.to_thread()` gestarteter Subprozess (pip/npm install, Testlauf) lässt sich nicht
+  sofort beenden – er läuft im Hintergrund zu Ende, während der sichtbare Lauf bereits als
+  abgebrochen gilt (gilt grundsätzlich für jedes Python-CLI-Tool, das Subprozesse startet).
+- 17 neue Tests (Orchestrator-Prüfpunkte inkl. "begonnene Phase läuft noch fertig, erst die
+  nächste wird übersprungen", CLI-Signal-Handler-Mechanik inkl. Wiederherstellung nach
+  Erfolg/Fehler, echter Dashboard-HTTP-Zyklus für alle drei Fälle queued/running/bereits
+  fertig); volle Suite (270 Tests) grün, ruff sauber.
+
+---
+
 ## 📋 Plan-Freigabe-Gate: den Aufgaben-Umfang VOR Tokenverbrauch sehen & bestätigen
 
 Bisher sah der Nutzer den von `TaskManager.decompose()` erstellten Plan (welche Spezialisten,

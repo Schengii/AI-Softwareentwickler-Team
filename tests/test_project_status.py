@@ -78,6 +78,24 @@ class TestProjectStatus(unittest.TestCase):
         self.assertEqual(read_status(self.temp_dir), [])
         self.assertEqual(format_context_for_agents(self.temp_dir), "")
 
+    def test_cancelled_run_gets_its_own_icon_distinct_from_budget_aborted(self):
+        """Ein manuell abgebrochener Lauf darf nicht wie ein Budget-Abbruch aussehen -
+        der Mensch hat den Lauf bewusst gestoppt, das ist ein anderer Grund."""
+        record_run(self.temp_dir, "Manuell gestoppt", verification_ok=False,
+                   budget_aborted=False, cancelled=True, files_written_count=1)
+        history = read_status(self.temp_dir)
+        self.assertTrue(history[0]["cancelled"])
+
+        context = format_context_for_agents(self.temp_dir)
+        self.assertIn("⏹️", context)
+        self.assertNotIn("🚫", context)
+
+    def test_cancelled_defaults_to_false_for_existing_callers(self):
+        """record_run() ohne explizites cancelled= (bestehende Aufrufer) bleibt unverändert."""
+        record_run(self.temp_dir, "Alter Aufrufer", verification_ok=True,
+                   budget_aborted=False, files_written_count=1)
+        self.assertFalse(read_status(self.temp_dir)[0]["cancelled"])
+
 
 if __name__ == "__main__":
     unittest.main()

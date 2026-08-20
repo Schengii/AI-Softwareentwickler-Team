@@ -61,7 +61,7 @@ class TestPlanConfirmationGate(unittest.TestCase):
         def _inner(mock_synthesize, mock_decompose, mock_hierarchy):
             mock_decompose.return_value = ("Kurze Aufgabe", "gate_test_proj", _tasks(n_tasks))
             mock_synthesize.return_value = ("### Fertig", 5)
-            mock_hierarchy.return_value = ([], {}, False)
+            mock_hierarchy.return_value = ([], {}, False, False)
 
             result = asyncio.run(self.orchestrator.process(
                 "Baue etwas", plan_confirmation_callback=callback,

@@ -44,16 +44,24 @@ def record_run(
     verification_ok: bool,
     budget_aborted: bool,
     files_written_count: int,
+    cancelled: bool = False,
 ) -> None:
     """Fügt diesen Lauf vorne in die Historie ein (neueste zuerst), gedeckelt auf
     MAX_HISTORY_ENTRIES (älteste fällt raus – dieselbe Deckelungslogik wie
-    memory/agent_knowledge_base.py, damit die Datei nicht unbegrenzt wächst)."""
+    memory/agent_knowledge_base.py, damit die Datei nicht unbegrenzt wächst).
+
+    cancelled: True, wenn der Lauf manuell abgebrochen wurde (Strg+C in der CLI, Cancel-
+    Button im Dashboard) – separat von budget_aborted, damit eine künftige Sitzung den
+    ehrlichen Grund sieht (siehe format_context_for_agents()) statt "Budget erreicht" zu
+    unterstellen, wo der Mensch den Lauf bewusst gestoppt hat.
+    """
     history = read_status(project_dir)
     entry = {
         "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
         "task_summary": task_summary,
         "verification_ok": verification_ok,
         "budget_aborted": budget_aborted,
+        "cancelled": cancelled,
         "files_written_count": files_written_count,
     }
     history.insert(0, entry)
@@ -82,6 +90,8 @@ def format_context_for_agents(project_dir: str, max_entries: int = 3) -> str:
     for entry in history:
         if entry.get("verification_ok"):
             status_icon = "✅"
+        elif entry.get("cancelled"):
+            status_icon = "⏹️"
         elif entry.get("budget_aborted"):
             status_icon = "🚫"
         else:

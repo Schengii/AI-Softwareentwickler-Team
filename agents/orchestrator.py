@@ -523,7 +523,18 @@ class Orchestrator:
                     notify(f"  ⚠️ [yellow]{lead.name} konnte nicht delegieren ({delegation.error}) – Fachteam startet ohne Zusatzanweisung.[/yellow]")
 
             # ── Fachteam arbeitet (parallel oder sequentiell, je nach Phase) ──
-            if run_mode == "parallel":
+            # Realer Fund: bei nur 1-2 Mitgliedern eines eigentlich "parallelen" Fachbereichs
+            # (typisch für klar umrissene Aufgaben) sahen sich die Agenten NIE gegenseitig, weil
+            # beide fast zeitgleich starten und der Dateibaum beim jeweils eigenen Start noch
+            # leer war (agents/base_agent.py._run_agentic_loop() zeigt zwar IMMER den aktuellen
+            # Dateibaum, aber eben nur den zum eigenen Startzeitpunkt) – das produzierte real
+            # zwei parallele Implementierungen derselben Sache (app.py/test_app.py UND separat
+            # main.py/test_main.py für denselben Health-Check-Endpoint). Bei so wenigen
+            # Mitgliedern ist der Latenzgewinn durch Parallelität gering, der Sichtbarkeitsgewinn
+            # durch echte Sequenzialität aber groß – deshalb wird hier bewusst NIE parallelisiert,
+            # unabhängig von der für den Fachbereich generell hinterlegten Präferenz.
+            effective_run_mode = "sequential" if len(member_tasks) <= 2 else run_mode
+            if effective_run_mode == "parallel":
                 for task in member_tasks:
                     notify(f"  ▶️ [yellow]Fachteam arbeitet:[/yellow] {self._agents[task.agent_id].name}...")
                 member_results = await self._run_agents_parallel(member_tasks, notify=notify)

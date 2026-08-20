@@ -20,6 +20,25 @@
 
 ---
 
+## 👥 Kleine Fachbereiche laufen jetzt sequenziell statt blind parallel
+
+Realer Fund: Für eine triviale Aufgabe entstanden zwei parallele Implementierungen derselben
+Sache (`app.py`/`test_app.py` UND separat `main.py`/`test_main.py` für denselben
+Health-Check-Endpoint), weil zwei Agenten desselben "parallelen" Fachbereichs fast zeitgleich
+starteten – die Dateibaum-Vorschau (siehe weiter unten) zeigt zwar immer den aktuellen Stand,
+aber eben nur den zum jeweils EIGENEN Startzeitpunkt.
+
+- `agents/orchestrator.py`: Fachbereiche mit **1–2 Mitgliedern** laufen jetzt IMMER
+  sequenziell, unabhängig von der für den Fachbereich generell hinterlegten Präferenz – der
+  Latenzgewinn durch Parallelität ist bei so wenigen Mitgliedern gering, der
+  Sichtbarkeitsgewinn durch echte Sequenzialität groß. Ab 3 Mitgliedern bleibt es bei echter
+  Parallelität (`asyncio.gather`), wo der Geschwindigkeitsvorteil überwiegt.
+- 2 neue Tests: Nachweis, dass der zweite Agent eines 2er-Fachbereichs die vom ersten
+  geschriebene Datei tatsächlich sieht, plus Gegenprobe, dass 3+-Mitglieder-Fachbereiche
+  weiterhin `asyncio.gather` nutzen; volle Suite (138 Tests) grün, ruff sauber.
+
+---
+
 ## ✅❓ Ehrlicher Abschluss-Status: "Fertig!" bedeutet jetzt wirklich verifiziert
 
 Bisher endete JEDER Lauf mit demselben uneingeschränkten "✅ Fertig! Alle Fachbereiche haben

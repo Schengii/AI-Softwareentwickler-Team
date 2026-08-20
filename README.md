@@ -20,6 +20,28 @@
 
 ---
 
+## ❓ Rückfragen bei unklaren Anforderungen statt Raten
+
+Realer Fund: vage Nutzeranfragen ("Ich möchte, dass ihr das Projekt weiter verbessert")
+führten bisher dazu, dass der Planer einfach ein thematisch beliebiges Demo-Projekt erfand,
+statt nachzufragen – ein erfahrener Senior-Entwickler würde bei einer derart unklaren
+Aufgabe zuerst präzisierende Fragen stellen.
+
+- `core/task_manager.py`: `DECOMPOSE_SYSTEM_PROMPT` kennt jetzt `needs_clarification` +
+  `clarifying_questions` im JSON-Schema – NUR wenn unterschiedliche vertretbare
+  Interpretationen zu grundverschiedenen Ergebnissen führen würden oder eine zwingende
+  Angabe komplett fehlt (nicht bei gewöhnlicher Unterspezifikation, die ein erfahrener
+  Entwickler selbst sinnvoll entscheiden würde).
+- `Orchestrator.process()` zeigt die Rückfragen direkt an, **ohne auch nur einen einzigen
+  Agenten zu starten** – kein Tokenverbrauch für einen möglicherweise falschen, geratenen
+  Plan. Nutzt dieselbe bereits vorhandene "leere agent_tasks"-Behandlung wie ein
+  Provider-Totalausfall, nur mit `❓` statt `⚠️` als Präfix.
+- Gleichzeitig: `compliance` ist jetzt ebenso verpflichtend wie `security` bei
+  personenbezogenen Daten, unklaren Drittanbieter-Lizenzen oder regulierten Bereichen.
+- 4 neue Tests; volle Suite (155 Tests) grün, ruff sauber.
+
+---
+
 ## 🚦 Proaktive Rate-Begrenzung gegen Gemini
 
 Die vorherige Runde ließ die Provider-Kette bei Totalerschöpfung kurz warten (REAKTIV,

@@ -201,6 +201,8 @@ Antworte NUR mit einem gültigen JSON-Objekt. Keine Erklärungen davor oder dana
 
 Das JSON-Format ist exakt wie folgt:
 {
+  "needs_clarification": false,
+  "clarifying_questions": [],
   "task_summary": "3-8 Wörter, technischer Imperativ im Perfekt (z.B. 'FastAPI Health-Check-Endpoint implementiert', 'Taschenrechner-GUI mit Core/GUI-Trennung erstellt'). NIEMALS die Nutzeranfrage wörtlich wiederholen, zitieren oder paraphrasieren, auch nicht in Teilen - beschreibe WAS entstehen wird, nicht WAS der Nutzer geschrieben hat. Dieser Text erscheint u.a. als Git-Commit-Message.",
   "project_slug": "kurzer_projekt_ordnername_ohne_sonderzeichen",
   "required_agents": [
@@ -210,6 +212,15 @@ Das JSON-Format ist exakt wie folgt:
     }
   ]
 }
+
+Rückfrage statt Raten (wie ein erfahrener Senior-Entwickler): Setze "needs_clarification"
+auf true und liste 1-3 knappe, konkrete Fragen in "clarifying_questions" (required_agents
+dann leer), wenn die Aufgabe SO unklar ist, dass unterschiedliche vertretbare Interpretationen
+zu grundverschieden Ergebnissen führen würden, oder eine für die Umsetzung ZWINGENDE Angabe
+komplett fehlt (z.B. welches Zielsystem, welche Datenquelle, welcher Kernzweck der Anwendung).
+NICHT für gewöhnliche Unterspezifikation nutzen, die ein erfahrener Entwickler sinnvoll selbst
+entscheiden würde (z.B. Styling-Details, exakte Bibliotheksversion) - im Zweifel lieber eine
+vernünftige Annahme treffen und im task_summary kurz erwähnen, statt nachzufragen.
 
 Verfügbare Agenten-IDs:
 team_lead, product_owner, business_analyst, web_research,
@@ -227,6 +238,9 @@ Wichtige Regeln:
 - security einbeziehen, sobald Authentifizierung/Autorisierung, Nutzer-/Personendaten,
   Zahlungsdaten, Datei-Uploads oder ein nach außen erreichbarer Netzwerk-Endpunkt entstehen -
   das ist NICHT optional, sondern genauso verpflichtend wie code_reviewer bei Code-Generierung
+- compliance einbeziehen, sobald personenbezogene Daten (DSGVO-Relevanz), neue
+  Drittanbieter-Abhängigkeiten mit unklarer/restriktiver Lizenz oder regulierte Bereiche
+  (z.B. Finanzen, Gesundheit) betroffen sind - ebenfalls NICHT optional
 - project_cleaner einbeziehen, wenn Verzeichnisstrukturen aufgeräumt oder schlank gehalten werden sollen
 """
 
@@ -272,6 +286,22 @@ Erstelle jetzt das JSON mit den Teilaufgaben."""
             return f"⚠️ Aufgabenanalyse fehlgeschlagen (alle konfigurierten Modelle/Provider aktuell nicht erreichbar: {e})", "project", []
 
         plan = self._parse_plan(raw_json)
+
+        # Rückfrage statt Raten: wie ein erfahrener Senior-Entwickler nachfragen, statt bei
+        # einer grundlegend unklaren Anfrage einfach die naheliegendste Interpretation zu
+        # bauen (real beobachtet: vage Prompts wie "Ich möchte, dass ihr das Projekt weiter
+        # verbessert" führten zu frei erfundenen, thematisch beliebigen Demo-Projekten statt
+        # einer Rückfrage). agent_tasks bleibt bewusst leer - dieselbe, bereits vorhandene
+        # Behandlung wie bei einem Provider-Totalausfall (siehe Orchestrator.process()),
+        # nur mit "❓" statt "⚠️" als Präfix, damit der Aufrufer zwischen "echter Fehler"
+        # und "brauche eine Antwort vom Menschen" unterscheiden kann.
+        if plan.get("needs_clarification") and plan.get("clarifying_questions"):
+            questions = "\n".join(f"{i}. {q}" for i, q in enumerate(plan["clarifying_questions"], 1))
+            return (
+                f"❓ Bevor ich das Team loslasse, brauche ich noch eine Präzisierung:\n\n{questions}",
+                "project", [],
+            )
+
         task_summary = plan.get("task_summary", "Aufgabe wird bearbeitet...")
         project_slug = plan.get("project_slug", "project")
         required_agents = plan.get("required_agents", [])

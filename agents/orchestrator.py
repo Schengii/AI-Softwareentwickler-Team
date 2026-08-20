@@ -240,9 +240,10 @@ class Orchestrator:
             self.last_task_summary = task_summary
 
         if not agent_tasks:
-            # task_summary enthaelt bei einem echten Provider-Ausfall bereits den konkreten
-            # Grund (siehe TaskManager.decompose()) statt nur "keine Aufgaben abgeleitet".
-            response = task_summary if task_summary.startswith("⚠️") else (
+            # task_summary enthaelt bei einem echten Provider-Ausfall ("⚠️") oder einer
+            # Rueckfrage bei zu unklarer Aufgabe ("❓", siehe TaskManager.decompose()) bereits
+            # den konkreten Grund/die Fragen - sonst generischer Fallback.
+            response = task_summary if task_summary.startswith(("⚠️", "❓")) else (
                 "⚠️ Ich konnte keine passenden Aufgaben ableiten. Bitte beschreibe die Aufgabe genauer."
             )
             self._history.add_assistant_message(response)

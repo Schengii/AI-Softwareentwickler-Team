@@ -866,6 +866,23 @@ class Orchestrator:
                 notify("  ⚠️ [yellow]Maximale Verifikations-Iterationen erreicht – letzter Stand wird übernommen.[/yellow]")
                 summary_lines.append(f"- ⚠️ Nach {MAX_VERIFICATION_ITERATIONS} Versuchen nicht vollständig grün – letzter Stand wurde übernommen.")
 
+        # Echtes Deployment beginnt damit, dass das Projekt sich überhaupt containerisieren
+        # lässt: ein generiertes Dockerfile, das nie tatsächlich baut, bringt niemanden näher
+        # an ein echtes Ausrollen. Baut NIE `docker run`/einen echten Push/Deploy aus (würde
+        # eine konkrete Ziel-Infrastruktur voraussetzen, die dieses Framework nicht kennt) -
+        # nur die Build-Fähigkeit wird geprüft. Übersprungen bei Budget-Abbruch (kostet zwar
+        # keine LLM-Tokens, aber echte Zeit) und generell kein Fehler, wenn kein Dockerfile
+        # existiert oder Docker lokal nicht verfügbar ist (siehe DockerBuildReport).
+        if not budget_aborted:
+            docker_report = await asyncio.to_thread(verifier.check_docker_build)
+            if docker_report.attempted:
+                if docker_report.success:
+                    notify("  🐳 [bold green]Docker-Image baut erfolgreich.[/bold green]")
+                    summary_lines.append("- 🐳 Docker-Image baut erfolgreich (echter `docker build`).")
+                else:
+                    notify("  🐳 [bold red]Docker-Build fehlgeschlagen.[/bold red]")
+                    summary_lines.append(f"- 🐳 ❌ Docker-Build fehlgeschlagen: {docker_report.output[:500]}")
+
         verification_summary = "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n" + (
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."
         )

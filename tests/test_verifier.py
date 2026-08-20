@@ -10,7 +10,9 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from core.code_sandbox import ExecutionResult
 from core.verifier import ProjectVerifier
 
 
@@ -65,6 +67,49 @@ class TestProjectVerifier(unittest.TestCase):
         verifier = ProjectVerifier(self.project_dir)
         result = verifier.ensure_environment()
         self.assertEqual(result, "")
+
+    def test_docker_build_skipped_without_dockerfile(self):
+        verifier = ProjectVerifier(self.project_dir)
+        report = verifier.check_docker_build()
+        self.assertFalse(report.attempted)
+        self.assertTrue(report.success)
+        self.assertIn("Kein Dockerfile", report.reason_skipped)
+
+    @patch("core.verifier.shutil.which", return_value=None)
+    def test_docker_build_skipped_when_docker_not_installed(self, mock_which):
+        (self.project_dir / "Dockerfile").write_text("FROM python:3.12\n")
+        verifier = ProjectVerifier(self.project_dir)
+        report = verifier.check_docker_build()
+        self.assertFalse(report.attempted)
+        self.assertTrue(report.success)
+        self.assertIn("nicht installiert", report.reason_skipped)
+
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/docker")
+    def test_docker_build_success_is_reported(self, mock_which, mock_run):
+        (self.project_dir / "Dockerfile").write_text("FROM python:3.12\n")
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="Successfully built abc123", stderr="", duration_seconds=1.0)
+
+        verifier = ProjectVerifier(self.project_dir)
+        report = verifier.check_docker_build()
+
+        self.assertTrue(report.attempted)
+        self.assertTrue(report.success)
+        mock_run.assert_called_once()
+        self.assertEqual(mock_run.call_args[0][0][:2], ["docker", "build"])
+
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/docker")
+    def test_docker_build_failure_is_reported_with_real_output(self, mock_which, mock_run):
+        (self.project_dir / "Dockerfile").write_text("FROM does-not-exist:latest\n")
+        mock_run.return_value = ExecutionResult(exit_code=1, stdout="", stderr="pull access denied", duration_seconds=1.0)
+
+        verifier = ProjectVerifier(self.project_dir)
+        report = verifier.check_docker_build()
+
+        self.assertTrue(report.attempted)
+        self.assertFalse(report.success)
+        self.assertIn("pull access denied", report.output)
 
 
 if __name__ == "__main__":

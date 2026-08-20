@@ -16,6 +16,7 @@ backend/frontend/database neu beauftragte). Stattdessen:
 """
 
 import re
+import shutil
 import sys
 import time
 from dataclasses import dataclass, field
@@ -44,6 +45,21 @@ class VerificationReport:
     stderr: str
     duration_seconds: float
     failures: list[TestFailure] = field(default_factory=list)
+    reason_skipped: str = ""
+
+
+@dataclass
+class DockerBuildReport:
+    """
+    Ergebnis eines echten `docker build`-Versuchs – Teil der "echtes Deployment"-Ambition:
+    ein generiertes Dockerfile, das nie tatsächlich baut, ist praktisch wertlos für den
+    Anspruch, ein Projekt bis zum Ausrollen zu bringen. Wie bei fehlenden Tests (siehe
+    VerificationReport.reason_skipped) gilt: kein Dockerfile bzw. keine lokale Docker-
+    Installation ist KEIN Fehler, nur nicht prüfbar (attempted=False).
+    """
+    attempted: bool
+    success: bool
+    output: str
     reason_skipped: str = ""
 
 
@@ -130,6 +146,30 @@ class ProjectVerifier:
         if not report.passed:
             report.failures = self._parse_failures(exec_result)
         return report
+
+    def check_docker_build(self, timeout_seconds: float = 180.0) -> DockerBuildReport:
+        """
+        Versucht einen echten `docker build` des Projekts, falls ein Dockerfile existiert
+        und `docker` lokal verfügbar ist – ein generiertes Dockerfile, das nie tatsächlich
+        baut, bringt ein Projekt nicht näher an ein echtes Deployment. Baut NIE `docker run`
+        oder gar einen echten Push/Deploy aus (das würde eine konkrete Ziel-Infrastruktur
+        voraussetzen, die dieses Framework nicht kennt) – nur die Build-Fähigkeit wird geprüft.
+        """
+        dockerfile = self.project_dir / "Dockerfile"
+        if not dockerfile.exists():
+            return DockerBuildReport(attempted=False, success=True, output="", reason_skipped="Kein Dockerfile im Projekt gefunden.")
+
+        if shutil.which("docker") is None:
+            return DockerBuildReport(attempted=False, success=True, output="", reason_skipped="Docker ist auf diesem System nicht installiert/verfügbar.")
+
+        tag = f"ai-team-verify-{self.project_dir.name.lower()}"
+        result = CodeSandbox.run_command(
+            ["docker", "build", "-t", tag, "."],
+            cwd=self.project_dir,
+            timeout_seconds=timeout_seconds,
+        )
+        output = (result.stdout + result.stderr).strip()[-2000:]
+        return DockerBuildReport(attempted=True, success=result.exit_code == 0, output=output)
 
     def _run_pytest_or_unittest(self, python_exe: str, timeout_seconds: float) -> ExecutionResult:
         pytest_check = CodeSandbox.run_command([python_exe, "-c", "import pytest"], cwd=self.project_dir, timeout_seconds=10.0)

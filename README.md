@@ -20,6 +20,27 @@
 
 ---
 
+## 🐳 Echte Docker-Build-Prüfung (ein Schritt Richtung echtem Deployment)
+
+"Echtes Deployment" im vollen Sinn (Push zu einer konkreten Cloud/einem Server) setzt eine
+Ziel-Infrastruktur voraus, die dieses Framework nicht kennt und nicht raten sollte – das
+bleibt bewusst außerhalb seines Bereichs. Was sich aber ehrlich prüfen lässt, ohne
+irgendeine Zielumgebung anzunehmen: **baut das generierte Dockerfile überhaupt?** Ein
+Dockerfile, das nie tatsächlich baut, bringt niemanden näher an ein echtes Ausrollen.
+
+- `core/verifier.py`: neue `ProjectVerifier.check_docker_build()` – führt einen echten
+  `docker build -t ... .` aus, WENN ein Dockerfile existiert UND `docker` lokal verfügbar
+  ist. Baut niemals `docker run` oder einen echten Push/Deploy aus. Fehlendes Dockerfile
+  oder fehlendes Docker sind dabei ausdrücklich KEIN Fehler, nur nicht prüfbar (dasselbe
+  Prinzip wie bei "keine Tests gefunden").
+- `agents/orchestrator.py`: `_run_verification_loop()` ruft das nach der Testverifikation
+  auf und macht Erfolg/Fehlschlag im Verifikations-Protokoll sichtbar – übersprungen bei
+  Budget-Abbruch, keine Zusatzzeile, wenn schlicht kein Dockerfile vorhanden ist.
+- 7 neue Tests (gemockte `docker`-Aufrufe für `core/verifier.py` + Orchestrator-Integration);
+  volle Suite (180 Tests) grün, ruff sauber.
+
+---
+
 ## 📜 Projekt-Kontinuität über mehrere Sitzungen hinweg
 
 `memory/conversation_history.py` ist sitzungsgebunden – startet der Nutzer eine neue

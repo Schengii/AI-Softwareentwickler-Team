@@ -24,7 +24,8 @@ class _FakeGenAIResponse:
 class TestLLMRouting(unittest.TestCase):
     def tearDown(self):
         # Global geteilten TokenGuard-Zustand nicht in andere Tests durchsickern lassen.
-        token_guard._exhausted_models.pop("gemini-3.6-flash", None)
+        for model in ("gemini-3.6-flash", "gemini-3.1-flash-lite", "claude-sonnet-5"):
+            token_guard._exhausted_models.pop(model, None)
 
     @patch("core.llm_factory._gemini_client")
     def test_gemini_fallback_chain_never_sends_claude_model_name_to_gemini_api(self, mock_gemini_client):
@@ -59,6 +60,40 @@ class TestLLMRouting(unittest.TestCase):
         # tatsaechlich an die Gemini-API gestellten Aufrufen nicht auftauchen.
         self.assertNotIn("claude-sonnet-5", called_models)
         self.assertTrue(all(m.startswith("gemini") for m in called_models), called_models)
+
+    @patch("core.llm_factory.asyncio.sleep")
+    @patch("core.llm_factory._gemini_client")
+    def test_waits_briefly_when_entire_fallback_chain_is_exhausted(self, mock_gemini_client, mock_sleep):
+        """
+        Realer Fund aus einem echten Lauf: als ALLE Modelle einer Fallback-Kette gleichzeitig
+        als erschöpft markiert waren (kein ANTHROPIC_API_KEY als Backstop), scheiterte jeder
+        einzelne Agenten-Aufruf sofort mit demselben 429 - ohne je den (oft nur Sekunden
+        entfernten) Cooldown abzuwarten. Jetzt wird kurz gewartet (gedeckelt via
+        MAX_EXHAUSTION_WAIT_SECONDS), dann erneut versucht.
+        """
+        # Die GESAMTE Kette von gemini-3.6-flash (sich selbst + claude-sonnet-5 +
+        # gemini-3.1-flash-lite, siehe MODEL_FALLBACKS) muss als erschöpft markiert sein,
+        # damit die Wartelogik greift - nicht nur ein einzelnes Glied.
+        token_guard.mark_model_exhausted("gemini-3.6-flash", "Test", cooldown_seconds=3.0)
+        token_guard.mark_model_exhausted("claude-sonnet-5", "Test", cooldown_seconds=3.0)
+        token_guard.mark_model_exhausted("gemini-3.1-flash-lite", "Test", cooldown_seconds=3.0)
+
+        mock_gemini_client.models.generate_content.return_value = _FakeGenAIResponse(text="ok")
+
+        client = GeminiClient(model_name="gemini-3.6-flash")
+
+        async def run():
+            return await client.generate_with_usage("Sag nur 'ok'.", None)
+
+        import asyncio
+        result = asyncio.run(run())
+
+        self.assertEqual(result.text, "ok")
+        mock_sleep.assert_called_once()
+        # Wartezeit muss gedeckelt UND positiv sein (kürzester bekannter Cooldown, hier 3s).
+        waited = mock_sleep.call_args[0][0]
+        self.assertGreater(waited, 0.0)
+        self.assertLessEqual(waited, 3.0)
 
 
 if __name__ == "__main__":

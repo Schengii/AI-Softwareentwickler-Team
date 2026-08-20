@@ -45,6 +45,25 @@ class TestCoreModules(unittest.TestCase):
         guard.mark_model_exhausted("claude-3-5-sonnet")
         self.assertTrue(guard.is_model_exhausted("claude-3-5-sonnet"))
 
+    def test_seconds_until_available_returns_zero_for_unknown_or_recovered_models(self):
+        guard = TokenGuard()
+        # Unbekanntes Modell -> sofort verfügbar.
+        self.assertEqual(guard.seconds_until_available(["nie-erschoepft"]), 0.0)
+
+        guard.mark_model_exhausted("a", cooldown_seconds=30.0)
+        guard.mark_model_exhausted("b", cooldown_seconds=5.0)
+        # "c" ist gar nicht erschöpft -> die Liste gilt als sofort verfügbar (0.0).
+        self.assertEqual(guard.seconds_until_available(["a", "b", "c"]), 0.0)
+
+    def test_seconds_until_available_returns_shortest_cooldown_when_all_exhausted(self):
+        guard = TokenGuard()
+        guard.mark_model_exhausted("a", cooldown_seconds=30.0)
+        guard.mark_model_exhausted("b", cooldown_seconds=5.0)
+        wait = guard.seconds_until_available(["a", "b"])
+        # Kürzerer Cooldown (b, ~5s) muss gewinnen, nicht der längere (a, ~30s).
+        self.assertGreater(wait, 0.0)
+        self.assertLessEqual(wait, 5.0)
+
     def test_workspace_file_parsing_fence(self):
         """Testet das Extrahieren von Code-Blöcken mit Datei-Pfaden."""
         sample_response = """

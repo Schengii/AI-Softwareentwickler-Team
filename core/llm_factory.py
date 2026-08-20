@@ -61,6 +61,14 @@ MODEL_FALLBACKS = {
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 1.5
 
+# Realer Fund aus einem echten Lauf: als an einem Tag alle Gemini-Kontingente gleichzeitig
+# an ihrem Minutenlimit hingen (kein ANTHROPIC_API_KEY als Backstop), scheiterten praktisch
+# alle Agenten sofort - jeder einzelne Aufruf kassierte denselben 429 nochmal, ohne je den
+# (oft nur Sekunden entfernten) Cooldown abzuwarten. Ist die GESAMTE Fallback-Kette eines
+# Aufrufs aktuell erschöpft, wird auf den kürzesten bekannten Cooldown gewartet – gedeckelt,
+# damit ein Lauf dadurch nie unbegrenzt hängt.
+MAX_EXHAUSTION_WAIT_SECONDS = 20.0
+
 
 @dataclass
 class ToolCall:
@@ -539,8 +547,16 @@ class GeminiClient:
             tools=[genai_tool] if genai_tool else None,
         )
 
-        models_to_try = [self.model_name] + MODEL_FALLBACKS.get(self.model_name, [])
-        models_to_try = [m for m in models_to_try if not token_guard.is_model_exhausted(m)] or [self.model_name]
+        all_candidates = [self.model_name] + MODEL_FALLBACKS.get(self.model_name, [])
+        models_to_try = [m for m in all_candidates if not token_guard.is_model_exhausted(m)]
+        if not models_to_try:
+            # Komplette Kette gerade erschöpft (siehe MAX_EXHAUSTION_WAIT_SECONDS oben) -
+            # kurz auf den kürzesten bekannten Cooldown warten statt sofort denselben
+            # Fehler erneut zu kassieren.
+            wait_s = min(token_guard.seconds_until_available(all_candidates), MAX_EXHAUSTION_WAIT_SECONDS)
+            if wait_s > 0:
+                await asyncio.sleep(wait_s)
+            models_to_try = [m for m in all_candidates if not token_guard.is_model_exhausted(m)] or [self.model_name]
 
         last_error: Exception | None = None
         for model in models_to_try:
@@ -652,8 +668,15 @@ class GeminiClient:
             raise RuntimeError("Gemini Client nicht initialisiert. Bitte GEMINI_API_KEY setzen.")
 
         start_model = self.model_name
-        models_to_try = [start_model] + MODEL_FALLBACKS.get(start_model, [])
-        models_to_try = [m for m in models_to_try if not token_guard.is_model_exhausted(m)] or [start_model]
+        all_candidates = [start_model] + MODEL_FALLBACKS.get(start_model, [])
+        models_to_try = [m for m in all_candidates if not token_guard.is_model_exhausted(m)]
+        if not models_to_try:
+            # Siehe generate_with_tools() weiter oben: kurz auf den kürzesten bekannten
+            # Cooldown warten, statt sofort denselben Fehler erneut zu kassieren.
+            wait_s = min(token_guard.seconds_until_available(all_candidates), MAX_EXHAUSTION_WAIT_SECONDS)
+            if wait_s > 0:
+                await asyncio.sleep(wait_s)
+            models_to_try = [m for m in all_candidates if not token_guard.is_model_exhausted(m)] or [start_model]
 
         last_error: Exception | None = None
         for model in models_to_try:

@@ -127,6 +127,28 @@ class TokenGuard:
 
         return True
 
+    def seconds_until_available(self, model_names: list[str]) -> float:
+        """
+        Gibt zurück, wie viele Sekunden mindestens gewartet werden muss, bis WENIGSTENS
+        eines der genannten Modelle wieder verfügbar ist – 0.0, wenn eines davon bereits
+        verfügbar ist (oder gar keines als erschöpft bekannt ist).
+
+        Wird genutzt, um bei einer komplett erschöpften Fallback-Kette (z.B. alle
+        Gratis-Kontingente gleichzeitig an ihrem Minutenlimit) kurz auf den kürzesten
+        bekannten Cooldown zu warten, statt sofort denselben 429-Fehler erneut zu kassieren
+        (siehe core/llm_factory.py, GeminiClient.generate_with_tools/generate_with_usage).
+        """
+        waits: list[float] = []
+        for name in model_names:
+            if name not in self._exhausted_models:
+                return 0.0
+            info = self._exhausted_models[name]
+            remaining = info.cooldown_seconds - (time.monotonic() - info.exhausted_at)
+            if remaining <= 0:
+                return 0.0
+            waits.append(remaining)
+        return min(waits) if waits else 0.0
+
     def get_summary(self) -> dict:
         """Gibt aggregierte Verbrauchsdaten zurück."""
         # Bereinige abgelaufene Modelle

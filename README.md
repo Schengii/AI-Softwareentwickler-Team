@@ -20,6 +20,31 @@
 
 ---
 
+## ⏳ Kurzes Warten statt Sofort-Scheitern bei komplett erschöpfter Provider-Kette
+
+Realer Fund aus einem echten Lauf: als an einem Tag alle Gemini-Kontingente gleichzeitig an
+ihrem Minutenlimit hingen (ohne konfigurierten `ANTHROPIC_API_KEY` als Backstop), scheiterten
+praktisch alle Agenten sofort – jeder einzelne Aufruf kassierte denselben `429`-Fehler erneut,
+ohne je den (oft nur Sekunden entfernten) Cooldown des jeweiligen Modells abzuwarten.
+
+- `core/token_guard.py`: neue `seconds_until_available()` – gibt zurück, wie lange mindestens
+  gewartet werden muss, bis wenigstens ein Kandidat einer Fallback-Kette wieder verfügbar ist.
+- `core/llm_factory.py`: `GeminiClient.generate_with_tools()`/`generate_with_usage()` warten
+  jetzt kurz (gedeckelt auf `MAX_EXHAUSTION_WAIT_SECONDS = 20s`) auf den kürzesten bekannten
+  Cooldown, WENN die komplette Fallback-Kette eines Aufrufs aktuell als erschöpft markiert ist –
+  statt sofort denselben Fehler erneut zu kassieren. Erhöht die reale Erfolgsquote bei kurzen,
+  minutenbasierten Rate-Limits spürbar, ohne einen Lauf durch unbegrenztes Warten zu blockieren.
+- 3 neue Tests (Cooldown-Berechnung inkl. "kürzester gewinnt", End-to-End-Nachweis der
+  Wartelogik mit gemocktem `asyncio.sleep`); volle Suite (121 Tests) grün, ruff sauber.
+
+**Weiterhin offen (nicht durch Code lösbar):** ohne mindestens einen zweiten, tatsächlich
+bezahlten Provider-Schlüssel (z.B. `ANTHROPIC_API_KEY`) als echtes Backstop bleibt das System
+nur so verlässlich wie die Großzügigkeit der kostenlosen Kontingente – bei echter
+Totalerschöpfung ALLER konfigurierten Provider (nicht nur eines kurzen Minutenlimits) gibt es
+weiterhin keinen Ausweg außer Warten oder einen Schlüssel hinzuzufügen.
+
+---
+
 ## 🛡️ Syntax-Gate für write_file/edit_file (kritischer Fund)
 
 Ein echter Team-Lauf hat `main.py` **und** `interface/cli.py` unbemerkt mit syntaktisch

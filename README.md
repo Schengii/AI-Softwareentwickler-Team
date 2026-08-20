@@ -20,6 +20,30 @@
 
 ---
 
+## 🌳 Worktree-Isolation gilt jetzt für ALLE Läufe, nicht nur Selbstverbesserung
+
+Die bisherige Git-Worktree-Isolation griff nur, wenn das Team am Framework selbst arbeitete.
+Dieselbe Gefahr besteht aber bei JEDEM Lauf gegen bereits vorhandenen Inhalt – z.B. ein per
+`/load` geladenes bestehendes Projekt.
+
+- `agents/orchestrator.py`: neue `_resolve_project_isolation()` entscheidet einheitlich für
+  BEIDE Fälle (per `/load` geladen ODER frisch geratener `project_slug`): isoliert wird
+  IMMER, wenn am Zielort bereits echter Inhalt existiert (Framework-Root zählt immer dazu).
+  Ein **brandneues, leeres Projekt** hat nichts zu verlieren und wird bewusst weiter direkt
+  geschrieben – kein Worktree-Overhead im Alltagsfall "neues Projekt erstellen".
+- `core/git_isolation.py`: neue `find_git_root()` (funktioniert auch für noch nicht
+  existierende Zielpfade, z.B. ein brandneues Workspace-Projekt, das erst beim nächsten
+  existierenden Elternordner ansetzt) und `has_uncommitted_changes()`.
+- **Unkommittete Änderungen am Zielort → keine Isolation.** Ein frischer Worktree basiert
+  auf dem letzten Commit und würde unkommittete Änderungen unsichtbar machen – in diesem
+  Fall wird stattdessen direkt geschrieben, mit klarer Warnung.
+- Nur beim Framework-Root selbst führt ein genereller Isolations-Fehlschlag (kein Git-Repo,
+  `git` fehlt) weiterhin zum Abbruch statt zu einem Fallback auf direktes Schreiben – dort
+  ist das Risiko am größten.
+- 9 neue Tests (echte temporäre Git-Repos); volle Suite (164 Tests) grün, ruff sauber.
+
+---
+
 ## ❓ Rückfragen bei unklaren Anforderungen statt Raten
 
 Realer Fund: vage Nutzeranfragen ("Ich möchte, dass ihr das Projekt weiter verbessert")

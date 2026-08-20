@@ -16,7 +16,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from core.git_isolation import GitIsolationError, create_isolated_worktree, is_git_repo, remove_worktree
+from core.git_isolation import (
+    GitIsolationError,
+    create_isolated_worktree,
+    find_git_root,
+    has_uncommitted_changes,
+    is_git_repo,
+    remove_worktree,
+)
 
 
 def _run(args: list[str], cwd: str) -> subprocess.CompletedProcess:
@@ -81,6 +88,41 @@ class TestGitIsolation(unittest.TestCase):
         ok, _ = remove_worktree(worktree)
         self.assertTrue(ok)
         self.assertFalse(Path(worktree.path).exists())
+
+    def test_find_git_root_for_subdirectory(self):
+        subdir = str(Path(self.repo_dir) / "some" / "nested" / "dir")
+        Path(subdir).mkdir(parents=True)
+        self.assertEqual(find_git_root(subdir), str(Path(self.repo_dir).resolve()))
+
+    def test_find_git_root_works_for_not_yet_existing_path(self):
+        """Ein brandneues Workspace-Projekt existiert zum Zeitpunkt der Prüfung u.U. noch
+        nicht - find_git_root muss dann beim naechsten existierenden Elternordner ansetzen."""
+        not_yet_created = str(Path(self.repo_dir) / "workspace" / "brand_new_project")
+        self.assertEqual(find_git_root(not_yet_created), str(Path(self.repo_dir).resolve()))
+
+    def test_find_git_root_returns_none_outside_any_repo(self):
+        non_repo = str(Path(self.temp_root) / "no_repo_here")
+        Path(non_repo).mkdir()
+        self.assertIsNone(find_git_root(non_repo))
+
+    def test_has_uncommitted_changes_detects_dirty_state(self):
+        self.assertFalse(has_uncommitted_changes(self.repo_dir, self.repo_dir))
+        (Path(self.repo_dir) / "main.py").write_text("print('modified')\n", encoding="utf-8")
+        self.assertTrue(has_uncommitted_changes(self.repo_dir, self.repo_dir))
+
+    def test_has_uncommitted_changes_scoped_to_subpath(self):
+        """Unkommittete Aenderungen an EINEM Projekt duerfen ein ANDERES, sauberes
+        Projekt im selben Repo nicht faelschlich als 'dirty' markieren."""
+        (Path(self.repo_dir) / "workspace_a").mkdir()
+        (Path(self.repo_dir) / "workspace_a" / "file.py").write_text("x = 1\n", encoding="utf-8")
+        _run(["add", "-A"], cwd=self.repo_dir)
+        _run(["commit", "-m", "add workspace_a"], cwd=self.repo_dir)
+
+        (Path(self.repo_dir) / "workspace_b").mkdir()
+        (Path(self.repo_dir) / "workspace_b" / "dirty.py").write_text("y = 2\n", encoding="utf-8")
+
+        self.assertFalse(has_uncommitted_changes(self.repo_dir, str(Path(self.repo_dir) / "workspace_a")))
+        self.assertTrue(has_uncommitted_changes(self.repo_dir, str(Path(self.repo_dir) / "workspace_b")))
 
 
 if __name__ == "__main__":

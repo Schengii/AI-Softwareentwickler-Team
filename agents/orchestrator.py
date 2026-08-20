@@ -74,7 +74,12 @@ from config import (
     MAX_VERIFICATION_ITERATIONS,
     ORCHESTRATOR_MODEL,
 )
-from core.git_isolation import GitIsolationError, create_isolated_worktree
+from core.git_isolation import (
+    GitIsolationError,
+    create_isolated_worktree,
+    find_git_root,
+    has_uncommitted_changes,
+)
 from core.message_bus import AgentResult, AgentTask
 from core.result_aggregator import ResultAggregator
 from core.task_manager import TaskManager
@@ -252,40 +257,11 @@ class Orchestrator:
         notify(f"📋 [bold white]Gesamtplan:[/bold white] {task_summary}")
 
         if forced_project_dir:
-            is_self_targeting = str(Path(forced_project_dir).resolve()) == str(Path(BASE_DIR).resolve())
-            if is_self_targeting:
-                # Selbstverbesserungslauf (Team arbeitet am Framework selbst): NIE direkt im
-                # echten Arbeitsverzeichnis des Nutzers schreiben. Realer Fund: genau das ließ
-                # den backend-Agenten main.py + interface/cli.py mit kaputtem Inhalt
-                # überschreiben, während der Nutzer nichtsahnend daneben saß. Läuft stattdessen
-                # in einem komplett separaten Git-Worktree (core/git_isolation.py) – der Mensch
-                # reviewt/merged die Änderungen danach selbst per `git diff`, analog zum
-                # bestehenden Push-Bestätigungs-Gate. Schlägt die Isolation fehl (kein Git-Repo,
-                # git fehlt), wird der Lauf bewusst ABGEBROCHEN statt unsicher fortzufahren.
-                try:
-                    worktree = create_isolated_worktree(BASE_DIR, task_summary)
-                except GitIsolationError as e:
-                    response = (
-                        f"⚠️ Selbstverbesserungslauf abgebrochen: Isolierter Git-Worktree konnte "
-                        f"nicht angelegt werden ({e}). Aus Sicherheitsgründen wird NICHT direkt im "
-                        "echten Arbeitsverzeichnis geschrieben."
-                    )
-                    self._history.add_assistant_message(response)
-                    return response
-
-                self.last_isolated_worktree = worktree
-                project_dir = worktree.path
-                notify(
-                    f"🌳 [bold cyan]Isolierter Git-Worktree:[/bold cyan] `{worktree.path}` "
-                    f"(Branch `{worktree.branch}`) – dein echtes Arbeitsverzeichnis bleibt "
-                    "während des gesamten Laufs unberührt."
-                )
-            else:
-                # Explizit per /load geladenes (externes/Workspace-)Projekt: project_slug (vom
-                # Modell geraten) wird bewusst ignoriert – die Frühwarnung unten ist hier
-                # unnötig, weil der Mensch das Zielverzeichnis bereits selbst gewählt hat.
-                project_dir = forced_project_dir
-                notify(f"📂 [dim]Arbeite im geladenen Projekt: {project_dir}[/dim]")
+            # Explizit per /load geladenes (externes/Workspace-)Projekt: project_slug (vom
+            # Modell geraten) wird bewusst ignoriert – der Mensch hat das Zielverzeichnis
+            # bereits selbst gewählt.
+            candidate_dir = forced_project_dir
+            notify(f"📂 [dim]Arbeite im geladenen Projekt: {candidate_dir}[/dim]")
         else:
             # Frühwarnung vor stillschweigend doppelter Arbeit: project_slug wird pro Lauf neu vom
             # Modell geraten und unterscheidet sich oft, selbst wenn die Aufgabe inhaltlich dieselbe
@@ -304,9 +280,24 @@ class Orchestrator:
                     f"stattdessen `/load <name>`.[/dim]"
                 )
 
-            # Jede Teilaufgabe bekommt ab hier echten Zugriff auf das Projektverzeichnis
-            # (read_file/write_file/edit_file/run_command/run_tests via agents/base_agent.py).
-            project_dir = str(self._workspace.get_project_dir(project_slug))
+            # get_project_dir() legt das Verzeichnis bei Bedarf leer an (mkdir) - die
+            # Isolationsentscheidung unten prüft trotzdem korrekt auf "bereits vorhandenen
+            # Inhalt", da ein frisch angelegtes Verzeichnis dabei leer bleibt.
+            candidate_dir = str(self._workspace.get_project_dir(project_slug))
+
+        # Jede Teilaufgabe bekommt ab hier echten Zugriff auf das Projektverzeichnis
+        # (read_file/write_file/edit_file/run_command/run_tests via agents/base_agent.py).
+        # Realer Fund: ein Selbstverbesserungslauf schrieb früher direkt im echten
+        # Arbeitsverzeichnis – dieselbe Gefahr besteht bei JEDEM Lauf gegen bereits
+        # vorhandenen Inhalt (z.B. ein per /load geladenes bestehendes Projekt), nicht nur
+        # beim Framework selbst. _resolve_project_isolation() isoliert deshalb IMMER, wenn am
+        # Zielort bereits echter Inhalt existiert – ein brandneues, leeres Projekt hat nichts
+        # zu verlieren und wird bewusst direkt geschrieben (kein Worktree-Overhead für den
+        # Alltagsfall "neues Projekt erstellen").
+        project_dir, abort_response = await self._resolve_project_isolation(candidate_dir, task_summary, notify)
+        if abort_response:
+            self._history.add_assistant_message(abort_response)
+            return abort_response
 
         # Der TATSÄCHLICH verwendete Ordnername (nicht der u.U. verworfene project_slug bei
         # forced_project_dir) – zuverlässiger Commit-Message-Fallback, siehe last_project_slug oben.
@@ -460,6 +451,82 @@ class Orchestrator:
                 "Code nicht bestätigt (siehe Verifikations-Protokoll oben) – prüfe das Ergebnis, bevor du es übernimmst."
             )
         return final_output
+
+    async def _resolve_project_isolation(
+        self, candidate_dir: str, task_summary: str, notify: Callable[[str], None],
+    ) -> tuple[str, str | None]:
+        """
+        Entscheidet, ob candidate_dir isoliert (Git-Worktree) oder direkt verwendet wird.
+
+        Gibt (project_dir, abort_response) zurück: project_dir ist bei einem Abbruch
+        bedeutungslos ("") – der Aufrufer MUSS abort_response (falls nicht None) direkt an
+        den Nutzer zurückgeben, statt fortzufahren.
+
+        Isoliert wird IMMER, wenn am Zielort bereits echter Inhalt existiert (Framework-Root
+        selbst zählt immer dazu) – ein brandneues, leeres Projekt hat nichts zu verlieren und
+        wird bewusst direkt geschrieben (kein Worktree-Overhead im Alltagsfall). Kann isoliert
+        werden, aber es liegen unkommittete Änderungen am Zielort vor, wird NICHT isoliert
+        (ein frischer Worktree basiert auf dem letzten COMMIT und würde diese Änderungen
+        unsichtbar machen) – stattdessen wird direkt geschrieben, mit klarer Warnung. Nur beim
+        Framework-Root selbst (Selbstverbesserungslauf) führt ein generelles Scheitern der
+        Isolation (kein Git-Repo, `git` fehlt) zum Abbruch statt zu einem Fallback auf direktes
+        Schreiben – dort ist das Risiko am größten.
+        """
+        resolved = Path(candidate_dir).resolve()
+        is_self_targeting = str(resolved) == str(Path(BASE_DIR).resolve())
+        has_content = is_self_targeting or (resolved.exists() and any(resolved.iterdir()))
+
+        if not has_content:
+            return candidate_dir, None
+
+        git_root = find_git_root(candidate_dir)
+        if git_root is None:
+            if is_self_targeting:
+                return "", (
+                    "⚠️ Selbstverbesserungslauf abgebrochen: Framework-Root ist kein "
+                    "Git-Repository – Isolation nicht möglich. Aus Sicherheitsgründen wird "
+                    "NICHT direkt im echten Arbeitsverzeichnis geschrieben."
+                )
+            notify(
+                f"⚠️ [yellow]Kein Git-Repo für `{candidate_dir}` gefunden – Isolation nicht "
+                "möglich, Änderungen werden direkt geschrieben.[/yellow]"
+            )
+            return candidate_dir, None
+
+        if has_uncommitted_changes(git_root, candidate_dir):
+            notify(
+                f"⚠️ [yellow]`{candidate_dir}` hat unkommittete Änderungen – ein isolierter "
+                "Worktree (basiert auf dem letzten Commit) würde diese nicht sehen. Änderungen "
+                "werden direkt geschrieben.[/yellow]"
+            )
+            return candidate_dir, None
+
+        try:
+            worktree = create_isolated_worktree(git_root, task_summary)
+        except GitIsolationError as e:
+            if is_self_targeting:
+                return "", (
+                    f"⚠️ Selbstverbesserungslauf abgebrochen: Isolierter Git-Worktree konnte "
+                    f"nicht angelegt werden ({e}). Aus Sicherheitsgründen wird NICHT direkt im "
+                    "echten Arbeitsverzeichnis geschrieben."
+                )
+            notify(f"⚠️ [yellow]Isolierter Git-Worktree konnte nicht angelegt werden ({e}) – Änderungen werden direkt geschrieben.[/yellow]")
+            return candidate_dir, None
+
+        self.last_isolated_worktree = worktree
+        git_root_resolved = Path(git_root).resolve()
+        if resolved == git_root_resolved:
+            project_dir = worktree.path
+        else:
+            project_dir = str(Path(worktree.path) / resolved.relative_to(git_root_resolved))
+            Path(project_dir).mkdir(parents=True, exist_ok=True)
+
+        notify(
+            f"🌳 [bold cyan]Isolierter Git-Worktree:[/bold cyan] `{project_dir}` "
+            f"(Branch `{worktree.branch}`) – dein echtes Arbeitsverzeichnis bleibt "
+            "während des gesamten Laufs unberührt."
+        )
+        return project_dir, None
 
     # ──────────────────────────────────────────────────────────────
     # Fachbereichs-Hierarchie mit ECHTER Teamleiter-Delegation & -Konsolidierung

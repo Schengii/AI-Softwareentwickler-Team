@@ -53,6 +53,49 @@ def is_git_repo(directory: str) -> bool:
     return result.returncode == 0 and result.stdout.strip() == "true"
 
 
+def find_git_root(directory: str) -> str | None:
+    """
+    Ermittelt das Root-Verzeichnis des Git-Repos, zu dem `directory` gehört – auch wenn
+    `directory` selbst noch nicht existiert (z.B. ein noch nicht angelegtes, brandneues
+    Workspace-Projekt): dann wird beim nächsten existierenden Elternverzeichnis angesetzt.
+    None, wenn weder `directory` noch einer seiner Elternordner zu einem Git-Repo gehört.
+
+    Genutzt, um Worktree-Isolation auch für /load-geladene externe Projekte (nicht nur das
+    Framework-Root selbst) zu ermöglichen – unabhängig davon, in WELCHEM Repo sich das
+    Zielverzeichnis befindet.
+    """
+    probe = Path(directory).resolve()
+    while not probe.exists():
+        if probe.parent == probe:
+            return None
+        probe = probe.parent
+    try:
+        result = _run_git(["rev-parse", "--show-toplevel"], cwd=str(probe))
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return str(Path(result.stdout.strip()).resolve())
+
+
+def has_uncommitted_changes(git_root: str, target_path: str) -> bool:
+    """
+    Prüft per `git status --short`, ob es am Zielpfad unkommittete Änderungen gibt. Ein
+    frisch angelegter Worktree basiert auf dem letzten COMMIT – unkommittete Änderungen
+    wären darin unsichtbar, das Team würde also mit einem veralteten Stand arbeiten und
+    eigene sowie fremde Änderungen könnten beim späteren manuellen Merge kollidieren.
+    """
+    try:
+        relative = str(Path(target_path).resolve().relative_to(Path(git_root).resolve()))
+    except ValueError:
+        relative = "."
+    try:
+        result = _run_git(["status", "--short", "--", relative], cwd=git_root)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return bool(result.stdout.strip())
+
+
 def create_isolated_worktree(base_dir: str, task_summary: str) -> IsolatedWorktree:
     """
     Legt einen neuen Git-Worktree für einen Selbstverbesserungslauf gegen base_dir an:

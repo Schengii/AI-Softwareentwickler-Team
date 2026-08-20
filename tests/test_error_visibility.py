@@ -74,6 +74,46 @@ class TestErrorVisibility(unittest.TestCase):
         )
         self.assertNotIn("Rohe Fehlermeldungen", summary)
 
+    def test_metrics_summary_flags_success_with_zero_files_written(self):
+        """
+        Realer Fund aus einem echten Lauf: backend meldete success=True, nutzte 5 echte
+        Werkzeug-Aufrufe und verbrauchte 36.443 Tokens - schrieb aber 0 Dateien (der Code
+        landete nur als Markdown-Codeblock im Antworttext). git status war danach komplett
+        leer. _build_metrics_summary() muss das jetzt sichtbar machen, statt es wie einen
+        normalen Erfolg aussehen zu lassen.
+        """
+        results = [
+            AgentResult(
+                task_id="t1", agent_id="backend", agent_name="Backend-Entwickler", success=True,
+                content="```python\napp = FastAPI()\n```", total_tokens=36443, tool_calls_count=5,
+                files_written=[],
+            ),
+        ]
+        summary = self.orchestrator._build_metrics_summary(
+            results=results, synth_tokens=10, total_duration=5.0, project_dir="test_proj",
+        )
+        self.assertIn("keine Datei geschrieben", summary)
+        self.assertIn("Backend-Entwickler", summary)
+        self.assertIn("36,443", summary)
+
+    def test_metrics_summary_does_not_flag_review_only_or_planning_roles(self):
+        """code_reviewer/project_cleaner (REVIEW_ONLY_AGENT_IDS) und reine Planungsrollen
+        (z.B. product_owner) schreiben LEGITIM keine Dateien - kein Fehlalarm dafür."""
+        results = [
+            AgentResult(
+                task_id="t1", agent_id="code_reviewer", agent_name="Code-Reviewer", success=True,
+                content="Review ok", tool_calls_count=3, files_written=[],
+            ),
+            AgentResult(
+                task_id="t2", agent_id="product_owner", agent_name="Product Owner", success=True,
+                content="Scope definiert", tool_calls_count=1, files_written=[],
+            ),
+        ]
+        summary = self.orchestrator._build_metrics_summary(
+            results=results, synth_tokens=10, total_duration=5.0, project_dir="test_proj",
+        )
+        self.assertNotIn("keine Datei geschrieben", summary)
+
 
 if __name__ == "__main__":
     unittest.main()

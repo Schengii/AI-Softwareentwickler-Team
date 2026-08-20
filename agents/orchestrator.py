@@ -85,6 +85,21 @@ from memory.conversation_history import ConversationHistory
 # Tokens, da ihnen ein kleineres Werkzeug-Set (kein write_file/edit_file/run_command) angeboten wird.
 REVIEW_ONLY_AGENT_IDS = {"code_reviewer", "compliance", "project_cleaner"}
 
+# Rollen, deren eigentlicher Auftrag darin besteht, echte Artefakte im Projekt zu hinterlassen
+# (nicht nur Planungs-/Analyse-Text). Realer Fund aus einem echten Lauf: der backend-Agent
+# meldete success=True, verbrauchte echte 36.000+ Tokens und lieferte fertigen Code – aber
+# AUSSCHLIESSLICH als Markdown-Codeblock im Antworttext statt über write_file/edit_file, sodass
+# git status danach komplett leer war (0 Dateien geändert). Ohne Gegenmaßnahme sieht ein
+# solcher Lauf im Report identisch zu einem echten Erfolg aus und der komplette
+# Tokenverbrauch verpufft, ohne dass irgendetwas Nutzbares im Projekt ankommt. Bewusst NUR
+# die Rollen mit eindeutigem Artefakt-Auftrag (kein product_owner/architect/ui_ux/etc. –
+# deren Aufgabe legitim reiner Text sein kann), um Fehlalarme gering zu halten.
+CODE_WRITING_AGENT_IDS = {
+    "backend", "frontend", "database", "api_integration", "data_engineer",
+    "mobile", "ml", "devops", "tester", "resilience_guard", "refactoring",
+    "readme", "documentation",
+}
+
 StatusCallback = Callable[[str], None]
 
 # Reihenfolge & Anzeige der 5 Fachbereichs-Phasen. Die Mitgliederlisten stammen
@@ -884,6 +899,26 @@ class Orchestrator:
             lines.append("\n### ❌ Rohe Fehlermeldungen (ungefiltert, nicht vom LLM zusammengefasst)\n")
             for r in failed:
                 lines.append(f"- **{r.agent_name}** (`{r.agent_id}`): `{r.error[:500]}`")
+
+        # "Erfolgreich", aber real NICHTS im Projekt verändert: eine Rolle mit eindeutigem
+        # Artefakt-Auftrag (CODE_WRITING_AGENT_IDS) hat Werkzeuge genutzt (tool_calls_count > 0,
+        # war also im agentischen Loop) und trotzdem 0 Dateien geschrieben – der komplette
+        # Tokenverbrauch dieses Agenten ging vermutlich in reinen Antworttext statt in echte
+        # write_file/edit_file-Aufrufe. Siehe CODE_WRITING_AGENT_IDS oben für den realen Fund.
+        silent_no_write = [
+            r for r in results
+            if r.success and r.agent_id in CODE_WRITING_AGENT_IDS and r.tool_calls_count > 0 and not r.files_written
+        ]
+        if silent_no_write:
+            lines.append(
+                "\n### ⚠️ Erfolg gemeldet, aber keine Datei geschrieben (vermutlich verpuffter Tokenverbrauch)\n"
+            )
+            for r in silent_no_write:
+                lines.append(
+                    f"- **{r.agent_name}** (`{r.agent_id}`): {r.tool_calls_count} Werkzeug-Aufruf(e), "
+                    f"{r.total_tokens:,} Tokens, aber 0 Dateien geschrieben. Prüfe `content` dieses "
+                    "Agenten manuell – der Code steckt wahrscheinlich nur im Antworttext."
+                )
 
         return "\n".join(lines)
 

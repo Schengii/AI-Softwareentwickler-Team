@@ -106,6 +106,20 @@ class BaseAgent(ABC):
         mit angeforderten Werkzeug-Aufrufen. Werkzeug-Aufrufe werden ausgeführt,
         ihr reales Ergebnis wird als Folge-Nachricht zurückgespielt, bis das
         Modell eine finale Textantwort liefert oder das Iterationslimit erreicht ist.
+
+        Provider wird pro Aufgabe FESTGENAGELT, sobald ein Fallback-Hop tatsächlich
+        geantwortet hat (siehe active_llm unten). Realer Fund aus einem echten Lauf: Ohne
+        das löste jede Iteration die Fallback-Kette (core/llm_factory.py MODEL_FALLBACKS)
+        unabhängig neu auf. Antwortete z.B. Iteration 1 über Groq (kein Claude-Key) und
+        scheiterte Groq dann in Iteration 2 (z.B. Rate-Limit), sprang die Kette weiter zu
+        Gemini – das dann die BISHERIGE Historie inkl. eines von GROQ erzeugten function_call
+        sah, dem die von Gemini zwingend verlangte thought_signature fehlt, und lehnte mit
+        "400 INVALID_ARGUMENT: Function call is missing a thought_signature" komplett ab
+        (beobachtet bei den Agenten `backend` und `code_reviewer`). Einmal gepinnt, wird kein
+        weiterer Fallback mehr innerhalb DIESER Aufgabe zugelassen (_allow_self_fallback=False)
+        – schlägt der gepinnte Provider erneut fehl, ist ein klarer Fehlschlag (jetzt sichtbar,
+        siehe agents/orchestrator.py _status_notify_line) der sichereren Alternative vorzuziehen,
+        Historie stillschweigend über einen weiteren, ebenfalls fremden Provider zu beschädigen.
         """
         max_iterations = task.max_tool_iterations or MAX_AGENT_TOOL_ITERATIONS
         turns: list[AgentMessage] = [AgentMessage(role="user", text=self._build_prompt(task))]
@@ -113,11 +127,18 @@ class BaseAgent(ABC):
         total_prompt_tokens = 0
         total_completion_tokens = 0
         response: LLMResponse | None = None
+        active_llm = self._llm
 
         for iteration in range(1, max_iterations + 1):
-            response = await self._llm.generate_with_tools(turns, system_prompt, toolbox.tool_specs())
+            allow_fallback = active_llm is self._llm
+            response = await active_llm.generate_with_tools(
+                turns, system_prompt, toolbox.tool_specs(), _allow_self_fallback=allow_fallback,
+            )
             total_prompt_tokens += response.prompt_tokens
             total_completion_tokens += response.completion_tokens
+
+            if allow_fallback and response.model_name != self._llm.model_name:
+                active_llm = LLMFactory.create_for_model(response.model_name)
 
             if not response.tool_calls or iteration == max_iterations:
                 if not response.text and response.tool_calls:

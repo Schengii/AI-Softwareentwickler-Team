@@ -33,7 +33,7 @@ class _TokenBurningFakeLLM:
         self.label = label
         self.model_name = "fake-model"
 
-    async def generate_with_tools(self, messages, system_prompt, tools):
+    async def generate_with_tools(self, messages, system_prompt, tools, _allow_self_fallback=True):
         orch_module.token_guard.record_usage(self.model_name, TOKENS_PER_CALL, 0)
         return LLMResponse(
             text=f"[{self.label}] verarbeitet.", model_name=self.model_name,

@@ -26,7 +26,7 @@ class _FakeToolCapableLLM:
         self._text = text
         self.model_name = model_name
 
-    async def generate_with_tools(self, messages, system_prompt, tools):
+    async def generate_with_tools(self, messages, system_prompt, tools, _allow_self_fallback=True):
         return LLMResponse(
             text=self._text, model_name=self.model_name,
             prompt_tokens=150, completion_tokens=80, total_tokens=230, tool_calls=[],

@@ -24,7 +24,7 @@ class _RecordingFakeLLM:
         self.model_name = "fake-model"
         self.calls: list[str] = []
 
-    async def generate_with_tools(self, messages, system_prompt, tools):
+    async def generate_with_tools(self, messages, system_prompt, tools, _allow_self_fallback=True):
         from core.llm_factory import LLMResponse
         self.calls.append(messages[-1].text if messages else "")
         return LLMResponse(

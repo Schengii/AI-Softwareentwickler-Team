@@ -81,6 +81,35 @@ Diverser Text...
         for agent_id in self.orchestrator._agents:
             self.assertEqual(kb.get_learnings(agent_id), [])
 
+    def test_finds_real_learnings_block_past_an_earlier_unrelated_json_example(self):
+        """
+        Regressionstest für einen echten Fund aus einem echten Lauf: Der Trainer-Bericht
+        illustriert seine Prompt-Diffs oft mit einem eigenen ```json-Beispiel-Snippet VOR dem
+        eigentlichen Lern-Block am Ende. Ein "nimm den ersten ```json-Block"-Parser matcht dann
+        das Beispiel (kein "learnings"-Schlüssel) und verwirft die echten Regeln lautlos.
+        """
+        report = '''### 2. Konkrete Prompt-Verbesserungen
+
+Beispiel für einen Tool-Aufruf mit Begründung:
+```json
+{
+  "name": "list_files",
+  "arguments": {"path": "."},
+  "thought_signature": "Ich pruefe den Bestand, bevor ich schreibe."
+}
+```
+
+### 5. Maschinenlesbare Lern-Regeln
+```json
+{"learnings": [{"agent_id": "backend", "rule": "Schreibe nach maximal 2 Lese-Schritten eine erste Datei."}]}
+```
+'''
+        kb = self._fresh_knowledge_base()
+        with patch("memory.agent_knowledge_base.agent_knowledge_base", kb):
+            self.orchestrator._extract_and_store_learnings(report)
+
+        self.assertIn("Schreibe nach maximal 2 Lese-Schritten eine erste Datei.", kb.get_learnings("backend"))
+
     def test_department_lead_is_a_valid_learning_target(self):
         report = '''```json
 {"learnings": [{"agent_id": "dev_lead", "rule": "Fasse Delegationsanweisungen kuerzer, um Tool-Iterationen zu sparen."}]}

@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config import WORKSPACE_DIR
+from core.code_sandbox import CodeSandbox
 
 
 @dataclass
@@ -159,6 +160,14 @@ class WorkspaceManager:
             target_file = (project_dir / clean_rel).resolve()
 
             if not str(target_file).startswith(str(project_dir)):
+                continue
+
+            # Wie core/agent_toolbox.py._tool_write_file(): niemals syntaktisch kaputtes Python
+            # unbemerkt auf die Platte schreiben. Diese Regex-basierte Extraktion aus dem freien
+            # Antworttext ist fehleranfälliger als ein natives write_file-Tool-Argument (z.B. bei
+            # unsauber geschlossenen Codeblöcken) - lieber gar nicht speichern als eine Datei mit
+            # kaputtem Inhalt zu überschreiben.
+            if clean_rel.lower().endswith(".py") and not CodeSandbox.validate_code(content, "py").is_valid:
                 continue
 
             target_file.parent.mkdir(parents=True, exist_ok=True)

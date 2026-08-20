@@ -232,7 +232,37 @@ class AgentToolbox:
             }
         return {"files": files}
 
+    @staticmethod
+    def _reject_if_invalid_python(path: str, content: str) -> str | None:
+        """Gibt eine Fehlermeldung zurück (statt None), wenn `path` auf .py endet und `content`
+        kein gültiges Python ist – None bedeutet "in Ordnung, schreiben erlaubt".
+
+        Realer Fund aus einem echten Lauf: ein Agent überschrieb main.py per write_file mit
+        Inhalt, der versehentlich ALLE Zeilenumbrüche/Anführungszeichen als literale `\\n`/`\\"`
+        statt echter Escape-Sequenzen enthielt (vermutlich doppelt JSON-serialisiert) - eine
+        einzige, syntaktisch komplett kaputte Zeile. Die Datei landete unbemerkt auf der Platte,
+        der komplette Rest des Frameworks (main.py + interface/cli.py) war danach nicht mehr
+        lauffähig, bis die eigentliche Testverifikation (Minuten später, nach mehreren weiteren
+        Werkzeug-Aufrufen) das erst über einen Test-Fehlschlag bemerkte. Diese Prüfung fängt es
+        SOFORT am Werkzeug selbst ab, bevor überhaupt etwas auf die Platte geschrieben wird -
+        nutzt dieselbe ast.parse()-Validierung wie core/code_sandbox.py (Sandbox-Validierung).
+        """
+        if not path.lower().endswith(".py"):
+            return None
+        result = CodeSandbox.validate_code(content or "", "py")
+        if result.is_valid:
+            return None
+        return (
+            f"Syntax-Fehler in '{path}' – Datei wurde NICHT gespeichert: {'; '.join(result.errors)}. "
+            "Prüfe insbesondere, ob Zeilenumbrüche/Anführungszeichen versehentlich als literale "
+            "Zeichen ('\\\\n', '\\\\\"') statt als echte Escape-Sequenzen im Inhalt gelandet sind."
+        )
+
     async def _tool_write_file(self, path: str, content: str) -> dict:
+        rejection = self._reject_if_invalid_python(path, content)
+        if rejection:
+            return {"error": rejection}
+
         target = self._resolve(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content if content is not None else "", encoding="utf-8")
@@ -259,6 +289,10 @@ class AgentToolbox:
             return {"error": f"'old_text' kommt {occurrences}-mal in '{path}' vor – füge mehr umgebenden Kontext hinzu, damit die Stelle eindeutig ist."}
 
         updated = current.replace(old_text, new_text, 1)
+        rejection = self._reject_if_invalid_python(path, updated)
+        if rejection:
+            return {"error": rejection}
+
         target.write_text(updated, encoding="utf-8")
         clean_rel = str(target.relative_to(self.project_dir)).replace("\\", "/")
         self.files_written.add(clean_rel)

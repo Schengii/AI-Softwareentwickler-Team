@@ -20,6 +20,30 @@
 
 ---
 
+## 🛡️ Syntax-Gate für write_file/edit_file (kritischer Fund)
+
+Ein echter Team-Lauf hat `main.py` **und** `interface/cli.py` unbemerkt mit syntaktisch
+komplett kaputtem Inhalt überschrieben (Zeilenumbrüche/Anführungszeichen landeten als
+literale `\n`/`\"` statt echter Escape-Sequenzen im Dateiinhalt – vermutlich doppelt
+JSON-serialisiert) – danach war `python main.py` überhaupt nicht mehr startbar. Der Agent
+meldete `success=True`, die echte Testverifikation lief zwar an und schlug fehl, aber die
+Fix-Versuche scheiterten selbst wieder an einer zeitgleichen Provider-Erschöpfung (alle
+Gemini-Kontingente + kein `ANTHROPIC_API_KEY`), sodass der kaputte Stand am Ende trotzdem
+übernommen wurde. Nichts war committet, der Schaden blieb also lokal reparabel – aber die
+eigentliche Lücke lag tiefer: **write_file/edit_file prüften den Inhalt vorher gar nicht.**
+
+- `core/agent_toolbox.py`: `write_file`/`edit_file` lehnen jetzt jeden `.py`-Inhalt ab, der
+  nicht durch `ast.parse()` (dieselbe Prüfung wie `core/code_sandbox.py`) valide ist –
+  SOFORT beim Werkzeug-Aufruf selbst, nicht erst Minuten später über die teure
+  Testverifikation. Der Agent bekommt eine klare Fehlermeldung zurück und kann selbst
+  korrigieren, statt dass kaputter Code unbemerkt auf der Platte landet.
+- `core/workspace.py`: derselbe Schutz für den Regex-basierten Text-Fallback
+  (`parse_and_save_files`) – fehleranfälliger, da aus freiem Antworttext extrahiert.
+- 5 neue Tests (Reproduktion des exakten Fund-Musters + Positiv-/Negativ-Fälle für beide
+  Speicherpfade); volle Suite (119 Tests) grün, ruff sauber.
+
+---
+
 ## 🪙 Commit-Message-Fallback & Test-Pflicht (Runde 2)
 
 Ein echter Team-Lauf zeigte trotz des vorherigen Fixes erneut eine Commit-Message wie *"Ich

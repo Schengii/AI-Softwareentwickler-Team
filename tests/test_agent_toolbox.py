@@ -68,6 +68,45 @@ class TestAgentToolbox(unittest.TestCase):
         self.assertIn("return 2", content)
         self.assertIn("app.py", self.toolbox.files_written)
 
+    def test_write_file_rejects_syntactically_invalid_python(self):
+        """
+        Realer Fund aus einem echten Lauf: ein Agent überschrieb main.py per write_file mit
+        Inhalt, dessen Zeilenumbrüche/Anführungszeichen als literale '\\n'/'\\"' statt echter
+        Escape-Sequenzen im String landeten - eine einzige, komplett kaputte Zeile. Die Datei
+        landete unbemerkt auf der Platte; main.py UND interface/cli.py waren danach nicht mehr
+        lauffähig. write_file muss das jetzt sofort ablehnen, bevor etwas geschrieben wird.
+        """
+        broken_content = '\\"\\"\\"\\nmain.py\\n\\"\\"\\"\\n\\nimport sys\\n'
+        result = run(self.toolbox.dispatch("write_file", {"path": "main.py", "content": broken_content}))
+        self.assertIn("error", result)
+        self.assertIn("Syntax-Fehler", result["error"])
+        self.assertFalse((Path(self.temp_dir) / "main.py").exists())
+        self.assertNotIn("main.py", self.toolbox.files_written)
+
+    def test_write_file_still_accepts_valid_python(self):
+        result = run(self.toolbox.dispatch("write_file", {"path": "ok.py", "content": "def foo():\n    return 1\n"}))
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue((Path(self.temp_dir) / "ok.py").exists())
+
+    def test_write_file_syntax_check_ignores_non_python_files(self):
+        # Absichtlich "ungültiges Python", aber kein .py - darf nicht betroffen sein.
+        result = run(self.toolbox.dispatch("write_file", {"path": "notes.txt", "content": "def foo(:\n"}))
+        self.assertEqual(result["status"], "ok")
+
+    def test_edit_file_rejects_edit_that_would_break_syntax(self):
+        run(self.toolbox.dispatch("write_file", {"path": "app.py", "content": "def foo():\n    return 1\n"}))
+
+        result = run(self.toolbox.dispatch("edit_file", {
+            "path": "app.py", "old_text": "return 1", "new_text": "return 1(",  # syntaktisch kaputt
+        }))
+        self.assertIn("error", result)
+        self.assertIn("Syntax-Fehler", result["error"])
+        # Die Original-Datei muss unangetastet (weiterhin gültig) bleiben - NICHT mit dem
+        # syntaktisch kaputten "return 1(" überschrieben worden sein.
+        content = (Path(self.temp_dir) / "app.py").read_text()
+        self.assertIn("return 1\n", content)
+        self.assertNotIn("return 1(", content)
+
     def test_directory_traversal_is_rejected(self):
         result = run(self.toolbox.dispatch("write_file", {"path": "../../evil.py", "content": "pwned = True"}))
         self.assertIn("error", result)

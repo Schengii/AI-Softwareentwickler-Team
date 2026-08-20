@@ -73,6 +73,28 @@ port: 8080
         main_content = (Path(self.temp_dir) / "test_proj" / "src" / "main.py").read_text(encoding="utf-8")
         self.assertIn('return "world"', main_content)
 
+    def test_workspace_file_parsing_skips_syntactically_invalid_python(self):
+        """
+        Wie core/agent_toolbox.py._tool_write_file(): niemals syntaktisch kaputtes Python
+        unbemerkt auf die Platte schreiben, auch nicht über den Regex-Text-Fallback.
+        """
+        sample_response = """
+```python:broken.py
+def hello(:
+    return "world"
+```
+
+```python:ok.py
+def works():
+    return 1
+```
+"""
+        saved = self.workspace.parse_and_save_files("broken_proj", sample_response, "TesterAgent")
+        saved_paths = [f.relative_path for f in saved]
+        self.assertNotIn("broken.py", saved_paths)
+        self.assertIn("ok.py", saved_paths)
+        self.assertFalse((Path(self.temp_dir) / "broken_proj" / "broken.py").exists())
+
     def test_workspace_zip_export(self):
         """Testet die Erstellung eines ZIP-Archivs für ein Projekt."""
         self.workspace.parse_and_save_files("zip_proj", "```python:app.py\nprint(1)\n```")

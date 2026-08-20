@@ -20,6 +20,33 @@
 
 ---
 
+## 📜 Projekt-Konstitution: feste Tech-Stack-Präferenzen über Sitzungen hinweg
+
+`project_slug`/Architektur/Tech-Stack werden pro Lauf frisch vom Modell geraten – selbst am
+selben Projekt kann Lauf 2 eine andere Sprache/Framework wählen als Lauf 1, wenn die
+Nutzeranfrage das nicht jedes Mal explizit wiederholt. `core/project_status.py` gab dem Team
+bereits Kontinuität über die LAUF-HISTORIE; jetzt gibt `core/project_constitution.py` dem
+NUTZER die Kontrolle über feste Präferenzen.
+
+- `core/project_constitution.py` (neu): schreibt/liest eine einfache, von Hand
+  lesbare/editierbare `.ai-team.toml`-Datei direkt im Projektverzeichnis (bewusst NICHT
+  gitignored, wie `.ai_team_status.json`) mit sechs Feldern (Sprache, Framework,
+  Test-Framework, Code-Stil, Deployment-Ziel, weitere Hinweise). Nutzt stdlib `tomllib` zum
+  Lesen (Python 3.11+, ohnehin Mindestversion); ein minimaler Hand-Writer fürs Schreiben
+  spart eine zusätzliche Abhängigkeit, da das Schema aus flachen String-Feldern besteht.
+- `interface/cli.py`: neues `/constitution [projekt]` – zeigt die aktuellen Werte, fragt ob
+  bearbeitet werden soll, geht dann Feld für Feld durch (Enter = behalten, `-` = löschen).
+  Ohne Projektangabe wird das per `/load` geladene Projekt verwendet.
+- `agents/orchestrator.py`: `process()` injiziert die Konstitution (falls vorhanden) in den
+  Kontext JEDER Teilaufgabe, genau wie die bereits bestehende Lauf-Historie – leer für
+  Projekte ohne Konstitution, kein unnötiger Prompt-Text für die Mehrheit der Projekte.
+- 17 neue Tests (Schreiben/Lesen inkl. Escaping von Anführungszeichen/Backslashes,
+  beschädigte Datei crasht nicht, CLI-Bearbeitungsfluss inkl. Feld-Löschen via `-`,
+  Orchestrator-Integration bis in den tatsächlichen Agenten-Kontext); volle Suite
+  (302 Tests) grün, ruff sauber.
+
+---
+
 ## 🧠 Editierbare Agent-Learnings: `/learnings` & `/delete-learning`
 
 `memory/agent_learnings.json` war bisher eine reine Black Box – jede vom `agent_trainer`

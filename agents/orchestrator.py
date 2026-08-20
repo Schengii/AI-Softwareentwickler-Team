@@ -82,6 +82,7 @@ from core.git_isolation import (
     has_uncommitted_changes,
 )
 from core.message_bus import AgentResult, AgentTask
+from core.project_constitution import format_constitution_for_agents
 from core.project_status import format_context_for_agents, record_run
 from core.result_aggregator import ResultAggregator
 from core.task_manager import TaskManager
@@ -353,11 +354,20 @@ class Orchestrator:
         # Quelldateien zu erraten. Leer für ein brandneues Projekt (kein unnötiger Prompt-Text).
         project_history_context = format_context_for_agents(project_dir)
 
+        # Projekt-Konstitution (core/project_constitution.py): feste Tech-Stack-Präferenzen,
+        # die der Nutzer einmal per /constitution festlegt (Sprache, Framework, Test-Framework,
+        # Code-Stil, Deployment-Ziel) - sonst würde project_slug/Architektur pro Lauf neu vom
+        # Modell geraten, selbst am selben Projekt. Leer für Projekte ohne Konstitution (kein
+        # unnötiger Prompt-Text für die Mehrheit der Projekte).
+        constitution_context = format_constitution_for_agents(project_dir)
+
         for t in agent_tasks:
             t.project_dir = project_dir
             t.max_tool_iterations = AGENT_MAX_TOOL_ITERATIONS.get(t.agent_id)  # None = config.MAX_AGENT_TOOL_ITERATIONS
             if t.agent_id in REVIEW_ONLY_AGENT_IDS:
                 t.tools_read_only = True
+            if constitution_context:
+                t.context += f"\n\n{constitution_context}"
             if project_history_context:
                 t.context += f"\n\n{project_history_context}"
 

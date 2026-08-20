@@ -21,7 +21,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.prompt import Confirm
+from rich.prompt import Confirm, Prompt
 from rich.table import Table
 from rich.text import Text
 
@@ -69,6 +69,7 @@ HELP_TEXT = """
 | `/audit-projekt [projekt]` | Lässt den Projekt-Hygiene-Agenten das Framework (oder ein Projekt) wirklich durchsehen; Löschungen nur nach Bestätigung |
 | `/learnings` | Zeigt alle von den Agenten gelernten Regeln (persistentes Gedächtnis) mit Nummer je Agent an |
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
+| `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/push` | Führt manuell einen Git-Commit & Push aus |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
@@ -552,6 +553,66 @@ class CLIInterface:
         else:
             console.print(f"⚠️ Regel Nr. {index} von `{agent_id}` konnte nicht entfernt werden (evtl. zwischenzeitlich geändert).", style="yellow")
 
+    def _resolve_constitution_target(self, project_arg: str | None) -> tuple[str | None, str | None]:
+        """Gibt (project_dir, error_message) zurück – dieselbe Existenzprüfung wie
+        _delete_project_with_confirmation (vor get_project_dir(), das sonst leer anlegen würde)."""
+        if project_arg:
+            exists = (
+                Path(project_arg).exists() if os.path.isabs(project_arg)
+                else project_arg in self._workspace.list_projects()
+            )
+            if not exists:
+                return None, f"⚠️ Projekt `{project_arg}` existiert nicht. Nutze `/projekte` zur Übersicht."
+            return str(self._workspace.get_project_dir(project_arg)), None
+        if self._loaded_project_dir:
+            return self._loaded_project_dir, None
+        return None, "⚠️ Kein Projekt angegeben und keines geladen. Nutze `/constitution <projekt>` oder lade zuerst eines mit `/load <name>`."
+
+    def _manage_constitution(self, project_arg: str | None) -> None:
+        """
+        Zeigt und bearbeitet die Projekt-Konstitution (core/project_constitution.py) – feste
+        Tech-Stack-Präferenzen (Sprache, Framework, Test-Framework, Code-Stil,
+        Deployment-Ziel), die JEDEM künftigen Lauf an diesem Projekt als verbindlicher Kontext
+        mitgegeben werden, statt bei jeder Anfrage neu vom Modell geraten zu werden.
+        """
+        from core.project_constitution import FIELDS, read_constitution, write_constitution
+
+        project_dir, error = self._resolve_constitution_target(project_arg)
+        if error:
+            console.print(error, style="yellow")
+            return
+
+        current = read_constitution(project_dir)
+        project_label = Path(project_dir).name
+
+        if current:
+            lines = [f"- **{FIELDS[k]}:** {v}" for k, v in current.items() if k in FIELDS]
+            console.print(Panel(Markdown("\n".join(lines)), title=f"📜 Projekt-Konstitution: {project_label}", border_style="cyan"))
+        else:
+            console.print(f"📭 Noch keine Projekt-Konstitution für `{project_label}` festgelegt.", style="dim")
+
+        try:
+            should_edit = Confirm.ask("Werte jetzt festlegen/bearbeiten?", default=not bool(current))
+        except Exception:
+            should_edit = False
+        if not should_edit:
+            return
+
+        console.print("[dim]Enter = aktuellen Wert behalten, '-' = Feld löschen.[/dim]")
+        updated = dict(current)
+        for key, label in FIELDS.items():
+            try:
+                value = Prompt.ask(label, default=current.get(key, ""))
+            except Exception:
+                break
+            if value.strip() == "-":
+                updated.pop(key, None)
+            elif value.strip():
+                updated[key] = value.strip()
+
+        write_constitution(project_dir, updated)
+        console.print(f"✅ [bold green]Projekt-Konstitution für `{project_label}` gespeichert.[/bold green]")
+
     async def _audit_project(self, target_path: str | None) -> None:
         """
         Lässt den project_cleaner-Agenten mit ECHTEM Lesezugriff (list_files/read_file/
@@ -669,6 +730,9 @@ class CLIInterface:
                 console.print("⚠️ Bitte gib Agent und Nummer an: `/delete-learning <agent> <nr>` (siehe `/learnings`)", style="yellow")
                 return False
             await self._delete_learning_with_confirmation(args[0], args[1])
+
+        elif cmd in ("/constitution", "/konstitution", "/techstack"):
+            self._manage_constitution(args[0] if args else None)
 
         elif cmd in ("/push", "/git"):
             await self._ask_for_git_push("manuelles Update")

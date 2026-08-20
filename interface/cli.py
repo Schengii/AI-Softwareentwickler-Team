@@ -164,8 +164,12 @@ class CLIInterface:
         )
         console.print()
 
-        # GitHub-Push Dialog
-        await self._ask_for_git_push(user_input)
+        # GitHub-Push Dialog. Nutzt die echte, vom TaskManager erzeugte Kurzfassung der Aufgabe
+        # (Orchestrator.last_task_summary) statt der rohen Nutzereingabe für die Commit-Message –
+        # user_input ist oft konversationell formuliert ("Okay ich möchte, dass ihr...") und
+        # landete zuvor 1:1 (nur bei 50 Zeichen hart abgeschnitten) im Commit-Betreff. Fällt nur
+        # zurück auf user_input, falls aus irgendeinem Grund keine Zusammenfassung vorliegt.
+        await self._ask_for_git_push(self._orchestrator.last_task_summary or user_input)
 
         # Regelmäßige Erinnerung an die Projekt-Hygiene (kein Auto-Löschen – nur ein Hinweis).
         self._tasks_since_audit_reminder += 1
@@ -176,6 +180,20 @@ class CLIInterface:
                 "`/audit-projekt` lässt den Projekt-Hygiene-Agenten das Projekt "
                 "wirklich durchsehen und schlägt konkrete Aufräumungen vor.[/dim]"
             )
+
+    @staticmethod
+    def _truncate_at_word(text: str, max_len: int) -> str:
+        """Kürzt einen Ein-Zeilen-Text auf max_len Zeichen, ohne mitten in einem Wort abzuschneiden.
+
+        Vermeidet z.B. `implement Health-Check-Endpoint für FastAPI-A via ...` (hartes [:50]
+        auf einem mehrzeiligen/langen task_summary) zugunsten von `... FastAPI via ...`.
+        """
+        flat = " ".join(text.split())  # Zeilenumbrüche/Mehrfach-Leerzeichen einebnen
+        if len(flat) <= max_len:
+            return flat
+        cut = flat[:max_len]
+        last_space = cut.rfind(" ")
+        return (cut[:last_space] if last_space > 0 else cut).strip()
 
     async def _ask_for_git_push(self, task_summary: str) -> None:
         """
@@ -197,7 +215,7 @@ class CLIInterface:
 
         changed_files = [line.strip() for line in diff_status.splitlines() if line.strip()]
         diff_stat = github_agent.get_diff()
-        commit_msg = f"feat: implement {task_summary[:50].strip()} via AI Developer Team"
+        commit_msg = f"feat: implement {self._truncate_at_word(task_summary, 50)} via AI Developer Team"
 
         console.print(
             Panel(

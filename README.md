@@ -20,6 +20,32 @@
 
 ---
 
+## 🪙 Commit-Message-Fix & Duplikat-Vermeidung (Token-Effizienz-Runde)
+
+Beim Durchsehen echter Läufe fielen zwei konkrete Verschwendungsmuster auf, die jetzt behoben sind:
+
+- **Commit-Message nutzte die rohe Nutzereingabe statt der Aufgaben-Zusammenfassung:** `/push`
+  baute den Commit-Betreff bisher aus der unveränderten, oft konversationellen Nutzereingabe
+  (z.B. *"Okay ich möchte, dass ihr das Projekt weiter verbessert…"*), hart bei 50 Zeichen
+  MITTEN im Wort abgeschnitten. `agents/orchestrator.py` legt die echte, vom `TaskManager`
+  erzeugte Kurzfassung jetzt in `Orchestrator.last_task_summary` ab, `interface/cli.py` nutzt
+  diese für die Commit-Message und schneidet nur noch an Wortgrenzen ab (`_truncate_at_word`).
+- **Parallele Teammitglieder implementierten dieselbe Sache doppelt:** Bei einer trivialen
+  Aufgabe entstanden real `app.py`/`test_app.py` UND separat `main.py`/`test_main.py` für
+  denselben Health-Check-Endpoint, weil ein Agent nicht von sich aus `list_files` aufrief,
+  bevor er zu schreiben begann. `agents/base_agent.py` stellt den aktuellen Dateibaum jetzt
+  IMMER automatisch (ohne LLM-Aufruf, ohne extra Loop-Iteration) dem ersten Prompt voran und
+  weist das Modell explizit an, bestehenden Code zu erweitern statt doppelt zu implementieren.
+- **Neue Projekte verschleierten bereits vorhandene, inhaltlich identische Projekte:**
+  `project_slug` wird pro Lauf neu vom Modell geraten und unterscheidet sich oft selbst bei
+  gleicher Aufgabe (real beobachtet: `calculator_service`/`simple_calculator` und
+  `notes_tasks_api`/`personal_notes_tasks` – je zwei komplette, separat bezahlte Läufe für
+  praktisch dieselbe Anwendung). `Orchestrator.process()` zeigt jetzt beim Anlegen eines neuen
+  Projektordners an, welche Projekte bereits im Workspace existieren, mit dem Hinweis, `/load
+  <name>` zu nutzen, falls eigentlich an einem davon weitergearbeitet werden sollte.
+
+---
+
 ## 🛠️ Echter agentischer Werkzeug-Loop, echte Verifikation & aktive Teamleiter
 
 Seit dem letzten Umbau ist das Team kein reiner Ein-Schuss-Textgenerator mehr, sondern nutzt echtes,

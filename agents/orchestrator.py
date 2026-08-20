@@ -163,6 +163,11 @@ class Orchestrator:
         self._history = ConversationHistory()
         self._workspace = WorkspaceManager()
 
+        # Vom TaskManager erzeugte, kurze Zusammenfassung der zuletzt verarbeiteten Aufgabe
+        # (nicht die rohe Nutzereingabe) – von interface/cli.py für die Commit-Message
+        # verwendet, siehe _ask_for_git_push(). Leer, solange noch kein Lauf abgeschlossen ist.
+        self.last_task_summary: str = ""
+
     async def process(
         self,
         user_request: str,
@@ -186,6 +191,11 @@ class Orchestrator:
         task_summary, project_slug, agent_tasks = await self._task_manager.decompose(
             user_request, conversation_context=context
         )
+        # Für die Commit-Message-Vorschau in interface/cli.py: eine ECHTE, vom Modell erstellte
+        # Kurzfassung statt der rohen (oft konversationellen) Nutzereingabe. Wird auch bei einem
+        # Abbruch unten (keine Aufgaben ableitbar) nicht überschrieben, bleibt dann leer/alt.
+        if agent_tasks:
+            self.last_task_summary = task_summary
 
         if not agent_tasks:
             # task_summary enthaelt bei einem echten Provider-Ausfall bereits den konkreten
@@ -197,6 +207,23 @@ class Orchestrator:
             return response
 
         notify(f"📋 [bold white]Gesamtplan:[/bold white] {task_summary}")
+
+        # Frühwarnung vor stillschweigend doppelter Arbeit: project_slug wird pro Lauf neu vom
+        # Modell geraten und unterscheidet sich oft, selbst wenn die Aufgabe inhaltlich dieselbe
+        # ist wie ein früherer Lauf – real beobachtet u.a. bei "calculator_service" vs.
+        # "simple_calculator" und "notes_tasks_api" vs. "personal_notes_tasks": zwei komplette,
+        # separat bezahlte Läufe für praktisch dieselbe Anwendung. Rein informativ (keine
+        # Heuristik/kein LLM-Aufruf, also kostenlos) – der Mensch entscheidet, ob `/load <name>`
+        # statt eines neuen Projekts die bessere Wahl gewesen wäre.
+        existing_projects = self._workspace.list_projects()
+        if project_slug not in existing_projects and existing_projects:
+            shown = ", ".join(existing_projects[:10])
+            more = f" (+{len(existing_projects) - 10} weitere)" if len(existing_projects) > 10 else ""
+            notify(
+                f"🗂️ [dim]Neues Projekt '{project_slug}' wird angelegt. Bereits vorhanden: "
+                f"{shown}{more} – falls du an einem davon weiterarbeiten wolltest, nutze "
+                f"stattdessen `/load <name>`.[/dim]"
+            )
 
         # Jede Teilaufgabe bekommt ab hier echten Zugriff auf das Projektverzeichnis
         # (read_file/write_file/edit_file/run_command/run_tests via agents/base_agent.py).
@@ -403,8 +430,7 @@ class Orchestrator:
                     res = await self._run_single_agent(task)
                     dur = time.monotonic() - start_t
                     member_results.append(res)
-                    status_ico = "✅ [green]Fertig[/green]" if res.success else "❌ [red]Fehler[/red]"
-                    notify(f"  {status_ico}: {agent_name} ({dur:.1f}s)")
+                    notify(self._status_notify_line("✅ [green]Fertig[/green]", "❌ [red]Fehler[/red]", agent_name, dur, res.success, res.error))
 
             all_results.extend(member_results)
             self._update_file_owners(file_owners, member_results)
@@ -475,6 +501,19 @@ class Orchestrator:
             max_tool_iterations=4,
         )
         return await lead.execute(task)
+
+    @staticmethod
+    def _status_notify_line(icon_success: str, icon_failure: str, agent_name: str, duration: float, success: bool, error: str | None) -> str:
+        """
+        Baut die Live-Statuszeile für einen abgeschlossenen Agenten-Aufruf. Realer Fund aus
+        einem echten Lauf: Bei einem Fehlschlag zeigte diese Zeile bisher NUR "❌ Fehler:
+        <Agent> (61.7s)" ohne jeden Hinweis auf die Ursache – der reale Fehlertext (AgentResult.error)
+        landete nirgends beim Nutzer, weder live noch im Endergebnis, nur (verkürzt/paraphrasiert)
+        in der von einem LLM verfassten Retrospektive. Jetzt wird der rohe Fehlertext direkt mitgeliefert.
+        """
+        icon = icon_success if success else icon_failure
+        error_note = f" — {error[:200]}" if not success and error else ""
+        return f"  {icon}: {agent_name} ({duration:.1f}s){error_note}"
 
     @staticmethod
     def _first_line(text: str, max_chars: int = 160) -> str:
@@ -634,8 +673,7 @@ class Orchestrator:
         async def _wrapped(task: AgentTask) -> AgentResult:
             res = await self._run_single_agent(task)
             if notify:
-                status_ico = "✅ [green]Abgeschlossen[/green]" if res.success else "❌ [red]Fehler[/red]"
-                notify(f"  {status_ico}: {res.agent_name} ({res.duration_seconds:.1f}s)")
+                notify(self._status_notify_line("✅ [green]Abgeschlossen[/green]", "❌ [red]Fehler[/red]", res.agent_name, res.duration_seconds, res.success, res.error))
             return res
 
         results = await asyncio.gather(
@@ -731,15 +769,23 @@ class Orchestrator:
 
     @staticmethod
     def _parse_structured_learnings(report_text: str) -> list[dict]:
-        match = re.search(r"```json\s*\n(.*?)```", report_text, re.DOTALL)
-        if not match:
-            return []
-        try:
-            data = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            return []
-        learnings = data.get("learnings") if isinstance(data, dict) else None
-        return learnings if isinstance(learnings, list) else []
+        """
+        Sucht NICHT nur den ersten ```json-Block, sondern den ersten, der wirklich einen
+        "learnings"-Schlüssel enthält. Realer Fund aus einem echten Lauf: Der Trainer-Bericht
+        enthält in seinen Prompt-Diff-Beispielen (Abschnitt "Konkrete Prompt-Verbesserungen")
+        selbst oft ein illustratives ```json-Snippet VOR dem eigentlichen Lern-Block am Ende –
+        ein reines "ersten Treffer nehmen" ignoriert dann den echten Block komplett und lässt
+        alle Lern-Regeln des Laufs stillschweigend verloren gehen (kein Fehler, kein Log).
+        """
+        for match in re.finditer(r"```json\s*\n(.*?)```", report_text, re.DOTALL):
+            try:
+                data = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                continue
+            learnings = data.get("learnings") if isinstance(data, dict) else None
+            if isinstance(learnings, list):
+                return learnings
+        return []
 
     @staticmethod
     def _parse_legacy_text_learnings(report_text: str) -> list[dict]:
@@ -805,6 +851,17 @@ class Orchestrator:
         lines.append(
             f"| **Hauptagent (Synthese)** | `orchestrator` | `{ORCHESTRATOR_MODEL}` | - | {synth_tokens:,} | - | ✅ |"
         )
+
+        # Rohe Fehlertexte GARANTIERT sichtbar machen – nicht nur (verkürzt/paraphrasiert) über
+        # die Retrospektive, die als eigener LLM-Aufruf den Fehler frei zusammenfasst und dabei
+        # auch ungenau werden kann. Realer Fund: Ohne dies verschwand die einzige Fehlerursache
+        # eines gescheiterten Laufs komplett aus dem Nutzer-sichtbaren Ergebnis.
+        failed = [r for r in results if not r.success and r.error]
+        if failed:
+            lines.append("\n### ❌ Rohe Fehlermeldungen (ungefiltert, nicht vom LLM zusammengefasst)\n")
+            for r in failed:
+                lines.append(f"- **{r.agent_name}** (`{r.agent_id}`): `{r.error[:500]}`")
+
         return "\n".join(lines)
 
     def get_team_info(self) -> str:

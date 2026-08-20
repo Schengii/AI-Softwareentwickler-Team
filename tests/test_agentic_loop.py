@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agents.backend_agent import BackendAgent
 from core.llm_factory import LLMResponse, ToolCall
@@ -26,7 +27,7 @@ class _SequencedFakeLLM:
         self.call_count = 0
         self.model_name = "fake-model"
 
-    async def generate_with_tools(self, messages, system_prompt, tools):
+    async def generate_with_tools(self, messages, system_prompt, tools, _allow_self_fallback=True):
         response = self._responses[min(self.call_count, len(self._responses) - 1)]
         self.call_count += 1
         return response
@@ -81,6 +82,49 @@ class TestAgenticToolLoop(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertIn("Maximale Werkzeug-Iterationen", result.content)
+
+    def test_pins_to_actual_responding_provider_after_fallback(self):
+        """
+        Regressionstest für einen echten Fund aus einem echten Lauf: Iteration 1 fällt (kein
+        Claude-Key) auf Groq zurück, das antwortet. Ab Iteration 2 darf NICHT erneut die volle
+        Fallback-Kette ab dem Primär-Client neu aufgelöst werden (das hatte die Agenten `backend`
+        und `code_reviewer` abstürzen lassen: ein Provider-Wechsel MITTEN im Tool-Dialog spielt
+        einem anderen Provider einen function_call zurück, den dieser nicht selbst erzeugt hat –
+        Gemini lehnt das mit "400 INVALID_ARGUMENT: missing thought_signature" ab). Stattdessen
+        muss ab Iteration 2 der TATSÄCHLICH antwortende Provider (hier: Groq) direkt angesprochen
+        werden, mit deaktiviertem Self-Fallback.
+        """
+        primary = _SequencedFakeLLM([
+            LLMResponse(
+                text="", model_name="groq:openai/gpt-oss-120b", prompt_tokens=10, completion_tokens=5, total_tokens=15,
+                tool_calls=[ToolCall(id="call_1", name="list_files", arguments={})],
+            ),
+        ])
+        primary.model_name = "claude-sonnet-5"  # der urspruenglich konfigurierte (aber "kein Key")-Client
+
+        pinned_calls = []
+
+        class _PinnedGroqStub:
+            model_name = "groq:openai/gpt-oss-120b"
+
+            async def generate_with_tools(self, messages, system_prompt, tools, _allow_self_fallback=True):
+                pinned_calls.append(_allow_self_fallback)
+                return LLMResponse(
+                    text="Fertig.", model_name="groq:openai/gpt-oss-120b",
+                    prompt_tokens=5, completion_tokens=5, total_tokens=10, tool_calls=[],
+                )
+
+        agent = BackendAgent()
+        agent._llm = primary
+        task = AgentTask(task_id="t4", agent_id="backend", description="Pin-Test", project_dir=self.temp_dir)
+
+        with patch("agents.base_agent.LLMFactory.create_for_model", return_value=_PinnedGroqStub()):
+            result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success)
+        # Iteration 2 muss ueber den gepinnten Groq-Stub gelaufen sein, NICHT nochmal ueber primary.
+        self.assertEqual(pinned_calls, [False])  # genau 1 Aufruf, mit deaktiviertem Self-Fallback
+        self.assertEqual(primary.call_count, 1)  # primary (Claude, "kein Key") nur EINMAL versucht
 
     def test_task_without_project_dir_uses_single_shot_path(self):
         agent = BackendAgent()

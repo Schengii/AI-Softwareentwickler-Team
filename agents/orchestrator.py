@@ -81,6 +81,7 @@ from core.git_isolation import (
     has_uncommitted_changes,
 )
 from core.message_bus import AgentResult, AgentTask
+from core.project_status import format_context_for_agents, record_run
 from core.result_aggregator import ResultAggregator
 from core.task_manager import TaskManager
 from core.token_guard import token_guard
@@ -303,11 +304,21 @@ class Orchestrator:
         # forced_project_dir) – zuverlässiger Commit-Message-Fallback, siehe last_project_slug oben.
         self.last_project_slug = Path(project_dir).name
 
+        # Projekt-Kontinuität über mehrere Sitzungen hinweg (core/project_status.py): eine
+        # neue Sitzung (neues Terminal) hat KEINEN Zugriff auf memory/conversation_history.py
+        # (sitzungsgebunden) – die persistente Lauf-Historie DIESES Projekts wird deshalb
+        # direkt in den Kontext jeder Teilaufgabe injiziert, damit das Team z.B. sofort sieht,
+        # dass der letzte Lauf am Lauf-Budget abgebrochen wurde, statt das nur aus den rohen
+        # Quelldateien zu erraten. Leer für ein brandneues Projekt (kein unnötiger Prompt-Text).
+        project_history_context = format_context_for_agents(project_dir)
+
         for t in agent_tasks:
             t.project_dir = project_dir
             t.max_tool_iterations = AGENT_MAX_TOOL_ITERATIONS.get(t.agent_id)  # None = config.MAX_AGENT_TOOL_ITERATIONS
             if t.agent_id in REVIEW_ONLY_AGENT_IDS:
                 t.tools_read_only = True
+            if project_history_context:
+                t.context += f"\n\n{project_history_context}"
 
         # Führe hierarchische Fachbereichs-Ausführung durch
         results, file_owners, budget_aborted = await self._run_department_hierarchy(
@@ -437,6 +448,18 @@ class Orchestrator:
         )
 
         self._history.add_assistant_message(final_output)
+
+        # Projekt-Kontinuität über mehrere Sitzungen hinweg (core/project_status.py) - siehe
+        # Injektion weiter oben. record_run() ist rein additiv (I/O-Fehler werden dort
+        # verschluckt), darf also niemals einen sonst erfolgreichen Lauf zum Scheitern bringen.
+        record_run(
+            project_dir=project_dir,
+            task_summary=task_summary,
+            verification_ok=verification_ok,
+            budget_aborted=budget_aborted,
+            files_written_count=len({f for r in results for f in r.files_written}),
+        )
+
         # Realer Fund: bisher endete JEDER Lauf mit demselben uneingeschränkten "✅ Fertig!",
         # auch wenn die Verifikation nie bestätigt werden konnte (keine Tests gefunden,
         # Testfehler blieben ungelöst, Budget während der Fixversuche erreicht) - nicht zu

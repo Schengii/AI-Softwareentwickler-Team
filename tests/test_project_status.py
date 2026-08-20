@@ -1,0 +1,83 @@
+"""
+tests/test_project_status.py – Testet core/project_status.py (Projekt-Kontinuität)
+
+Realer Fund: memory/conversation_history.py ist sitzungsgebunden - startet der Nutzer eine
+neue Sitzung, ist jeglicher Kontext über ein Projekt weg, selbst bei erneutem /load
+desselben Projekts. core/project_status.py schreibt eine persistente, projektgebundene
+Lauf-Historie direkt im Projektverzeichnis.
+"""
+
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+
+from core.project_status import format_context_for_agents, read_status, record_run
+
+
+class TestProjectStatus(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_read_status_returns_empty_list_when_no_history_exists(self):
+        self.assertEqual(read_status(self.temp_dir), [])
+
+    def test_record_run_then_read_status_roundtrip(self):
+        record_run(self.temp_dir, "Health-Check implementiert", verification_ok=True,
+                   budget_aborted=False, files_written_count=2)
+        history = read_status(self.temp_dir)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["task_summary"], "Health-Check implementiert")
+        self.assertTrue(history[0]["verification_ok"])
+
+    def test_newest_run_appears_first(self):
+        record_run(self.temp_dir, "Erster Lauf", verification_ok=True, budget_aborted=False, files_written_count=1)
+        record_run(self.temp_dir, "Zweiter Lauf", verification_ok=False, budget_aborted=False, files_written_count=1)
+        history = read_status(self.temp_dir)
+        self.assertEqual(history[0]["task_summary"], "Zweiter Lauf")
+        self.assertEqual(history[1]["task_summary"], "Erster Lauf")
+
+    def test_history_is_capped_oldest_evicted(self):
+        for i in range(15):
+            record_run(self.temp_dir, f"Lauf {i}", verification_ok=True, budget_aborted=False, files_written_count=1)
+        history = read_status(self.temp_dir)
+        self.assertEqual(len(history), 10)
+        self.assertEqual(history[0]["task_summary"], "Lauf 14")  # neuester
+        self.assertEqual(history[-1]["task_summary"], "Lauf 5")  # ältester verbliebener
+
+    def test_format_context_is_empty_for_fresh_project(self):
+        self.assertEqual(format_context_for_agents(self.temp_dir), "")
+
+    def test_format_context_includes_recent_runs_with_status_icons(self):
+        record_run(self.temp_dir, "Erfolgreich verifiziert", verification_ok=True, budget_aborted=False, files_written_count=3)
+        record_run(self.temp_dir, "Budget erreicht", verification_ok=False, budget_aborted=True, files_written_count=1)
+        record_run(self.temp_dir, "Tests fehlgeschlagen", verification_ok=False, budget_aborted=False, files_written_count=2)
+
+        context = format_context_for_agents(self.temp_dir)
+
+        self.assertIn("Erfolgreich verifiziert", context)
+        self.assertIn("Budget erreicht", context)
+        self.assertIn("Tests fehlgeschlagen", context)
+        self.assertIn("✅", context)
+        self.assertIn("🚫", context)
+        self.assertIn("⚠️", context)
+
+    def test_format_context_respects_max_entries(self):
+        for i in range(5):
+            record_run(self.temp_dir, f"Lauf {i}", verification_ok=True, budget_aborted=False, files_written_count=1)
+        context = format_context_for_agents(self.temp_dir, max_entries=2)
+        self.assertIn("Lauf 4", context)
+        self.assertIn("Lauf 3", context)
+        self.assertNotIn("Lauf 2", context)
+
+    def test_corrupted_status_file_does_not_crash(self):
+        (Path(self.temp_dir) / ".ai_team_status.json").write_text("{not valid json", encoding="utf-8")
+        self.assertEqual(read_status(self.temp_dir), [])
+        self.assertEqual(format_context_for_agents(self.temp_dir), "")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -20,6 +20,29 @@
 
 ---
 
+## 📜 Projekt-Kontinuität über mehrere Sitzungen hinweg
+
+`memory/conversation_history.py` ist sitzungsgebunden – startet der Nutzer eine neue
+Sitzung (neues Terminal), war jeglicher Kontext über ein Projekt bisher weg, selbst bei
+erneutem `/load` desselben Projekts. Ein Mensch, der ein Projekt nach Tagen wieder aufmacht,
+hat wenigstens ein Commit-Log; das Team hatte bisher nur die rohen Quelldateien, ohne jeden
+Hinweis auf offene Punkte (z.B. "Lauf-Budget während der Verifikation erreicht").
+
+- `core/project_status.py` (neu): schreibt eine kompakte, gedeckelte JSON-Historie
+  (`.ai_team_status.json`, max. 10 Einträge – dieselbe Deckelungslogik wie
+  `memory/agent_knowledge_base.py`) direkt im Projektverzeichnis. Bewusst NICHT gitignored,
+  im Unterschied zu `.ai_team_venv`/`.ai_team_rag` – das ist echte, wertvolle
+  Projekt-Historie, kein Build-Artefakt, und soll mitversioniert werden.
+- `agents/orchestrator.py`: injiziert die letzten 3 Läufe (mit Status-Icon ✅/⚠️/🚫) in den
+  Kontext jeder Teilaufgabe – das Team sieht damit sofort, dass der letzte Lauf z.B. am
+  Budget abgebrochen wurde, statt das nur aus den Quelldateien zu erraten. Protokolliert am
+  Ende jedes Laufs den eigenen Ausgang (Aufgabe, Verifikation, Budget-Abbruch, Dateizahl).
+- 9 neue Tests, davon einer als echter End-to-End-Nachweis: zwei GETRENNTE
+  Orchestrator-Instanzen (= zwei Sitzungen) arbeiten nacheinander am selben Projekt – die
+  zweite sieht die Historie der ersten. Volle Suite (173 Tests) grün, ruff sauber.
+
+---
+
 ## 🌳 Worktree-Isolation gilt jetzt für ALLE Läufe, nicht nur Selbstverbesserung
 
 Die bisherige Git-Worktree-Isolation griff nur, wenn das Team am Framework selbst arbeitete.

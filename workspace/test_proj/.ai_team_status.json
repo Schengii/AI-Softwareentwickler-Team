@@ -1,0 +1,72 @@
+[
+  {
+    "timestamp": "2026-08-20T13:15:07+00:00",
+    "task_summary": "Kurze Aufgabe",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "files_written_count": 0
+  },
+  {
+    "timestamp": "2026-08-20T13:15:07+00:00",
+    "task_summary": "Kurze Aufgabe",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "files_written_count": 0
+  },
+  {
+    "timestamp": "2026-08-20T13:15:07+00:00",
+    "task_summary": "Kurze Aufgabe",
+    "verification_ok": true,
+    "budget_aborted": false,
+    "files_written_count": 0
+  },
+  {
+    "timestamp": "2026-08-20T13:13:58+00:00",
+    "task_summary": "Kurze Aufgabe",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "files_written_count": 0
+  },
+  {
+    "timestamp": "2026-08-20T13:13:58+00:00",
+    "task_summary": "Kurze Aufgabe",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "files_written_count": 0
+  },
+  {
+    "timestamp": "2026-08-20T13:13:58+00:00",
+    "task_summary": "Kurze Aufgabe",
+    "verification_ok": true,
+    "budget_aborted": false,
+    "files_written_count": 0
+  },
+  {
+    "timestamp": "2026-08-20T13:13:01+00:00",
+    "task_summary": "Kurze Aufgabe",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "files_written_count": 0
+  },
+  {
+    "timestamp": "2026-08-20T13:13:01+00:00",
+    "task_summary": "Kurze Aufgabe",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "files_written_count": 0
+  },
+  {
+    "timestamp": "2026-08-20T13:13:00+00:00",
+    "task_summary": "Kurze Aufgabe",
+    "verification_ok": true,
+    "budget_aborted": false,
+    "files_written_count": 0
+  },
+  {
+    "timestamp": "2026-08-20T13:11:57+00:00",
+    "task_summary": "Kurze Aufgabe",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "files_written_count": 0
+  }
+]

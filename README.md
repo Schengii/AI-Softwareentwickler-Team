@@ -489,15 +489,18 @@ bricht Läufe jetzt tatsächlich ab, sobald das per `.env` konfigurierte `MAX_RU
   also einen Neustart des Programms.
 - **Agenten-Wissensbasis** (`memory/agent_knowledge_base.py`): Nach jedem Lauf analysiert der
   `agent_trainer`-Agent per LLM-Aufruf Fehler und Ineffizienzen und schlägt konkrete
-  Prompt-Schärfungen vor. Diese werden geparst und pro Agent als Liste kurzer Regeln in
-  `memory/agent_learnings.json` gespeichert (max. 5 pro Agent – älteste fällt raus) und bei
-  jedem künftigen Aufruf automatisch an dessen System-Prompt angehängt
-  (`get_augmented_prompt()`).
-- **Ehrliche Einschränkung:** Die Extraktion der Lern-Regeln aus dem Trainer-Bericht basiert
-  auf einem einfachen Textmuster (`"Betroffener Agent:"` gefolgt von Aufzählungspunkten).
-  Hält sich das Modell nicht exakt an dieses Format, geht der Lerneffekt für diesen Lauf
-  verloren – ein bekanntes, bewusst in Kauf genommenes Risiko einer leichtgewichtigen,
-  abhängigkeitsfreien Lösung statt eines strukturierten Function-Calling-Extrahierens.
+  Prompt-Schärfungen vor. `Orchestrator._extract_and_store_learnings()` liest primär einen
+  maschinenlesbaren ```json```-Block (`{"learnings": [{"agent_id": ..., "rule": ...}]}`) aus
+  dem Trainer-Bericht – dabei explizit NICHT nur den ersten gefundenen Block, sondern den
+  ersten, der wirklich einen `"learnings"`-Schlüssel enthält (der Bericht selbst zeigt in
+  seinen Prompt-Diff-Beispielen oft schon ein illustratives ```json```-Snippet davor). Liefert
+  das Modell keinen gültigen JSON-Block, greift ein Text-Fallback
+  (`"Betroffener Agent:"` gefolgt von Aufzählungspunkten). Jede `agent_id` wird gegen die
+  echten Agenten-/Leiter-IDs validiert. Regeln werden pro Agent als Liste in
+  `memory/agent_learnings.json` gespeichert (max. 5 pro Agent – älteste fällt raus, jede
+  einzelne Regel zusätzlich auf `MAX_RULE_LENGTH=300` Zeichen gedeckelt, da sie bei JEDEM
+  künftigen Aufruf des Agenten erneut in dessen System-Prompt landet) und bei jedem künftigen
+  Aufruf automatisch angehängt (`get_augmented_prompt()`).
 
 ---
 

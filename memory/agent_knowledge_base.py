@@ -14,6 +14,13 @@ from config import BASE_DIR
 
 KNOWLEDGE_FILE = Path(BASE_DIR) / "memory" / "agent_learnings.json"
 
+# Jede gespeicherte Regel wird bei JEDEM künftigen Aufruf des betroffenen Agenten in dessen
+# System-Prompt eingefügt (siehe get_augmented_prompt) - für immer, bis sie nach 5 neueren
+# Regeln verdrängt wird. Eine einzelne, unbegrenzt lange "Regel" (der Trainer-Agent liefert
+# Freitext, kein garantiert kurzes Format) würde diesen Tokenverbrauch bei jedem künftigen
+# Lauf unbemerkt wiederholen - deshalb hart gedeckelt statt nur auf die Anzahl der Regeln.
+MAX_RULE_LENGTH = 300
+
 
 class AgentKnowledgeBase:
     """
@@ -47,6 +54,12 @@ class AgentKnowledgeBase:
         clean_rule = rule_or_tip.strip()
         if not clean_rule:
             return
+        if len(clean_rule) > MAX_RULE_LENGTH:
+            # An der letzten Wortgrenze kürzen statt hart mitten im Wort abzuschneiden
+            # (gleiches Prinzip wie interface/cli.py._truncate_at_word).
+            cut = clean_rule[:MAX_RULE_LENGTH]
+            last_space = cut.rfind(" ")
+            clean_rule = (cut[:last_space] if last_space > 0 else cut).rstrip() + "…"
 
         if agent_id not in self._learnings:
             self._learnings[agent_id] = []

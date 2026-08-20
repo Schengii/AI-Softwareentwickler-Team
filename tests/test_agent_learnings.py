@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from memory.agent_knowledge_base import AgentKnowledgeBase
+from memory.agent_knowledge_base import MAX_RULE_LENGTH, AgentKnowledgeBase
 
 
 class TestAgentKnowledgeBase(unittest.TestCase):
@@ -25,6 +25,22 @@ class TestAgentKnowledgeBase(unittest.TestCase):
         learnings = self.kb.get_learnings("database")
         self.assertEqual(len(learnings), 1)
         self.assertIn("db_index=True", learnings[0])
+
+    def test_overlong_rule_is_truncated_to_prevent_permanent_prompt_bloat(self):
+        """
+        Jede gespeicherte Regel landet bei JEDEM künftigen Aufruf des Agenten im
+        System-Prompt (siehe get_augmented_prompt) - eine einzelne, unbegrenzt lange
+        "Regel" (der Trainer-Agent liefert Freitext) würde diesen Tokenverbrauch bei
+        jedem künftigen Lauf unbemerkt wiederholen.
+        """
+        overlong_rule = "Wichtige Regel: " + ("sehr ausführlicher Text " * 30)
+        self.assertGreater(len(overlong_rule), MAX_RULE_LENGTH)
+
+        self.kb.add_learning("backend", overlong_rule)
+        stored = self.kb.get_learnings("backend")[0]
+
+        self.assertLessEqual(len(stored), MAX_RULE_LENGTH + 1)  # +1 für das "…"-Suffix
+        self.assertTrue(stored.endswith("…"))
 
     def test_prompt_augmentation(self):
         self.kb.add_learning("backend", "Verwende async def für alle I/O-gebundenen Endpunkte.")

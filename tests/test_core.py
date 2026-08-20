@@ -1,5 +1,5 @@
 """
-tests/test_core.py – Tests für TaskManager, Workspace, Sandbox, TokenGuard & ToolRegistry
+tests/test_core.py – Tests für TaskManager, Workspace, Sandbox & TokenGuard
 """
 
 import os
@@ -12,7 +12,6 @@ from pathlib import Path
 from core.code_sandbox import CodeSandbox
 from core.task_manager import AVAILABLE_AGENTS
 from core.token_guard import TokenGuard
-from core.tool_registry import ToolRegistry
 from core.workspace import WorkspaceManager
 
 
@@ -147,15 +146,6 @@ def works():
 
         self.assertEqual(result.exit_code, 0, msg=result.stderr)
         self.assertIn("SECRET=sk-visible-when-opted-out", result.stdout)
-
-    def test_tool_registry(self):
-        """Testet die ToolRegistry und die integrierten Tools."""
-        registry = ToolRegistry(workspace_manager=self.workspace)
-        tools = registry.list_tools()
-        tool_names = [t["name"] for t in tools]
-        self.assertIn("validate_syntax", tool_names)
-        self.assertIn("list_workspace_files", tool_names)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,9 +1,10 @@
 """
 core/agent_toolbox.py – Echte, projektgebundene Werkzeuge für den agentischen Loop
 
-Im Unterschied zu core/tool_registry.py (statische Tool-Deklarationen, die
-bisher von keinem Agenten tatsächlich aufgerufen wurden) ist die AgentToolbox
-die operative Umsetzung: Jede Aufgabe mit gesetztem AgentTask.project_dir bekommt
+Die AgentToolbox ist die operative Umsetzung des Werkzeug-Zugriffs (ein früheres,
+nie tatsächlich aufgerufenes core/tool_registry.py mit rein statischen
+Tool-Deklarationen wurde als toter Code entfernt): Jede Aufgabe mit gesetztem
+AgentTask.project_dir bekommt
 in agents/base_agent.py eine eigene AgentToolbox-Instanz, die der Agent während
 seines Function-Calling-Loops tatsächlich verwendet, um:
 

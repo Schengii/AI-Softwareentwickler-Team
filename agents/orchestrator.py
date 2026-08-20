@@ -507,10 +507,21 @@ class Orchestrator:
                 "wurden übersprungen; die bis dahin erarbeiteten Ergebnisse wurden trotzdem oben zusammengefasst."
             )
 
+        # Realer Fund: final_solution (die LLM-Synthese oben) reproduzierte in einem echten
+        # Lauf Code, der NICHT mit der tatsächlich geschriebenen Datei übereinstimmte (das
+        # Modell paraphrasierte aus den Agenten-Berichten statt wortgetreu zu übernehmen) -
+        # ein echtes Vertrauensproblem für jeden, der nur den Chat-Output liest, statt die
+        # Dateien selbst zu prüfen. Dieser Abschnitt liest die WIRKLICH geschriebenen Dateien
+        # direkt von der Platte (kein LLM-Aufruf, daher immer exakt korrekt) - siehe auch die
+        # entsprechend angepasste SYNTHESIZE_SYSTEM_PROMPT-Anweisung, keinen vollständigen
+        # Code mehr zu reproduzieren.
+        real_files_section = self._build_real_files_section(project_dir, file_owners)
+
         final_output = (
             f"{final_solution}\n\n"
             f"---\n\n"
-            f"{verification_summary}\n\n"
+            + (f"{real_files_section}\n\n---\n\n" if real_files_section else "")
+            + f"{verification_summary}\n\n"
             f"---\n\n"
             f"{retro_result.content if retro_result else ''}\n\n"
             f"---\n\n"
@@ -1221,6 +1232,46 @@ class Orchestrator:
                 if len(clean_rule) > 15:
                     learnings.append({"agent_id": current_agent, "rule": clean_rule})
         return learnings
+
+    # Caps analog zu ResultAggregator.MAX_CONTENT_CHARS_PER_RESULT - verhindert, dass ein
+    # Projekt mit vielen/großen Dateien die finale Antwort unbegrenzt aufbläht. Vollständiger
+    # Inhalt liegt immer im Workspace-Verzeichnis, unabhängig von dieser Kürzung.
+    MAX_CHARS_PER_REAL_FILE = 3000
+    MAX_TOTAL_REAL_FILES_CHARS = 20000
+    _LANG_BY_EXTENSION = {
+        ".py": "python", ".js": "javascript", ".jsx": "jsx", ".ts": "typescript",
+        ".tsx": "tsx", ".json": "json", ".md": "markdown", ".html": "html",
+        ".css": "css", ".yml": "yaml", ".yaml": "yaml", ".toml": "toml",
+        ".sh": "bash", ".sql": "sql", ".txt": "",
+    }
+
+    def _build_real_files_section(self, project_dir: str, file_owners: dict[str, str]) -> str:
+        """
+        Liest die TATSÄCHLICH geschriebenen Dateien direkt von der Platte (kein LLM-Aufruf,
+        daher immer exakt korrekt) – Gegenstück zur LLM-Synthese oben, die Code nur
+        beschreiben, nicht mehr reproduzieren soll (siehe SYNTHESIZE_SYSTEM_PROMPT). Leer,
+        wenn keine Dateien geschrieben wurden (z.B. ein reiner Planungs-/Analyse-Lauf).
+        """
+        if not file_owners:
+            return ""
+
+        blocks = ["### 📁 Tatsächlich geschriebene Dateien (direkt von der Platte gelesen, nicht vom LLM reproduziert)"]
+        total_chars = 0
+        for rel_path in sorted(file_owners):
+            if total_chars >= self.MAX_TOTAL_REAL_FILES_CHARS:
+                blocks.append(f"\n… weitere Dateien gekürzt (Gesamtlänge begrenzt) – vollständig im Workspace unter `{project_dir}`.")
+                break
+            try:
+                content = (Path(project_dir) / rel_path).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue  # z.B. Binärdatei oder zwischenzeitlich gelöscht - kein Fehler, einfach übersprungen
+            truncated = content[: self.MAX_CHARS_PER_REAL_FILE]
+            note = "" if len(content) <= self.MAX_CHARS_PER_REAL_FILE else "\n… [gekürzt, vollständiger Inhalt im Workspace] …"
+            lang = self._LANG_BY_EXTENSION.get(Path(rel_path).suffix, "")
+            blocks.append(f"\n**`{rel_path}`**\n```{lang}\n{truncated}{note}\n```")
+            total_chars += len(truncated)
+
+        return "\n".join(blocks)
 
     def _build_metrics_summary(
         self,

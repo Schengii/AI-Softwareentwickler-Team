@@ -7,6 +7,33 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🪞 Finale Antwort zeigt jetzt echten statt vom LLM erfundenen Code
+
+Erster echter End-to-End-Testlauf dieser Session (reale FastAPI-Notizen-API, echte
+LLM-Aufrufe, keinerlei Mocking) deckte einen konkreten Vertrauensbruch auf: `app/main.py`
+auf der Platte nutzte UUID-Strings als Notiz-IDs – die finale, dem Nutzer angezeigte
+LLM-Synthese zeigte zwei UNTERSCHIEDLICHE Code-Versionen, beide mit Integer-IDs, keine davon
+identisch mit der echten Datei. Die echte Datei und die echten Tests waren selbst korrekt
+(alle 5 Tests bestanden) – nur die Anzeige log. Wer nur den Chat-Output liest statt die
+Dateien zu prüfen, hätte einen falschen Eindruck vom tatsächlich gebauten Code bekommen.
+
+- `core/result_aggregator.py`: `SYNTHESIZE_SYSTEM_PROMPT` weist das Modell jetzt explizit an,
+  KEINEN vollständigen Quellcode mehr zu reproduzieren – nur Architektur, Entscheidungen und
+  Zusammenspiel der Komponenten zu beschreiben, Dateien nur beim Namen zu referenzieren.
+- `agents/orchestrator.py`: neue `_build_real_files_section()` – liest die tatsächlich
+  geschriebenen Dateien (aus `file_owners`, bereits vorhandene Datei-Besitzer-Zuordnung)
+  DIREKT von der Platte (kein LLM-Aufruf, daher immer exakt korrekt) und hängt sie als
+  eigenen, deterministischen Abschnitt an die finale Antwort an – Ground Truth statt
+  LLM-Erinnerung. Gedeckelt wie die bestehende Ergebnis-Formatierung (pro Datei und
+  insgesamt), damit große Projekte die Antwort nicht unbegrenzt aufblähen.
+- Nebeneffekt: reduziert auch den Tokenverbrauch der Synthese, da das Modell keinen
+  potenziell großen Code mehr aus dem Gedächtnis regenerieren muss.
+- 9 neue Tests (`_build_real_files_section()` inkl. Kürzung/Binärdateien/fehlender Dateien;
+  ein echter End-to-End-Beweis, dass eine bewusst ERFUNDENE Synthese-Behauptung den echten
+  Code trotzdem nicht verdrängt); volle Suite (330 Tests) grün, ruff sauber.
+
+---
+
 ## 🔀 Echte parallele Dashboard-Jobs
 
 Jobs liefen im Dashboard bisher SERIELL in einem einzigen Hintergrund-Worker – ein zweiter

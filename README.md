@@ -20,6 +20,20 @@
 
 ---
 
+## 🔗 `/load` arbeitet jetzt wirklich am geladenen Projekt weiter
+
+Der Hilfetext versprach schon immer: *"Lade das Projekt mit `/load <name>`, gib dem Team dann
+deine Anweisung."* Real hatte `/load` aber NUR Auswirkung auf `/rag` – jede normale
+Chat-Nachricht ließ `agents/orchestrator.py` trotzdem einen frischen `project_slug` raten und
+in einem NEUEN `workspace/`-Ordner arbeiten. Das ist die eigentliche Ursache der Duplikate im
+Abschnitt darunter (`calculator_service`/`simple_calculator` etc. entstanden vermutlich genau
+so). `Orchestrator.process()` akzeptiert jetzt `forced_project_dir`; `interface/cli.py` reicht
+`_loaded_project_dir` dorthin durch, sobald zuvor `/load` aufgerufen wurde – inklusive der
+Text-Fallback-Dateispeicherung und der "Projektverzeichnis"-Anzeige in den Lauf-Kennzahlen, die
+beide vorher noch am geratenen Slug statt am tatsächlichen Zielordner hingen.
+
+---
+
 ## 🪙 Commit-Message-Fix & Duplikat-Vermeidung (Token-Effizienz-Runde)
 
 Beim Durchsehen echter Läufe fielen zwei konkrete Verschwendungsmuster auf, die jetzt behoben sind:

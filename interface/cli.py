@@ -141,9 +141,15 @@ class CLIInterface:
                 live.update(self._render_status_panel(status_lines))
 
             try:
+                # Nach /load reicht jede folgende Chat-Nachricht das geladene Projektverzeichnis
+                # durch, statt (wie zuvor) einen neuen project_slug erraten und einen neuen
+                # workspace/-Ordner anlegen zu lassen. Vorher hatte _loaded_project_dir nur
+                # Auswirkung auf /rag – die im Hilfetext dokumentierte "So entwickelst du ein
+                # bestehendes Projekt weiter"-Anleitung funktionierte real also nicht.
                 result = await self._orchestrator.process(
                     user_request=user_input,
                     status_callback=on_status,
+                    forced_project_dir=self._loaded_project_dir,
                 )
             except Exception as e:
                 console.print(

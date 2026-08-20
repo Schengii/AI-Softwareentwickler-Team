@@ -59,7 +59,7 @@ class TestErrorVisibility(unittest.TestCase):
             ),
         ]
         summary = self.orchestrator._build_metrics_summary(
-            results=results, synth_tokens=10, total_duration=5.0, project_slug="test_proj",
+            results=results, synth_tokens=10, total_duration=5.0, project_dir="test_proj",
         )
         self.assertIn("Rohe Fehlermeldungen", summary)
         self.assertIn("thought_signature", summary)
@@ -70,7 +70,7 @@ class TestErrorVisibility(unittest.TestCase):
             AgentResult(task_id="t1", agent_id="backend", agent_name="Backend-Entwickler", success=True, content="ok"),
         ]
         summary = self.orchestrator._build_metrics_summary(
-            results=results, synth_tokens=10, total_duration=5.0, project_slug="test_proj",
+            results=results, synth_tokens=10, total_duration=5.0, project_dir="test_proj",
         )
         self.assertNotIn("Rohe Fehlermeldungen", summary)
 

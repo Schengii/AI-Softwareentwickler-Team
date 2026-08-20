@@ -172,7 +172,17 @@ class Orchestrator:
         self,
         user_request: str,
         status_callback: StatusCallback | None = None,
+        forced_project_dir: str | None = None,
     ) -> str:
+        """
+        forced_project_dir: Wenn gesetzt (von interface/cli.py nach `/load <projekt>` befüllt),
+        arbeitet dieser Lauf IMMER in diesem Verzeichnis statt in einem frisch vom Modell
+        geratenen project_slug. Behebt einen realen Fund: `/load` setzte bisher zwar
+        `_loaded_project_dir`, das aber nirgends an process() durchgereicht wurde – jede
+        Chat-Nachricht landete trotz vorherigem `/load` in einem NEUEN Workspace-Ordner, statt
+        das geladene Projekt tatsächlich weiterzuentwickeln (Ursache mehrerer beobachteter
+        Duplikate wie `calculator_service`/`simple_calculator`).
+        """
         overall_start_time = time.monotonic()
         # Schnappschuss des GLOBALEN Tokenzählers (core/token_guard.py) vor diesem Lauf – nicht
         # der Zähler selbst, da der Prozess (CLI-Sitzung/Dashboard-Worker) mehrere Läufe teilt.
@@ -208,26 +218,33 @@ class Orchestrator:
 
         notify(f"📋 [bold white]Gesamtplan:[/bold white] {task_summary}")
 
-        # Frühwarnung vor stillschweigend doppelter Arbeit: project_slug wird pro Lauf neu vom
-        # Modell geraten und unterscheidet sich oft, selbst wenn die Aufgabe inhaltlich dieselbe
-        # ist wie ein früherer Lauf – real beobachtet u.a. bei "calculator_service" vs.
-        # "simple_calculator" und "notes_tasks_api" vs. "personal_notes_tasks": zwei komplette,
-        # separat bezahlte Läufe für praktisch dieselbe Anwendung. Rein informativ (keine
-        # Heuristik/kein LLM-Aufruf, also kostenlos) – der Mensch entscheidet, ob `/load <name>`
-        # statt eines neuen Projekts die bessere Wahl gewesen wäre.
-        existing_projects = self._workspace.list_projects()
-        if project_slug not in existing_projects and existing_projects:
-            shown = ", ".join(existing_projects[:10])
-            more = f" (+{len(existing_projects) - 10} weitere)" if len(existing_projects) > 10 else ""
-            notify(
-                f"🗂️ [dim]Neues Projekt '{project_slug}' wird angelegt. Bereits vorhanden: "
-                f"{shown}{more} – falls du an einem davon weiterarbeiten wolltest, nutze "
-                f"stattdessen `/load <name>`.[/dim]"
-            )
+        if forced_project_dir:
+            # Explizit per /load geladenes Projekt: project_slug (vom Modell geraten) wird
+            # bewusst ignoriert – die Frühwarnung unten ist hier unnötig, weil der Mensch das
+            # Zielverzeichnis bereits selbst gewählt hat.
+            project_dir = forced_project_dir
+            notify(f"📂 [dim]Arbeite im geladenen Projekt: {project_dir}[/dim]")
+        else:
+            # Frühwarnung vor stillschweigend doppelter Arbeit: project_slug wird pro Lauf neu vom
+            # Modell geraten und unterscheidet sich oft, selbst wenn die Aufgabe inhaltlich dieselbe
+            # ist wie ein früherer Lauf – real beobachtet u.a. bei "calculator_service" vs.
+            # "simple_calculator" und "notes_tasks_api" vs. "personal_notes_tasks": zwei komplette,
+            # separat bezahlte Läufe für praktisch dieselbe Anwendung. Rein informativ (keine
+            # Heuristik/kein LLM-Aufruf, also kostenlos) – der Mensch entscheidet, ob `/load <name>`
+            # statt eines neuen Projekts die bessere Wahl gewesen wäre.
+            existing_projects = self._workspace.list_projects()
+            if project_slug not in existing_projects and existing_projects:
+                shown = ", ".join(existing_projects[:10])
+                more = f" (+{len(existing_projects) - 10} weitere)" if len(existing_projects) > 10 else ""
+                notify(
+                    f"🗂️ [dim]Neues Projekt '{project_slug}' wird angelegt. Bereits vorhanden: "
+                    f"{shown}{more} – falls du an einem davon weiterarbeiten wolltest, nutze "
+                    f"stattdessen `/load <name>`.[/dim]"
+                )
 
-        # Jede Teilaufgabe bekommt ab hier echten Zugriff auf das Projektverzeichnis
-        # (read_file/write_file/edit_file/run_command/run_tests via agents/base_agent.py).
-        project_dir = str(self._workspace.get_project_dir(project_slug))
+            # Jede Teilaufgabe bekommt ab hier echten Zugriff auf das Projektverzeichnis
+            # (read_file/write_file/edit_file/run_command/run_tests via agents/base_agent.py).
+            project_dir = str(self._workspace.get_project_dir(project_slug))
         for t in agent_tasks:
             t.project_dir = project_dir
             t.max_tool_iterations = AGENT_MAX_TOOL_ITERATIONS.get(t.agent_id)  # None = config.MAX_AGENT_TOOL_ITERATIONS
@@ -251,8 +268,14 @@ class Orchestrator:
         if AUTO_SAVE_WORKSPACE:
             for res in results:
                 if res.success and res.content:
+                    # project_dir (nicht project_slug!) verwenden: project_dir ist bereits der
+                    # tatsächlich verwendete, absolute Zielordner (bei /load der geladene Pfad,
+                    # sonst workspace/<slug>/) – get_project_dir() akzeptiert absolute Pfade
+                    # direkt (siehe core/workspace.py), landet also garantiert am selben Ort wie
+                    # die per Werkzeug-Loop geschriebenen Dateien, statt versehentlich einen
+                    # zweiten Ordner unter dem geratenen project_slug anzulegen.
                     files = self._workspace.parse_and_save_files(
-                        project_name=project_slug,
+                        project_name=project_dir,
                         text_content=res.content,
                         agent_name=res.agent_name,
                     )
@@ -262,7 +285,7 @@ class Orchestrator:
                         file_owners[f.relative_path] = res.agent_id
 
             if saved_files_count > 0:
-                notify(f"💾 [green]Workspace:[/green] {saved_files_count} zusätzliche Projektdateien (Text-Fallback) in `workspace/{project_slug}/` gespeichert.")
+                notify(f"💾 [green]Workspace:[/green] {saved_files_count} zusätzliche Projektdateien (Text-Fallback) in `{project_dir}` gespeichert.")
 
         # Echte Verifikation: Abhängigkeiten installieren, Tests wirklich ausführen,
         # bei Fehlschlägen gezielt den verantwortlichen Agenten korrigieren lassen.
@@ -326,7 +349,7 @@ class Orchestrator:
             results=results,
             synth_tokens=synth_tokens,
             total_duration=total_duration,
-            project_slug=project_slug,
+            project_dir=project_dir,
             run_start_tokens=run_start_tokens,
         )
         if budget_aborted:
@@ -811,7 +834,7 @@ class Orchestrator:
         results: list[AgentResult],
         synth_tokens: int,
         total_duration: float,
-        project_slug: str,
+        project_dir: str,
         run_start_tokens: int | None = None,
     ) -> str:
         total_prompt_tokens = sum(r.prompt_tokens for r in results)
@@ -837,7 +860,7 @@ class Orchestrator:
 
         lines += [
             f"- 🛠️ **Werkzeug-Aufrufe (echte Datei-/Testoperationen):** `{total_tool_calls:,}` | **Dateien geschrieben/geändert:** `{total_files_written}`",
-            f"- 📁 **Projektverzeichnis:** `workspace/{project_slug}/`\n",
+            f"- 📁 **Projektverzeichnis:** `{project_dir}`\n",
             "| KI-Agent | Rolle / Fachbereich | Modell | Dauer | Tokens | Tool-Calls | Status |",
             "|---|---|---|---|---|---|---|",
         ]

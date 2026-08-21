@@ -291,6 +291,23 @@ class BaseAgent(ABC):
         return response, total_prompt_tokens, total_completion_tokens
 
     def _augment_with_tool_instructions(self, system_prompt: str) -> str:
+        # Realer Fund aus einem echten Lauf: der architect-Agent wird vom Hauptagenten bei
+        # kleineren, gut umrissenen Aufgaben oft gar nicht erst eingeplant (siehe
+        # core/task_manager.py DECOMPOSE_SYSTEM_PROMPT) - selbst wenn die Aufgabe explizit
+        # eine Technologie-Abwägung mit echter Alternative verlangte. Code-schreibende Agenten
+        # (CODE_WRITING_AGENT_IDS) treffen solche Entscheidungen dann selbst, ohne sie je zu
+        # dokumentieren, obwohl ihnen dasselbe record_architecture_decision-Werkzeug wie dem
+        # architect zur Verfügung steht. Zweite Verteidigungslinie zusätzlich zur decompose()-
+        # Regel: der Hinweis geht an genau diese Rollen, nicht an alle (z.B. copywriter/i18n
+        # treffen legitim keine Architektur-Entscheidungen).
+        adr_note = (
+            "\n\nTriffst du dabei eine Entscheidung mit einer echten Alternative (z.B. "
+            "'PostgreSQL statt In-Memory-Liste', 'REST statt GraphQL'), dokumentiere sie "
+            "ZUSÄTZLICH über das Werkzeug `record_architecture_decision` – nicht nur in "
+            "deiner Zusammenfassung, sonst ist sie beim nächsten Lauf an diesem Projekt "
+            "bereits wieder vergessen."
+            if self.agent_id in CODE_WRITING_AGENT_IDS else ""
+        )
         return f"""{system_prompt}
 
 ## 🛠️ WERKZEUG-NUTZUNG (agentischer Modus)
@@ -303,7 +320,7 @@ Du hast direkten Zugriff auf das Projektverzeichnis über Werkzeuge:
 
 Speichere Code IMMER direkt über write_file/edit_file im Projektverzeichnis – gib ihn nicht nur als Text in
 deiner Antwort aus. Deine finale Textantwort soll eine KURZE Zusammenfassung sein (was wurde geschrieben/geändert,
-warum, was ist noch offen) – kein erneutes Einfügen des kompletten Codes."""
+warum, was ist noch offen) – kein erneutes Einfügen des kompletten Codes.{adr_note}"""
 
     def _build_prompt(self, task: AgentTask) -> str:
         """Baut den finalen Prompt token-effizient zusammen mit strikten Sparsamkeits-Regeln."""

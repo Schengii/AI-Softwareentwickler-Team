@@ -44,14 +44,23 @@ if GROQ_API_KEY:
 # ausweichen) – Groq/DeepSeek/OpenRouter/HuggingFace bleiben als Provider verfügbar
 # (core/llm_factory.py-Clients existieren weiter), werden aber standardmäßig nicht mehr
 # zugewiesen (siehe config.AGENT_MODELS) und daher hier nicht mehr als erste Wahl gelistet.
+#
+# Realer Fund aus einem echten End-to-End-Testlauf ohne ANTHROPIC_API_KEY: die
+# STANDARD/LITE-Gemini-Ketten endeten bisher NACH dem Claude-Versuch (der ohne Schlüssel
+# sofort scheitert) – ein Agent mit einer echten Gemini-Störung (nicht nur Quota, sondern
+# z.B. ein Function-Calling-Fehler) hatte dann KEINE weitere Rettung mehr, obwohl Groq im
+# SELBEN Lauf für andere Rollen (HEAVY-Tier, siehe GROQ_HEAVY_MODEL in config.py) einwandfrei
+# funktionierte. Groq/openai/gpt-oss-120b jetzt als letzte Stufe auch in den STANDARD/LITE-
+# Ketten ergänzt – kein Endlosloop möglich, da _allow_self_fallback=False verhindert, dass
+# Groq bei eigenem Scheitern zurück zu Gemini zurückspringt (siehe generate_with_tools()).
 MODEL_FALLBACKS = {
     # Gemini erschöpft/fehlerhaft -> auf das jeweils gleichwertige Claude-Modell ausweichen,
-    # erst danach auf eine kleinere Gemini-Stufe.
+    # dann eine kleinere Gemini-Stufe, zuletzt Groq als kostenloser Backstop.
     "gemini-pro-latest":    ["claude-opus-5", "claude-sonnet-5", "gemini-3.6-flash"],
-    "gemini-3.6-flash":     ["claude-sonnet-5", "gemini-3.1-flash-lite"],
-    "gemini-3.1-flash-lite": ["claude-haiku-4-5-20251001", "gemini-3.6-flash"],
+    "gemini-3.6-flash":     ["claude-sonnet-5", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
+    "gemini-3.1-flash-lite": ["claude-haiku-4-5-20251001", "gemini-3.6-flash", "groq:openai/gpt-oss-120b"],
     # Ältere/abweichende Konfigurationswerte (falls per .env manuell gesetzt) ebenfalls abdecken.
-    "gemini-3.5-flash":     ["claude-sonnet-5", "gemini-3.6-flash", "gemini-3.1-flash-lite"],
+    "gemini-3.5-flash":     ["claude-sonnet-5", "gemini-3.6-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
     # Legacy-Provider-Fallbacks (nur relevant, falls ein Agent per .env explizit auf sie gesetzt wird).
     "huggingface:auto": ["gemini-3.6-flash", "gemini-3.1-flash-lite"],
     "openrouter:auto": ["gemini-3.6-flash", "gemini-3.1-flash-lite"],

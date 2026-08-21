@@ -86,5 +86,49 @@ class TestIssueLabelAndCommentOperations(unittest.TestCase):
         self.agent.ensure_label_exists("ai-team-done")
 
 
+class TestGetPrStatus(unittest.TestCase):
+    def setUp(self):
+        self.agent = GitHubAgent()
+
+    @patch("agents.github_agent.subprocess.run")
+    def test_returns_merged_for_a_merged_pr(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout='{"state": "MERGED", "mergedAt": "2026-08-21T10:00:00Z"}', stderr="",
+        )
+        state, detail = self.agent.get_pr_status("https://github.com/x/y/pull/1")
+        self.assertEqual(state, "merged")
+        self.assertEqual(detail, "2026-08-21T10:00:00Z")
+
+    @patch("agents.github_agent.subprocess.run")
+    def test_returns_closed_for_a_closed_unmerged_pr(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout='{"state": "CLOSED", "mergedAt": null}', stderr="")
+        state, _detail = self.agent.get_pr_status("https://github.com/x/y/pull/2")
+        self.assertEqual(state, "closed")
+
+    @patch("agents.github_agent.subprocess.run")
+    def test_returns_open_for_a_still_open_pr(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout='{"state": "OPEN", "mergedAt": null}', stderr="")
+        state, _detail = self.agent.get_pr_status("https://github.com/x/y/pull/3")
+        self.assertEqual(state, "open")
+
+    @patch("agents.github_agent.subprocess.run")
+    def test_returns_unknown_when_pr_not_found(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="no pull requests found")
+        state, detail = self.agent.get_pr_status("https://github.com/x/y/pull/999")
+        self.assertEqual(state, "unknown")
+        self.assertIn("no pull requests found", detail)
+
+    @patch("agents.github_agent.subprocess.run")
+    def test_returns_unknown_on_malformed_json(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="not json", stderr="")
+        state, _detail = self.agent.get_pr_status("https://github.com/x/y/pull/1")
+        self.assertEqual(state, "unknown")
+
+    @patch("agents.github_agent.subprocess.run", side_effect=subprocess.TimeoutExpired("gh", 20))
+    def test_returns_unknown_on_timeout_without_crashing(self, _mock_run):
+        state, _detail = self.agent.get_pr_status("https://github.com/x/y/pull/1")
+        self.assertEqual(state, "unknown")
+
+
 if __name__ == "__main__":
     unittest.main()

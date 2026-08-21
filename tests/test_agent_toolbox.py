@@ -131,6 +131,31 @@ class TestAgentToolbox(unittest.TestCase):
         result = run(self.toolbox.dispatch("search_code", {"query": "authenticate JWT", "top_k": 3}))
         self.assertTrue(any("auth/service.py" in r["file"] for r in result["results"]))
 
+    def test_record_architecture_decision_writes_numbered_adr_and_tracks_files_written(self):
+        result = run(self.toolbox.dispatch("record_architecture_decision", {
+            "title": "PostgreSQL statt MongoDB",
+            "context": "Nutzerdaten brauchen relationale Integrität.",
+            "decision": "PostgreSQL wegen ACID-Transaktionen.",
+            "consequences": "Erfordert ein Schema-Migrationswerkzeug.",
+        }))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["path"], "docs/adr/0001-postgresql-statt-mongodb.md")
+        self.assertIn("docs/adr/0001-postgresql-statt-mongodb.md", self.toolbox.files_written)
+        self.assertTrue((Path(self.temp_dir) / "docs" / "adr" / "0001-postgresql-statt-mongodb.md").exists())
+
+    def test_record_architecture_decision_rejects_empty_title(self):
+        result = run(self.toolbox.dispatch("record_architecture_decision", {
+            "title": "  ", "context": "K", "decision": "E", "consequences": "K",
+        }))
+        self.assertIn("error", result)
+
+    def test_read_only_toolbox_blocks_record_architecture_decision(self):
+        read_only_box = AgentToolbox(project_dir=self.temp_dir, agent_id="planning_lead", read_only=True)
+        result = run(read_only_box.dispatch("record_architecture_decision", {
+            "title": "X", "context": "K", "decision": "E", "consequences": "K",
+        }))
+        self.assertIn("error", result)
+
     def test_read_only_toolbox_blocks_write(self):
         read_only_box = AgentToolbox(project_dir=self.temp_dir, agent_id="planning_lead", read_only=True)
         result = run(read_only_box.dispatch("write_file", {"path": "x.py", "content": "x = 1"}))

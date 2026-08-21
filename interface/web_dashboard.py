@@ -45,7 +45,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from agents.orchestrator import Orchestrator
 from config import DASHBOARD_AUTH_TOKEN, DASHBOARD_HOST, DASHBOARD_MAX_CONCURRENT_JOBS
@@ -84,6 +84,10 @@ class DashboardServer:
     def __init__(self, max_concurrent_jobs: int = DASHBOARD_MAX_CONCURRENT_JOBS):
         self.orchestrator = Orchestrator()
         self.jobs: dict[str, Job] = {}
+        # Deploy-Status pro Projektname (core/deployment.py) - EIN aktueller Stand pro
+        # Projekt reicht (kein History-Log wie bei Jobs), da /deploy manuell pro Projekt
+        # ausgelöst wird, nicht als Warteschlange vieler Anfragen.
+        self.deployments: dict[str, dict] = {}
         self._max_concurrent_jobs = max_concurrent_jobs
         self._loop = asyncio.new_event_loop()
         self._async_queue: asyncio.Queue[str] | None = None  # im Loop-Thread erzeugt, siehe _run_event_loop
@@ -177,6 +181,48 @@ class DashboardServer:
         ticket_status = "blocked" if job.status == "error" else job.status
         upsert_ticket(ticket_id=f"dashboard-{job_id}", title=job.prompt[:80], source="dashboard", status=ticket_status)
 
+    def deploy(self, project_name: str) -> None:
+        """Startet ein echtes lokales Docker-Deployment für ein Workspace-Projekt
+        (core/deployment.py) - läuft im Hintergrund-Event-Loop, Status via
+        GET /api/deploy-status/<projekt> pollbar (dasselbe Prinzip wie Jobs)."""
+        self.deployments[project_name] = {"status": "running"}
+        self._loop.call_soon_threadsafe(self._loop.create_task, self._execute_deploy(project_name))
+
+    async def _execute_deploy(self, project_name: str) -> None:
+        from core.deployment import deploy_project
+        project_dir = self.orchestrator._workspace.get_project_dir(project_name)
+        try:
+            # asyncio.to_thread: deploy_project() ist blockierend (echte Subprozesse) - direkt
+            # im Event-Loop aufgerufen würde es ALLE anderen Jobs/Deploys in diesem Prozess
+            # für die Dauer des Docker-Builds blockieren.
+            result = await asyncio.to_thread(deploy_project, project_dir)
+        except Exception as e:
+            self.deployments[project_name] = {"status": "error", "output": str(e)}
+            return
+        self.deployments[project_name] = {
+            "status": "done" if result.attempted else "skipped",
+            "success": result.success, "method": result.method,
+            "urls": result.urls, "output": result.output, "reason_skipped": result.reason_skipped,
+        }
+
+    def stop_deploy(self, project_name: str) -> None:
+        """Fährt ein per deploy() gestartetes Deployment wieder herunter."""
+        self.deployments[project_name] = {"status": "stopping"}
+        self._loop.call_soon_threadsafe(self._loop.create_task, self._execute_stop_deploy(project_name))
+
+    async def _execute_stop_deploy(self, project_name: str) -> None:
+        from core.deployment import stop_deployment
+        project_dir = self.orchestrator._workspace.get_project_dir(project_name)
+        try:
+            result = await asyncio.to_thread(stop_deployment, project_dir)
+        except Exception as e:
+            self.deployments[project_name] = {"status": "error", "output": str(e)}
+            return
+        self.deployments[project_name] = {
+            "status": "stopped" if result.success else "error",
+            "success": result.success, "method": result.method, "output": result.output,
+        }
+
 
 HTML_DASHBOARD = """<!DOCTYPE html>
 <html lang="de">
@@ -235,6 +281,16 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     <h3 style="color: var(--text-white); margin-bottom: 10px;">📡 Live-Fortschritt</h3>
     <div id="logOutput"></div>
     <div id="resultOutput"></div>
+  </div>
+
+  <div class="prompt-box">
+    <h3>🚀 Deployment (lokal per Docker)</h3>
+    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px;">
+      <select id="deployProjectSelect" style="background: #0d1117; color: #f0f6fc; border: 1px solid var(--card-border); border-radius: 8px; padding: 8px;"><option>Lade Projekte…</option></select>
+      <button id="deployBtn" onclick="deployProject()">Deploy</button>
+      <button id="deployStopBtn" onclick="stopDeployProject()" style="background: #da3633;">Stoppen</button>
+    </div>
+    <div id="deployStatus" style="margin-top: 10px; font-size: 13px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; white-space: pre-wrap;"></div>
   </div>
 
   <h2 style="color: var(--text-white); font-size: 18px; margin-bottom: 16px;">🎫 Backlog / Kanban-Board</h2>
@@ -361,8 +417,72 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       }
     }
 
+    async function loadProjects() {
+      const res = await fetch('/api/projects');
+      const data = await res.json();
+      const sel = document.getElementById('deployProjectSelect');
+      sel.innerHTML = data.projects.length
+        ? data.projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('')
+        : '<option value="">Keine Projekte im Workspace</option>';
+    }
+
+    let deployPollTimer = null;
+
+    async function deployProject() {
+      const project = document.getElementById('deployProjectSelect').value;
+      if (!project) return;
+      document.getElementById('deployStatus').innerText = '🚀 Deploye… (kann mehrere Minuten dauern)';
+      const res = await fetch('/api/deploy', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        document.getElementById('deployStatus').innerText = '❌ ' + (data.error || 'Fehler beim Start.');
+        return;
+      }
+      pollDeployStatus(project);
+    }
+
+    async function stopDeployProject() {
+      const project = document.getElementById('deployProjectSelect').value;
+      if (!project) return;
+      document.getElementById('deployStatus').innerText = '⏹️ Stoppe…';
+      await fetch('/api/deploy-stop', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project }),
+      });
+      pollDeployStatus(project);
+    }
+
+    function pollDeployStatus(project) {
+      if (deployPollTimer) clearInterval(deployPollTimer);
+      deployPollTimer = setInterval(async () => {
+        const res = await fetch(`/api/deploy-status/${encodeURIComponent(project)}`);
+        const data = await res.json();
+        if (data.status === 'done') {
+          clearInterval(deployPollTimer);
+          const urlsText = (data.urls && data.urls.length) ? data.urls.join(', ') : '(kein Port ermittelt)';
+          document.getElementById('deployStatus').innerText = data.success
+            ? `✅ Deployment erfolgreich (${data.method}): ${urlsText}`
+            : `❌ Deployment fehlgeschlagen:\n${data.output || ''}`;
+        } else if (data.status === 'stopped') {
+          clearInterval(deployPollTimer);
+          document.getElementById('deployStatus').innerText = '⏹️ Deployment gestoppt.';
+        } else if (data.status === 'skipped') {
+          clearInterval(deployPollTimer);
+          document.getElementById('deployStatus').innerText = 'ℹ️ ' + (data.reason_skipped || 'Nicht möglich.');
+        } else if (data.status === 'error') {
+          clearInterval(deployPollTimer);
+          document.getElementById('deployStatus').innerText = '❌ ' + (data.output || 'Fehler.');
+        }
+        // "running"/"stopping" -> weiter pollen, Statustext steht schon
+      }, 3000);
+    }
+
     loadStatus();
     loadBacklog();
+    loadProjects();
     setInterval(loadBacklog, 5000);
   </script>
 </body>
@@ -456,6 +576,11 @@ def make_handler(server: DashboardServer):
                 # Alle Tickets über ALLE Trigger-Quellen (CLI/Dashboard/Issue-Watcher), siehe
                 # core/backlog_store.py - nicht nur die Jobs dieses Dashboard-Prozesses.
                 self._send_json({"tickets": [vars(t) for t in list_tickets()]})
+            elif path_only == "/api/projects":
+                self._send_json({"projects": server.orchestrator._workspace.list_projects()})
+            elif path_only.startswith("/api/deploy-status/"):
+                project_name = unquote(path_only.rsplit("/", 1)[-1])
+                self._send_json({"project": project_name, **server.deployments.get(project_name, {"status": "none"})})
             else:
                 self._send_json({"error": "Not found"}, status=404)
 
@@ -481,6 +606,22 @@ def make_handler(server: DashboardServer):
                     self._send_json({"job_id": job_id, "cancel_requested": True})
                 else:
                     self._send_json({"error": "Unbekannte job_id oder Job bereits abgeschlossen."}, status=404)
+            elif urlparse(self.path).path in ("/api/deploy", "/api/deploy-stop"):
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length) or b"{}")
+                    project_name = (payload.get("project") or "").strip()
+                except Exception:
+                    self._send_json({"error": "Ungültiger Request-Body"}, status=400)
+                    return
+                if not project_name or project_name not in server.orchestrator._workspace.list_projects():
+                    self._send_json({"error": "Unbekanntes Projekt."}, status=404)
+                    return
+                if urlparse(self.path).path == "/api/deploy":
+                    server.deploy(project_name)
+                else:
+                    server.stop_deploy(project_name)
+                self._send_json({"project": project_name, "status": "running"}, status=202)
             else:
                 self._send_json({"error": "Not found"}, status=404)
 

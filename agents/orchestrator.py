@@ -75,6 +75,7 @@ from config import (
     ORCHESTRATOR_MODEL,
     PLAN_CONFIRMATION_MIN_TASKS,
 )
+from core.adr import format_adr_summary_for_context
 from core.git_isolation import (
     GitIsolationError,
     create_isolated_worktree,
@@ -366,6 +367,12 @@ class Orchestrator:
         # unnötiger Prompt-Text für die Mehrheit der Projekte).
         constitution_context = format_constitution_for_agents(project_dir)
 
+        # Architecture Decision Records (core/adr.py): das WARUM hinter bereits getroffenen
+        # Architektur-Entscheidungen (die Konstitution oben hält nur das WAS fest). Ohne das
+        # könnten spätere Läufe unbemerkt gegen frühere, bewusst getroffene Entscheidungen
+        # arbeiten. Leer für Projekte ohne bisherige ADRs (kein unnötiger Prompt-Text).
+        adr_context = format_adr_summary_for_context(project_dir)
+
         for t in agent_tasks:
             t.project_dir = project_dir
             t.max_tool_iterations = AGENT_MAX_TOOL_ITERATIONS.get(t.agent_id)  # None = config.MAX_AGENT_TOOL_ITERATIONS
@@ -375,6 +382,8 @@ class Orchestrator:
                 t.context += f"\n\n{constitution_context}"
             if project_history_context:
                 t.context += f"\n\n{project_history_context}"
+            if adr_context:
+                t.context += f"\n\n{adr_context}"
 
         # Führe hierarchische Fachbereichs-Ausführung durch
         results, file_owners, budget_aborted, manually_cancelled = await self._run_department_hierarchy(

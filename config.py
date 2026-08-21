@@ -163,6 +163,16 @@ DEPENDENCY_INSTALL_TIMEOUT_SECONDS: float = float(os.getenv("DEPENDENCY_INSTALL_
 TEST_RUN_TIMEOUT_SECONDS: float = float(os.getenv("TEST_RUN_TIMEOUT_SECONDS", "60"))
 
 # ──────────────────────────────────────────
+# Echtes lokales Deployment: Docker Compose (core/deployment.py, manuell per /deploy ausgelöst)
+# ──────────────────────────────────────────
+# core/verifier.py.check_docker_build() prüfte bisher NUR, ob ein generiertes Dockerfile
+# überhaupt baut - nie einen echten Deploy. core/deployment.py kennt jetzt ein konkretes
+# Ziel: Docker Compose lokal/self-hosted (kein Cloud-Account/API-Token nötig). Bewusst NICHT
+# automatisch nach Push/Merge ausgelöst - echte Container-Ausführung startet einen laufenden
+# Prozess und belegt Ports, verdient dieselbe Bestätigungs-Gate-Philosophie wie /push.
+DEPLOY_TIMEOUT_SECONDS: float = float(os.getenv("DEPLOY_TIMEOUT_SECONDS", "300"))
+
+# ──────────────────────────────────────────
 # Fachbereichs-Teamleiter: echte Delegation & Konsolidierung per LLM-Call
 # ──────────────────────────────────────────
 ENABLE_DEPARTMENT_LEAD_EXECUTION: bool = os.getenv("ENABLE_DEPARTMENT_LEAD_EXECUTION", "true").lower() in ("true", "1", "yes")

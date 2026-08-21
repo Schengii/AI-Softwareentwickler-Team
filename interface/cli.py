@@ -72,6 +72,9 @@ HELP_TEXT = """
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
 | `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/backlog` | Zeigt das Kanban-Board (Todo/In Bearbeitung/Review/Blockiert/Fertig) über CLI, Dashboard UND autonome Issue-Läufe hinweg |
+| `/adr [projekt]` | Zeigt die dokumentierten Architecture Decision Records (Begründungen echter Architektur-Entscheidungen) eines Projekts |
+| `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
+| `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |
 | `/push` | Führt manuell einen Git-Commit & Push aus |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
@@ -608,13 +611,22 @@ class CLIInterface:
             "💡 [dim]Eine falsche/überholte Regel entfernen: `/delete-learning <agent> <nr>`[/dim]"
         )
 
-    def _show_backlog(self) -> None:
+    async def _show_backlog(self) -> None:
         """
         Zeigt memory/backlog.json (core/backlog_store.py) - alle Tickets über CLI, Dashboard
         UND autonome GitHub-Issue-Läufe (core/issue_watcher.py) hinweg, gruppiert nach Spalte.
         Bisher hatte jede dieser drei Trigger-Quellen ihren eigenen, isolierten Fortschritts-
         Begriff - kein einziger Befehl zeigte, woran das Team gerade/zuletzt gearbeitet hat.
+
+        Zieht VOR der Anzeige echte GitHub-Merges nach (core/merge_watcher.py) - ohne den
+        wiederkehrenden `--check-issues`-Poll-Zyklus (core/issue_watcher.py) eingerichtet zu
+        haben, wäre das sonst die einzige Stelle, an der "review"-Tickets je auf "done"
+        gezogen würden. asyncio.to_thread, da der Merge-Check echte, blockierende
+        `gh`-Subprozessaufrufe macht.
         """
+        from core.merge_watcher import check_merged_tickets
+        await asyncio.to_thread(check_merged_tickets)
+
         tickets = list_tickets()
         if not tickets:
             console.print("📭 Noch keine Tickets im Backlog (memory/backlog.json ist leer).", style="dim")
@@ -630,6 +642,40 @@ class CLIInterface:
             for ticket in [t for t in tickets if t.status == status]:
                 table.add_row(status, ticket.source, ticket.title, ticket.detail or ticket.updated_at)
 
+        console.print(table)
+
+    def _show_adrs(self, project_name: str | None) -> None:
+        """
+        Zeigt die Architecture Decision Records (core/adr.py) eines Projekts – alle bisher
+        per record_architecture_decision()-Werkzeug (core/agent_toolbox.py, primär vom
+        architect-Agenten genutzt) dokumentierten Architektur-Entscheidungen samt
+        Begründung, statt dass sie nur einmalig im Antworttext eines Laufs auftauchen.
+        """
+        project_dir = self._resolve_project_dir(project_name)
+        if project_dir is None:
+            if project_name:
+                console.print(f"⚠️ Projekt `{project_name}` existiert nicht in `workspace/`.", style="yellow")
+            else:
+                console.print(
+                    "⚠️ Kein Projekt angegeben und keines geladen. Nutze `/adr <projekt>` "
+                    "oder lade zuerst eines mit `/load <projekt>`.", style="yellow",
+                )
+            return
+
+        from core.adr import list_adrs
+
+        records = list_adrs(project_dir)
+        if not records:
+            console.print(f"📭 Noch keine Architecture Decision Records für `{project_dir.name}`.", style="dim")
+            return
+
+        table = Table(title=f"📐 Architecture Decision Records – {project_dir.name}", box=box.ROUNDED)
+        table.add_column("Nr.", justify="right", style="dim")
+        table.add_column("Status", style="cyan")
+        table.add_column("Titel")
+        table.add_column("Datei", style="dim")
+        for r in records:
+            table.add_row(f"{r.number:04d}", r.status, r.title, str(r.path.relative_to(project_dir)))
         console.print(table)
 
     async def _delete_learning_with_confirmation(self, agent_id: str, index_str: str) -> None:
@@ -847,7 +893,10 @@ class CLIInterface:
             self._show_learnings()
 
         elif cmd in ("/backlog", "/board", "/kanban", "/tickets"):
-            self._show_backlog()
+            await self._show_backlog()
+
+        elif cmd in ("/adr", "/adrs", "/entscheidungen"):
+            self._show_adrs(args[0] if args else None)
 
         elif cmd in ("/delete-learning", "/forget", "/vergessen"):
             if len(args) < 2:
@@ -864,6 +913,12 @@ class CLIInterface:
         elif cmd in ("/run-tests", "/test"):
             proj_name = args[0] if args else "jobsuche-app"
             self._run_tests(proj_name)
+
+        elif cmd in ("/deploy", "/rollout"):
+            await self._deploy_project_with_confirmation(args[0] if args else None)
+
+        elif cmd in ("/deploy-stop", "/undeploy"):
+            await self._stop_deployment(args[0] if args else None)
 
         elif cmd in ("/load", "/laden", "/open", "/oeffnen", "/import"):
             if not args:
@@ -967,6 +1022,96 @@ class CLIInterface:
             console.print(f"✅ Alle Tests erfolgreich!\n{res.stdout}", style="bold green")
         else:
             console.print(f"❌ Tests fehlgeschlagen:\n{res.stderr or res.stdout}", style="bold red")
+
+    def _resolve_project_dir(self, project_name: str | None) -> Path | None:
+        """
+        Löst einen optionalen Projektnamen auf einen echten, EXISTIERENDEN Projektordner auf
+        - ohne Namen wird das per `/load` geladene Projekt verwendet. None, wenn nichts
+        angegeben/geladen ist ODER der genannte Name nicht existiert (der Aufrufer
+        unterscheidet diese beiden Fälle für eine passende Fehlermeldung selbst).
+        """
+        if project_name:
+            exists = (
+                Path(project_name).exists() if os.path.isabs(project_name)
+                else project_name in self._workspace.list_projects()
+            )
+            return Path(self._workspace.get_project_dir(project_name)) if exists else None
+        if self._loaded_project_dir:
+            return Path(self._loaded_project_dir)
+        return None
+
+    async def _deploy_project_with_confirmation(self, project_name: str | None) -> None:
+        """
+        Deployt ein Projekt lokal per Docker (core/deployment.py: Compose bevorzugt, sonst
+        Dockerfile+docker run) – mit Vorschau + Bestätigung, analog zum Git-Push-Gate
+        (_ask_for_git_push): echte Container-Ausführung startet einen laufenden Prozess und
+        belegt Ports, verdient dieselbe Bestätigungs-Gate-Philosophie statt stillschweigend
+        loszulaufen.
+        """
+        project_dir = self._resolve_project_dir(project_name)
+        if project_dir is None:
+            if project_name:
+                console.print(f"⚠️ Projekt `{project_name}` existiert nicht in `workspace/`.", style="yellow")
+            else:
+                console.print(
+                    "⚠️ Kein Projekt angegeben und keines geladen. Nutze `/deploy <projekt>` "
+                    "oder lade zuerst eines mit `/load <projekt>`.", style="yellow",
+                )
+            return
+
+        from core.deployment import deploy_project, describe_deploy_plan
+
+        console.print(
+            Panel(
+                f"[bold]Projekt:[/bold] `{project_dir}`\n"
+                f"[bold]Geplanter Schritt:[/bold] {describe_deploy_plan(project_dir)}",
+                title="🚀 Deployment: Vorschau",
+                border_style="cyan",
+            )
+        )
+        try:
+            should_deploy = Confirm.ask("Wirklich deployen (startet echte Docker-Container)?", default=False)
+        except Exception:
+            should_deploy = False
+        if not should_deploy:
+            console.print("↩️ Deployment übersprungen.", style="dim")
+            return
+
+        console.print("🚀 [dim]Deploye... (kann je nach Projekt mehrere Minuten dauern)[/dim]")
+        # asyncio.to_thread: deploy_project() ist blockierend (echte Subprozesse) - direkt im
+        # Event-Loop aufgerufen würde es die Live-Anzeige/den Strg+C-Handler einfrieren.
+        result = await asyncio.to_thread(deploy_project, project_dir)
+
+        if not result.attempted:
+            console.print(f"⚠️ {result.reason_skipped}", style="yellow")
+        elif result.success:
+            urls_note = "\n".join(f"  🌐 {u}" for u in result.urls) if result.urls else "  (kein Port ermittelt)"
+            console.print(f"✅ [bold green]Deployment erfolgreich ({result.method}):[/bold green]\n{urls_note}")
+            console.print("💡 [dim]Stoppen mit `/deploy-stop`.[/dim]")
+        else:
+            console.print(f"❌ [bold red]Deployment fehlgeschlagen:[/bold red]\n{result.output}", style="red")
+
+    async def _stop_deployment(self, project_name: str | None) -> None:
+        """Fährt ein per /deploy gestartetes Deployment wieder herunter."""
+        project_dir = self._resolve_project_dir(project_name)
+        if project_dir is None:
+            if project_name:
+                console.print(f"⚠️ Projekt `{project_name}` existiert nicht in `workspace/`.", style="yellow")
+            else:
+                console.print("⚠️ Kein Projekt angegeben und keines geladen.", style="yellow")
+            return
+
+        from core.deployment import stop_deployment
+
+        console.print(f"⏹️ [dim]Stoppe Deployment für `{project_dir}`...[/dim]")
+        result = await asyncio.to_thread(stop_deployment, project_dir)
+
+        if not result.attempted:
+            console.print(f"⚠️ {result.reason_skipped}", style="yellow")
+        elif result.success:
+            console.print("⏹️ [bold green]Deployment gestoppt.[/bold green]")
+        else:
+            console.print(f"❌ Stoppen fehlgeschlagen:\n{result.output}", style="red")
 
     def _render_status_panel(self, lines: list[str]) -> Panel:
         if not lines:

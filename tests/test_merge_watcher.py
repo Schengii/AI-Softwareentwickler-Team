@@ -1,0 +1,100 @@
+"""
+tests/test_merge_watcher.py – Testet core/merge_watcher.py (Merge-Erkennung fürs Backlog)
+
+Realer struktureller Fund: Tickets landeten bei einem geöffneten PR auf "review", aber NIE
+automatisch weiter auf "done" - selbst wenn der PR längst gemerged wurde. GitHubAgent ist
+hier vollständig gemockt (die echte gh-CLI-Interaktion ist bereits in
+tests/test_github_agent_issue_methods.py::TestGetPrStatus abgedeckt) - Gegenstand ist die
+Backlog-Status-Übersetzung, nicht die gh-Kommandos selbst.
+"""
+
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import core.backlog_store as backlog_store
+from core.merge_watcher import check_merged_tickets
+
+
+class TestCheckMergedTickets(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self._patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(self.temp_dir) / "backlog.json")
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+        self.fake_github = MagicMock()
+        self.fake_github.gh_ready.return_value = True
+
+    def test_merged_pr_moves_ticket_to_done(self):
+        backlog_store.upsert_ticket("issue-1", "Health-Check", "issue", "review", detail="https://github.com/x/y/pull/1")
+        self.fake_github.get_pr_status.return_value = ("merged", "2026-08-21T10:00:00Z")
+
+        updated = check_merged_tickets(self.fake_github)
+
+        self.assertEqual(updated, ["issue-1"])
+        ticket = backlog_store.list_tickets()[0]
+        self.assertEqual(ticket.status, "done")
+        self.assertEqual(ticket.detail, "https://github.com/x/y/pull/1")  # PR-Link bleibt erhalten
+
+    def test_closed_without_merge_moves_ticket_to_blocked(self):
+        backlog_store.upsert_ticket("cli-abc", "Feature X", "cli", "review", detail="https://github.com/x/y/pull/2")
+        self.fake_github.get_pr_status.return_value = ("closed", "")
+
+        updated = check_merged_tickets(self.fake_github)
+
+        self.assertEqual(updated, ["cli-abc"])
+        ticket = backlog_store.list_tickets()[0]
+        self.assertEqual(ticket.status, "blocked")
+        self.assertIn("geschlossen ohne Merge", ticket.detail)
+
+    def test_still_open_pr_leaves_ticket_unchanged(self):
+        backlog_store.upsert_ticket("issue-3", "Feature Y", "issue", "review", detail="https://github.com/x/y/pull/3")
+        self.fake_github.get_pr_status.return_value = ("open", "")
+
+        updated = check_merged_tickets(self.fake_github)
+
+        self.assertEqual(updated, [])
+        self.assertEqual(backlog_store.list_tickets()[0].status, "review")
+
+    def test_unknown_status_leaves_ticket_unchanged(self):
+        backlog_store.upsert_ticket("issue-4", "Feature Z", "issue", "review", detail="https://github.com/x/y/pull/4")
+        self.fake_github.get_pr_status.return_value = ("unknown", "network error")
+
+        updated = check_merged_tickets(self.fake_github)
+
+        self.assertEqual(updated, [])
+        self.assertEqual(backlog_store.list_tickets()[0].status, "review")
+
+    def test_ticket_without_pr_link_in_detail_is_skipped(self):
+        backlog_store.upsert_ticket("cli-xyz", "Kein PR", "cli", "review", detail="")
+
+        updated = check_merged_tickets(self.fake_github)
+
+        self.assertEqual(updated, [])
+        self.fake_github.get_pr_status.assert_not_called()
+
+    def test_only_review_tickets_are_checked(self):
+        backlog_store.upsert_ticket("t1", "Todo", "cli", "todo")
+        backlog_store.upsert_ticket("t2", "Done", "cli", "done", detail="https://github.com/x/y/pull/5")
+        backlog_store.upsert_ticket("t3", "Review", "cli", "review", detail="https://github.com/x/y/pull/6")
+        self.fake_github.get_pr_status.return_value = ("merged", "")
+
+        check_merged_tickets(self.fake_github)
+
+        self.fake_github.get_pr_status.assert_called_once_with("https://github.com/x/y/pull/6")
+
+    def test_skips_entirely_when_gh_not_ready(self):
+        backlog_store.upsert_ticket("issue-1", "Health-Check", "issue", "review", detail="https://github.com/x/y/pull/1")
+        self.fake_github.gh_ready.return_value = False
+
+        updated = check_merged_tickets(self.fake_github)
+
+        self.assertEqual(updated, [])
+        self.fake_github.get_pr_status.assert_not_called()
+        self.assertEqual(backlog_store.list_tickets()[0].status, "review")  # unverändert
+
+
+if __name__ == "__main__":
+    unittest.main()

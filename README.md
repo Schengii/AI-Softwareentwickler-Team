@@ -237,8 +237,7 @@ hält jetzt eine EINZIGE, persistente Ticket-Liste (`memory/backlog.json`), in d
 Quellen schreiben:
 
 - **Spalten:** `todo` → `in_progress` → `review` (PR eröffnet, wartet auf Merge) →
-  `done`/`blocked`/`cancelled`. "done" heißt bewusst NICHT "gemerged" – eine Merge-Erkennung
-  wäre ein zusätzlicher `gh`-Aufruf, den es aktuell bewusst noch nicht gibt.
+  `done`/`blocked`/`cancelled`.
 - **CLI:** `/backlog` zeigt das Board als Tabelle. Jede Aufgabe legt beim Start ein Ticket an
   (sofort `in_progress`, noch bevor eine echte Kurzfassung vorliegt) und finalisiert es beim
   Abschluss über denselben Mechanismus wie der PR-Workflow (`_ask_for_git_push()`).
@@ -247,6 +246,11 @@ Quellen schreiben:
   entstanden sind, nicht nur die Jobs dieses Dashboard-Prozesses.
 - **Issue-Watcher:** Jedes aufgegriffene Issue ist sofort als `in_progress` sichtbar (nicht
   erst nach Abschluss) und landet je nach Ausgang auf `review` (PR eröffnet) oder `blocked`.
+- **Merge-Erkennung (`core/merge_watcher.py`):** "review"-Tickets bleiben nicht für immer
+  auf "review" hängen – `check_merged_tickets()` fragt für jedes den echten PR-Status per
+  `gh pr view` ab und zieht den Backlog-Status nach: echt gemerged → `done`, ohne Merge
+  geschlossen → `blocked`. Läuft automatisch im selben `--check-issues`-Poll-Zyklus mit
+  (kein zusätzlicher Cron-Eintrag nötig) UND vor jeder `/backlog`-Anzeige in der CLI.
 
 ---
 
@@ -400,6 +404,15 @@ bricht Läufe jetzt tatsächlich ab, sobald das per `.env` konfigurierte `MAX_RU
   Deployment-Ziel) fest, die bei JEDEM künftigen Lauf an diesem Projekt als verbindlicher
   Kontext an alle Agenten mitgegeben werden – einmal festgelegt statt bei jeder Anfrage neu
   spezifiziert.
+- **Architecture Decision Records** (`core/adr.py`): Die Konstitution hält das WAS fest
+  (Tech-Stack), aber nicht das WARUM ("REST statt GraphQL, weil…"). Der `architect`-Agent
+  (und grundsätzlich jeder Agent im Werkzeug-Loop) dokumentiert echte Trade-off-Entscheidungen
+  über das Werkzeug `record_architecture_decision` als nummerierte, mit dem Code versionierte
+  Markdown-Datei unter `docs/adr/NNNN-titel.md` im Projekt (Nygard-Format: Titel, Status,
+  Kontext, Entscheidung, Konsequenzen) – bewusst NICHT gitignored, anders als
+  `memory/backlog.json`. Bereits getroffene Entscheidungen werden bei JEDEM künftigen Lauf
+  automatisch in den Kontext aller Teilaufgaben injiziert, damit spätere Läufe nicht
+  unbemerkt gegen frühere, bewusste Entscheidungen arbeiten. Über `/adr [projekt]` einsehbar.
 
 ---
 
@@ -462,6 +475,10 @@ Details zu `--check-issues`: [🎫 Autonome, getriggerte Arbeit](#issue-watcher)
 | `/learnings` | Zeigt alle von den Agenten gelernten Regeln (persistentes Gedächtnis) mit Nummer je Agent an |
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
 | `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
+| `/adr [projekt]` | Zeigt die dokumentierten Architecture Decision Records (Begründungen echter Architektur-Entscheidungen) eines Projekts |
+| `/backlog` | Zeigt das Kanban-Board (Todo/In Bearbeitung/Review/Blockiert/Fertig) über CLI, Dashboard UND autonome Issue-Läufe hinweg |
+| `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
+| `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |
 | `/push` | Führt manuell einen Git-Commit & Push aus (mit Secret-Scan, Verifikations-Warnung & PR-Workflow) |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |

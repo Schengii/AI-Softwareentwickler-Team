@@ -344,8 +344,11 @@ class ProjectVerifier:
         Versucht einen echten `docker build` des Projekts, falls ein Dockerfile existiert
         und `docker` lokal verfügbar ist – ein generiertes Dockerfile, das nie tatsächlich
         baut, bringt ein Projekt nicht näher an ein echtes Deployment. Baut NIE `docker run`
-        oder gar einen echten Push/Deploy aus (das würde eine konkrete Ziel-Infrastruktur
-        voraussetzen, die dieses Framework nicht kennt) – nur die Build-Fähigkeit wird geprüft.
+        oder gar einen echten Deploy aus – nur die Build-Fähigkeit wird geprüft. Das
+        tatsächliche lokale Deployment (Docker Compose bzw. `docker run`) übernimmt bei Bedarf
+        core/deployment.py, manuell ausgelöst über `/deploy` – bewusst getrennt von dieser
+        automatischen Verifikationsprüfung, da eine echte Container-Ausführung Ports belegt
+        und einen laufenden Prozess startet, eine reine Build-Prüfung dagegen nicht.
         """
         dockerfile = self.project_dir / "Dockerfile"
         if not dockerfile.exists():

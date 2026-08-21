@@ -282,6 +282,39 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
         output = (result.stdout + result.stderr).strip()
         return success, output
 
+    def get_pr_status(self, pr_url: str) -> tuple[str, str]:
+        """
+        Fragt den echten Status eines Pull Requests per `gh pr view <url>` ab – Grundlage für
+        core/merge_watcher.py, um Backlog-Tickets (core/backlog_store.py) nach einem echten
+        Merge automatisch von "review" auf "done" zu ziehen, statt für immer auf "review"
+        hängen zu bleiben. Gibt ("merged"|"closed"|"open", Detail) zurück, oder
+        ("unknown", Fehlermeldung) bei JEDEM Problem (gh fehlt, PR nicht mehr auffindbar,
+        Netzwerkfehler, kaputtes JSON, ...) – der Aufrufer lässt das Ticket dann einfach
+        unverändert, statt einen falschen Status zu erzwingen.
+        """
+        try:
+            result = subprocess.run(
+                ["gh", "pr", "view", pr_url, "--json", "state,mergedAt"],
+                cwd=BASE_DIR, capture_output=True, text=True, timeout=20, encoding="utf-8",
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return "unknown", str(e)
+        if result.returncode != 0:
+            return "unknown", (result.stderr or result.stdout).strip()
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return "unknown", "Unerwartete Ausgabe von `gh pr view`."
+
+        state = (data.get("state") or "").upper()  # gh liefert "OPEN"/"CLOSED"/"MERGED"
+        if state == "MERGED":
+            return "merged", data.get("mergedAt", "")
+        if state == "CLOSED":
+            return "closed", ""
+        if state == "OPEN":
+            return "open", ""
+        return "unknown", f"Unbekannter PR-Status: '{state}'"
+
     # ──────────────────────────────────────────
     # Issue-Polling: autonome, getriggerte Läufe (core/issue_watcher.py)
     # ──────────────────────────────────────────

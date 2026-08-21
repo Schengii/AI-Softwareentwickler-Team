@@ -7,6 +7,110 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 📐 Architecture Decision Records (ADRs)
+
+Realer struktureller Fund: `agents/architect_agent.py`s eigener Ausgabe-Prompt sprach schon
+immer von "ADRs" (Abschnitt "6. Technologie-Entscheidungen (ADRs)") – aber nichts schrieb sie
+je als echte, persistente Datei. Jede Entscheidung stand nur im Antworttext EINES Laufs und
+war beim nächsten Lauf bereits wieder vergessen. `core/project_constitution.py` hält das WAS
+fest (Tech-Stack), nie das WARUM – ohne das konnten spätere Läufe unbemerkt gegen frühere,
+bewusst getroffene Entscheidungen arbeiten.
+
+- `core/adr.py` (neu): `write_adr()` legt eine nummerierte `docs/adr/NNNN-slug.md` im
+  Projekt an (Nygard-Format: Titel, Status, Kontext, Entscheidung, Konsequenzen) – die
+  Nummer wird deterministisch in Python vergeben statt vom Modell geraten, schließt
+  Kollisionen/Lücken aus. Bewusst NICHT gitignored (anders als `memory/backlog.json`) – ADRs
+  sind Projekt-Dokumentation und sollen mit dem Code versioniert werden.
+  `format_adr_summary_for_context()` liefert einen token-gedeckelten Digest (max. 12 ADRs,
+  älteste fallen zuerst raus) für die Kontext-Injektion.
+- `core/agent_toolbox.py`: neues Werkzeug `record_architecture_decision` – JEDER Agent im
+  Werkzeug-Loop kann es aufrufen (dieselbe flache Toolset-Verfügbarkeit wie `write_file`),
+  primär gedacht für Entscheidungen mit echter Alternative ("PostgreSQL statt MongoDB", "REST
+  statt GraphQL"). Trackt die geschriebene Datei in `toolbox.files_written` wie jedes andere
+  Datei-Werkzeug (relevant für die bestehende `file_owners`-Zuordnung).
+- `agents/architect_agent.py`: System-Prompt weist jetzt explizit an, Entscheidungen mit
+  echter Alternative ZUSÄTZLICH über das neue Werkzeug festzuhalten statt nur im Fließtext,
+  und bereits im Kontext mitgegebene frühere Entscheidungen nicht unbemerkt zu widersprechen.
+- `agents/orchestrator.py`: injiziert `format_adr_summary_for_context()` in den Kontext JEDER
+  Teilaufgabe – dieselbe "einmal festgelegt, künftig immer mitgegeben"-Philosophie wie die
+  bestehende Projekt-Konstitution und Lauf-Historie. Leer für Projekte ohne bisherige ADRs
+  (kein unnötiger Prompt-Text für die Mehrheit der Läufe).
+- `interface/cli.py`: neues `/adr [projekt]` zeigt alle dokumentierten Entscheidungen eines
+  Projekts als Tabelle.
+- `core/verifier.py`: veralteten Docstring-Hinweis bei `check_docker_build()` weiter
+  präzisiert (verweist jetzt korrekt auf `core/deployment.py`/`/deploy`).
+- 27 neue Tests (`test_adr.py`: Schreiben/Nummerierung/Listing inkl. kaputter Dateien und
+  Kontext-Kürzung; `test_agent_toolbox.py`: neues Werkzeug inkl. Nur-Lese-Sperre und leerem
+  Titel; `test_adr_integration.py`: echte Kontext-Injektion in JEDE Teilaufgabe über einen
+  echten Orchestrator-Lauf, analog zu `test_constitution_integration.py`; `test_adr_command.py`:
+  `/adr`-Anzeige). Volle Suite (431 Tests) grün, ruff sauber.
+
+---
+
+## 🔀 Merge-Erkennung fürs Backlog
+
+Direkte Lücke aus dem Backlog/Kanban-Eintrag unten: Tickets landeten bei einem geöffneten PR
+auf "review" – aber NIE automatisch weiter auf "done", selbst wenn der PR längst gemerged
+wurde. Das Board driftete dadurch zwangsläufig vom echten GitHub-Zustand auseinander.
+
+- `agents/github_agent.py`: neue `get_pr_status(pr_url)` – `gh pr view <url> --json
+  state,mergedAt`, liefert `("merged"|"closed"|"open", Detail)` oder `("unknown", ...)` bei
+  JEDEM Problem (kein Fehler-Raise – der Aufrufer lässt das Ticket dann unverändert, statt
+  einen falschen Status zu erzwingen).
+- `core/merge_watcher.py` (neu): `check_merged_tickets()` – prüft jedes Backlog-Ticket im
+  Status "review" (die PR-URL steckt bereits im `detail`-Feld, siehe PR-Workflow) gegen den
+  echten PR-Status: gemerged → `done`, ohne Merge geschlossen → `blocked` (abgelehnt, braucht
+  menschliche Aufmerksamkeit), weiterhin offen → unverändert.
+- `core/issue_watcher.py`: `run_issue_poll_cycle()` ruft `check_merged_tickets()` jetzt bei
+  JEDEM Zyklus mit auf – kein zusätzlicher Cron-Eintrag nötig, der bereits eingerichtete
+  `--check-issues`-Taskplaner-Job (siehe Eintrag unten) übernimmt die Merge-Erkennung gleich
+  mit. `main.py` gibt aktualisierte Ticket-IDs in der `--check-issues`-Ausgabe aus.
+- `interface/cli.py`: `/backlog` ist jetzt async und zieht Merges per
+  `asyncio.to_thread(check_merged_tickets)` VOR der Anzeige nach – für alle, die (noch) keinen
+  wiederkehrenden `--check-issues`-Lauf eingerichtet haben, sonst die einzige Stelle, an der
+  ein "review"-Ticket je auf "done" gezogen worden wäre.
+- `core/verifier.py`: veralteten Docstring-Hinweis bei `check_docker_build()` korrigiert
+  ("das würde eine konkrete Ziel-Infrastruktur voraussetzen, die dieses Framework nicht
+  kennt" – seit `core/deployment.py` nicht mehr richtig).
+- 28 neue Tests (`test_github_agent_issue_methods.py::TestGetPrStatus`: alle
+  `gh pr view`-Antwortfälle inkl. Timeout/kaputtes JSON; `test_merge_watcher.py`:
+  Status-Übersetzung inkl. "nur review-Tickets werden geprüft"/"kein PR-Link -> übersprungen"/
+  "gh nicht bereit -> nichts geprüft"; ein Integrationstest in `test_issue_watcher.py`, dass
+  der Poll-Zyklus ein vorbestehendes "review"-Ticket wirklich auf "done" zieht). Volle Suite
+  (411 Tests) grün, ruff sauber.
+
+---
+
+## 🚀 Echtes lokales Deployment (Docker Compose, `/deploy`)
+
+Letzter offener Punkt aus der ursprünglichen Gap-Analyse gegen ein echtes Team (siehe
+PR-Workflow-Eintrag unten): `core/verifier.py.check_docker_build()` prüfte bislang NUR, ob
+ein generiertes Dockerfile überhaupt baut – "das würde eine konkrete Ziel-Infrastruktur
+voraussetzen, die dieses Framework nicht kennt" (ursprünglicher Docstring dort). Jetzt kennt
+es eine: Docker Compose lokal/self-hosted, der ohne Cloud-Account/API-Token funktionierende
+Standardfall (bewusste Nutzerentscheidung gegen ein PaaS-Ziel wie Fly.io/Railway).
+
+- `core/deployment.py` (neu): `deploy_project()` – bevorzugt eine Compose-Datei
+  (`docker compose up -d --build`, liest die tatsächlich veröffentlichten Ports danach ECHT
+  aus `docker compose ps --format json`, nicht aus der Compose-Datei geraten, da Docker Ports
+  dynamisch zuweisen kann), sonst `docker build` + `docker run` mit Port aus einem
+  gefundenen `EXPOSE` im Dockerfile. `stop_deployment()` fährt es wieder herunter. Kein
+  automatischer Deploy nach Push/Merge – echte Container-Ausführung startet einen laufenden
+  Prozess und belegt Ports, verdient dieselbe Bestätigungs-Gate-Philosophie wie `/push`.
+- `interface/cli.py`: neue Befehle `/deploy [projekt]` (Vorschau + Bestätigung) und
+  `/deploy-stop [projekt]`, fallen ohne Namen auf das per `/load` geladene Projekt zurück.
+- `interface/web_dashboard.py`: neuer Deploy-Bereich (Projekt-Dropdown, Deploy/Stoppen), drei
+  neue Endpunkte (`GET /api/projects`, `POST /api/deploy(-stop)`, `GET
+  /api/deploy-status/<projekt>`) – läuft über denselben Hintergrund-Event-Loop wie die Jobs
+  (`asyncio.to_thread`), blockiert den Server also nicht während eines Docker-Builds.
+- `config.py`: `DEPLOY_TIMEOUT_SECONDS` (Standard 300s).
+- 25 neue Tests (`test_deployment.py`: Compose vs. Dockerfile-Fallback vs. nichts gefunden,
+  Port-Ermittlung aus echtem `docker compose ps`/`EXPOSE`, Namens-Sanitisierung;
+  `test_deploy_command.py`: CLI-Bestätigungs-Gate; `test_dashboard_deploy.py`: echter
+  HTTP-Server-Zyklus bis "done"/"stopped"). Volle Suite (397 Tests) grün, ruff sauber.
+
+---
+
 ## 📋 Backlog/Kanban-Board über CLI, Dashboard & Issue-Watcher hinweg
 
 Direkte Folge-Baustelle aus derselben Roadmap: PR-Workflow und Issue-Watcher gaben jeder

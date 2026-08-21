@@ -9,6 +9,9 @@ Reaktionsfähigkeit, die ein echtes Team neben der direkten Auftragsannahme auch
 als externer Poll-Aufruf statt eines eingebauten Schedulers/Webhook-Servers: Cron/Taskplaner/
 CI-Schedule lösen das zuverlässiger, als eine eigene Scheduler-Implementierung es könnte.
 
+Derselbe Zyklus zieht außerdem die Merge-Erkennung fürs Backlog mit (core/merge_watcher.py) -
+Tickets, deren PR inzwischen echt gemerged wurde, wandern dabei von "review" auf "done".
+
 Sicherheitsmodell (bewusst konservativer als der interaktive CLI-Pfad, da KEIN Mensch zur
 Bestätigung verfügbar ist):
 - Nur Issues mit einem expliziten Opt-in-Label (config.ISSUE_TRIGGER_LABEL) werden
@@ -40,6 +43,7 @@ from config import (
     ISSUE_TRIGGER_LABEL,
 )
 from core.backlog_store import upsert_ticket
+from core.merge_watcher import check_merged_tickets
 
 StatusCallback = Callable[[str], None]
 
@@ -63,6 +67,9 @@ class IssuePollReport:
     """Ergebnis eines gesamten Poll-Zyklus (ein Aufruf von `python main.py --check-issues`)."""
     gh_ready: bool = True
     results: list[IssueRunResult] = field(default_factory=list)
+    # IDs der Backlog-Tickets, die in DIESEM Zyklus per core/merge_watcher.py von "review" auf
+    # "done"/"blocked" gezogen wurden (echter GitHub-Merge erkannt) - siehe dort.
+    merged_ticket_ids: list[str] = field(default_factory=list)
 
 
 async def run_issue_poll_cycle(
@@ -86,13 +93,16 @@ async def run_issue_poll_cycle(
     github_agent.ensure_label_exists(ISSUE_DONE_LABEL, color="0e8a16", description="KI-Team hat einen PR eröffnet")
     github_agent.ensure_label_exists(ISSUE_BLOCKED_LABEL, color="d93f0b", description="KI-Team konnte nicht abschließen")
 
+    report = IssuePollReport(gh_ready=True)
+    # Merge-Erkennung fürs Backlog nutzt DENSELBEN Poll-Zyklus mit (core/merge_watcher.py) -
+    # kein zusätzlicher Cron-Eintrag nötig, gh_ready() wurde oben schon geprüft.
+    report.merged_ticket_ids = check_merged_tickets(github_agent)
+
     limit = max_issues if max_issues is not None else ISSUE_POLL_MAX_PER_CYCLE
     issues = github_agent.list_actionable_issues(
         label=ISSUE_TRIGGER_LABEL,
         exclude_labels=[ISSUE_IN_PROGRESS_LABEL, ISSUE_DONE_LABEL, ISSUE_BLOCKED_LABEL],
     )[:limit]
-
-    report = IssuePollReport(gh_ready=True)
     for issue in issues:
         if status_callback:
             status_callback(f"🎫 Issue #{issue.get('number')} '{issue.get('title', '')}' wird aufgegriffen...")

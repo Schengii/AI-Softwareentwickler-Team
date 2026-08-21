@@ -175,6 +175,21 @@ class TestIssueWatcherOrchestration(unittest.TestCase):
         self.assertIn("LLM-Aufruf fehlgeschlagen", report.results[0].detail)
         self.fake_github.add_issue_label.assert_any_call(1, "ai-team-blocked")
 
+    def test_poll_cycle_also_runs_merge_detection_for_existing_review_tickets(self):
+        # Ein aus einem FRÜHEREN Zyklus stammendes "review"-Ticket, dessen PR inzwischen
+        # gemerged wurde - core/merge_watcher.py.check_merged_tickets() wird vom selben
+        # Poll-Zyklus mitgenutzt (kein zusätzlicher Cron-Eintrag nötig).
+        backlog_store.upsert_ticket(
+            "issue-99", "Älteres Issue", "issue", "review", detail="https://github.com/x/y/pull/99",
+        )
+        self.fake_github.get_pr_status.return_value = ("merged", "2026-08-21T09:00:00Z")
+
+        report = asyncio.run(run_issue_poll_cycle())
+
+        self.assertEqual(report.merged_ticket_ids, ["issue-99"])
+        merged_ticket = next(t for t in backlog_store.list_tickets() if t.id == "issue-99")
+        self.assertEqual(merged_ticket.status, "done")
+
     def test_respects_max_issues_limit(self):
         self.fake_github.list_actionable_issues.return_value = [_fake_issue(1), _fake_issue(2), _fake_issue(3)]
         report = asyncio.run(run_issue_poll_cycle(max_issues=1))

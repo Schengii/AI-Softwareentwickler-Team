@@ -35,12 +35,15 @@ def main():
         report = asyncio.run(run_issue_poll_cycle(status_callback=print))
         if not report.gh_ready:
             print("ℹ️  `gh`-CLI nicht installiert/nicht eingeloggt – Issue-Poll übersprungen.")
-        elif not report.results:
-            print("ℹ️  Keine neuen Issues mit passendem Label gefunden.")
         else:
-            for r in report.results:
-                detail = f" – {r.detail}" if r.detail else ""
-                print(f"#{r.issue_number} '{r.title}' -> {r.outcome}{detail}")
+            if report.merged_ticket_ids:
+                print(f"🔀 {len(report.merged_ticket_ids)} Backlog-Ticket(s) auf gemergte PRs aktualisiert: {', '.join(report.merged_ticket_ids)}")
+            if not report.results:
+                print("ℹ️  Keine neuen Issues mit passendem Label gefunden.")
+            else:
+                for r in report.results:
+                    detail = f" – {r.detail}" if r.detail else ""
+                    print(f"#{r.issue_number} '{r.title}' -> {r.outcome}{detail}")
         return
 
     if "--dashboard" in sys.argv:

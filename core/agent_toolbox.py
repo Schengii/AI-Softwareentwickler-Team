@@ -98,6 +98,29 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "description": "Führt die echte Testsuite des Projekts aus (pytest falls installiert, sonst unittest discover) und gibt das tatsächliche Ergebnis (exit_code, stdout, stderr) zurück. Nutze dies, um deine Änderungen zu verifizieren, bevor du die Aufgabe als abgeschlossen meldest.",
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
+    {
+        "name": "record_architecture_decision",
+        "description": (
+            "Dokumentiert EINE getroffene Architektur-Entscheidung mit echtem Trade-off "
+            "(z.B. 'REST statt GraphQL', 'PostgreSQL statt MongoDB', 'Monolith statt "
+            "Microservices') als nummeriertes Architecture Decision Record (ADR) unter "
+            "docs/adr/ im Projekt. Nutze dies bei jeder Entscheidung, bei der es plausible "
+            "Alternativen gab und du dich bewusst für eine entschieden hast – NICHT für "
+            "Routine-Implementierungsdetails ohne echte Alternative. Künftige Läufe an "
+            "diesem Projekt sehen bereits getroffene Entscheidungen automatisch und "
+            "widersprechen ihnen dadurch nicht unbemerkt."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Kurzer Titel der Entscheidung, z.B. 'PostgreSQL statt MongoDB für Nutzerdaten'"},
+                "context": {"type": "string", "description": "Welches Problem/welche Anforderung führte zu dieser Entscheidung? Welche Optionen standen zur Wahl?"},
+                "decision": {"type": "string", "description": "Wofür wurde sich entschieden und warum (die eigentliche Begründung)?"},
+                "consequences": {"type": "string", "description": "Was folgt daraus - Vor-/Nachteile, künftige Einschränkungen, worauf spätere Änderungen achten müssen"},
+            },
+            "required": ["title", "context", "decision", "consequences"],
+        },
+    },
 ]
 
 READ_ONLY_TOOL_NAMES = {"read_file", "list_files", "search_code"}
@@ -349,6 +372,21 @@ class AgentToolbox:
             "stderr": report.stderr,
             "reason_skipped": report.reason_skipped,
         }
+
+    # ── Dokumentations-Werkzeug ──────────────────────────────────────
+
+    async def _tool_record_architecture_decision(
+        self, title: str, context: str, decision: str, consequences: str,
+    ) -> dict:
+        from core.adr import write_adr
+
+        if not (title or "").strip():
+            return {"error": "'title' darf nicht leer sein."}
+
+        path = write_adr(self.project_dir, title=title, context=context, decision=decision, consequences=consequences)
+        clean_rel = str(path.relative_to(self.project_dir)).replace("\\", "/")
+        self.files_written.add(clean_rel)
+        return {"path": clean_rel, "status": "ok"}
 
     @staticmethod
     def _split_command(command: str) -> list[str]:

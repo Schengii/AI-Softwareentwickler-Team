@@ -7,6 +7,33 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 📐 ADR-Adoption Teil 2: architect ruft das Werkzeug jetzt auch wirklich auf
+
+Fund aus einem ZWEITEN echten End-to-End-Testlauf, der gezielt prüfte, ob die vorherige
+ADR-Adoption-Runde (siehe Eintrag unten) wirklich greift: Sie greift – teilweise. `architect`
+wurde diesmal korrekt eingeplant und explizit mit "erstelle ADR" beauftragt
+(`DECOMPOSE_SYSTEM_PROMPT`-Regel funktioniert live nachweislich), rief aber trotz eigener
+System-Prompt-Anweisung (`agents/architect_agent.py`) NIE `record_architecture_decision` auf –
+die Entscheidung stand nur im Fließtext. Der bestehende Code-Fence-Retry
+(`CODE_WRITING_AGENT_IDS`) greift hier nicht: `architect` gehört nicht zu dieser Gruppe und
+liefert legitim Code-Fences für Mermaid-Diagramme, ohne dass "kein write_file aufgerufen"
+dort ein Problem wäre.
+
+- `agents/base_agent.py`: eigene, gezielte Heuristik für `architect` – NICHT der
+  Code-Fence-Check von oben, sondern `_ADR_TEXT_MARKERS` (deckt den vom
+  `architect`-Ausgabeformat selbst vorgeschriebenen Abschnitt "Technologie-Entscheidungen
+  (ADRs)" ab). Erwähnt die finale Antwort eine Technologie-/Architektur-Entscheidung, OHNE
+  dass während der GESAMTEN Aufgabe auch nur eine Datei (nicht mal ein ADR) geschrieben
+  wurde, wird GENAU EIN gezielter Korrektur-Hinweis nachgeschoben – dasselbe
+  Ein-Retry-Muster wie die beiden bestehenden Fixes.
+- 6 neue Tests (`test_agentic_loop_resilience.py`): Retry-Pfad inkl. echtem
+  `record_architecture_decision`-Aufruf danach; kein Retry ohne Entscheidungs-Marker; kein
+  Retry, wenn schon eine Datei geschrieben wurde; kein Retry für Agenten außerhalb von
+  `architect` (auch nicht für `backend` mit demselben Marker im Text); nur EIN Retry; kein
+  Retry ohne verbleibende Iteration. Volle Suite (446 Tests) grün, ruff sauber.
+
+---
+
 ## 📐 ADR-Adoption: architect wird jetzt zuverlässiger eingeplant
 
 Vierter und letzter Fund aus demselben echten End-to-End-Testlauf (siehe die Einträge

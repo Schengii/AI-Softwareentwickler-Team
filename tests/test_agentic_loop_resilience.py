@@ -290,5 +290,122 @@ class TestCodeInTextWithoutFileWriteRetry(unittest.TestCase):
         self.assertEqual(fake_llm.call_count, 1)  # max_tool_iterations=1 -> keine Iteration für einen Retry übrig
 
 
+class TestArchitectAdrCallRetry(unittest.TestCase):
+    """
+    Realer Fund aus einem echten End-to-End-Testlauf: architect wurde korrekt eingeplant und
+    explizit mit "erstelle ADR" beauftragt, hat aber trotz eigener System-Prompt-Anweisung NIE
+    record_architecture_decision aufgerufen - die Entscheidung stand nur im Fließtext. Der
+    Code-Fence-Check (TestCodeInTextWithoutFileWriteRetry) greift hier nicht: architect ist
+    NICHT in CODE_WRITING_AGENT_IDS und liefert legitim Code-Fences für Mermaid-Diagramme.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_adr_marker_without_any_write_triggers_retry_that_then_calls_the_tool(self):
+        adr_call = LLMResponse(
+            text="", model_name="fake-model", prompt_tokens=10, completion_tokens=5, total_tokens=15,
+            tool_calls=[ToolCall(id="c1", name="record_architecture_decision", arguments={
+                "title": "PostgreSQL statt MongoDB", "context": "K", "decision": "E", "consequences": "K",
+            })],
+        )
+        fake_llm = _ScriptedLLM([
+            _final_response("## 6. Technologie-Entscheidungen (ADRs)\n\nWir wählen PostgreSQL."),
+            adr_call,
+            _final_response("ADR dokumentiert."),
+        ])
+        agent = ArchitectAgent()
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="architect", description="Entwirf die Architektur",
+                          project_dir=self.temp_dir, max_tool_iterations=5)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.content, "ADR dokumentiert.")
+        self.assertEqual(len(result.files_written), 1)
+        self.assertTrue(result.files_written[0].startswith("docs/adr/"))
+        self.assertEqual(fake_llm.call_count, 3)
+        retry_messages_text = " ".join(m.text for m in fake_llm.seen_messages[1])
+        self.assertIn("KEIN ADR", retry_messages_text)
+
+    def test_no_retry_without_adr_marker_in_text(self):
+        fake_llm = _ScriptedLLM([_final_response("Ich schlage FastAPI und PostgreSQL vor.")])
+        agent = ArchitectAgent()
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="architect", description="Entwirf die Architektur",
+                          project_dir=self.temp_dir, max_tool_iterations=5)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(fake_llm.call_count, 1)  # kein Entscheidungs-Marker -> kein Retry-Grund
+
+    def test_no_retry_when_architect_already_wrote_a_file(self):
+        write_call = LLMResponse(
+            text="", model_name="fake-model", prompt_tokens=10, completion_tokens=5, total_tokens=15,
+            tool_calls=[ToolCall(id="c1", name="write_file", arguments={"path": "docs/architecture.md", "content": "# Architektur\n"})],
+        )
+        fake_llm = _ScriptedLLM([
+            write_call,
+            _final_response("## 6. Technologie-Entscheidungen (ADRs)\n\nSiehe docs/architecture.md."),
+        ])
+        agent = ArchitectAgent()
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="architect", description="Entwirf die Architektur",
+                          project_dir=self.temp_dir, max_tool_iterations=5)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.files_written, ["docs/architecture.md"])
+        self.assertEqual(fake_llm.call_count, 2)  # bereits geschrieben -> kein Retry trotz ADR-Marker
+
+    def test_no_retry_for_non_architect_agent_with_adr_marker(self):
+        # backend ist NICHT von dieser Heuristik betroffen (nur von der Code-Fence-Heuristik,
+        # die hier mangels "```" ebenfalls nicht greift).
+        fake_llm = _ScriptedLLM([_final_response("## 6. Technologie-Entscheidungen (ADRs)\n\nOK.")])
+        agent = BackendAgent()
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="backend", description="Baue etwas",
+                          project_dir=self.temp_dir, max_tool_iterations=5)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(fake_llm.call_count, 1)
+
+    def test_only_one_adr_retry_even_if_still_not_called(self):
+        fake_llm = _ScriptedLLM([
+            _final_response("## 6. Technologie-Entscheidungen (ADRs)\n\nErster Versuch."),
+            _final_response("## 6. Technologie-Entscheidungen (ADRs)\n\nIgnoriert den Hinweis."),
+        ])
+        agent = ArchitectAgent()
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="architect", description="Entwirf die Architektur",
+                          project_dir=self.temp_dir, max_tool_iterations=5)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(fake_llm.call_count, 2)  # nur EIN Retry
+        self.assertEqual(result.files_written, [])
+
+    def test_no_retry_when_no_iterations_remain(self):
+        fake_llm = _ScriptedLLM([_final_response("## 6. Technologie-Entscheidungen (ADRs)\n\nOK.")])
+        agent = ArchitectAgent()
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="architect", description="Entwirf die Architektur",
+                          project_dir=self.temp_dir, max_tool_iterations=1)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(fake_llm.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

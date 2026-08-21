@@ -162,6 +162,16 @@ MAX_VERIFICATION_ITERATIONS: int = int(os.getenv("MAX_VERIFICATION_ITERATIONS", 
 DEPENDENCY_INSTALL_TIMEOUT_SECONDS: float = float(os.getenv("DEPENDENCY_INSTALL_TIMEOUT_SECONDS", "120"))
 TEST_RUN_TIMEOUT_SECONDS: float = float(os.getenv("TEST_RUN_TIMEOUT_SECONDS", "60"))
 
+# Realer Fund: der tester-Agent nennt "Code-Coverage-Analyse" in seinem eigenen System-Prompt
+# als Fähigkeit (agents/tester_agent.py) - aber nirgends im echten Code wurde Coverage jemals
+# tatsächlich AUSGEFÜHRT oder GEMESSEN, nur behauptet. Dieselbe "LLM-Einschätzung statt echter
+# Messung"-Lücke, die bei Dependency-Vulnerabilities bereits durch einen echten pip-audit-Scan
+# geschlossen wurde. core/verifier.py.check_coverage() misst jetzt echt per `coverage.py`.
+# Rein informativ wie check_lint()/check_dependency_vulnerabilities() (beeinflusst
+# verification_ok NICHT) - ein KI-generiertes Projekt mit niedriger Coverage soll nicht hart
+# blockiert werden, aber der Nutzer soll die reale Zahl sehen statt gar keine.
+MIN_TEST_COVERAGE_PERCENT: float = float(os.getenv("MIN_TEST_COVERAGE_PERCENT", "70"))
+
 # ──────────────────────────────────────────
 # Echtes lokales Deployment: Docker Compose (core/deployment.py, manuell per /deploy ausgelöst)
 # ──────────────────────────────────────────

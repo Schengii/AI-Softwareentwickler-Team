@@ -7,6 +7,27 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🚨 CI-Fehlschlag bleibt nicht mehr folgenlos: automatisches Backlog-Ticket
+
+Realer Fund bei einer Bestandsaufnahme des eigenen Teams: `interface/cli.py._report_ci_status()`
+wartete zwar echt auf die CI-Pipeline und zeigte "❌ CI fehlgeschlagen" in der Konsole – aber
+danach passierte NICHTS. Kein Backlog-Ticket, kein Hinweis in `/backlog`, keine
+Weiterverfolgung. Der Push/PR-Vorgang selbst stand im Backlog trotzdem als "review"/"done",
+obwohl die eigentliche Arbeit gar nicht grün war – ein rotes CI ist für ein professionelles
+Team kein Detail, das man nur einmal in der Konsole sieht und dann vergisst.
+
+- `interface/cli.py._report_ci_status()`: gibt jetzt `(status, detail)` zurück statt nur zu
+  loggen.
+- `interface/cli.py._ask_for_git_push()`: überschreibt den Ticket-Endstatus mit `"blocked"`
+  und einer Fehlerbeschreibung, sobald CI wirklich fehlschlägt (`status == "failed"`) – ein
+  `no_run`-Ergebnis (kein `gh` verfügbar, kein CI konfiguriert) bleibt bewusst unangetastet,
+  das ist kein Fehler, nur nicht prüfbar.
+- 3 neue Tests (`test_ci_failure_creates_backlog_ticket.py`): rotes CI stuft das Ticket auf
+  `blocked` herab und trägt die reale CI-Fehlermeldung ein; grünes CI belässt es bei `done`;
+  ein nicht prüfbares CI blockiert nichts künstlich. Volle Suite (465 Tests) grün, ruff sauber.
+
+---
+
 ## ⚡ Team-Komplexitäts-Skalierung: kein Teamleiter-Overhead mehr bei trivialen Aufgaben
 
 Realer Fund aus Probelauf 3 (FastAPI-Ping-API, ein einziger Endpunkt + ein Test): 66.000

@@ -501,7 +501,14 @@ class CLIInterface:
                 else:
                     console.print("🚀 [bold green]Änderungen erfolgreich auf GitHub gepusht![/bold green]")
                     ticket_status = "done"
-                await self._report_ci_status(github_agent)
+                ci_status, ci_detail = await self._report_ci_status(github_agent)
+                if ci_status == "failed":
+                    # Realer Fund: ein CI-Fehlschlag blieb bisher folgenlos - nur eine rote
+                    # Konsolenzeile, kein Backlog-Ticket, keine Weiterverfolgung. Überschreibt
+                    # bewusst "review"/"done" mit "blocked", da ein rotes CI die eigentliche
+                    # Arbeit NICHT als abgeschlossen gelten lassen sollte, egal ob Direct-Push
+                    # oder PR-Workflow.
+                    ticket_status, ticket_detail = "blocked", f"CI fehlgeschlagen: {ci_detail}"
             else:
                 console.print(f"⚠️ Push nicht abgeschlossen: {out_p}", style="yellow")
                 ticket_detail = out_p
@@ -524,12 +531,15 @@ class CLIInterface:
         # abgezweigt) einen neuen Feature-Branch anlegt statt fälschlich direkt auf diesen
         # Leftover-Branch zu committen.
 
-    async def _report_ci_status(self, github_agent) -> None:
+    async def _report_ci_status(self, github_agent) -> tuple[str, str]:
         """
         Wartet auf die echte CI-Pipeline (.github/workflows/ci.yml, läuft bei jedem Push) und
         meldet das tatsächliche Ergebnis – realer Fund: push() war bisher "fire and forget",
         ob CI tatsächlich grün wurde, hat das Team nie erfahren. Ein `no_run`-Ergebnis (kein
         `gh` verfügbar, kein GitHub-Remote, ...) ist dabei kein Fehler, nur nicht prüfbar.
+        Gibt (status, detail) zurück, damit der Aufrufer (siehe _ask_for_git_push) bei einem
+        echten Fehlschlag das Backlog-Ticket entsprechend nachziehen kann – bisher blieb ein
+        rotes CI folgenlos: nur diese eine Konsolenzeile, kein Ticket, keine Weiterverfolgung.
         """
         branch = github_agent.get_current_branch()
         console.print(f"🔄 [dim]Warte auf CI-Status für `{branch}` (max. 90s)...[/dim]")
@@ -542,6 +552,7 @@ class CLIInterface:
             console.print(f"⏳ [yellow]{detail}[/yellow] – prüfe den Status später manuell.")
         else:  # "no_run"
             console.print(f"ℹ️ [dim]CI-Status nicht prüfbar: {detail}[/dim]")
+        return status, detail
 
     async def _delete_project_with_confirmation(self, project_name: str) -> None:
         """

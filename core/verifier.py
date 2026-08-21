@@ -44,6 +44,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from config import MIN_TEST_COVERAGE_PERCENT
 from core.code_sandbox import CodeSandbox, ExecutionResult
 
 VENV_DIRNAME = ".ai_team_venv"
@@ -138,6 +139,28 @@ class DependencyAuditReport:
     vulnerable: bool
     tool: str
     vulnerabilities: list[DependencyVulnerability] = field(default_factory=list)
+    reason_skipped: str = ""
+
+
+@dataclass
+class CoverageReport:
+    """
+    Ergebnis einer echten Coverage-Messung (`coverage.py`) – ersetzt die bisher rein
+    behauptete Fähigkeit "Code-Coverage-Analyse" im System-Prompt des tester-Agenten
+    (agents/tester_agent.py), die nirgends im echten Code tatsächlich AUSGEFÜHRT wurde.
+
+    Wie bei DockerBuildReport/DependencyAuditReport/LintReport gilt: fehlendes Tool, ein
+    technischer Fehlschlag der Messung selbst, oder gar keine Python-Testdateien sind KEIN
+    Fehler, nur nicht messbar (attempted=False) – niemals fälschlich als "0% Coverage"
+    gemeldet. `passed` vergleicht gegen MIN_TEST_COVERAGE_PERCENT (config.py), beeinflusst
+    aber – wie check_lint()/check_dependency_vulnerabilities() – bewusst NICHT
+    verification_ok: ein KI-generiertes Projekt mit niedriger Coverage soll die reale Zahl
+    sichtbar machen, nicht hart blockiert werden.
+    """
+    attempted: bool
+    passed: bool
+    percent_covered: float
+    threshold: float
     reason_skipped: str = ""
 
 
@@ -337,6 +360,74 @@ class ProjectVerifier:
             ran=True, passed=passed, exit_code=exit_code,
             stdout="\n".join(stdout_chunks), stderr="\n".join(stderr_chunks),
             duration_seconds=time.monotonic() - start, failures=failures,
+        )
+
+    def check_coverage(self, timeout_seconds: float = 60.0) -> CoverageReport:
+        """
+        Misst echte Test-Coverage per `coverage.py` – ersetzt die bisher rein behauptete
+        Fähigkeit im System-Prompt des tester-Agenten durch eine tatsächliche Messung.
+        NUR für Python (analog zu check_lint()s bewusster Python-Priorität – Node-Coverage
+        bräuchte eine andere Toolchain wie nyc/istanbul). Installiert `coverage` bei Bedarf
+        in dieselbe venv wie run_tests() und liest das reale JSON-Ergebnis – kein Parsen
+        von Freitext-Prozentzahlen.
+        """
+        if not self._find_python_test_files():
+            return CoverageReport(
+                attempted=False, passed=True, percent_covered=0.0, threshold=MIN_TEST_COVERAGE_PERCENT,
+                reason_skipped="Keine Testdateien (test_*.py) im Projekt gefunden – Coverage nicht messbar.",
+            )
+
+        python_exe = self._resolve_python()
+        install_result = CodeSandbox.run_command(
+            [python_exe, "-m", "pip", "install", "-q", "coverage"],
+            cwd=self.project_dir, timeout_seconds=60.0,
+        )
+        if install_result.exit_code != 0:
+            return CoverageReport(
+                attempted=False, passed=True, percent_covered=0.0, threshold=MIN_TEST_COVERAGE_PERCENT,
+                reason_skipped=f"`coverage`-Paket konnte nicht installiert werden: {install_result.stderr[:300]}",
+            )
+
+        data_file = self.project_dir / ".ai_team_coverage_data"
+        json_file = self.project_dir / ".ai_team_coverage.json"
+        try:
+            pytest_check = CodeSandbox.run_command([python_exe, "-c", "import pytest"], cwd=self.project_dir, timeout_seconds=10.0)
+            if pytest_check.exit_code == 0:
+                run_command = [python_exe, "-m", "coverage", "run", f"--data-file={data_file}", "-m", "pytest", "-q", str(self.project_dir)]
+            else:
+                run_command = [python_exe, "-m", "coverage", "run", f"--data-file={data_file}", "-m", "unittest",
+                                "discover", "-s", str(self.project_dir), "-p", "test_*.py"]
+            run_result = CodeSandbox.run_command(run_command, cwd=self.project_dir, timeout_seconds=timeout_seconds)
+
+            # coverage run's eigener exit_code spiegelt nur den Testlauf-Exit-Code wider
+            # (Testfehler selbst sind bereits Gegenstand von run_tests() oben) - hier zählt
+            # nur, ob überhaupt Coverage-Daten geschrieben wurden.
+            if not data_file.exists():
+                tail = (run_result.stdout + run_result.stderr).strip()[-500:]
+                return CoverageReport(
+                    attempted=False, passed=True, percent_covered=0.0, threshold=MIN_TEST_COVERAGE_PERCENT,
+                    reason_skipped=f"Coverage-Messung lieferte keine Daten (Testlauf evtl. abgestürzt): {tail}",
+                )
+
+            json_result = CodeSandbox.run_command(
+                [python_exe, "-m", "coverage", "json", f"--data-file={data_file}", "-o", str(json_file), "-q"],
+                cwd=self.project_dir, timeout_seconds=30.0,
+            )
+            try:
+                report_data = json.loads(json_file.read_text(encoding="utf-8"))
+                percent = float(report_data["totals"]["percent_covered"])
+            except (OSError, json.JSONDecodeError, KeyError, ValueError):
+                return CoverageReport(
+                    attempted=False, passed=True, percent_covered=0.0, threshold=MIN_TEST_COVERAGE_PERCENT,
+                    reason_skipped=f"Coverage-JSON-Report konnte nicht gelesen werden: {json_result.stderr[:300]}",
+                )
+        finally:
+            data_file.unlink(missing_ok=True)
+            json_file.unlink(missing_ok=True)
+
+        return CoverageReport(
+            attempted=True, passed=percent >= MIN_TEST_COVERAGE_PERCENT,
+            percent_covered=percent, threshold=MIN_TEST_COVERAGE_PERCENT,
         )
 
     def check_docker_build(self, timeout_seconds: float = 180.0) -> DockerBuildReport:

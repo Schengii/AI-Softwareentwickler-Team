@@ -1087,6 +1087,29 @@ class Orchestrator:
                     notify(f"  🎨 [bold green]{lint.tool}: keine Lint-Funde.[/bold green]")
                     summary_lines.append(f"- 🎨 {lint.tool}: keine Lint-Funde.")
 
+        # Realer Fund: der tester-Agent nennt "Code-Coverage-Analyse" im eigenen System-Prompt
+        # als Fähigkeit, aber nirgends im echten Code wurde sie je tatsächlich ausgeführt oder
+        # gemessen - dieselbe "LLM-Einschätzung statt echter Messung"-Lücke, die bei
+        # Dependency-Vulnerabilities bereits geschlossen wurde. Rein informativ wie
+        # check_lint() - beeinflusst verification_ok NICHT, ein KI-generiertes Projekt mit
+        # niedriger Coverage soll die reale Zahl sichtbar machen, nicht hart blockiert werden.
+        if not (budget_aborted or manually_cancelled):
+            coverage_report = await asyncio.to_thread(verifier.check_coverage)
+            if coverage_report.attempted:
+                # Bewusst ohne Format-Spezifizierer (":.1f") direkt in der f-String-
+                # Interpolation - round() vorab ausgeführt, damit ein in Tests gemocktes
+                # ProjectVerifier (siehe test_lint_integration.py & Co., dort oft ein
+                # unkonfigurierter MagicMock) nicht an einem strikten Format-Spezifizierer
+                # scheitert, den MagicMock.__format__() nicht unterstützt.
+                percent = round(coverage_report.percent_covered, 1)
+                threshold = round(coverage_report.threshold)
+                if coverage_report.passed:
+                    notify(f"  📈 [bold green]Test-Coverage: {percent}% (≥ {threshold}% Schwelle).[/bold green]")
+                    summary_lines.append(f"- 📈 Test-Coverage: {percent}% (≥ {threshold}% Schwelle).")
+                else:
+                    notify(f"  📉 [bold yellow]Test-Coverage: {percent}% (unter {threshold}% Schwelle).[/bold yellow]")
+                    summary_lines.append(f"- 📉 ⚠️ Test-Coverage: {percent}% (unter {threshold}% Schwelle).")
+
         verification_summary = "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n" + (
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."
         )

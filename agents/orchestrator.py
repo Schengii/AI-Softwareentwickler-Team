@@ -70,6 +70,7 @@ from config import (
     AUTO_SAVE_WORKSPACE,
     BASE_DIR,
     ENABLE_DEPARTMENT_LEAD_EXECUTION,
+    ENABLE_TASK_COMPLEXITY_SCALING,
     MAX_RUN_TOKENS,
     MAX_VERIFICATION_ITERATIONS,
     ORCHESTRATOR_MODEL,
@@ -86,7 +87,7 @@ from core.message_bus import AgentResult, AgentTask
 from core.project_constitution import format_constitution_for_agents
 from core.project_status import format_context_for_agents, record_run
 from core.result_aggregator import ResultAggregator
-from core.task_manager import TaskManager
+from core.task_manager import TaskManager, is_micro_task
 from core.token_guard import token_guard
 from core.verifier import ProjectVerifier
 from core.workspace import WorkspaceManager
@@ -679,6 +680,12 @@ class Orchestrator:
         running_context = ""  # Kompakter Kontext aus vorherigen Phasen (z.B. Planungsergebnisse)
         budget_aborted = False
         manually_cancelled = False
+        # Realer Fund: eine triviale Ein-Endpunkt-Aufgabe verbrauchte 66.000 Tokens, weil
+        # jeder Fachbereich mit nur EINEM Mitglied trotzdem die volle Teamleiter-Delegation+
+        # Konsolidierung durchlief (siehe ENABLE_TASK_COMPLEXITY_SCALING in config.py für
+        # Details). Einmalig aus dem bereits erstellten Plan berechnet, kein zusätzlicher
+        # LLM-Aufruf.
+        task_is_micro = ENABLE_TASK_COMPLEXITY_SCALING and is_micro_task(agent_tasks)
 
         for dept_id, phase_label, icon, run_mode in PHASE_ORDER:
             if run_start_tokens is not None and self._run_budget_exceeded(run_start_tokens):
@@ -709,8 +716,14 @@ class Orchestrator:
                 for task in member_tasks:
                     task.context += f"\n\n## Kontext aus vorherigen Fachbereichen:\n{running_context[:2500]}"
 
+            # Nur EIN Mitglied trägt hier die gesamte Fachbereichsarbeit - bei einer insgesamt
+            # kleinen Aufgabe fehlt der Abstimmungsbedarf, den Delegation+Konsolidierung
+            # eigentlich rechtfertigt (siehe task_is_micro oben). Fachbereiche mit mehreren
+            # Mitgliedern behalten die Teamleiter-Koordination IMMER.
+            skip_lead_layer = task_is_micro and len(member_tasks) == 1
+
             # ── Echte Delegation durch den Teamleiter ──
-            if ENABLE_DEPARTMENT_LEAD_EXECUTION:
+            if ENABLE_DEPARTMENT_LEAD_EXECUTION and not skip_lead_layer:
                 delegation = await self._run_department_delegation(lead, task_summary, member_tasks, project_dir)
                 all_results.append(delegation)
                 if delegation.success and delegation.content:
@@ -719,6 +732,8 @@ class Orchestrator:
                         task.context += f"\n\n## Arbeitsauftrag von {lead.name}:\n{delegation.content[:1200]}"
                 else:
                     notify(f"  ⚠️ [yellow]{lead.name} konnte nicht delegieren ({delegation.error}) – Fachteam startet ohne Zusatzanweisung.[/yellow]")
+            elif skip_lead_layer:
+                notify(f"  ℹ️ [dim]Kleine Aufgabe, einziges Mitglied – Delegation/Konsolidierung durch {lead.name} übersprungen.[/dim]")
 
             # ── Fachteam arbeitet (parallel oder sequentiell, je nach Phase) ──
             # Realer Fund: bei nur 1-2 Mitgliedern eines eigentlich "parallelen" Fachbereichs
@@ -754,7 +769,7 @@ class Orchestrator:
             running_context = (running_context + self._format_results_for_review(member_results)[:2000])[-3000:]
 
             # ── Echte Konsolidierung durch den Teamleiter ──
-            if ENABLE_DEPARTMENT_LEAD_EXECUTION:
+            if ENABLE_DEPARTMENT_LEAD_EXECUTION and not skip_lead_layer:
                 consolidation = await self._run_department_consolidation(lead, member_results, project_dir)
                 all_results.append(consolidation)
                 if consolidation.success and consolidation.content:

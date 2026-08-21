@@ -126,14 +126,20 @@ Was die Grafik oben zeigt, läuft technisch über zwei einfache Datenstrukturen
    Governance laufen sequenziell, die anderen drei parallel (`asyncio.gather`).
 3. **Echte Delegation:** Vor jeder Phase bekommt der zuständige Teamleiter einen echten
    LLM-Aufruf mit der Aufgabenliste seines Fachteams und liefert priorisierte
-   Arbeitsanweisungen zurück, die den Mitgliedern als Zusatzkontext mitgegeben werden.
+   Arbeitsanweisungen zurück, die den Mitgliedern als Zusatzkontext mitgegeben werden. **Ausnahme
+   (Team-Komplexitäts-Skalierung):** Hat ein Fachbereich nur EIN Mitglied UND ist die
+   Gesamtaufgabe klein (`core/task_manager.py.is_micro_task()`, rein deterministisch aus dem
+   bereits erstellten Plan – kein zusätzlicher LLM-Aufruf), entfällt die Delegation, da hier
+   kein echter Abstimmungsbedarf besteht. Fachbereiche mit mehreren Mitgliedern behalten die
+   Teamleiter-Koordination immer. Abschaltbar über `ENABLE_TASK_COMPLEXITY_SCALING=false`.
 4. **Ausführung mit echtem Werkzeugzugriff:** Jedes Fachteam-Mitglied arbeitet über den
    agentischen Werkzeug-Loop (siehe oben) direkt im Projektverzeichnis und liefert ein
    `AgentResult` (Erfolg/Fehler, Inhalt, Tokens, geschriebene Dateien) zurück.
 5. **Echte Konsolidierung:** Nach jeder Phase prüft derselbe Teamleiter per weiterem
-   LLM-Aufruf die Ergebnisse seines Teams und erstellt den offiziellen Fachbereichsbericht.
-   Eine `file_owners`-Map merkt sich dabei, welcher Agent welche Datei geschrieben hat –
-   die Grundlage für die gezielte Fehlerbehebung in der Verifikationsphase (siehe unten).
+   LLM-Aufruf die Ergebnisse seines Teams und erstellt den offiziellen Fachbereichsbericht
+   (bei einem einzelnen Mitglied und kleiner Gesamtaufgabe entfällt auch dieser Schritt, siehe
+   Punkt 3). Eine `file_owners`-Map merkt sich dabei, welcher Agent welche Datei geschrieben
+   hat – die Grundlage für die gezielte Fehlerbehebung in der Verifikationsphase (siehe unten).
 6. **Synthese:** Der Hauptagent fasst alle Fachbereichsberichte über `ResultAggregator`
    zu einem einheitlichen Gesamtergebnis zusammen und liefert es an den Nutzer zurück.
 

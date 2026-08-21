@@ -194,6 +194,36 @@ AVAILABLE_AGENTS = {
     },
 }
 
+# Realer Fund aus einem echten End-to-End-Testlauf: diese Agenten werden laut den
+# DECOMPOSE_SYSTEM_PROMPT-Regeln unten NUR bei echter Komplexität eingeplant (architect/
+# security/compliance sind dort explizit "NICHT optional, sobald..."-Fälle, die übrigen
+# signalisieren von sich aus einen größeren Aufgabenzuschnitt) - taucht auch nur EINER davon
+# im Plan auf, ist die Aufgabe per Definition NICHT trivial.
+_COMPLEXITY_SIGNAL_AGENT_IDS = {
+    "architect", "security", "compliance", "finops", "performance",
+    "data_engineer", "ml", "mobile", "product_owner", "business_analyst", "web_research",
+}
+
+# Ab dieser Gesamtzahl an eingeplanten Spezialisten gilt eine Aufgabe nicht mehr als "klein"
+# genug, um die Teamleiter-Koordination zu überspringen - selbst wenn kein einzelner Agent
+# ein Komplexitäts-Signal ist, deutet eine breite Aufgabenverteilung auf echten
+# Abstimmungsbedarf hin.
+_MICRO_TASK_MAX_AGENTS = 4
+
+
+def is_micro_task(agent_tasks: list["AgentTask"]) -> bool:
+    """
+    Rein deterministische Klassifikation aus dem BEREITS erstellten Aufgabenplan - KEIN
+    zusätzlicher LLM-Aufruf, keine neue Schätzung. Nutzt genau die Agenten-Auswahl, die
+    decompose() (siehe DECOMPOSE_SYSTEM_PROMPT unten) ohnehin schon für die Zwecke von
+    "welche Spezialisten sind wirklich nötig" trifft, nur ein zweites Mal ausgewertet für
+    "wie viel Teamleiter-Koordination braucht dieser Plan wirklich".
+    """
+    if len(agent_tasks) > _MICRO_TASK_MAX_AGENTS:
+        return False
+    return not any(t.agent_id in _COMPLEXITY_SIGNAL_AGENT_IDS for t in agent_tasks)
+
+
 DECOMPOSE_SYSTEM_PROMPT = """Du bist ein erfahrener Principal Software-Architekt und Engineering Lead.
 Analysiere die Aufgabe und wähle NUR die wirklich notwendigen Spezialisten aus, um maximale Token-Effizienz zu gewährleisten.
 

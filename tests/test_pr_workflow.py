@@ -26,6 +26,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import core.backlog_store as backlog_store
 from agents.github_agent import GitHubAgent
 from interface.cli import CLIInterface
 
@@ -134,6 +135,12 @@ class TestCLIUsesPRWorkflowOnProtectedBranch(unittest.TestCase):
         self._print_patcher = patch("interface.cli.console.print")
         self._print_patcher.start()
         self.addCleanup(self._print_patcher.stop)
+        # _ask_for_git_push() schreibt jetzt auch ins Backlog (core/backlog_store.py) - gegen
+        # ein temporäres Verzeichnis statt der echten memory/backlog.json.
+        self._backlog_dir = tempfile.mkdtemp()
+        self._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(self._backlog_dir) / "backlog.json")
+        self._backlog_patcher.start()
+        self.addCleanup(self._backlog_patcher.stop)
 
     @patch("interface.cli.Confirm.ask", return_value=True)
     def test_falls_back_to_direct_push_when_gh_not_ready(self, _mock_confirm):
@@ -196,7 +203,13 @@ class TestCLIFullPRWorkflowAgainstRealRepo(unittest.TestCase):
         _run(["remote", "add", "origin", self.remote_dir], cwd=self.work_dir)
         _run(["push", "-u", "origin", "main"], cwd=self.work_dir)
 
+        # _ask_for_git_push() schreibt jetzt auch ins Backlog (core/backlog_store.py) - gegen
+        # ein temporäres Verzeichnis statt der echten memory/backlog.json.
+        self._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(self.temp_root) / "backlog.json")
+        self._backlog_patcher.start()
+
     def tearDown(self):
+        self._backlog_patcher.stop()
         shutil.rmtree(self.temp_root, ignore_errors=True)
 
     def _remote_branches(self) -> list[str]:

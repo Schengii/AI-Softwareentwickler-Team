@@ -24,6 +24,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import core.backlog_store as backlog_store
 from agents.orchestrator import Orchestrator
 from core.llm_factory import LLMResponse
 from core.message_bus import AgentTask
@@ -98,8 +99,12 @@ class TestCliPassesLoadedProjectDir(unittest.TestCase):
 
         # _process_task loest am Ende auch das Git-Push-Gate aus (siehe tests/test_cli_push_gate.py)
         # - hier bewusst mit Confirm.ask=False stillgelegt, das ist nicht Testgegenstand dieses Falls.
+        # _process_task() schreibt außerdem jetzt ins Backlog (core/backlog_store.py) - gegen ein
+        # temporäres Verzeichnis statt der echten memory/backlog.json.
+        backlog_dir = tempfile.mkdtemp()
         with patch("interface.cli.console.print"), patch("interface.cli.Live"), \
-                patch("interface.cli.Confirm.ask", return_value=False):
+                patch("interface.cli.Confirm.ask", return_value=False), \
+                patch.object(backlog_store, "BACKLOG_FILE", Path(backlog_dir) / "backlog.json"):
             asyncio.run(cli._process_task("Mach etwas an diesem Projekt"))
 
         cli._orchestrator.process.assert_called_once()

@@ -1,4 +1,4 @@
-# 🤖 KI-Softwareentwickler-Team (v4.3)
+  # 🤖 KI-Softwareentwickler-Team (v4.3)
 
 <div align="center">
 
@@ -35,6 +35,8 @@ damit dieses README als aktuelle Funktionsübersicht schlank bleibt.
 - [Kommunikations- & Delegations-Workflow](#kommunikations-workflow)
 - [🛡️ Neuer Spezialist: Resilience-Guard (QA & Fault-Tolerance)](#resilience-guard)
 - [🔀 PR-Workflow: Feature-Branch + Pull Request statt Direct-Push](#pr-workflow)
+- [🎫 Autonome, getriggerte Arbeit: GitHub-Issues als Backlog](#issue-watcher)
+- [📋 Backlog/Kanban-Board über CLI, Dashboard & Issue-Watcher hinweg](#backlog-kanban)
 - [🌐 Modernes Web-Dashboard & Visualisierung](#web-dashboard)
 - [🔌 MCP-Server: Einbindung in Cursor, Windsurf & Antigravity](#mcp-server)
 - [🔍 Lokales Codebase-RAG & Semantische Suche](#codebase-rag)
@@ -171,6 +173,80 @@ Aufgabe, Pull Request, Merge erst nach grüner CI und Freigabe.
   des Branches fehl, fällt der Ablauf automatisch auf den bisherigen Direct-Push zurück –
   der Nutzer wird informiert, aber nicht blockiert. `ENABLE_PR_WORKFLOW=false` schaltet den
   gesamten PR-Workflow ab und stellt das alte Verhalten wieder her.
+
+---
+
+<a id="issue-watcher"></a>
+## 🎫 Autonome, getriggerte Arbeit: GitHub-Issues als Backlog
+
+Bisher wurde das Team ausschließlich durch eine direkte Nutzeranfrage aktiv (CLI, Dashboard,
+MCP). `python main.py --check-issues` ergänzt die Gegenrichtung: ein einzelner Poll-Zyklus,
+gedacht für einen wiederkehrenden externen Aufruf (Cron, Windows-Taskplaner, GitHub-Actions-
+Schedule, z.B. alle 10–15 Minuten) – kein eingebauter Dauer-Scheduler, das übernimmt
+zuverlässiger die vorhandene Infrastruktur.
+
+- **Opt-in-Backlog statt Autopilot auf dem ganzen Tracker:** Nur offene Issues mit dem Label
+  `ISSUE_TRIGGER_LABEL` (Standard: `ai-team`) werden aufgegriffen – ein Mensch entscheidet
+  weiterhin, welche Tickets das Team bekommt, genau wie bei einem triagierten Backlog in
+  einem echten Team.
+- **Label-Zustandsmaschine gegen Doppelbearbeitung:** `ai-team-in-progress` wird VOR dem Lauf
+  gesetzt (schützt vor überlappenden Poll-Zyklen), `ai-team-done` bzw. `ai-team-blocked`
+  danach – alle drei Namen über `ISSUE_*_LABEL` in `config.py` änderbar.
+  `core/issue_watcher.py` legt die Labels bei Bedarf automatisch im Repo an.
+- **Immer über den PR-Workflow, nie Direct-Push:** Jedes bearbeitete Issue bekommt einen
+  frischen Feature-Branch + Pull Request (`Closes #<issue-nummer>` im Body, damit GitHub das
+  Issue beim Merge automatisch schließt) – ohne den `gh_ready()`-Fallback auf Direct-Push des
+  interaktiven Pfads, da dafür eine menschliche Bestätigung nötig wäre, die hier fehlt.
+- **Schärferes Sicherheitsmodell als der interaktive Pfad:** Ein Secret-Fund blockiert HART
+  (kein Push, kein PR, Issue-Kommentar mit Warnung) statt nur zu warnen – niemand ist da, der
+  bewusst übersteuern könnte. Fehlgeschlagene Verifikation blockiert dagegen NICHT hart,
+  sondern öffnet den PR trotzdem mit deutlicher `⚠️ Verifikation nicht bestanden`-Kennzeichnung
+  in Titel/Body, damit ein Mensch das beim Review sieht statt die Arbeit stillschweigend zu
+  verwerfen.
+- **Ergebnis immer als Issue-Kommentar sichtbar:** PR-Link, Blockade-Grund oder Fehler landen
+  als Kommentar auf dem Issue – die einzige Rückmeldung, die ohne CLI/Dashboard-Ansicht
+  überhaupt ankommt.
+
+**Einrichtung unter Windows** (`scripts/run_issue_watcher.ps1`): ruft `--check-issues` auf
+und hängt die Ausgabe UTF-8-sicher an `logs/issue_watcher.log` an (nicht versioniert, siehe
+`.gitignore`). Als wiederkehrender Taskplaner-Eintrag (alle 15 Min, läuft nur bei laufendem
+PC – für unabhängigen Cloud-Betrieb siehe Hinweis unten):
+
+```powershell
+$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument '-NoProfile -ExecutionPolicy Bypass -File "<projektpfad>\scripts\run_issue_watcher.ps1"'
+$Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 3650)
+Register-ScheduledTask -TaskName "AI-Team-IssueWatcher" -Action $Action -Trigger $Trigger -Description "Poll-Zyklus fuer GitHub-Issues"
+```
+
+Wichtig: `--check-issues` braucht dieselben lokalen Voraussetzungen wie jeder andere Lauf –
+gültige `.env` (API-Keys) und eine eingeloggte `gh`-CLI (`gh auth status`). Eine Cloud-basierte
+Alternative (z.B. Claude Codes `/schedule`) hat KEINEN Zugriff auf lokale Secrets/das lokale
+Framework und würde entweder eigene API-Keys in der Cloud-Umgebung brauchen oder die Arbeit
+mit cloud-eigenen Tools statt dem eigenen Multi-Agent-Team erledigen – für dieses Feature
+deshalb bewusst lokal gelöst.
+
+---
+
+<a id="backlog-kanban"></a>
+## 📋 Backlog/Kanban-Board über CLI, Dashboard & Issue-Watcher hinweg
+
+Bisher hatte jede Trigger-Quelle ihren eigenen, isolierten Fortschritts-Begriff: das
+Web-Dashboard hielt Jobs nur im Speicher (weg nach jedem Neustart), der Issue-Watcher trackte
+Fortschritt nur über GitHub-Labels (nur dort sichtbar), die CLI gar nicht. `core/backlog_store.py`
+hält jetzt eine EINZIGE, persistente Ticket-Liste (`memory/backlog.json`), in die alle drei
+Quellen schreiben:
+
+- **Spalten:** `todo` → `in_progress` → `review` (PR eröffnet, wartet auf Merge) →
+  `done`/`blocked`/`cancelled`. "done" heißt bewusst NICHT "gemerged" – eine Merge-Erkennung
+  wäre ein zusätzlicher `gh`-Aufruf, den es aktuell bewusst noch nicht gibt.
+- **CLI:** `/backlog` zeigt das Board als Tabelle. Jede Aufgabe legt beim Start ein Ticket an
+  (sofort `in_progress`, noch bevor eine echte Kurzfassung vorliegt) und finalisiert es beim
+  Abschluss über denselben Mechanismus wie der PR-Workflow (`_ask_for_git_push()`).
+- **Dashboard:** Neuer Board-Bereich auf der Startseite (`GET /api/backlog`), aktualisiert
+  sich alle 5 Sekunden – zeigt auch Tickets, die über die CLI oder autonome Issue-Läufe
+  entstanden sind, nicht nur die Jobs dieses Dashboard-Prozesses.
+- **Issue-Watcher:** Jedes aufgegriffene Issue ist sofort als `in_progress` sichtbar (nicht
+  erst nach Abschluss) und landet je nach Ausgang auf `review` (PR eröffnet) oder `blocked`.
 
 ---
 
@@ -365,9 +441,11 @@ eingeloggt?"* die passende `auth.py`, obwohl dort nirgends "einloggen" steht.
 ```bash
 python main.py                          # Interaktive CLI (Standard)
 python main.py --dashboard [--port N]   # Web-Dashboard unter http://localhost:8080
+python main.py --check-issues           # EIN Poll-Zyklus über offene GitHub-Issues, dann Ende
 ```
 
 Details zum Web-Dashboard: [🌐 Modernes Web-Dashboard & Visualisierung](#web-dashboard).
+Details zu `--check-issues`: [🎫 Autonome, getriggerte Arbeit](#issue-watcher).
 
 | Befehl | Beschreibung |
 |---|---|

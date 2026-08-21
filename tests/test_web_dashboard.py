@@ -15,14 +15,17 @@ gepatcht (patch.object(Orchestrator, "process", ...)), betrifft dadurch JEDE Ins
 """
 
 import json
+import tempfile
 import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from unittest.mock import patch
 
+import core.backlog_store as backlog_store
 from agents.orchestrator import Orchestrator
 from interface.web_dashboard import DashboardServer, make_handler
 
@@ -41,6 +44,12 @@ class TestWebDashboard(unittest.TestCase):
     def setUpClass(cls):
         cls._process_patcher = patch.object(Orchestrator, "process", _fake_process)
         cls._process_patcher.start()
+        # Jobs schreiben jetzt auch ins Backlog (core/backlog_store.py) - gegen ein
+        # temporäres Verzeichnis statt der echten memory/backlog.json (dasselbe Prinzip wie
+        # tests/test_cost_history_integration.py für COST_HISTORY_FILE).
+        cls._backlog_dir = tempfile.mkdtemp()
+        cls._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(cls._backlog_dir) / "backlog.json")
+        cls._backlog_patcher.start()
         cls.server_state = DashboardServer()
         handler_cls = make_handler(cls.server_state)
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", PORT), handler_cls)
@@ -53,6 +62,7 @@ class TestWebDashboard(unittest.TestCase):
         cls.httpd.shutdown()
         cls.thread.join(timeout=2)
         cls._process_patcher.stop()
+        cls._backlog_patcher.stop()
 
     def _get_json(self, path: str) -> dict:
         with urllib.request.urlopen(f"http://127.0.0.1:{PORT}{path}") as r:
@@ -102,6 +112,13 @@ class TestWebDashboard(unittest.TestCase):
         self.assertEqual(job_status["status"], "done", msg=job_status)
         self.assertIn("Ergebnis fuer: Baue eine Todo-App", job_status["result"])
         self.assertIn("Phase 1: Starte...", job_status["log"])
+
+        # Das Ticket landet im gemeinsamen Backlog (core/backlog_store.py) mit demselben
+        # Endstatus wie der Job - sichtbar über /api/backlog, unabhängig vom job_id-Polling.
+        backlog = self._get_json("/api/backlog")
+        ticket = next(t for t in backlog["tickets"] if t["id"] == f"dashboard-{job_id}")
+        self.assertEqual(ticket["status"], "done")
+        self.assertEqual(ticket["source"], "dashboard")
 
     def test_unknown_job_id_returns_404(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:

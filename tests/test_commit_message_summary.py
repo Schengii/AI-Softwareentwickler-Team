@@ -14,9 +14,12 @@ Diese Tests stellen sicher, dass:
 """
 
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import core.backlog_store as backlog_store
 from agents.orchestrator import Orchestrator
 from core.message_bus import AgentTask
 from core.verifier import VerificationReport
@@ -140,15 +143,19 @@ class TestRawRequestEchoFallback(unittest.TestCase):
         cli._orchestrator._agents["github"] = fake_github
         cli._orchestrator.last_project_slug = "modular_calculator_gui"
 
-        with patch("interface.cli.console.print"), patch("interface.cli.Confirm.ask", return_value=False):
-            asyncio.run(cli._ask_for_git_push("Ich möchte das ihr ein neues Projekt erstellt. Es"))
+        # _ask_for_git_push() schreibt jetzt auch ins Backlog (core/backlog_store.py) - gegen
+        # ein temporäres Verzeichnis statt der echten memory/backlog.json.
+        backlog_dir = tempfile.mkdtemp()
+        with patch.object(backlog_store, "BACKLOG_FILE", Path(backlog_dir) / "backlog.json"):
+            with patch("interface.cli.console.print"), patch("interface.cli.Confirm.ask", return_value=False):
+                asyncio.run(cli._ask_for_git_push("Ich möchte das ihr ein neues Projekt erstellt. Es"))
 
-        # Confirm.ask=False -> commit() wird nicht aufgerufen, aber die Vorschau-Message wurde
-        # bereits gebaut und an console.print übergeben; wir prüfen sie über den nächsten echten
-        # Aufruf mit Confirm.ask=True, um den tatsächlich verwendeten commit_msg zu erhalten.
-        fake_github.reset_mock()
-        with patch("interface.cli.console.print"), patch("interface.cli.Confirm.ask", return_value=True):
-            asyncio.run(cli._ask_for_git_push("Ich möchte das ihr ein neues Projekt erstellt. Es"))
+            # Confirm.ask=False -> commit() wird nicht aufgerufen, aber die Vorschau-Message wurde
+            # bereits gebaut und an console.print übergeben; wir prüfen sie über den nächsten echten
+            # Aufruf mit Confirm.ask=True, um den tatsächlich verwendeten commit_msg zu erhalten.
+            fake_github.reset_mock()
+            with patch("interface.cli.console.print"), patch("interface.cli.Confirm.ask", return_value=True):
+                asyncio.run(cli._ask_for_git_push("Ich möchte das ihr ein neues Projekt erstellt. Es"))
 
         fake_github.commit.assert_called_once()
         commit_msg = fake_github.commit.call_args[0][0]

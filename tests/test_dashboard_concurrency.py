@@ -15,13 +15,16 @@ echte Überlappung deterministisch beweisen, statt sich auf Timing/sleep()-Heuri
 
 import asyncio
 import json
+import tempfile
 import threading
 import time
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from unittest.mock import patch
 
+import core.backlog_store as backlog_store
 from agents.orchestrator import Orchestrator
 from interface.web_dashboard import DashboardServer, make_handler
 
@@ -42,6 +45,9 @@ class TestDashboardConcurrency(unittest.TestCase):
 
         cls._process_patcher = patch.object(Orchestrator, "process", _fake_blocking_process)
         cls._process_patcher.start()
+        cls._backlog_dir = tempfile.mkdtemp()
+        cls._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(cls._backlog_dir) / "backlog.json")
+        cls._backlog_patcher.start()
         cls.server_state = DashboardServer(max_concurrent_jobs=2)
         handler_cls = make_handler(cls.server_state)
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", PORT), handler_cls)
@@ -55,6 +61,7 @@ class TestDashboardConcurrency(unittest.TestCase):
         cls.httpd.shutdown()
         cls.thread.join(timeout=2)
         cls._process_patcher.stop()
+        cls._backlog_patcher.stop()
 
     def setUp(self):
         self.started.clear()

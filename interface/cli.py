@@ -28,6 +28,7 @@ from rich.text import Text
 from agents.department_lead_agent import DEPARTMENT_DEFINITIONS
 from agents.orchestrator import PHASE_ORDER, Orchestrator
 from config import ENABLE_PLAN_CONFIRMATION, ENABLE_PR_WORKFLOW, GIT_PROTECTED_BRANCHES, validate_config
+from core.backlog_store import STATUSES, list_tickets, new_ticket_id, upsert_ticket
 from core.code_sandbox import CodeSandbox
 from core.message_bus import AgentTask
 from core.task_manager import AVAILABLE_AGENTS
@@ -70,6 +71,7 @@ HELP_TEXT = """
 | `/learnings` | Zeigt alle von den Agenten gelernten Regeln (persistentes Gedächtnis) mit Nummer je Agent an |
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
 | `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
+| `/backlog` | Zeigt das Kanban-Board (Todo/In Bearbeitung/Review/Blockiert/Fertig) über CLI, Dashboard UND autonome Issue-Läufe hinweg |
 | `/push` | Führt manuell einen Git-Commit & Push aus |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
@@ -196,6 +198,13 @@ class CLIInterface:
         """Verarbeitet eine Nutzeraufgabe mit detailliertem Live-Status."""
         status_lines: list[str] = []
 
+        # Sofort im gemeinsamen Backlog sichtbar (core/backlog_store.py), noch bevor eine
+        # echte Kurzfassung vorliegt - daher zunächst mit der rohen Nutzereingabe als Titel.
+        # _ask_for_git_push() aktualisiert Titel/Status beim Abschluss auf die echte
+        # Zusammenfassung bzw. den tatsächlichen Ausgang (review/done/blocked).
+        ticket_id = new_ticket_id("cli")
+        upsert_ticket(ticket_id=ticket_id, title=user_input[:80], source="cli", status="in_progress")
+
         console.print()
 
         # Live-Statusanzeige während Agenten arbeiten
@@ -247,6 +256,10 @@ class CLIInterface:
                         f"\n❌ Fehler bei der Verarbeitung: {e}",
                         style="bold red"
                     )
+                    upsert_ticket(
+                        ticket_id=ticket_id, title=user_input[:80], source="cli",
+                        status="blocked", detail=str(e)[:200],
+                    )
                     return
             finally:
                 signal.signal(signal.SIGINT, original_sigint_handler)
@@ -268,7 +281,7 @@ class CLIInterface:
         # user_input ist oft konversationell formuliert ("Okay ich möchte, dass ihr...") und
         # landete zuvor 1:1 (nur bei 50 Zeichen hart abgeschnitten) im Commit-Betreff. Fällt nur
         # zurück auf user_input, falls aus irgendeinem Grund keine Zusammenfassung vorliegt.
-        await self._ask_for_git_push(self._orchestrator.last_task_summary or user_input)
+        await self._ask_for_git_push(self._orchestrator.last_task_summary or user_input, ticket_id=ticket_id)
 
         # Regelmäßige Erinnerung an die Projekt-Hygiene (kein Auto-Löschen – nur ein Hinweis).
         self._tasks_since_audit_reminder += 1
@@ -311,7 +324,7 @@ class CLIInterface:
         normalized = text.strip().lower()
         return normalized.startswith(cls._RAW_REQUEST_PREFIXES)
 
-    async def _ask_for_git_push(self, task_summary: str) -> None:
+    async def _ask_for_git_push(self, task_summary: str, ticket_id: str | None = None) -> None:
         """
         Fragt den Nutzer, ob der GitHub-Agent Änderungen committen und pushen soll.
 
@@ -320,13 +333,23 @@ class CLIInterface:
         github_agent.commit() intern `git add -A` ausführt und damit den GESAMTEN
         Repo-Stand staged, nicht nur die Dateien des gerade bearbeiteten Projekts – der
         Nutzer soll das vor einer irreversiblen Aktion (Push) wirklich sehen können.
+
+        `ticket_id`: das im gemeinsamen Backlog (core/backlog_store.py) bereits als
+        "in_progress" angelegte Ticket dieses Laufs (siehe _process_task()) – wird hier auf
+        den tatsächlichen Ausgang finalisiert (review/done/blocked). Ohne Angabe (der
+        manuelle `/push`-Befehl hat keinen vorherigen Lauf-Ticket) wird eins neu angelegt.
         """
+        ticket_id = ticket_id or new_ticket_id("cli")
+
         github_agent = self._orchestrator._agents.get("github")
         if not github_agent:
             return
 
         diff_status = github_agent.get_status()
         if not diff_status:
+            # Nichts zu committen - aus Sicht des Backlogs ist die Arbeit trotzdem
+            # abgeschlossen (kein Push-Schritt für diese Aufgabe nötig).
+            upsert_ticket(ticket_id=ticket_id, title=task_summary[:80], source="cli", status="done")
             return
 
         changed_files = [line.strip() for line in diff_status.splitlines() if line.strip()]
@@ -424,6 +447,7 @@ class CLIInterface:
 
         if not should_push:
             console.print("↩️ Push übersprungen – nichts wurde committet oder gepusht.", style="dim")
+            upsert_ticket(ticket_id=ticket_id, title=task_summary[:80], source="cli", status="done")
             return
 
         if use_pr_workflow:
@@ -434,6 +458,10 @@ class CLIInterface:
                     "– falle auf Direct-Push zurück.", style="yellow",
                 )
                 use_pr_workflow = False
+
+        # Ticket-Endstatus wird unten je nach tatsächlichem Ausgang gesetzt (statt an jedem
+        # Rückgabepunkt einzeln) - EIN upsert_ticket()-Aufruf am Ende deckt alle Pfade ab.
+        ticket_status, ticket_detail = "blocked", ""
 
         success_c, out_c = github_agent.commit(commit_msg)
         if success_c:
@@ -450,18 +478,28 @@ class CLIInterface:
                     if success_pr:
                         pr_url = pr_out.splitlines()[-1] if pr_out else pr_out
                         console.print(f"🔀 [bold green]Pull Request erstellt:[/bold green] {pr_url}")
+                        ticket_status, ticket_detail = "review", pr_url
                     else:
                         console.print(
                             f"⚠️ PR-Erstellung fehlgeschlagen ({pr_out}) – Branch ist trotzdem "
                             "gepusht, PR ggf. manuell auf GitHub anlegen.", style="yellow",
                         )
+                        ticket_detail = pr_out
                 else:
                     console.print("🚀 [bold green]Änderungen erfolgreich auf GitHub gepusht![/bold green]")
+                    ticket_status = "done"
                 await self._report_ci_status(github_agent)
             else:
                 console.print(f"⚠️ Push nicht abgeschlossen: {out_p}", style="yellow")
+                ticket_detail = out_p
         else:
             console.print(f"⚠️ Commit nicht möglich: {out_c}", style="yellow")
+            ticket_detail = out_c
+
+        upsert_ticket(
+            ticket_id=ticket_id, title=task_summary[:80], source="cli",
+            status=ticket_status, detail=ticket_detail[:300],
+        )
 
         # Zurück auf den ursprünglichen Hauptbranch wechseln, damit die NÄCHSTE Aufgabe wieder
         # von einem sauberen Hauptbranch-Stand aus einen neuen Feature-Branch anlegt, statt
@@ -569,6 +607,30 @@ class CLIInterface:
         console.print(
             "💡 [dim]Eine falsche/überholte Regel entfernen: `/delete-learning <agent> <nr>`[/dim]"
         )
+
+    def _show_backlog(self) -> None:
+        """
+        Zeigt memory/backlog.json (core/backlog_store.py) - alle Tickets über CLI, Dashboard
+        UND autonome GitHub-Issue-Läufe (core/issue_watcher.py) hinweg, gruppiert nach Spalte.
+        Bisher hatte jede dieser drei Trigger-Quellen ihren eigenen, isolierten Fortschritts-
+        Begriff - kein einziger Befehl zeigte, woran das Team gerade/zuletzt gearbeitet hat.
+        """
+        tickets = list_tickets()
+        if not tickets:
+            console.print("📭 Noch keine Tickets im Backlog (memory/backlog.json ist leer).", style="dim")
+            return
+
+        table = Table(title="🎫 Backlog / Kanban-Board", box=box.ROUNDED)
+        table.add_column("Status", style="cyan")
+        table.add_column("Quelle", style="dim")
+        table.add_column("Titel")
+        table.add_column("Details/Aktualisiert", style="dim")
+
+        for status in STATUSES:
+            for ticket in [t for t in tickets if t.status == status]:
+                table.add_row(status, ticket.source, ticket.title, ticket.detail or ticket.updated_at)
+
+        console.print(table)
 
     async def _delete_learning_with_confirmation(self, agent_id: str, index_str: str) -> None:
         """Entfernt eine einzelne gelernte Regel - IRREVERSIBEL, mit Bestätigung analog zu
@@ -783,6 +845,9 @@ class CLIInterface:
 
         elif cmd in ("/learnings", "/gelernt", "/knowledge"):
             self._show_learnings()
+
+        elif cmd in ("/backlog", "/board", "/kanban", "/tickets"):
+            self._show_backlog()
 
         elif cmd in ("/delete-learning", "/forget", "/vergessen"):
             if len(args) < 2:

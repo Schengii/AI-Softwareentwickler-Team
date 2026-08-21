@@ -49,6 +49,7 @@ from urllib.parse import parse_qs, urlparse
 
 from agents.orchestrator import Orchestrator
 from config import DASHBOARD_AUTH_TOKEN, DASHBOARD_HOST, DASHBOARD_MAX_CONCURRENT_JOBS
+from core.backlog_store import list_tickets, upsert_ticket
 
 MAX_LOG_LINES_KEPT = 500
 # Adressen, die als "nur von diesem Rechner erreichbar" gelten – hier darf das Dashboard
@@ -114,6 +115,10 @@ class DashboardServer:
     def enqueue(self, prompt: str) -> str:
         job_id = uuid.uuid4().hex[:12]
         self.jobs[job_id] = Job(job_id=job_id, prompt=prompt)
+        # Sofort im Backlog sichtbar (core/backlog_store.py) - dieselbe Ticket-Quelle, die
+        # auch core/issue_watcher.py und interface/cli.py befüllen, damit das Kanban-Board
+        # ALLE Trigger-Quellen zeigt, nicht nur Dashboard-Jobs.
+        upsert_ticket(ticket_id=f"dashboard-{job_id}", title=prompt[:80], source="dashboard", status="todo")
         # call_soon_threadsafe: enqueue() wird vom HTTP-Handler-Thread aufgerufen, die Queue
         # gehört aber dem Event-Loop-Thread - asyncio.Queue.put_nowait() ist NICHT threadsafe.
         self._loop.call_soon_threadsafe(self._async_queue.put_nowait, job_id)
@@ -135,8 +140,11 @@ class DashboardServer:
     async def _execute_job(self, job_id: str) -> None:
         job = self.jobs.get(job_id)
         if not job or job.status == "cancelled":
+            if job:
+                upsert_ticket(ticket_id=f"dashboard-{job_id}", title=job.prompt[:80], source="dashboard", status="cancelled")
             return  # bereits vor dem Start abgebrochen (siehe cancel())
         job.status = "running"
+        upsert_ticket(ticket_id=f"dashboard-{job_id}", title=job.prompt[:80], source="dashboard", status="in_progress")
         # Frische, isolierte Orchestrator-Instanz PRO JOB - der eigentliche Grund für die
         # frühere Serialisierung war eine GETEILTE ConversationHistory, die sich bei
         # gleichzeitigen Jobs vermischt hätte. Jeder Job bekommt jetzt sein eigenes
@@ -162,6 +170,12 @@ class DashboardServer:
         except Exception as e:
             job.error = str(e)
             job.status = "error"
+
+        # Terminal-Status im Backlog nachziehen - "error" heißt hier wie überall im Board
+        # "blocked" (braucht menschliche Aufmerksamkeit), siehe core/issue_watcher.py für
+        # dieselbe Konvention.
+        ticket_status = "blocked" if job.status == "error" else job.status
+        upsert_ticket(ticket_id=f"dashboard-{job_id}", title=job.prompt[:80], source="dashboard", status=ticket_status)
 
 
 HTML_DASHBOARD = """<!DOCTYPE html>
@@ -195,6 +209,12 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     #logPanel { display: none; background: #010409; border: 1px solid var(--card-border); border-radius: 12px; padding: 16px; margin-bottom: 28px; }
     #logOutput { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; white-space: pre-wrap; max-height: 340px; overflow-y: auto; color: var(--text-main); }
     #resultOutput { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; white-space: pre-wrap; margin-top: 12px; color: var(--text-white); }
+    .kanban { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 28px; }
+    .kanban-col { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 14px; min-height: 60px; }
+    .kanban-col h4 { color: var(--text-white); font-size: 13px; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .ticket { background: #0d1117; border: 1px solid var(--card-border); border-radius: 8px; padding: 10px; margin-bottom: 8px; font-size: 12.5px; }
+    .ticket .ticket-title { color: var(--text-white); margin-bottom: 4px; }
+    .ticket .ticket-meta { color: var(--text-muted); font-size: 11px; font-family: 'JetBrains Mono', monospace; }
   </style>
 </head>
 <body>
@@ -216,6 +236,10 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     <div id="logOutput"></div>
     <div id="resultOutput"></div>
   </div>
+
+  <h2 style="color: var(--text-white); font-size: 18px; margin-bottom: 16px;">🎫 Backlog / Kanban-Board</h2>
+  <p style="color: var(--text-muted); font-size: 12.5px; margin-bottom: 14px; margin-top: -12px;">Alle Tickets über CLI, Dashboard und autonome GitHub-Issue-Läufe hinweg (core/backlog_store.py) – persistent, überlebt einen Neustart.</p>
+  <div class="kanban" id="kanbanBoard"><p style="color: var(--text-muted);">Lade Backlog…</p></div>
 
   <h2 style="color: var(--text-white); font-size: 18px; margin-bottom: 16px;">🏢 Fachbereichs- & Teamleiter-Hierarchie</h2>
   <div class="grid" id="departmentGrid"><p style="color: var(--text-muted);">Lade Teamstruktur…</p></div>
@@ -307,7 +331,39 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       }, 2000);
     }
 
+    const KANBAN_COLUMNS = [
+      ['todo', '📋 Todo'], ['in_progress', '🔄 In Bearbeitung'], ['review', '👀 Review'],
+      ['blocked', '🚧 Blockiert'], ['cancelled', '⏹️ Abgebrochen'], ['done', '✅ Fertig'],
+    ];
+
+    function escapeHtml(s) {
+      const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+      return (s || '').replace(/[&<>"']/g, c => map[c]);
+    }
+
+    async function loadBacklog() {
+      const res = await fetch('/api/backlog');
+      if (!res.ok) return;
+      const data = await res.json();
+      const board = document.getElementById('kanbanBoard');
+      board.innerHTML = '';
+      for (const [status, label] of KANBAN_COLUMNS) {
+        const tickets = data.tickets.filter(t => t.status === status);
+        const col = document.createElement('div');
+        col.className = 'kanban-col';
+        const cards = tickets.slice(0, 8).map(t => `
+          <div class="ticket">
+            <div class="ticket-title">${escapeHtml(t.title)}</div>
+            <div class="ticket-meta">${escapeHtml(t.source)} · ${escapeHtml((t.detail || t.id).slice(0, 40))}</div>
+          </div>`).join('');
+        col.innerHTML = `<h4>${label} (${tickets.length})</h4>${cards}`;
+        board.appendChild(col);
+      }
+    }
+
     loadStatus();
+    loadBacklog();
+    setInterval(loadBacklog, 5000);
   </script>
 </body>
 </html>
@@ -396,6 +452,10 @@ def make_handler(server: DashboardServer):
                     "job_id": job.job_id, "status": job.status,
                     "log": job.log, "result": job.result, "error": job.error,
                 })
+            elif path_only == "/api/backlog":
+                # Alle Tickets über ALLE Trigger-Quellen (CLI/Dashboard/Issue-Watcher), siehe
+                # core/backlog_store.py - nicht nur die Jobs dieses Dashboard-Prozesses.
+                self._send_json({"tickets": [vars(t) for t in list_tickets()]})
             else:
                 self._send_json({"error": "Not found"}, status=404)
 

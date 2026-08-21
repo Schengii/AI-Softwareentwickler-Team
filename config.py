@@ -215,6 +215,27 @@ GIT_PROTECTED_BRANCHES: tuple[str, ...] = tuple(
 )
 
 # ──────────────────────────────────────────
+# Autonome, getriggerte Arbeit: GitHub-Issues als Backlog (core/issue_watcher.py)
+# ──────────────────────────────────────────
+# Ergänzt den PR-Workflow oben um die Trigger-Seite: `python main.py --check-issues` (von
+# außen z.B. per Cron/Windows-Taskplaner/GitHub-Actions-Schedule alle 10-15 Min aufgerufen)
+# sucht eigenständig nach offenen Issues mit ISSUE_TRIGGER_LABEL und arbeitet sie über den
+# bestehenden Orchestrator + PR-Workflow ab – OHNE dass jemand manuell die CLI bedient. Nur
+# Issues mit einem EXPLIZITEN Opt-in-Label werden aufgegriffen (kein wahlloses Abarbeiten
+# JEDES offenen Issues) – ein echtes Team arbeitet auch einen triagierten Backlog ab, nicht
+# den kompletten, ungefilterten Issue-Tracker. Die drei weiteren Label dienen als
+# Zustandsmaschine gegen Doppelbearbeitung bei überlappenden Poll-Zyklen (siehe
+# core/issue_watcher.py: ISSUE_IN_PROGRESS_LABEL wird VOR dem Lauf gesetzt, nicht danach).
+ISSUE_TRIGGER_LABEL: str = os.getenv("ISSUE_TRIGGER_LABEL", "ai-team")
+ISSUE_IN_PROGRESS_LABEL: str = os.getenv("ISSUE_IN_PROGRESS_LABEL", "ai-team-in-progress")
+ISSUE_DONE_LABEL: str = os.getenv("ISSUE_DONE_LABEL", "ai-team-done")
+ISSUE_BLOCKED_LABEL: str = os.getenv("ISSUE_BLOCKED_LABEL", "ai-team-blocked")
+# Konservativ auf 1 Issue pro Poll-Zyklus begrenzt (Standard) – verhindert, dass ein einzelner
+# Cron-Tick nach längerer Pause gleich eine ganze Batch teurer Läufe lostritt; der nächste
+# Zyklus greift das nächste Issue auf.
+ISSUE_POLL_MAX_PER_CYCLE: int = int(os.getenv("ISSUE_POLL_MAX_PER_CYCLE", "1"))
+
+# ──────────────────────────────────────────
 # Web-Dashboard: sichere Standardwerte (nur lokal, optionaler Token für Netzwerkzugriff)
 # ──────────────────────────────────────────
 # Standardmäßig NUR auf localhost erreichbar (siehe interface/web_dashboard.py). Wer das

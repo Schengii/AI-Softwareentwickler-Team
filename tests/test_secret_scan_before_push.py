@@ -21,6 +21,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import core.backlog_store as backlog_store
 from agents.github_agent import GitHubAgent
 from interface.cli import CLIInterface
 
@@ -66,6 +67,12 @@ class TestGitHubAgentScanForSecrets(unittest.TestCase):
 class TestCLIWarnsOnSecretFund(unittest.TestCase):
     def setUp(self):
         self.cli = CLIInterface()
+        # _ask_for_git_push() schreibt jetzt auch ins Backlog (core/backlog_store.py) - gegen
+        # ein temporäres Verzeichnis statt der echten memory/backlog.json.
+        self._backlog_dir = tempfile.mkdtemp()
+        self._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(self._backlog_dir) / "backlog.json")
+        self._backlog_patcher.start()
+        self.addCleanup(self._backlog_patcher.stop)
         self.fake_github = MagicMock()
         self.fake_github.get_status.return_value = "M config.py"
         self.fake_github.get_diff.return_value = "config.py | 1 +"

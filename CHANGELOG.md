@@ -7,6 +7,97 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 📋 Backlog/Kanban-Board über CLI, Dashboard & Issue-Watcher hinweg
+
+Direkte Folge-Baustelle aus derselben Roadmap: PR-Workflow und Issue-Watcher gaben jeder
+Trigger-Quelle einen eigenen, ISOLIERTEN Fortschritts-Begriff – das Web-Dashboard hielt Jobs
+nur im Speicher (weg nach Neustart), der Issue-Watcher trackte Fortschritt nur über
+GitHub-Labels (nur dort sichtbar), die CLI gar nicht. Kein einziger Befehl zeigte, woran das
+Team gerade/zuletzt gearbeitet hat.
+
+- `core/backlog_store.py` (neu): persistente `memory/backlog.json` mit flacher Ticket-Liste
+  (`upsert_ticket()`/`list_tickets()`). Realer Fund beim Bauen: `_save_raw()` sortierte
+  zunächst nach `updated_at` (Sekundenauflösung) für die Kürzung auf `MAX_TICKETS_KEPT` –
+  mehrere Aktualisierungen in derselben Sekunde ließen sich damit nicht mehr eindeutig
+  ordnen, ein Test bewies das konkret (das älteste statt das neueste Ticket wurde verdrängt).
+  Gefixt: `upsert_ticket()` entfernt ein aktualisiertes Ticket aus seiner alten Position und
+  hängt es ans Listenende – Listenreihenfolge IST damit Aktualisierungsreihenfolge, keine
+  erneute Zeitstempel-Sortierung nötig.
+- `core/issue_watcher.py`: schreibt "in_progress" SOFORT beim Aufgreifen eines Issues (nicht
+  erst nach Abschluss – sonst wäre ein noch laufendes Issue auf dem Board unsichtbar) und
+  danach den Ausgang (`pr_opened` → "review", alles andere → "blocked").
+- `interface/web_dashboard.py`: `enqueue()`/`_execute_job()` spiegeln den Job-Lebenszyklus
+  (queued/running/done/error/cancelled) ins Backlog; neuer `GET /api/backlog`-Endpunkt plus
+  ein Kanban-Board-Bereich auf der Dashboard-Startseite (Auto-Refresh alle 5s), inkl.
+  HTML-Escaping der Ticket-Titel/Details (aus Nutzereingaben/Issue-Titeln, daher potenziell
+  fremdgesteuerter Text im `innerHTML`-Rendering).
+- `interface/cli.py`: `/backlog` zeigt das Board als Tabelle; `_process_task()` legt beim
+  Start ein `in_progress`-Ticket an, `_ask_for_git_push()` finalisiert es beim Abschluss
+  (review/done/blocked) – derselbe Mechanismus, den auch der manuelle `/push`-Befehl nutzt.
+- 8 neue Tests (`test_backlog_store.py`: 7 Store-Grundfunktionen inkl. der Sortier-Regression;
+  `test_issue_watcher.py`: 1 neuer Beweis, dass ein Ticket schon WÄHREND der Bearbeitung als
+  "in_progress" sichtbar ist). Zusätzlich Ticket-Status-Assertions in bestehende Tests
+  (`test_issue_watcher.py`, `test_web_dashboard.py`) ergänzt. Alle Tests, die
+  `_process_task()`/`_ask_for_git_push()` bzw. echte Dashboard-Jobs ausführen, patchen jetzt
+  `core.backlog_store.BACKLOG_FILE` gegen ein temporäres Verzeichnis (dasselbe Prinzip wie
+  `COST_HISTORY_FILE` in `test_cost_history_integration.py`) – ansonsten hätte JEDER
+  Testlauf die echte `memory/backlog.json` mit Test-Tickets verunreinigt (real beim Bauen
+  beobachtet: zwei Nachzügler-Testklassen ohne eigenes `setUp` hatten den Patch zunächst
+  verpasst). Volle Suite (372 Tests) grün, ruff sauber.
+
+---
+
+## 🎫 Autonome, getriggerte Arbeit: GitHub-Issues als Backlog (`--check-issues`)
+
+Ebenfalls keine Bugfix, sondern die konsequente Fortsetzung der PR-Workflow-Strukturent-
+scheidung direkt darüber: der neue PR-Workflow hatte bis hierhin nur EINEN Konsumenten – einen
+Menschen an der CLI, der `Confirm.ask()` bestätigt. Ohne getriggerte Arbeit entsteht nie ein
+PR, wenn gerade niemand das Tool bedient, genau der Fall, für den ein echtes Team PRs eigentlich
+öffnet (auf ein Issue reagieren, ohne dass jemand zusehen muss).
+
+- `agents/github_agent.py`: sechs neue Primitiven für Issue-Interaktion – `list_actionable_issues()`
+  (client­seitiger Ausschluss-Filter, da `gh issue list --label` nur UND-Verknüpfung kennt, kein
+  NOT; liefert bei JEDEM Fehler eine leere Liste statt zu werfen, ein Poll-Zyklus soll bei einem
+  vorübergehenden Problem einfach beim nächsten Mal erneut versuchen), `ensure_label_exists()`
+  (best effort, schluckt jeden Fehler bewusst), `add_issue_label()`/`remove_issue_label()`,
+  `comment_on_issue()`.
+- `core/issue_watcher.py` (neu): `run_issue_poll_cycle()` – EIN Poll-Durchlauf (keine eigene
+  Schleife/Sleep, das übernimmt ein externer Cron/Taskplaner/GitHub-Actions-Schedule
+  zuverlässiger als ein selbstgebauter Dauer-Scheduler). Sicherheitsmodell bewusst
+  konservativer als der interaktive CLI-Pfad, da kein Mensch zur Bestätigung verfügbar ist:
+  nur Issues mit explizitem Opt-in-Label (`ISSUE_TRIGGER_LABEL`, Standard `ai-team`) werden
+  aufgegriffen; `ISSUE_IN_PROGRESS_LABEL` wird VOR dem Lauf gesetzt (nicht danach), damit ein
+  überlappender zweiter Poll-Zyklus dasselbe Issue nicht doppelt aufgreift; ein Secret-Fund
+  blockiert HART (kein Push, kein PR – anders als im interaktiven Pfad, wo ein Mensch bewusst
+  übersteuern kann); fehlgeschlagene Verifikation blockiert dagegen NICHT hart, sondern öffnet
+  den PR trotzdem mit `⚠️ Verifikation nicht bestanden`-Kennzeichnung in Titel/Body, damit ein
+  Mensch das beim Review sieht statt bereits geleistete Arbeit stillschweigend zu verwerfen;
+  IMMER über einen frischen Feature-Branch + PR (`Closes #<issue-nummer>`), NIE der
+  Direct-Push-Fallback des interaktiven Pfads. PR-Link/Blockade-Grund/Fehler landen als
+  Issue-Kommentar – die einzige Rückmeldung ohne CLI/Dashboard-Ansicht.
+- `config.py`: `ISSUE_TRIGGER_LABEL`/`ISSUE_IN_PROGRESS_LABEL`/`ISSUE_DONE_LABEL`/
+  `ISSUE_BLOCKED_LABEL` sowie `ISSUE_POLL_MAX_PER_CYCLE` (Standard `1` – ein einzelner
+  Cron-Tick nach längerer Pause soll nicht gleich eine ganze Batch teurer Läufe lostreten).
+- `main.py`: neuer `--check-issues`-Einstiegspunkt, läuft EINEN Poll-Zyklus und beendet sich
+  wieder (kein Dauerbetrieb).
+- 21 neue Tests (`test_github_agent_issue_methods.py`: die sechs neuen Primitiven inkl. aller
+  Fehlerpfade; `test_issue_watcher.py`: vollständige Orchestrierung – Happy Path inkl.
+  Label-Reihenfolge, keine Dateiänderung, Secret-Blockade, fehlgeschlagene Verifikation
+  öffnet trotzdem den PR, PR-Erstellung schlägt fehl, Orchestrator wirft eine Exception,
+  `max_issues`-Limit). Volle Suite (364 Tests) grün, ruff sauber.
+- `scripts/run_issue_watcher.ps1` (neu) + Windows-Taskplaner-Eintrag: ruft `--check-issues`
+  wiederkehrend auf (Standard alle 15 Min) und protokolliert nach `logs/issue_watcher.log`
+  (nicht versioniert). Realer Fund beim Einrichten: PowerShell 5.1s Redirect-Operatoren
+  (`*>>`) schreiben Konsolenausgaben standardmäßig als UTF-16LE, was main.py's UTF-8-Fix
+  (Emojis/Umlaute) im Log unlesbar gemacht hätte – behoben über `[Console]::OutputEncoding`
+  VOR dem Python-Aufruf plus `Out-File -Encoding utf8` beim Schreiben. Bewusst als lokaler
+  Taskplaner-Eintrag statt einer Cloud-Routine (z.B. Claude Codes `/schedule`) gelöst: eine
+  Cloud-Session hat keinen Zugriff auf lokale `.env`-Secrets/die lokale `gh`-Anmeldung und
+  müsste entweder eigene API-Keys in der Cloud-Umgebung hinterlegen oder die Arbeit mit
+  cloud-eigenen Tools statt dem eigenen Multi-Agent-Team erledigen.
+
+---
+
 ## 🔀 PR-Workflow: Feature-Branch + Pull Request statt Direct-Push auf den Hauptbranch
 
 Kein Bugfix aus einem Testlauf, sondern eine bewusste Strukturentscheidung aus einer

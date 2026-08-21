@@ -17,14 +17,17 @@ deshalb auf KLASSENEBENE gepatcht (betrifft dadurch JEDE Instanz), nicht auf der
 
 import asyncio
 import json
+import tempfile
 import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from unittest.mock import patch
 
+import core.backlog_store as backlog_store
 from agents.orchestrator import Orchestrator
 from interface.web_dashboard import DashboardServer, make_handler
 
@@ -46,6 +49,9 @@ class TestDashboardCancel(unittest.TestCase):
     def setUpClass(cls):
         cls._process_patcher = patch.object(Orchestrator, "process", _fake_cancellable_process)
         cls._process_patcher.start()
+        cls._backlog_dir = tempfile.mkdtemp()
+        cls._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(cls._backlog_dir) / "backlog.json")
+        cls._backlog_patcher.start()
         # max_concurrent_jobs=1: test_cancel_queued_job_never_runs verlässt sich darauf, dass
         # ein zweiter enqueue()ter Job garantiert wartet, statt mit dem Standard-Limit (2)
         # gleich mitzulaufen - echte Parallelität wird separat in
@@ -62,6 +68,7 @@ class TestDashboardCancel(unittest.TestCase):
         cls.httpd.shutdown()
         cls.thread.join(timeout=2)
         cls._process_patcher.stop()
+        cls._backlog_patcher.stop()
 
     def _get_json(self, path: str) -> dict:
         with urllib.request.urlopen(f"http://127.0.0.1:{PORT}{path}") as r:

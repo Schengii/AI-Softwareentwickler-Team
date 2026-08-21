@@ -282,6 +282,92 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
         output = (result.stdout + result.stderr).strip()
         return success, output
 
+    # ──────────────────────────────────────────
+    # Issue-Polling: autonome, getriggerte Läufe (core/issue_watcher.py)
+    # ──────────────────────────────────────────
+    # Gegenstück zum PR-Workflow oben: nicht nur ein Mensch stößt über die CLI einen Lauf an,
+    # sondern ein wiederkehrender Poll-Zyklus (core/issue_watcher.py, aufgerufen über
+    # `python main.py --check-issues`) findet eigenständig neue Arbeit über GitHub Issues.
+
+    def list_actionable_issues(self, label: str, exclude_labels: list[str]) -> list[dict]:
+        """
+        Listet offene Issues mit `label`, die KEINES der `exclude_labels` tragen (z.B.
+        bereits in Bearbeitung/erledigt/blockiert) – Grundlage für core/issue_watcher.py, um
+        bei jedem Poll-Zyklus nur wirklich neue, noch unbearbeitete Arbeit aufzunehmen.
+        Filtert clientseitig, da `gh issue list --label` nur UND-Verknüpfung kennt, keinen
+        Ausschluss. Leere Liste bei JEDEM Fehler (kein `gh`, kein Remote, Timeout, kaputtes
+        JSON, ...) statt einer Exception – ein Poll-Zyklus soll bei einem vorübergehenden
+        Problem beim nächsten Mal einfach erneut versuchen, nicht abstürzen.
+        """
+        try:
+            result = subprocess.run(
+                ["gh", "issue", "list", "--label", label, "--state", "open",
+                 "--json", "number,title,body,labels", "--limit", "50"],
+                cwd=BASE_DIR, capture_output=True, text=True, timeout=20, encoding="utf-8",
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        if result.returncode != 0:
+            return []
+        try:
+            issues = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError:
+            return []
+        exclude = set(exclude_labels)
+        return [
+            issue for issue in issues
+            if not exclude & {lbl.get("name", "") for lbl in issue.get("labels", [])}
+        ]
+
+    def ensure_label_exists(self, name: str, color: str = "ededed", description: str = "") -> None:
+        """
+        Legt ein GitHub-Label an, falls es im Repo noch nicht existiert – `gh issue edit
+        --add-label` schlägt sonst fehl, wenn das Label dort noch nie angelegt wurde. Best
+        effort: ignoriert JEDEN Fehler bewusst (Label existiert bereits, keine
+        Schreibrechte, `gh` fehlt, ...) – reine Komfort-Vorbereitung, kein kritischer Schritt.
+        """
+        try:
+            subprocess.run(
+                ["gh", "label", "create", name, "--color", color,
+                 "--description", description, "--force"],
+                cwd=BASE_DIR, capture_output=True, text=True, timeout=15, encoding="utf-8",
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    def add_issue_label(self, issue_number: int, label: str) -> tuple[bool, str]:
+        """Fügt einem Issue ein Label hinzu (Label muss bereits existieren, siehe ensure_label_exists())."""
+        return self._gh_issue_edit(issue_number, "--add-label", label)
+
+    def remove_issue_label(self, issue_number: int, label: str) -> tuple[bool, str]:
+        """Entfernt ein Label von einem Issue – kein Fehler, wenn es ohnehin nicht gesetzt war."""
+        return self._gh_issue_edit(issue_number, "--remove-label", label)
+
+    def _gh_issue_edit(self, issue_number: int, flag: str, label: str) -> tuple[bool, str]:
+        try:
+            result = subprocess.run(
+                ["gh", "issue", "edit", str(issue_number), flag, label],
+                cwd=BASE_DIR, capture_output=True, text=True, timeout=20, encoding="utf-8",
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        return result.returncode == 0, (result.stdout + result.stderr).strip()
+
+    def comment_on_issue(self, issue_number: int, body: str) -> tuple[bool, str]:
+        """
+        Postet einen Kommentar auf ein Issue – die einzige Rückmeldung, die ein Mensch bei
+        einem autonom getriggerten Lauf ohne CLI/Dashboard-Ansicht überhaupt zu sehen
+        bekommt (Ergebnis, Blockade-Grund, Fehler), siehe core/issue_watcher.py.
+        """
+        try:
+            result = subprocess.run(
+                ["gh", "issue", "comment", str(issue_number), "--body", body],
+                cwd=BASE_DIR, capture_output=True, text=True, timeout=20, encoding="utf-8",
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        return result.returncode == 0, (result.stdout + result.stderr).strip()
+
     def add_remote(self, name: str, url: str) -> tuple[bool, str]:
         """Fügt ein Remote-Repository hinzu."""
         result = subprocess.run(

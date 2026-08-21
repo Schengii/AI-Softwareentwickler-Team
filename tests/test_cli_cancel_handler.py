@@ -11,9 +11,12 @@ danach IMMER wiederhergestellt - sonst bliebe Strg+C für den Rest der Sitzung v
 
 import asyncio
 import signal
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import core.backlog_store as backlog_store
 from interface.cli import CLIInterface
 
 
@@ -21,6 +24,12 @@ class TestInstallCancelHandler(unittest.TestCase):
     def setUp(self):
         self.cli = CLIInterface()
         self._original_handler = signal.getsignal(signal.SIGINT)
+        # _process_task() schreibt jetzt auch ins Backlog (core/backlog_store.py) - gegen ein
+        # temporäres Verzeichnis statt der echten memory/backlog.json.
+        self._backlog_dir = tempfile.mkdtemp()
+        self._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(self._backlog_dir) / "backlog.json")
+        self._backlog_patcher.start()
+        self.addCleanup(self._backlog_patcher.stop)
 
     def tearDown(self):
         signal.signal(signal.SIGINT, self._original_handler)
@@ -61,6 +70,14 @@ class TestInstallCancelHandler(unittest.TestCase):
 
 
 class TestProcessTaskCancelWiring(unittest.TestCase):
+    def setUp(self):
+        # _process_task() schreibt jetzt auch ins Backlog (core/backlog_store.py) - gegen ein
+        # temporäres Verzeichnis statt der echten memory/backlog.json.
+        self._backlog_dir = tempfile.mkdtemp()
+        self._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(self._backlog_dir) / "backlog.json")
+        self._backlog_patcher.start()
+        self.addCleanup(self._backlog_patcher.stop)
+
     def _run_process_task(self):
         cli = CLIInterface()
         cli._orchestrator.process = AsyncMock(return_value="### ok")

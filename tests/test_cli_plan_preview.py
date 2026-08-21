@@ -9,9 +9,12 @@ getestet wird).
 """
 
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import core.backlog_store as backlog_store
 from core.message_bus import AgentTask
 from interface.cli import CLIInterface
 
@@ -22,6 +25,12 @@ class TestRenderAndConfirmPlan(unittest.TestCase):
         self._print_patcher = patch("interface.cli.console.print")
         self._print_patcher.start()
         self.addCleanup(self._print_patcher.stop)
+        # _process_task() schreibt jetzt auch ins Backlog (core/backlog_store.py) - gegen ein
+        # temporäres Verzeichnis statt der echten memory/backlog.json.
+        self._backlog_dir = tempfile.mkdtemp()
+        self._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(self._backlog_dir) / "backlog.json")
+        self._backlog_patcher.start()
+        self.addCleanup(self._backlog_patcher.stop)
 
     def _tasks(self) -> list[AgentTask]:
         return [
@@ -62,6 +71,14 @@ class TestRenderAndConfirmPlan(unittest.TestCase):
 
 
 class TestProcessTaskForwardsPlanCallback(unittest.TestCase):
+    def setUp(self):
+        # _process_task() schreibt jetzt auch ins Backlog (core/backlog_store.py) - gegen ein
+        # temporäres Verzeichnis statt der echten memory/backlog.json.
+        self._backlog_dir = tempfile.mkdtemp()
+        self._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(self._backlog_dir) / "backlog.json")
+        self._backlog_patcher.start()
+        self.addCleanup(self._backlog_patcher.stop)
+
     def _run_process_task(self):
         cli = CLIInterface()
         cli._orchestrator.process = AsyncMock(return_value="### ok")

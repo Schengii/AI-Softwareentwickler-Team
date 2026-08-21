@@ -8,15 +8,24 @@ Stellt sicher, dass CLIInterface._ask_for_git_push():
 """
 
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import core.backlog_store as backlog_store
 from interface.cli import CLIInterface
 
 
 class TestPushConfirmationGate(unittest.TestCase):
     def setUp(self):
         self.cli = CLIInterface()
+        # _ask_for_git_push() schreibt jetzt auch ins Backlog (core/backlog_store.py) - gegen
+        # ein temporäres Verzeichnis statt der echten memory/backlog.json.
+        self._backlog_dir = tempfile.mkdtemp()
+        self._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(self._backlog_dir) / "backlog.json")
+        self._backlog_patcher.start()
+        self.addCleanup(self._backlog_patcher.stop)
         self.fake_github = MagicMock()
         self.fake_github.get_status.return_value = "M some_file.py\n?? new_file.py"
         self.fake_github.get_diff.return_value = "some_file.py | 3 +--"

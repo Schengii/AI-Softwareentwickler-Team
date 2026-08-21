@@ -35,7 +35,7 @@ from agents.agent_trainer_agent import AgentTrainerAgent
 from agents.api_integration_agent import ApiIntegrationAgent
 from agents.architect_agent import ArchitectAgent
 from agents.backend_agent import BackendAgent
-from agents.base_agent import BaseAgent
+from agents.base_agent import CODE_WRITING_AGENT_IDS, BaseAgent
 from agents.business_analyst_agent import BusinessAnalystAgent
 from agents.code_reviewer_agent import CodeReviewerAgent
 from agents.compliance_agent import ComplianceAgent
@@ -97,21 +97,6 @@ from memory.cost_history import record_run_usage
 # selbst umschreiben (das ist Aufgabe von refactoring/backend/etc.) – spart nebenbei auch
 # Tokens, da ihnen ein kleineres Werkzeug-Set (kein write_file/edit_file/run_command) angeboten wird.
 REVIEW_ONLY_AGENT_IDS = {"code_reviewer", "compliance", "project_cleaner"}
-
-# Rollen, deren eigentlicher Auftrag darin besteht, echte Artefakte im Projekt zu hinterlassen
-# (nicht nur Planungs-/Analyse-Text). Realer Fund aus einem echten Lauf: der backend-Agent
-# meldete success=True, verbrauchte echte 36.000+ Tokens und lieferte fertigen Code – aber
-# AUSSCHLIESSLICH als Markdown-Codeblock im Antworttext statt über write_file/edit_file, sodass
-# git status danach komplett leer war (0 Dateien geändert). Ohne Gegenmaßnahme sieht ein
-# solcher Lauf im Report identisch zu einem echten Erfolg aus und der komplette
-# Tokenverbrauch verpufft, ohne dass irgendetwas Nutzbares im Projekt ankommt. Bewusst NUR
-# die Rollen mit eindeutigem Artefakt-Auftrag (kein product_owner/architect/ui_ux/etc. –
-# deren Aufgabe legitim reiner Text sein kann), um Fehlalarme gering zu halten.
-CODE_WRITING_AGENT_IDS = {
-    "backend", "frontend", "database", "api_integration", "data_engineer",
-    "mobile", "ml", "devops", "tester", "resilience_guard", "refactoring",
-    "readme", "documentation",
-}
 
 StatusCallback = Callable[[str], None]
 

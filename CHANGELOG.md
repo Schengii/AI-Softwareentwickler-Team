@@ -7,6 +7,35 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🛠️ Code-schreibende Agenten liefern Code nicht mehr unbemerkt nur im Antworttext
+
+Dritter Fund aus demselben echten End-to-End-Testlauf (siehe die beiden Einträge unten):
+Backend (×2), Datenbank- und README-Agent meldeten `success=True` und verbrauchten
+zusammen ~48.000 Tokens, schrieben dabei aber laut Report "0 Dateien" – der Code steckte
+vermutlich nur im Antworttext statt über `write_file`/`edit_file`, trotz expliziter
+Anweisung dazu (`_augment_with_tool_instructions()`). Der bestehende Regex-Text-Fallback
+(`core/workspace.py.parse_and_save_files()`) fing das NICHT auf – im Log erschien kein
+einziges "💾 Workspace: … Text-Fallback"; die Regex verlangt einen erkennbaren
+Dateipfad-Marker (Fence mit Doppelpunkt, Überschrift mit Backtick-Dateiname, "Datei:"/
+"File:"-Zeile), den freier Fließtext ohne solche Marker nicht liefert.
+
+- `agents/base_agent.py`: `CODE_WRITING_AGENT_IDS` (bisher in `agents/orchestrator.py`, das
+  es nur noch importiert) lebt jetzt hier, da `_run_agentic_loop()` es direkt braucht.
+  Liefert ein Code-schreibender Agent eine finale Textantwort mit einem Code-Fence
+  (`` ``` ``), OHNE dass während der GESAMTEN Aufgabe auch nur eine Datei über
+  `write_file`/`edit_file` gespeichert wurde, UND ist noch mindestens eine Iteration übrig,
+  wird GENAU EIN gezielter Korrektur-Hinweis nachgeschoben ("rufe jetzt write_file/edit_file
+  auf") statt die Antwort unkorrigiert zu akzeptieren – dasselbe Ein-Retry-Muster wie beim
+  bestehenden `tool_use_failed`-Fix.
+- 7 neue Tests (`test_agentic_loop_resilience.py`): der Retry-Pfad inkl. echtem
+  `write_file`-Aufruf danach; kein Retry ohne Code-Fence; kein Retry, wenn schon vorher eine
+  Datei geschrieben wurde (verhindert Fehlalarme bei legitimen Kurz-Zitaten in der
+  Zusammenfassung); kein Retry für Agenten außerhalb von `CODE_WRITING_AGENT_IDS`; nur EIN
+  Retry auch bei wiederholtem Fehlverhalten; kein Retry ohne verbleibende Iteration. Volle
+  Suite (437 Tests) grün, ruff sauber.
+
+---
+
 ## 🔀 PR-Workflow ließ generierte Projekte lokal verschwinden (echter End-to-End-Testlauf)
 
 Erster echter End-to-End-Testlauf seit Einführung des PR-Workflows (reale FastAPI-Notiz-API,

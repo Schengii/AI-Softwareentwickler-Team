@@ -28,6 +28,32 @@ Team kein Detail, das man nur einmal in der Konsole sieht und dann vergisst.
 
 ---
 
+## 📈 Echtes Coverage-Gate statt behaupteter Fähigkeit
+
+Realer Fund bei derselben Bestandsaufnahme: der tester-Agent nennt "Code-Coverage-Analyse"
+in seinem eigenen System-Prompt (`agents/tester_agent.py`) als Fähigkeit – aber nirgends im
+echten Code (`core/`) wurde Coverage jemals tatsächlich AUSGEFÜHRT oder GEMESSEN, nur
+behauptet. Exakt dieselbe "LLM-Einschätzung statt echter Messung"-Lücke, die bei
+Dependency-Vulnerabilities bereits durch einen echten `pip-audit`-Scan geschlossen wurde.
+
+- `core/verifier.py`: neue Methode `check_coverage()` – misst per `coverage.py` (isoliert in
+  derselben venv wie `run_tests()`), liest das reale JSON-Ergebnis (`coverage json`), kein
+  Parsen von Freitext-Prozentzahlen. Nur Python (analog zur bewussten Python-Priorität von
+  `check_lint()`). Fehlendes Tool, kein Testlauf oder ein technischer Fehlschlag der Messung
+  selbst sind KEIN Fehler, nur nicht messbar (`attempted=False`) – niemals fälschlich als "0%
+  Coverage" gemeldet.
+- `config.py`: neuer Schwellenwert `MIN_TEST_COVERAGE_PERCENT` (Standard 70%).
+- `agents/orchestrator.py`: Ergebnis erscheint im Verifikations-Protokoll, rein informativ wie
+  `check_lint()` – beeinflusst `verification_ok` NICHT, ein KI-generiertes Projekt mit
+  niedriger Coverage soll die reale Zahl sichtbar machen, nicht hart blockiert werden.
+- 11 neue Tests (`test_verifier_coverage.py`, `test_coverage_integration.py`): echte
+  Prozent-Berechnung über/unter Schwelle, Aufräumen der Coverage-Artefakt-Dateien, fehlende
+  Testdateien/fehlgeschlagene Installation/abgestürzter Lauf/kaputtes JSON werden alle
+  korrekt als "nicht messbar" (nicht als Fehler) behandelt, Coverage beeinflusst
+  `verification_ok` nachweislich nicht. Volle Suite (476 Tests) grün, ruff sauber.
+
+---
+
 ## ⚡ Team-Komplexitäts-Skalierung: kein Teamleiter-Overhead mehr bei trivialen Aufgaben
 
 Realer Fund aus Probelauf 3 (FastAPI-Ping-API, ein einziger Endpunkt + ein Test): 66.000

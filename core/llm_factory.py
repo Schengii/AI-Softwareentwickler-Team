@@ -89,6 +89,39 @@ MAX_EXHAUSTION_WAIT_SECONDS = 20.0
 # teilen.
 _gemini_rate_limiter = RateLimiter(max_calls=GEMINI_MAX_CALLS_PER_MINUTE, window_seconds=60.0)
 
+# Realer Fund aus einem echten End-to-End-Lauf: governance_lead (HEAVY-Tier, kein
+# ANTHROPIC_API_KEY) war innerhalb EINER Aufgabe bereits erfolgreich auf Groq gepinnt
+# (siehe agents/base_agent.py active_llm), verbrauchte über mehrere Iterationen genug
+# Tokens, um Groqs echtes Tageskontingent zu kippen ("tokens per day (TPD)") - und scheiterte
+# dann mit dem ROHEN Groq-JSON-Fehlertext als AgentResult.error. Das Verhalten selbst (kein
+# weiterer Hop zu Gemini NACH dem Pinning) ist bewusst und bleibt unverändert – ein Hop hier
+# würde exakt die Provider-Historie-Korruption zurückbringen, die das Pinning verhindert
+# (siehe _run_agentic_loop-Docstring). Nur die Fehlermeldung selbst war unnötig kryptisch.
+_RATE_LIMIT_ERROR_MARKERS = ("429", "rate_limit", "resource_exhausted", "quota")
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in _RATE_LIMIT_ERROR_MARKERS)
+
+
+def _pinned_provider_failure(provider_label: str, model_name: str, exc: Exception) -> Exception:
+    """
+    Baut eine verständliche Fehlermeldung für den Fall, dass ein bereits GEPINNTER Provider
+    (kein weiterer Fallback-Hop innerhalb dieser Aufgabe mehr erlaubt, siehe
+    _allow_self_fallback=False) mit einem erkennbaren Kontingent-/Rate-Limit-Fehler scheitert.
+    Ersetzt NICHT die ursprüngliche Exception als Fehlerursache (siehe `raise ... from exc`),
+    macht aber die für den Nutzer sichtbare AgentResult.error-Zeile sofort verständlich statt
+    rohes Provider-JSON zu zeigen.
+    """
+    return RuntimeError(
+        f"{provider_label} ({model_name}) ist für diese Aufgabe bereits fest eingeplant "
+        f"und gerade nicht verfügbar (Kontingent erschöpft oder Rate-Limit erreicht) – kein "
+        f"weiterer automatischer Wechsel innerhalb dieser Aufgabe, um die Konversation nicht "
+        f"zu beschädigen. Kurz warten oder einen zusätzlichen API-Key ergänzen. "
+        f"Rohe Provider-Meldung: {exc}"
+    )
+
 
 @dataclass
 class ToolCall:
@@ -824,10 +857,12 @@ class GroqClient:
                 total_tokens=total,
             )
         except Exception as e:
-            err_str = str(e)
-            if "429" in err_str or "rate_limit" in err_str:
+            is_rate_limit = _is_rate_limit_error(e)
+            if is_rate_limit:
                 token_guard.mark_model_exhausted(f"groq:{self.model_name}", "Groq Rate Limit")
             if not _allow_self_fallback:
+                if is_rate_limit:
+                    raise _pinned_provider_failure("Groq", self.model_name, e) from e
                 raise
             gemini_fallback = GeminiClient(model_name="gemini-3.6-flash")
             return await gemini_fallback.generate_with_usage(prompt, system_prompt)
@@ -880,10 +915,12 @@ class GroqClient:
                 tool_calls=tool_calls,
             )
         except Exception as e:
-            err_str = str(e)
-            if "429" in err_str or "rate_limit" in err_str:
+            is_rate_limit = _is_rate_limit_error(e)
+            if is_rate_limit:
                 token_guard.mark_model_exhausted(f"groq:{self.model_name}", "Groq Rate Limit")
             if not _allow_self_fallback:
+                if is_rate_limit:
+                    raise _pinned_provider_failure("Groq", self.model_name, e) from e
                 raise
             gemini_fallback = GeminiClient(model_name="gemini-3.6-flash")
             return await gemini_fallback.generate_with_tools(messages, system_prompt, tools)
@@ -953,10 +990,12 @@ class ClaudeClient:
                 total_tokens=total,
             )
         except Exception as e:
-            err_str = str(e)
-            if "429" in err_str or "rate_limit" in err_str:
+            is_rate_limit = _is_rate_limit_error(e)
+            if is_rate_limit:
                 token_guard.mark_model_exhausted(self.model_name, "Claude Rate Limit")
             if not _allow_self_fallback:
+                if is_rate_limit:
+                    raise _pinned_provider_failure("Claude", self.model_name, e) from e
                 raise
             return await self._free_heavy_fallback_client().generate_with_usage(prompt, system_prompt)
 
@@ -1008,10 +1047,12 @@ class ClaudeClient:
                 tool_calls=tool_calls,
             )
         except Exception as e:
-            err_str = str(e)
-            if "429" in err_str or "rate_limit" in err_str:
+            is_rate_limit = _is_rate_limit_error(e)
+            if is_rate_limit:
                 token_guard.mark_model_exhausted(self.model_name, "Claude Rate Limit")
             if not _allow_self_fallback:
+                if is_rate_limit:
+                    raise _pinned_provider_failure("Claude", self.model_name, e) from e
                 raise
             return await self._free_heavy_fallback_client().generate_with_tools(messages, system_prompt, tools)
 

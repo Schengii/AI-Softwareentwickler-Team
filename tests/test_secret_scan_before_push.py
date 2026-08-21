@@ -73,6 +73,9 @@ class TestCLIWarnsOnSecretFund(unittest.TestCase):
         self.fake_github.push.return_value = (True, "push ok")
         self.fake_github.get_current_branch.return_value = "main"
         self.fake_github.wait_for_ci_status = AsyncMock(return_value=("no_run", "kein CI im Test"))
+        # PR-Workflow ist hier nicht Testgegenstand (siehe tests/test_pr_workflow.py) - hält
+        # den bisherigen Direct-Push-Pfad aktiv.
+        self.fake_github.gh_ready.return_value = False
         self.cli._orchestrator._agents["github"] = self.fake_github
         self.cli._orchestrator.last_verification_ok = True
         self._print_patcher = patch("interface.cli.console.print")

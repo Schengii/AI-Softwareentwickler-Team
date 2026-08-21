@@ -7,6 +7,49 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔀 PR-Workflow: Feature-Branch + Pull Request statt Direct-Push auf den Hauptbranch
+
+Kein Bugfix aus einem Testlauf, sondern eine bewusste Strukturentscheidung aus einer
+Gap-Analyse gegen ein echtes, professionelles Team: `github_agent.commit()`/`push()`
+schrieben bisher IMMER direkt auf den gerade ausgecheckten Branch – bei einem
+frischen/geladenen Projekt i.d.R. `main`. Ein echtes Team committet nicht direkt auf den
+Hauptbranch, sondern legt pro Aufgabe einen Feature-Branch an, öffnet einen Pull Request
+und lässt Merge erst nach grüner CI/Freigabe zu.
+
+- `agents/github_agent.py`: vier neue Methoden – `build_feature_branch_name()` (Slug der
+  Aufgabe + kurzes UUID-Suffix, dieselbe Namenskonvention wie die isolierten
+  Selbstverbesserungs-Worktrees in `core/git_isolation.py`, dort dafür jetzt als
+  `slugify()` public statt `_slugify()` – ein zweites Mal dieselbe Logik zu duplizieren
+  hätte dem Token-Effizienz-Grundsatz widersprochen), `create_branch()`, `checkout()`
+  (zurück auf einen bestehenden Branch) und `gh_ready()`/`create_pull_request()` (reine
+  `gh`-CLI-Fähigkeitsprüfung bzw. `gh pr create`-Aufruf, wirft nie eine Exception – ein
+  fehlgeschlagener PR-Aufruf soll den bereits gepushten Branch nicht verwerfen).
+- `interface/cli.py._ask_for_git_push()`: entscheidet vor dem Bestätigungs-Dialog, ob der
+  PR-Workflow greift – NUR wenn der aktuelle Branch einer der neuen
+  `config.GIT_PROTECTED_BRANCHES` (Standard: `main,master`) ist UND `gh_ready()` True
+  liefert. Ist bereits ein Feature-/Worktree-Branch aktiv, fehlt die `gh`-CLI, fehlt ein
+  GitHub-Remote, oder schlägt `create_branch()` fehl, fällt der Ablauf automatisch auf den
+  bisherigen Direct-Push zurück (Graceful Degradation statt Blockade) – der
+  Vorschau-Dialog zeigt die gewählte Strategie vorab an, kein blindes Ja/Nein. Nach
+  erfolgreicher PR-Erstellung wechselt der Agent lokal wieder auf den ursprünglichen
+  Hauptbranch zurück, damit die nächste Aufgabe wieder von einem sauberen Stand aus einen
+  neuen Feature-Branch anlegt statt unbemerkt auf demselben Feature-Branch weiterzuarbeiten.
+  `ENABLE_PR_WORKFLOW=false` stellt das alte Verhalten vollständig wieder her.
+- 14 neue Tests (`tests/test_pr_workflow.py`): Branch-Operationen gegen ein echtes lokales
+  Git-Repo (kein Mock, wie schon bei `push()` in `test_github_agent_push.py`), `gh pr
+  create` über `subprocess.run` gemockt (in der CI-Umgebung nicht installiert), die
+  CLI-Entscheidungslogik (Hauptbranch+gh-ready -> PR-Workflow, Feature-Branch bereits aktiv
+  -> Direct-Push, `gh` nicht bereit -> Direct-Push, Branch-Anlage schlägt fehl ->
+  Direct-Push-Fallback) sowie ein voller End-to-End-Beweis gegen ein echtes Repo (Branch
+  wird wirklich auf den Remote gepusht, PR bekommt den echten Branch-Namen als `head`,
+  danach echter Rückwechsel auf `main`). Vier bestehende Push-Gate-Tests
+  (`test_cli_push_gate.py`, `test_push_gate_verification_warning.py`,
+  `test_commit_message_summary.py`, `test_secret_scan_before_push.py`) fixieren
+  `gh_ready.return_value = False`, da sie den Direct-Push-Pfad testen, nicht den neuen
+  PR-Workflow. Volle Suite (347 Tests) grün, ruff sauber.
+
+---
+
 ## 🛠️ Zwei Resilienz-Fixes im agentischen Werkzeug-Loop (aus demselben Testlauf)
 
 Derselbe echte End-to-End-Testlauf (siehe Eintrag unten) deckte zwei weitere, unabhängige

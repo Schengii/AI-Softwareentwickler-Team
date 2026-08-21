@@ -27,7 +27,7 @@ from rich.text import Text
 
 from agents.department_lead_agent import DEPARTMENT_DEFINITIONS
 from agents.orchestrator import PHASE_ORDER, Orchestrator
-from config import ENABLE_PLAN_CONFIRMATION, validate_config
+from config import ENABLE_PLAN_CONFIRMATION, ENABLE_PR_WORKFLOW, GIT_PROTECTED_BRANCHES, validate_config
 from core.code_sandbox import CodeSandbox
 from core.message_bus import AgentTask
 from core.task_manager import AVAILABLE_AGENTS
@@ -362,6 +362,26 @@ class CLIInterface:
         else:
             commit_msg = f"feat: implement {self._truncate_at_word(task_summary, 50)} via AI Developer Team"
 
+        # PR-Workflow statt Direct-Push: Ein echtes Team committet nicht direkt auf den
+        # Hauptbranch. Nur AKTIV, wenn der aktuelle Branch tatsächlich ein Hauptbranch ist
+        # (schon auf einem Feature-/Worktree-Branch ausgecheckt -> ganz normal direkt darauf
+        # committen/pushen, siehe agents/github_agent.py) UND die `gh`-CLI installiert +
+        # eingeloggt ist (gh_ready()) - sonst Graceful Degradation auf den bisherigen
+        # Direct-Push, statt den Nutzer ganz zu blockieren.
+        original_branch = github_agent.get_current_branch()
+        use_pr_workflow = (
+            ENABLE_PR_WORKFLOW
+            and original_branch in GIT_PROTECTED_BRANCHES
+            and github_agent.gh_ready()
+        )
+        feature_branch = github_agent.build_feature_branch_name(task_summary) if use_pr_workflow else None
+        branch_note = (
+            f"\n\n[bold cyan]🔀 PR-Workflow:[/bold cyan] Feature-Branch `{feature_branch}` wird "
+            f"angelegt, gepusht und als Pull Request gegen `{original_branch}` geöffnet - "
+            f"KEIN Direct-Commit auf `{original_branch}`."
+            if use_pr_workflow else ""
+        )
+
         # Realer Fund: JEDER Lauf endete bisher mit demselben "✅ Fertig!", egal ob die echte
         # Testsuite tatsächlich bestanden hatte, nie gefunden wurde, oder nach Fixversuchen
         # weiter fehlschlug – wer nur die letzte Statuszeile sah, hielt ungeprüften Code für
@@ -383,6 +403,7 @@ class CLIInterface:
                     + (f"\n  … und {len(changed_files) - 25} weitere" if len(changed_files) > 25 else "")
                     + (f"\n\n[dim]{diff_stat}[/dim]" if diff_stat else "")
                     + f"\n\n[bold]Geplante Commit-Message:[/bold]\n  {commit_msg}"
+                    + branch_note
                     + verification_note
                     + secret_note
                 ),
@@ -405,17 +426,55 @@ class CLIInterface:
             console.print("↩️ Push übersprungen – nichts wurde committet oder gepusht.", style="dim")
             return
 
+        if use_pr_workflow:
+            success_b, out_b = github_agent.create_branch(feature_branch)
+            if not success_b:
+                console.print(
+                    f"⚠️ Feature-Branch `{feature_branch}` konnte nicht angelegt werden ({out_b}) "
+                    "– falle auf Direct-Push zurück.", style="yellow",
+                )
+                use_pr_workflow = False
+
         success_c, out_c = github_agent.commit(commit_msg)
         if success_c:
             console.print(f"✅ [green]Commit erfolgreich:[/green] {commit_msg}")
-            success_p, out_p = github_agent.push()
+            success_p, out_p = github_agent.push(branch=feature_branch if use_pr_workflow else None)
             if success_p:
-                console.print("🚀 [bold green]Änderungen erfolgreich auf GitHub gepusht![/bold green]")
+                if use_pr_workflow:
+                    console.print(f"🚀 [bold green]Feature-Branch `{feature_branch}` gepusht.[/bold green]")
+                    success_pr, pr_out = github_agent.create_pull_request(
+                        title=commit_msg,
+                        body=f"Automatisch erstellt vom KI-Softwareentwickler-Team.\n\nAufgabe: {task_summary}",
+                        base=original_branch, head=feature_branch,
+                    )
+                    if success_pr:
+                        pr_url = pr_out.splitlines()[-1] if pr_out else pr_out
+                        console.print(f"🔀 [bold green]Pull Request erstellt:[/bold green] {pr_url}")
+                    else:
+                        console.print(
+                            f"⚠️ PR-Erstellung fehlgeschlagen ({pr_out}) – Branch ist trotzdem "
+                            "gepusht, PR ggf. manuell auf GitHub anlegen.", style="yellow",
+                        )
+                else:
+                    console.print("🚀 [bold green]Änderungen erfolgreich auf GitHub gepusht![/bold green]")
                 await self._report_ci_status(github_agent)
             else:
                 console.print(f"⚠️ Push nicht abgeschlossen: {out_p}", style="yellow")
         else:
             console.print(f"⚠️ Commit nicht möglich: {out_c}", style="yellow")
+
+        # Zurück auf den ursprünglichen Hauptbranch wechseln, damit die NÄCHSTE Aufgabe wieder
+        # von einem sauberen Hauptbranch-Stand aus einen neuen Feature-Branch anlegt, statt
+        # unbemerkt auf demselben Feature-Branch weiterzuarbeiten. Läuft unabhängig davon, ob
+        # Commit/Push/PR oben erfolgreich waren – solange wir den Branch überhaupt gewechselt
+        # haben (create_branch() erfolgreich war).
+        if use_pr_workflow and github_agent.get_current_branch() != original_branch:
+            success_co, out_co = github_agent.checkout(original_branch)
+            if not success_co:
+                console.print(
+                    f"⚠️ Konnte nicht zu `{original_branch}` zurückwechseln ({out_co}) – lokal "
+                    f"weiterhin auf `{feature_branch}` ausgecheckt.", style="dim",
+                )
 
     async def _report_ci_status(self, github_agent) -> None:
         """

@@ -8,10 +8,13 @@ Kann auch direkte Git-Kommandos vorschlagen.
 
 import asyncio
 import json
+import shutil
 import subprocess
+import uuid
 
 from agents.base_agent import BaseAgent
 from config import BASE_DIR
+from core.git_isolation import slugify
 from core.secret_scanner import SecretFinding, scan_diff
 
 
@@ -193,6 +196,91 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
 
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
+
+    # ──────────────────────────────────────────
+    # PR-Workflow: Feature-Branch + Pull Request statt Direct-Push auf einen Hauptbranch
+    # ──────────────────────────────────────────
+    # Realer struktureller Unterschied zu einem echten Team: push() commitete bisher direkt
+    # auf den gerade ausgecheckten Branch – bei einem frischen/geladenen Projekt i.d.R.
+    # "main". Ein echtes Team committet nicht direkt auf den Hauptbranch, sondern legt pro
+    # Aufgabe einen Feature-Branch an, öffnet einen Pull Request und lässt CI/Review VOR dem
+    # Merge laufen. interface/cli.py._ask_for_git_push() nutzt die folgenden Methoden dafür,
+    # WENN der aktuelle Branch einer von config.GIT_PROTECTED_BRANCHES ist UND gh_ready()
+    # True liefert – sonst bleibt es beim bisherigen Direct-Push (Graceful Degradation ohne
+    # `gh`-CLI/GitHub-Remote, statt den Nutzer komplett zu blockieren).
+
+    def build_feature_branch_name(self, task_summary: str) -> str:
+        """
+        Erzeugt einen eindeutigen Feature-Branch-Namen aus der Aufgabenbeschreibung –
+        dieselbe Slug+UUID-Namenskonvention wie core/git_isolation.py für isolierte
+        Selbstverbesserungs-Worktrees, hier unter dem Präfix "feat/" statt "ai-team/", da es
+        sich um einen normalen, auf GitHub sichtbaren Feature-Branch handelt (kein isolierter
+        Selbstverbesserungslauf).
+        """
+        return f"feat/{slugify(task_summary)}-{uuid.uuid4().hex[:6]}"
+
+    def create_branch(self, branch_name: str) -> tuple[bool, str]:
+        """Legt einen neuen lokalen Branch vom aktuellen HEAD an und checkt ihn aus."""
+        result = subprocess.run(
+            ["git", "checkout", "-b", branch_name],
+            cwd=BASE_DIR, capture_output=True, text=True, encoding="utf-8",
+        )
+        success = result.returncode == 0
+        output = result.stdout + result.stderr
+        return success, output.strip()
+
+    def checkout(self, branch: str) -> tuple[bool, str]:
+        """
+        Wechselt zu einem bereits existierenden lokalen Branch zurück – genutzt, um nach
+        Push+PR-Erstellung wieder auf den ursprünglichen Hauptbranch zu wechseln, damit die
+        NÄCHSTE Aufgabe wieder von einem sauberen Hauptbranch-Stand aus einen neuen
+        Feature-Branch anlegt, statt unbemerkt auf demselben Feature-Branch weiterzuarbeiten.
+        """
+        result = subprocess.run(
+            ["git", "checkout", branch],
+            cwd=BASE_DIR, capture_output=True, text=True, encoding="utf-8",
+        )
+        success = result.returncode == 0
+        output = result.stdout + result.stderr
+        return success, output.strip()
+
+    def gh_ready(self) -> bool:
+        """
+        Prüft, ob die `gh`-CLI installiert UND eingeloggt ist – Voraussetzung für
+        create_pull_request(). Reine Fähigkeitsprüfung ohne Fehler bei negativem Ergebnis:
+        der Aufrufer (interface/cli.py) entscheidet selbst, ob er dann auf den bisherigen
+        Direct-Push zurückfällt.
+        """
+        if shutil.which("gh") is None:
+            return False
+        try:
+            result = subprocess.run(
+                ["gh", "auth", "status"],
+                cwd=BASE_DIR, capture_output=True, text=True, timeout=10, encoding="utf-8",
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return result.returncode == 0
+
+    def create_pull_request(self, title: str, body: str, base: str, head: str) -> tuple[bool, str]:
+        """
+        Erstellt einen Pull Request per `gh pr create` – Voraussetzung: `head` wurde bereits
+        gepusht (push()) und gh_ready() war True. Gibt bei Erfolg die von `gh` ausgegebene
+        PR-URL zurück (letzte Zeile von stdout), sonst die Fehlerausgabe. Wirft NIE eine
+        Exception – ein fehlgeschlagener PR-Aufruf soll den bereits gepushten Branch nicht
+        verwerfen, nur ohne automatisch erstellten PR liegen lassen (der Nutzer kann ihn dann
+        manuell auf GitHub anlegen).
+        """
+        try:
+            result = subprocess.run(
+                ["gh", "pr", "create", "--title", title, "--body", body, "--base", base, "--head", head],
+                cwd=BASE_DIR, capture_output=True, text=True, timeout=30, encoding="utf-8",
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        success = result.returncode == 0
+        output = (result.stdout + result.stderr).strip()
+        return success, output
 
     def add_remote(self, name: str, url: str) -> tuple[bool, str]:
         """Fügt ein Remote-Repository hinzu."""

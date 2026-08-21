@@ -40,7 +40,14 @@ def _run_git(args: list[str], cwd: str, timeout: float = 30.0) -> subprocess.Com
     )
 
 
-def _slugify(text: str, max_len: int = 40) -> str:
+def slugify(text: str, max_len: int = 40) -> str:
+    """
+    Wandelt einen beliebigen Text in einen git-branch-tauglichen Slug um (nur
+    Kleinbuchstaben/Ziffern/Bindestriche). Bewusst PUBLIC (kein führender Unterstrich) –
+    wird sowohl hier für isolierte Selbstverbesserungs-Worktrees als auch von
+    agents/github_agent.py für normale Feature-Branch-Namen im PR-Workflow genutzt, statt
+    dieselbe Slugify-Logik ein zweites Mal zu duplizieren.
+    """
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", (text or "").strip().lower()).strip("-")
     return (slug[:max_len] or "task").strip("-")
 
@@ -110,7 +117,7 @@ def create_isolated_worktree(base_dir: str, task_summary: str) -> IsolatedWorktr
     if not is_git_repo(base_dir):
         raise GitIsolationError(f"'{base_dir}' ist kein Git-Repository – Worktree-Isolation nicht möglich.")
 
-    slug = _slugify(task_summary)
+    slug = slugify(task_summary)
     unique = uuid.uuid4().hex[:6]
     branch = f"ai-team/{slug}-{unique}"
     worktree_dir = str(Path(base_dir).resolve().parent / ".ai-team-worktrees" / f"{slug}-{unique}")

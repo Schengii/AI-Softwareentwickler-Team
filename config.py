@@ -195,6 +195,26 @@ ENABLE_PLAN_CONFIRMATION: bool = os.getenv("ENABLE_PLAN_CONFIRMATION", "true").l
 PLAN_CONFIRMATION_MIN_TASKS: int = int(os.getenv("PLAN_CONFIRMATION_MIN_TASKS", "3"))
 
 # ──────────────────────────────────────────
+# PR-Workflow: Feature-Branch + Pull Request statt Direct-Push auf einen Hauptbranch
+# ──────────────────────────────────────────
+# Bisher committete/pushte agents/github_agent.py IMMER direkt auf den gerade ausgecheckten
+# Branch – bei einem frischen/geladenen Projekt i.d.R. "main". Ein echtes Team committet
+# nicht direkt auf den Hauptbranch: eigener Feature-Branch pro Aufgabe, Pull Request, Merge
+# erst nach grüner CI und Freigabe. ENABLE_PR_WORKFLOW=true (Standard) lässt
+# interface/cli.py._ask_for_git_push() automatisch einen Feature-Branch anlegen und einen PR
+# per `gh pr create` öffnen, WENN der aktuelle Branch einer der GIT_PROTECTED_BRANCHES ist –
+# ist bereits ein Feature-Branch aktiv (z.B. manuell ausgecheckt oder ein isolierter
+# Selbstverbesserungs-Worktree, siehe core/git_isolation.py), wird ganz normal direkt darauf
+# committet/gepusht, da das ohnehin schon kein Hauptbranch ist. Ohne installierte/eingeloggte
+# `gh`-CLI (agents/github_agent.py.gh_ready()) fällt der Ablauf automatisch auf das bisherige
+# Direct-Push-Verhalten zurück (Graceful Degradation) – der Nutzer wird darüber informiert,
+# PUSHT aber trotzdem, statt komplett zu blockieren.
+ENABLE_PR_WORKFLOW: bool = os.getenv("ENABLE_PR_WORKFLOW", "true").lower() in ("true", "1", "yes")
+GIT_PROTECTED_BRANCHES: tuple[str, ...] = tuple(
+    b.strip() for b in os.getenv("GIT_PROTECTED_BRANCHES", "main,master").split(",") if b.strip()
+)
+
+# ──────────────────────────────────────────
 # Web-Dashboard: sichere Standardwerte (nur lokal, optionaler Token für Netzwerkzugriff)
 # ──────────────────────────────────────────
 # Standardmäßig NUR auf localhost erreichbar (siehe interface/web_dashboard.py). Wer das

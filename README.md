@@ -34,6 +34,7 @@ damit dieses README als aktuelle Funktionsübersicht schlank bleibt.
 - [Hierarchische Team- & Fachbereichsstruktur (Grafik)](#teamstruktur)
 - [Kommunikations- & Delegations-Workflow](#kommunikations-workflow)
 - [🛡️ Neuer Spezialist: Resilience-Guard (QA & Fault-Tolerance)](#resilience-guard)
+- [🔀 PR-Workflow: Feature-Branch + Pull Request statt Direct-Push](#pr-workflow)
 - [🌐 Modernes Web-Dashboard & Visualisierung](#web-dashboard)
 - [🔌 MCP-Server: Einbindung in Cursor, Windsurf & Antigravity](#mcp-server)
 - [🔍 Lokales Codebase-RAG & Semantische Suche](#codebase-rag)
@@ -144,6 +145,32 @@ Der [ResilienceGuardAgent](agents/resilience_guard_agent.py) sichert Software ge
 - **Smart Retries:** Exponentielles Backoff mit Jitter gegen Thundering-Herd-Probleme.
 - **Graceful Degradation:** Fällt nahtlos auf Caches oder Fallbacks zurück.
 - **Chaos Tests:** Schreibt gezielte Unit-Tests zur Simulation von Netzwerk-Timeouts und Verbindungsabbrüchen.
+
+---
+
+<a id="pr-workflow"></a>
+## 🔀 PR-Workflow: Feature-Branch + Pull Request statt Direct-Push
+
+`/push` (bzw. der automatische Push-Dialog nach jedem Lauf) committete bisher IMMER direkt
+auf den gerade ausgecheckten Branch – bei einem frischen/geladenen Projekt i.d.R. `main`.
+Ein echtes Team committet nicht direkt auf den Hauptbranch: eigener Feature-Branch pro
+Aufgabe, Pull Request, Merge erst nach grüner CI und Freigabe.
+
+- **Automatischer Feature-Branch:** Ist der aktuell ausgecheckte Branch einer der
+  `GIT_PROTECTED_BRANCHES` (Standard: `main,master`) UND die `gh`-CLI installiert und
+  eingeloggt (`gh_ready()`), legt `agents/github_agent.py` vor dem Commit automatisch einen
+  eindeutigen Feature-Branch an (`feat/<slug-der-aufgabe>-<uuid>`), pusht ihn und öffnet
+  per `gh pr create` einen Pull Request gegen den ursprünglichen Hauptbranch – der
+  Vorschau-Dialog vor der Bestätigung zeigt das vorab an, kein blindes Ja/Nein.
+- **Zurück auf den Hauptbranch:** Nach Push + PR-Erstellung wechselt der Agent lokal wieder
+  auf den ursprünglichen Hauptbranch zurück, damit die nächste Aufgabe wieder von einem
+  sauberen Stand aus einen neuen Feature-Branch anlegt statt unbemerkt auf demselben
+  Feature-Branch weiterzuarbeiten.
+- **Graceful Degradation:** Ist bereits ein Feature-/Worktree-Branch aktiv (kein
+  Hauptbranch), oder ist `gh` nicht installiert/nicht eingeloggt, oder schlägt das Anlegen
+  des Branches fehl, fällt der Ablauf automatisch auf den bisherigen Direct-Push zurück –
+  der Nutzer wird informiert, aber nicht blockiert. `ENABLE_PR_WORKFLOW=false` schaltet den
+  gesamten PR-Workflow ab und stellt das alte Verhalten wieder her.
 
 ---
 
@@ -357,7 +384,7 @@ Details zum Web-Dashboard: [🌐 Modernes Web-Dashboard & Visualisierung](#web-d
 | `/learnings` | Zeigt alle von den Agenten gelernten Regeln (persistentes Gedächtnis) mit Nummer je Agent an |
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
 | `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
-| `/push` | Führt manuell einen Git-Commit & Push aus (mit Secret-Scan & Verifikations-Warnung) |
+| `/push` | Führt manuell einen Git-Commit & Push aus (mit Secret-Scan, Verifikations-Warnung & PR-Workflow) |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
 | `/hilfe` | Zeigt die Befehlsübersicht an |

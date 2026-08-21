@@ -23,6 +23,11 @@ class TestPushConfirmationGate(unittest.TestCase):
         self.fake_github.commit.return_value = (True, "commit ok")
         self.fake_github.push.return_value = (True, "push ok")
         self.fake_github.get_current_branch.return_value = "main"
+        # Gegenstand dieser Tests ist das Bestätigungs-Gate, nicht der PR-Workflow (siehe
+        # tests/test_pr_workflow.py) - gh_ready()=False hält den bisherigen Direct-Push-Pfad
+        # aktiv, sonst würde ein unkonfigurierter MagicMock() für create_branch() etc. beim
+        # Tupel-Unpacking crashen.
+        self.fake_github.gh_ready.return_value = False
         # wait_for_ci_status() ist async (siehe agents/github_agent.py) - MagicMock kennt das
         # nicht automatisch, ohne AsyncMock würde `await` mit TypeError fehlschlagen.
         self.fake_github.wait_for_ci_status = AsyncMock(return_value=("no_run", "kein CI im Test"))

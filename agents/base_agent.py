@@ -58,6 +58,16 @@ CODE_WRITING_AGENT_IDS = {
     "readme", "documentation",
 }
 
+# Realer Fund aus einem echten End-to-End-Testlauf: architect wurde korrekt eingeplant und
+# explizit mit "erstelle ADR" beauftragt (core/task_manager.py DECOMPOSE_SYSTEM_PROMPT-Regel),
+# hat aber trotz eigener System-Prompt-Anweisung (agents/architect_agent.py) NIE
+# record_architecture_decision aufgerufen - die Entscheidung stand nur im Fließtext. Diese
+# Marker erkennen genau den Abschnitt, den architect_agent.py's fixes Ausgabeformat IMMER
+# verlangt ("## 6. Technologie-Entscheidungen (ADRs)") - kein Codeblock-Check wie bei
+# CODE_WRITING_AGENT_IDS, da architect legitim Code-Fences für Mermaid-Diagramme liefert, ohne
+# dass "kein write_file aufgerufen" dort ein Problem wäre.
+_ADR_TEXT_MARKERS = ("Technologie-Entscheidung", "Architektur-Entscheidung", "ADR")
+
 
 class BaseAgent(ABC):
     """
@@ -184,6 +194,7 @@ class BaseAgent(ABC):
         active_llm = self._llm
         disallowed_tool_call_retry_used = False
         no_file_written_retry_used = False
+        no_adr_call_retry_used = False
 
         for iteration in range(1, max_iterations + 1):
             if iteration == max_iterations and max_iterations > 1:
@@ -272,6 +283,39 @@ class BaseAgent(ABC):
                             "write_file/edit_file gespeichert. Rufe JETZT für jede Datei, die du "
                             "gerade beschrieben hast, das passende Werkzeug auf – erst danach "
                             "eine kurze Abschlusszusammenfassung ohne erneuten Code."
+                        ),
+                    ))
+                    continue
+                elif (
+                    not response.tool_calls
+                    and iteration < max_iterations
+                    and not no_adr_call_retry_used
+                    and self.agent_id == "architect"
+                    and not toolbox.files_written
+                    and any(marker in response.text for marker in _ADR_TEXT_MARKERS)
+                ):
+                    # Realer Fund aus einem echten End-to-End-Testlauf: architect wurde diesmal
+                    # (dank der neuen decompose()-Pflichtregel, siehe core/task_manager.py)
+                    # korrekt eingeplant UND explizit mit "erstelle ADR" beauftragt – hat aber
+                    # trotz seines eigenen System-Prompt-Hinweises (agents/architect_agent.py)
+                    # NIE record_architecture_decision aufgerufen, die Entscheidung stand nur im
+                    # Fließtext. Der obige Code-Fence-Check (CODE_WRITING_AGENT_IDS) greift hier
+                    # NICHT: architect liefert legitim Code-Fences für Mermaid-Diagramme, ohne
+                    # dass "kein write_file aufgerufen" ein Problem wäre - er schreibt normalerweise
+                    # ohnehin keine Projektdateien. Eigene, gezielte Heuristik: Antwort erwähnt
+                    # Technologie-/Architektur-Entscheidungen (_ADR_TEXT_MARKERS, deckt das vom
+                    # architect-Prompt selbst vorgeschriebene Ausgabeformat ab), aber toolbox.
+                    # files_written ist über die GESAMTE Aufgabe leer (nicht mal ein ADR).
+                    no_adr_call_retry_used = True
+                    turns.append(AgentMessage(role="assistant", text=response.text, tool_calls=[]))
+                    turns.append(AgentMessage(
+                        role="user",
+                        text=(
+                            "Deine Antwort beschreibt Technologie-/Architektur-Entscheidungen, "
+                            "aber du hast noch KEIN ADR über das Werkzeug "
+                            "record_architecture_decision dokumentiert. Rufe es JETZT für jede "
+                            "Entscheidung mit einer echten Alternative auf – erst danach eine "
+                            "kurze Abschlusszusammenfassung."
                         ),
                     ))
                     continue

@@ -43,6 +43,33 @@ echten Arbeitsverzeichnis mit echten, weiterzuentwickelnden Projekten daneben.
 
 ---
 
+## 🪙 Groq-Backstop für die STANDARD/LITE-Gemini-Fallback-Kette (echter Testlauf)
+
+Derselbe echte End-to-End-Testlauf wie beim PR-Workflow-Fund (siehe unten): der QA-Tester
+scheiterte komplett – "Gemini Function-Calling Fehler nach allen Fallback-Modellen
+(gemini-3.1-flash-lite): Claude innerhalb einer Fallback-Kette nicht verfügbar (kein
+ANTHROPIC_API_KEY)" –, obwohl Groq im SELBEN Lauf für andere Rollen (Backend, Datenbank,
+Code-Reviewer, …) einwandfrei funktionierte. Ursache: `core/llm_factory.py.MODEL_FALLBACKS`
+hatte einen Groq-Backstop bisher nur für die HEAVY-Stufe (`GROQ_HEAVY_MODEL` in `config.py`),
+nicht für die STANDARD/LITE-Gemini-Ketten – ein Agent mit einer echten Gemini-Störung (nicht
+nur Quota-Erschöpfung) hatte dort keine weitere Rettung mehr.
+
+- `core/llm_factory.py`: `groq:openai/gpt-oss-120b` als letzte Stufe zu den
+  `gemini-3.6-flash`-, `gemini-3.1-flash-lite`- und `gemini-3.5-flash`-Fallback-Ketten
+  ergänzt. Kein Endlosloop möglich (`_allow_self_fallback=False` verhindert, dass Groq bei
+  eigenem Scheitern zurück zu Gemini zurückspringt).
+- 1 neuer Test (`test_llm_routing.py`): beweist, dass ein Aufruf tatsächlich bei Groq landet,
+  wenn sowohl Gemini als auch Claude scheitern. Dabei einen zweiten, echten Fund gemacht:
+  ein BESTEHENDER Test (`test_waits_briefly_when_entire_fallback_chain_is_exhausted`) markierte
+  absichtlich die GESAMTE Kette als erschöpft, um die Cooldown-Wartelogik zu prüfen – ohne
+  den neuen Groq-Kandidaten mit zu markieren, wäre die Kette durch den Fix nie mehr
+  vollständig erschöpft gewesen, und der Test hätte im echten `GROQ_API_KEY`-Environment
+  unbemerkt einen ECHTEN Netzwerkaufruf an die Groq-API ausgelöst statt wie vorgesehen
+  komplett gemockt zu bleiben. Test entsprechend korrigiert. Volle Suite (432 Tests) grün,
+  ruff sauber.
+
+---
+
 ## 📐 Architecture Decision Records (ADRs)
 
 Realer struktureller Fund: `agents/architect_agent.py`s eigener Ausgabe-Prompt sprach schon

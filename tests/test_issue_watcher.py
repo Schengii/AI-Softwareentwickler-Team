@@ -85,16 +85,19 @@ class TestIssueWatcherOrchestration(unittest.TestCase):
         self.assertIn((1, "ai-team-done"), label_calls)
         self.fake_github.remove_issue_label.assert_any_call(1, "ai-team-in-progress")
 
-        # Feature-Branch angelegt, gepusht, PR gegen den ursprünglichen Branch geöffnet.
-        self.fake_github.create_branch.assert_called_once_with("feat/health-check-endpoint-abc123")
+        # Feature-Branch angelegt (explizit vom Hauptbranch abgezweigt), gepusht, PR gegen
+        # den Hauptbranch geöffnet.
+        self.fake_github.create_branch.assert_called_once_with("feat/health-check-endpoint-abc123", base="main")
         self.fake_github.push.assert_called_once_with(branch="feat/health-check-endpoint-abc123")
         pr_kwargs = self.fake_github.create_pull_request.call_args.kwargs
         self.assertEqual(pr_kwargs["base"], "main")
         self.assertEqual(pr_kwargs["head"], "feat/health-check-endpoint-abc123")
         self.assertIn("Closes #1", pr_kwargs["body"])
 
-        # Zurück auf den ursprünglichen Branch, damit das nächste Issue sauber startet.
-        self.fake_github.checkout.assert_called_once_with("main")
+        # KEIN Zurückwechseln mehr zum Hauptbranch (realer Fund: das hätte gerade erst
+        # generierte, nur auf dem Feature-Branch committete Dateien aus dem
+        # Arbeitsverzeichnis entfernt) - siehe core/issue_watcher.py.
+        self.fake_github.checkout.assert_not_called()
         self.fake_github.comment_on_issue.assert_called_once()
         self.assertIn("https://github.com/x/y/pull/7", self.fake_github.comment_on_issue.call_args[0][1])
 

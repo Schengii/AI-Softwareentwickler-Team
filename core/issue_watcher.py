@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from agents.github_agent import GitHubAgent
 from agents.orchestrator import Orchestrator
 from config import (
+    GIT_PROTECTED_BRANCHES,
     ISSUE_BLOCKED_LABEL,
     ISSUE_DONE_LABEL,
     ISSUE_IN_PROGRESS_LABEL,
@@ -134,7 +135,14 @@ async def _process_single_issue(
     # gar nicht auftauchen. Der Ticket-ID-Präfix "issue-" hält sie eindeutig von CLI-/
     # Dashboard-Tickets getrennt, siehe core/backlog_store.py.
     upsert_ticket(ticket_id=f"issue-{issue_number}", title=title, source="issue", status="in_progress")
+    # Realer Fund: das Arbeitsverzeichnis kann hier bereits auf einem "feat/"-Branch eines
+    # VORHERIGEN Issues in diesem Poll-Zyklus stehen (seit dem entsprechenden Fix wird nach
+    # einem PR-Workflow-Lauf NICHT mehr zurückgewechselt, siehe unten) - original_branch wäre
+    # dann fälschlich dieser Leftover-Branch statt des echten Hauptbranchs. base_branch ist
+    # deshalb explizit der erste konfigurierte Hauptbranch, falls original_branch selbst
+    # keiner ist.
     original_branch = github_agent.get_current_branch()
+    base_branch = original_branch if original_branch in GIT_PROTECTED_BRANCHES else (GIT_PROTECTED_BRANCHES[0] if GIT_PROTECTED_BRANCHES else "main")
 
     try:
         orchestrator = Orchestrator()
@@ -172,7 +180,7 @@ async def _process_single_issue(
         return IssueRunResult(issue_number, title, "blocked_secret")
 
     feature_branch = github_agent.build_feature_branch_name(title)
-    success_b, out_b = github_agent.create_branch(feature_branch)
+    success_b, out_b = github_agent.create_branch(feature_branch, base=base_branch)
     if not success_b:
         github_agent.remove_issue_label(issue_number, ISSUE_IN_PROGRESS_LABEL)
         github_agent.add_issue_label(issue_number, ISSUE_BLOCKED_LABEL)
@@ -182,14 +190,12 @@ async def _process_single_issue(
     commit_msg = f"feat: {title[:60]} (Issue #{issue_number}) via AI Developer Team"
     success_c, out_c = github_agent.commit(commit_msg)
     if not success_c:
-        github_agent.checkout(original_branch)
         github_agent.remove_issue_label(issue_number, ISSUE_IN_PROGRESS_LABEL)
         github_agent.add_issue_label(issue_number, ISSUE_BLOCKED_LABEL)
         return IssueRunResult(issue_number, title, "error", out_c)
 
     success_p, out_p = github_agent.push(branch=feature_branch)
     if not success_p:
-        github_agent.checkout(original_branch)
         github_agent.remove_issue_label(issue_number, ISSUE_IN_PROGRESS_LABEL)
         github_agent.add_issue_label(issue_number, ISSUE_BLOCKED_LABEL)
         return IssueRunResult(issue_number, title, "error", out_p)
@@ -207,9 +213,14 @@ async def _process_single_issue(
         f"Closes #{issue_number}\n\n---\n\n{final_report[:3000]}"
     )
     success_pr, pr_out = github_agent.create_pull_request(
-        title=commit_msg, body=pr_body, base=original_branch, head=feature_branch,
+        title=commit_msg, body=pr_body, base=base_branch, head=feature_branch,
     )
-    github_agent.checkout(original_branch)
+    # Bewusst KEIN Zurückwechseln zum Hauptbranch mehr (realer Fund: ein `git checkout` weg
+    # vom Feature-Branch entfernt jede Datei, die NUR auf diesem Branch committet ist, aus
+    # dem Arbeitsverzeichnis - ein gerade erst generiertes Projekt wäre bis zum PR-Merge
+    # lokal komplett verschwunden). base_branch oben sorgt dafür, dass das NÄCHSTE Issue in
+    # diesem Poll-Zyklus trotzdem korrekt vom echten Hauptbranch statt von diesem
+    # Leftover-Branch abzweigt.
     github_agent.remove_issue_label(issue_number, ISSUE_IN_PROGRESS_LABEL)
 
     if not success_pr:

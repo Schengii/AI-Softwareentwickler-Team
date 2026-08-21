@@ -389,22 +389,32 @@ class CLIInterface:
             commit_msg = f"feat: implement {self._truncate_at_word(task_summary, 50)} via AI Developer Team"
 
         # PR-Workflow statt Direct-Push: Ein echtes Team committet nicht direkt auf den
-        # Hauptbranch. Nur AKTIV, wenn der aktuelle Branch tatsächlich ein Hauptbranch ist
-        # (schon auf einem Feature-/Worktree-Branch ausgecheckt -> ganz normal direkt darauf
-        # committen/pushen, siehe agents/github_agent.py) UND die `gh`-CLI installiert +
-        # eingeloggt ist (gh_ready()) - sonst Graceful Degradation auf den bisherigen
-        # Direct-Push, statt den Nutzer ganz zu blockieren.
+        # Hauptbranch. AKTIV, wenn der aktuelle Branch tatsächlich ein Hauptbranch ist ODER
+        # noch ein "feat/"-Branch aus einem VORHERIGEN PR-Workflow-Lauf ist (das
+        # Arbeitsverzeichnis wechselt nach einem Lauf bewusst NICHT mehr zurück, siehe unten
+        # - ein "feat/"-Branch ist damit fast immer unser eigener Leftover-Zustand, kein
+        # bewusst vom Menschen ausgecheckter Feature-Branch, den es zu respektieren gälte).
+        # Schon auf einem ANDEREN, nicht-protected Branch (z.B. ein isolierter
+        # Selbstverbesserungs-Worktree mit "ai-team/"-Präfix, oder ein manuell vom Menschen
+        # ausgecheckter Branch) -> ganz normal direkt darauf committen/pushen. Zusätzlich muss
+        # die `gh`-CLI installiert + eingeloggt sein (gh_ready()) - sonst Graceful Degradation
+        # auf den bisherigen Direct-Push, statt den Nutzer ganz zu blockieren.
         original_branch = github_agent.get_current_branch()
+        is_leftover_feature_branch = original_branch.startswith("feat/") and original_branch not in GIT_PROTECTED_BRANCHES
         use_pr_workflow = (
             ENABLE_PR_WORKFLOW
-            and original_branch in GIT_PROTECTED_BRANCHES
+            and (original_branch in GIT_PROTECTED_BRANCHES or is_leftover_feature_branch)
             and github_agent.gh_ready()
         )
+        # Der eigentliche Ziel-/Basis-Branch für PR und neuen Feature-Branch – bei einem
+        # Leftover-"feat/"-Branch NICHT original_branch selbst (der ist ja gerade das Problem),
+        # sondern der erste konfigurierte Hauptbranch.
+        base_branch = original_branch if original_branch in GIT_PROTECTED_BRANCHES else (GIT_PROTECTED_BRANCHES[0] if GIT_PROTECTED_BRANCHES else "main")
         feature_branch = github_agent.build_feature_branch_name(task_summary) if use_pr_workflow else None
         branch_note = (
             f"\n\n[bold cyan]🔀 PR-Workflow:[/bold cyan] Feature-Branch `{feature_branch}` wird "
-            f"angelegt, gepusht und als Pull Request gegen `{original_branch}` geöffnet - "
-            f"KEIN Direct-Commit auf `{original_branch}`."
+            f"angelegt, gepusht und als Pull Request gegen `{base_branch}` geöffnet - "
+            f"KEIN Direct-Commit auf `{base_branch}`."
             if use_pr_workflow else ""
         )
 
@@ -454,7 +464,7 @@ class CLIInterface:
             return
 
         if use_pr_workflow:
-            success_b, out_b = github_agent.create_branch(feature_branch)
+            success_b, out_b = github_agent.create_branch(feature_branch, base=base_branch)
             if not success_b:
                 console.print(
                     f"⚠️ Feature-Branch `{feature_branch}` konnte nicht angelegt werden ({out_b}) "
@@ -476,7 +486,7 @@ class CLIInterface:
                     success_pr, pr_out = github_agent.create_pull_request(
                         title=commit_msg,
                         body=f"Automatisch erstellt vom KI-Softwareentwickler-Team.\n\nAufgabe: {task_summary}",
-                        base=original_branch, head=feature_branch,
+                        base=base_branch, head=feature_branch,
                     )
                     if success_pr:
                         pr_url = pr_out.splitlines()[-1] if pr_out else pr_out
@@ -504,18 +514,15 @@ class CLIInterface:
             status=ticket_status, detail=ticket_detail[:300],
         )
 
-        # Zurück auf den ursprünglichen Hauptbranch wechseln, damit die NÄCHSTE Aufgabe wieder
-        # von einem sauberen Hauptbranch-Stand aus einen neuen Feature-Branch anlegt, statt
-        # unbemerkt auf demselben Feature-Branch weiterzuarbeiten. Läuft unabhängig davon, ob
-        # Commit/Push/PR oben erfolgreich waren – solange wir den Branch überhaupt gewechselt
-        # haben (create_branch() erfolgreich war).
-        if use_pr_workflow and github_agent.get_current_branch() != original_branch:
-            success_co, out_co = github_agent.checkout(original_branch)
-            if not success_co:
-                console.print(
-                    f"⚠️ Konnte nicht zu `{original_branch}` zurückwechseln ({out_co}) – lokal "
-                    f"weiterhin auf `{feature_branch}` ausgecheckt.", style="dim",
-                )
+        # Bewusst KEIN Zurückwechseln zum Hauptbranch mehr (realer Fund: ein `git checkout`
+        # weg vom Feature-Branch entfernt jede Datei, die NUR auf diesem Branch committet
+        # ist, aus dem Arbeitsverzeichnis - das gerade erst generierte Projekt wäre bis zum
+        # PR-Merge lokal komplett verschwunden, `/load`/erneute Läufe am selben Projekt hätten
+        # es fälschlich als neu angelegt). Das Arbeitsverzeichnis bleibt stattdessen auf dem
+        # Feature-Branch stehen - die obige is_leftover_feature_branch-Erkennung sorgt dafür,
+        # dass der NÄCHSTE Lauf trotzdem korrekt (wieder über den PR-Workflow, von base_branch
+        # abgezweigt) einen neuen Feature-Branch anlegt statt fälschlich direkt auf diesen
+        # Leftover-Branch zu committen.
 
     async def _report_ci_status(self, github_agent) -> None:
         """

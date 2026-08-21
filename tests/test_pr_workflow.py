@@ -175,6 +175,23 @@ class TestCLIUsesPRWorkflowOnProtectedBranch(unittest.TestCase):
         self.fake_github.create_pull_request.assert_not_called()
         self.fake_github.checkout.assert_not_called()
 
+    @patch("interface.cli.Confirm.ask", return_value=True)
+    def test_uses_pr_workflow_on_leftover_feat_branch_from_a_previous_run(self, _mock_confirm):
+        # Realer Fund: das Arbeitsverzeichnis bleibt nach einem PR-Workflow-Lauf jetzt bewusst
+        # auf dem Feature-Branch stehen (kein Checkout zurück mehr, siehe unten in dieser
+        # Datei) - ein "feat/"-Branch ist damit fast immer unser eigener Leftover-Zustand,
+        # kein bewusst vom Menschen ausgecheckter Branch, den es zu respektieren gälte.
+        self.fake_github.get_current_branch.return_value = "feat/vorheriger-lauf-abc123"
+        self.fake_github.gh_ready.return_value = True
+        asyncio.run(self.cli._ask_for_git_push("Testaufgabe"))
+
+        # Neuer Branch wird explizit vom konfigurierten Hauptbranch abgezweigt, NICHT vom
+        # Leftover-Branch selbst.
+        self.fake_github.create_branch.assert_called_once_with("feat/some-task-abc123", base="main")
+        pr_kwargs = self.fake_github.create_pull_request.call_args.kwargs
+        self.assertEqual(pr_kwargs["base"], "main")
+        self.fake_github.checkout.assert_not_called()
+
 
 class TestCLIFullPRWorkflowAgainstRealRepo(unittest.TestCase):
     """
@@ -217,7 +234,13 @@ class TestCLIFullPRWorkflowAgainstRealRepo(unittest.TestCase):
         return [line.strip(" *") for line in result.stdout.splitlines() if line.strip()]
 
     @patch("interface.cli.Confirm.ask", return_value=True)
-    def test_creates_feature_branch_pr_and_switches_back_to_main(self, _mock_confirm):
+    def test_creates_feature_branch_pr_and_stays_on_it(self, _mock_confirm):
+        """
+        Realer Fund: ein Checkout zurück zu `main` nach Push+PR entfernt jede Datei, die NUR
+        auf dem Feature-Branch committet ist, aus dem Arbeitsverzeichnis - ein gerade erst
+        generiertes Projekt wäre bis zum PR-Merge lokal komplett verschwunden. Das
+        Arbeitsverzeichnis bleibt deshalb jetzt bewusst auf dem Feature-Branch stehen.
+        """
         (Path(self.work_dir) / "new_file.py").write_text("x = 1\n", encoding="utf-8")
 
         with patch("agents.github_agent.BASE_DIR", self.work_dir):
@@ -239,8 +262,50 @@ class TestCLIFullPRWorkflowAgainstRealRepo(unittest.TestCase):
             pr_kwargs = agent.create_pull_request.call_args.kwargs
             self.assertEqual(pr_kwargs["base"], "main")
             self.assertTrue(pr_kwargs["head"].startswith("feat/testaufgabe-"))
-            # Zurück auf main gewechselt, damit die nächste Aufgabe wieder von main ausgeht.
-            self.assertEqual(agent.get_current_branch(), "main")
+            # Arbeitsverzeichnis bleibt auf dem Feature-Branch ...
+            self.assertTrue(agent.get_current_branch().startswith("feat/testaufgabe-"))
+            # ... und die gerade erst committete Datei ist lokal weiterhin sichtbar.
+            self.assertTrue((Path(self.work_dir) / "new_file.py").exists())
+
+    @patch("interface.cli.Confirm.ask", return_value=True)
+    def test_second_run_still_branches_from_main_despite_leftover_feat_branch(self, _mock_confirm):
+        """
+        Folge-Test zum obigen Fund: Da das Arbeitsverzeichnis nach einem Lauf jetzt auf dem
+        Feature-Branch stehen bleibt, muss der ZWEITE Lauf trotzdem korrekt vom echten
+        Hauptbranch abzweigen - nicht vom Leftover-Feature-Branch des ersten Laufs (sonst
+        würde jeder PR versehentlich auf dem vorherigen aufbauen).
+        """
+        with patch("agents.github_agent.BASE_DIR", self.work_dir):
+            agent = GitHubAgent()
+            agent.gh_ready = lambda: True
+            agent.create_pull_request = MagicMock(return_value=(True, "https://github.com/x/y/pull/1"))
+            agent.wait_for_ci_status = AsyncMock(return_value=("no_run", "kein CI im Test"))
+
+            cli = CLIInterface()
+            cli._orchestrator._agents["github"] = agent
+            cli._orchestrator.last_verification_ok = True
+
+            (Path(self.work_dir) / "first.py").write_text("x = 1\n", encoding="utf-8")
+            with patch("interface.cli.console.print"):
+                asyncio.run(cli._ask_for_git_push("Erste Aufgabe"))
+            first_branch = agent.get_current_branch()
+            self.assertTrue(first_branch.startswith("feat/"))
+
+            agent.create_pull_request.reset_mock()
+            (Path(self.work_dir) / "second.py").write_text("y = 2\n", encoding="utf-8")
+            with patch("interface.cli.console.print"):
+                asyncio.run(cli._ask_for_git_push("Zweite Aufgabe"))
+            second_branch = agent.get_current_branch()
+
+            self.assertNotEqual(first_branch, second_branch)
+            pr_kwargs = agent.create_pull_request.call_args.kwargs
+            self.assertEqual(pr_kwargs["base"], "main")  # vom Hauptbranch abgezweigt, nicht von first_branch
+            # Der zweite Branch enthält NUR second.py, nicht das Ergebnis des ersten Laufs -
+            # Beweis, dass er wirklich von main und nicht von first_branch abgezweigt wurde.
+            diff = _run(["diff", "main", second_branch, "--name-only"], cwd=self.work_dir)
+            changed_files = diff.stdout.split()
+            self.assertIn("second.py", changed_files)
+            self.assertNotIn("first.py", changed_files)
 
 
 if __name__ == "__main__":

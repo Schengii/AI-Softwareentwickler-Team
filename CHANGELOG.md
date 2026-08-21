@@ -39,6 +39,37 @@ Mitglied "abstimmt", stiftet keinen echten Nutzen.
 
 ---
 
+## 🪙 Klare Fehlermeldung statt rohem Provider-JSON beim gepinnten Groq-/Claude-Scheitern
+
+Fund aus Probelauf 3 (gezielte Nachverifikation von Fix #1 direkt gegen `main`): der Trial
+löste dabei unprovoziert das real vertagte "Groq-Tageslimit"-Szenario aus –
+`governance_lead` (HEAVY-Tier, kein `ANTHROPIC_API_KEY`) war innerhalb einer Aufgabe bereits
+erfolgreich auf Groq gepinnt (siehe `agents/base_agent.py` `active_llm`), verbrauchte über
+mehrere Iterationen genug Tokens, um Groqs echtes Tageskontingent zu kippen ("tokens per day
+(TPD)") – und die Aufgabe scheiterte mit dem **rohen Groq-JSON-Fehlertext** als
+`AgentResult.error`, statt einer verständlichen Meldung. Zwei gezielte Probes an den echten
+Klassen aus `core/llm_factory.py` bestätigten den Mechanismus: **vor** dem Pinning wird ein
+Groq-Ausfall transparent zu Gemini gerettet, **nach** dem Pinning (`_allow_self_fallback=False`)
+wird die Exception bewusst ungefiltert durchgereicht – ein weiterer Hop dort würde exakt die
+Provider-Historie-Korruption zurückbringen, die das Pinning verhindert (siehe
+`_run_agentic_loop`-Docstring). Dieses Verhalten bleibt **unverändert** – nur die Meldung war
+unnötig kryptisch.
+
+- `core/llm_factory.py`: neue Helfer `_is_rate_limit_error()` / `_pinned_provider_failure()`.
+  Erkennt eine Exception als Kontingent-/Rate-Limit-Fehler (429/rate_limit/resource_exhausted/
+  quota), ersetzt sie beim gepinnten Scheitern (`GroqClient`/`ClaudeClient`, jeweils
+  `generate_with_usage()` UND `generate_with_tools()`) durch eine verständliche deutsche
+  Meldung ("bereits fest eingeplant und gerade nicht verfügbar ... kurz warten oder API-Key
+  ergänzen"), die die rohe Provider-Meldung zur Diagnose weiterhin enthält (`raise ... from e`).
+  Andere Fehlerarten (z.B. Netzwerkfehler) bleiben bewusst unverändert roh durchgereicht, da
+  dort eine andere Diagnose nötig ist.
+- 4 neue Tests (`test_pinned_provider_failure_message.py`): gepinnter Groq-/Claude-Rate-Limit-
+  Fehler bekommt die klare Meldung; ein NICHT-Rate-Limit-Fehler bleibt unverändert; der
+  bestehende automatische Rettungs-Hop zu Gemini VOR dem Pinning funktioniert weiterhin
+  unverändert (Regressionsschutz). Volle Suite (453 Tests) grün, ruff sauber.
+
+---
+
 ## 📐 ADR-Adoption Teil 2: architect ruft das Werkzeug jetzt auch wirklich auf
 
 Fund aus einem ZWEITEN echten End-to-End-Testlauf, der gezielt prüfte, ob die vorherige

@@ -219,10 +219,20 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
         """
         return f"feat/{slugify(task_summary)}-{uuid.uuid4().hex[:6]}"
 
-    def create_branch(self, branch_name: str) -> tuple[bool, str]:
-        """Legt einen neuen lokalen Branch vom aktuellen HEAD an und checkt ihn aus."""
+    def create_branch(self, branch_name: str, base: str | None = None) -> tuple[bool, str]:
+        """
+        Legt einen neuen lokalen Branch an und checkt ihn aus – von `base`, falls angegeben,
+        sonst vom aktuellen HEAD. `base` explizit zu setzen ist wichtig, sobald das
+        Arbeitsverzeichnis NICHT mehr zuverlässig auf dem Hauptbranch steht (siehe
+        interface/cli.py._ask_for_git_push(): nach einem PR-Workflow-Lauf bleibt das
+        Arbeitsverzeichnis jetzt bewusst auf dem zuletzt genutzten Feature-Branch stehen,
+        damit gerade erst generierte Dateien nicht durch einen Checkout unsichtbar werden).
+        """
+        args = ["checkout", "-b", branch_name]
+        if base:
+            args.append(base)
         result = subprocess.run(
-            ["git", "checkout", "-b", branch_name],
+            ["git", *args],
             cwd=BASE_DIR, capture_output=True, text=True, encoding="utf-8",
         )
         success = result.returncode == 0

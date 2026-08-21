@@ -175,6 +175,38 @@ class LintReport:
     reason_skipped: str = ""
 
 
+@dataclass
+class SastIssue:
+    """Ein einzelnes, aus einer echten `bandit`-JSON-Ausgabe geparstes Sicherheits-Fundstück
+    (z.B. hartcodierte Secrets, SQL-Injection-Vektoren, unsichere Deserialisierung)."""
+    file_path: str
+    line_number: int
+    message: str
+    severity: str  # LOW/MEDIUM/HIGH (bandits eigene Einstufung)
+    rule: str = ""  # bandit-Test-ID, z.B. "B608" (hardcoded_sql_expressions)
+
+
+@dataclass
+class SastReport:
+    """
+    Ergebnis eines echten statischen Sicherheits-Scans (`bandit`) auf generierten Code –
+    ersetzt keine LLM-Einschätzung des security-Agenten, sondern ergänzt sie um eine
+    tatsächliche, werkzeuggestützte Analyse (SAST: Static Application Security Testing).
+    Anders als check_dependency_vulnerabilities() (Risiken in FREMDEN Abhängigkeiten) prüft
+    dies die selbst geschriebene Code-LOGIK auf bekannte Schwachstellenmuster (OWASP-nahe
+    Regeln wie hartcodierte Passwörter, `eval()`, unsichere Zufallszahlen, SQL-String-Concat).
+
+    NUR Python (bandit ist Python-spezifisch, analog zur bewussten Python-Priorität von
+    check_lint()/check_coverage()). Wie bei allen anderen Checks: fehlendes Tool oder ein
+    technischer Fehlschlag des Scans selbst sind KEIN Fehler, nur nicht prüfbar
+    (attempted=False) – NIEMALS fälschlich als "keine Funde" gemeldet.
+    """
+    attempted: bool
+    passed: bool
+    issues: list[SastIssue] = field(default_factory=list)
+    reason_skipped: str = ""
+
+
 class ProjectVerifier:
     """Installiert Abhängigkeiten isoliert und führt die reale Testsuite eines Projekts aus."""
 
@@ -503,6 +535,57 @@ class ProjectVerifier:
             if tsc_report is not None:
                 reports.append(tsc_report)
         return reports
+
+    def check_sast(self, timeout_seconds: float = 60.0) -> SastReport:
+        """
+        Führt einen echten statischen Sicherheits-Scan (`bandit`) über den generierten
+        Python-Code aus – ergänzt die LLM-Einschätzung des security-Agenten um eine
+        tatsächliche, werkzeuggestützte Analyse (SAST). Installiert `bandit` bei Bedarf
+        isoliert in dieselbe venv wie run_tests()/check_coverage() (bandit ist keine
+        Abhängigkeit des Frameworks selbst, kein Anspruch auf globale Verfügbarkeit). NUR
+        Python (analog zur bewussten Python-Priorität von check_lint()/check_coverage()).
+        """
+        if not self._has_python_files():
+            return SastReport(attempted=False, passed=True, reason_skipped="Keine Python-Dateien im Projekt gefunden.")
+
+        python_exe = self._resolve_python()
+        install_result = CodeSandbox.run_command(
+            [python_exe, "-m", "pip", "install", "-q", "bandit"],
+            cwd=self.project_dir, timeout_seconds=60.0,
+        )
+        if install_result.exit_code != 0:
+            return SastReport(
+                attempted=False, passed=True,
+                reason_skipped=f"`bandit`-Paket konnte nicht installiert werden: {install_result.stderr[:300]}",
+            )
+
+        exclude_dirs = ",".join(str(self.project_dir / d) for d in sorted(_IGNORED_DIRS))
+        command = [python_exe, "-m", "bandit", "-r", str(self.project_dir), "-f", "json", "-q", "-x", exclude_dirs]
+        result = CodeSandbox.run_command(command, cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        return self._parse_bandit_result(result)
+
+    def _parse_bandit_result(self, result: ExecutionResult) -> SastReport:
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            tail = (result.stdout + result.stderr).strip()[-800:]
+            return SastReport(attempted=False, passed=True, reason_skipped=f"bandit lieferte kein gültiges Ergebnis: {tail}")
+
+        issues: list[SastIssue] = []
+        for entry in data.get("results", []):
+            raw_path = entry.get("filename", "?")
+            try:
+                rel = str(Path(raw_path).resolve().relative_to(self.project_dir)).replace("\\", "/")
+            except (ValueError, OSError):
+                rel = raw_path
+            issues.append(SastIssue(
+                file_path=rel,
+                line_number=entry.get("line_number", 0),
+                message=entry.get("issue_text", ""),
+                severity=entry.get("issue_severity", ""),
+                rule=entry.get("test_id", ""),
+            ))
+        return SastReport(attempted=True, passed=len(issues) == 0, issues=issues)
 
     def _has_python_files(self) -> bool:
         return any(

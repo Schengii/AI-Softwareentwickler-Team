@@ -7,6 +7,30 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔓 Echter statischer Sicherheits-Scan (SAST) für generierten Code
+
+Realer Fund bei einer Bestandsaufnahme des eigenen Teams: `check_dependency_vulnerabilities()`
+prüft nur FREMDE Abhängigkeiten auf bekannte CVEs (pip-audit/npm audit) – aber die selbst
+geschriebene Code-LOGIK (hartcodierte Secrets, SQL-String-Concat, `eval()`, unsichere
+Zufallszahlen, …) hatte nie einen echten statischen Sicherheits-Scan. Der security-Agent
+konnte solche Muster bisher nur per LLM-Einschätzung bewerten, nicht werkzeuggestützt prüfen.
+
+- `core/verifier.py`: neue Methode `check_sast()` – scannt per `bandit` (installiert bei
+  Bedarf isoliert in dieselbe venv wie `run_tests()`/`check_coverage()`, keine
+  Framework-Abhängigkeit), liest das reale JSON-Ergebnis. Nur Python (analog zur bewussten
+  Python-Priorität von `check_lint()`/`check_coverage()`). Fehlendes Tool oder ein
+  technischer Fehlschlag des Scans selbst sind KEIN Fehler, nur nicht prüfbar
+  (`attempted=False`) – niemals fälschlich als "keine Funde" gemeldet.
+- `agents/orchestrator.py`: Ergebnis erscheint im Verifikations-Protokoll, rein informativ wie
+  `check_lint()`/`check_dependency_vulnerabilities()` – beeinflusst `verification_ok` NICHT,
+  dieselbe Konsistenz wie bei echten Dependency-Schwachstellen.
+- 9 neue Tests (`test_verifier_sast.py`, `test_sast_integration.py`): echte bandit-JSON-Funde
+  inkl. Pfad-Relativierung, saubere Scans, fehlende Python-Dateien/fehlgeschlagene
+  Installation/kaputtes JSON werden korrekt als "nicht messbar" behandelt, SAST beeinflusst
+  `verification_ok` nachweislich nicht. Volle Suite (471 Tests) grün, ruff sauber.
+
+---
+
 ## ⚡ Team-Komplexitäts-Skalierung: kein Teamleiter-Overhead mehr bei trivialen Aufgaben
 
 Realer Fund aus Probelauf 3 (FastAPI-Ping-API, ein einziger Endpunkt + ein Test): 66.000

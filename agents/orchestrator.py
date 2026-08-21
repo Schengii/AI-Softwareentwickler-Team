@@ -1087,6 +1087,28 @@ class Orchestrator:
                     notify(f"  🎨 [bold green]{lint.tool}: keine Lint-Funde.[/bold green]")
                     summary_lines.append(f"- 🎨 {lint.tool}: keine Lint-Funde.")
 
+        # Realer Fund bei einer Bestandsaufnahme des eigenen Teams: check_dependency_
+        # vulnerabilities() prüft nur FREMDE Abhängigkeiten auf bekannte CVEs, aber die
+        # selbst geschriebene Code-LOGIK (hartcodierte Secrets, SQL-String-Concat, eval(),
+        # unsichere Zufallszahlen, ...) hatte nie einen echten statischen Sicherheits-Scan -
+        # der security-Agent konnte sie nur per LLM-Einschätzung bewerten. Rein informativ
+        # wie check_lint()/check_dependency_vulnerabilities() - beeinflusst verification_ok
+        # NICHT, dieselbe Konsistenz wie bei echten Dependency-Schwachstellen.
+        if not (budget_aborted or manually_cancelled):
+            sast_report = await asyncio.to_thread(verifier.check_sast)
+            if sast_report.attempted:
+                if sast_report.passed:
+                    notify("  🔐 [bold green]bandit: keine statischen Sicherheits-Funde.[/bold green]")
+                    summary_lines.append("- 🔐 bandit: keine statischen Sicherheits-Funde.")
+                else:
+                    top = "; ".join(
+                        f"{i.file_path}:{i.line_number} [{i.rule}/{i.severity}]" for i in sast_report.issues[:5]
+                    )
+                    if len(sast_report.issues) > 5:
+                        top += f" … und {len(sast_report.issues) - 5} weitere"
+                    notify(f"  🔓 [bold red]bandit: {len(sast_report.issues)} statische(r) Sicherheits-Fund(e).[/bold red]")
+                    summary_lines.append(f"- 🔓 ⚠️ bandit: {len(sast_report.issues)} statische(r) Sicherheits-Fund(e): {top}")
+
         verification_summary = "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n" + (
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."
         )

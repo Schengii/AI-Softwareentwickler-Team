@@ -7,6 +7,30 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## ↩️ Echter Rollback-Workflow: `/rollback <PR-Nummer>`
+
+Realer Fund bei einer Bestandsaufnahme des eigenen Teams: bricht ein gemergter PR `main`
+(z.B. ein CI-Fehlschlag, der erst NACH dem Merge bemerkt wird), gab es keinerlei Mechanismus,
+das rückgängig zu machen – nur der manuelle Weg direkt über GitHub. Ein echtes Team hat einen
+bekannten, schnellen Rollback-Pfad.
+
+- `agents/github_agent.py`: zwei neue Methoden – `get_merged_pr_info()` liest Merge-Commit-SHA
+  und Titel eines PRs per `gh pr view` (lehnt nicht-gemergte PRs mit klarem Grund ab, statt
+  einen falschen Erfolg vorzutäuschen); `revert_commit()` führt einen echten
+  `git revert --no-edit` aus – ein Merge-Konflikt dabei ist kein Absturz, nur ein sauberer
+  Fehlschlag.
+- `interface/cli.py`: neuer Befehl `/rollback <PR-Nummer>` – legt einen eigenen Revert-Branch
+  vom Hauptbranch an, revertiert den Merge-Commit darauf, pusht und öffnet einen ganz normalen
+  Revert-Pull-Request. KEIN Direct-Commit auf den Hauptbranch, derselbe PR-Workflow (CI/Review)
+  wie jede andere Änderung. Vorschau + Bestätigungs-Gate wie bei `/delete-project`.
+- 10 neue Tests (`test_rollback_workflow.py`): `get_merged_pr_info()` gegen gemergte/offene/
+  nicht gefundene PRs; `revert_commit()` gegen ein ECHTES lokales Git-Repo (inkl. eines echten
+  Revert-Konflikts); der volle CLI-Ablauf (Branch→Revert→Push→PR), Abbruch bei fehlender
+  Bestätigung, fehlendem `gh`, nicht-gemergtem PR und einem Revert-Konflikt (checkt dabei
+  sauber zum ursprünglichen Branch zurück). Volle Suite grün, ruff sauber.
+
+---
+
 ## ⚡ Team-Komplexitäts-Skalierung: kein Teamleiter-Overhead mehr bei trivialen Aufgaben
 
 Realer Fund aus Probelauf 3 (FastAPI-Ping-API, ein einziger Endpunkt + ein Test): 66.000

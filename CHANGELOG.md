@@ -65,8 +65,6 @@ Dateipfad-Marker (Fence mit Doppelpunkt, Überschrift mit Backtick-Dateiname, "D
 
 ---
 
-<<<<<<< HEAD
-=======
 ## 🔀 PR-Workflow ließ generierte Projekte lokal verschwinden (echter End-to-End-Testlauf)
 
 Erster echter End-to-End-Testlauf seit Einführung des PR-Workflows (reale FastAPI-Notiz-API,
@@ -130,7 +128,6 @@ nur Quota-Erschöpfung) hatte dort keine weitere Rettung mehr.
 
 ---
 
->>>>>>> origin/main
 ## 📐 Architecture Decision Records (ADRs)
 
 Realer struktureller Fund: `agents/architect_agent.py`s eigener Ausgabe-Prompt sprach schon

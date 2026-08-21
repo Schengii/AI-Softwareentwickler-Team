@@ -241,6 +241,12 @@ Wichtige Regeln:
 - compliance einbeziehen, sobald personenbezogene Daten (DSGVO-Relevanz), neue
   Drittanbieter-Abhängigkeiten mit unklarer/restriktiver Lizenz oder regulierte Bereiche
   (z.B. Finanzen, Gesundheit) betroffen sind - ebenfalls NICHT optional
+- architect einbeziehen, sobald eine echte Technologie-/Architektur-Entscheidung mit
+  mehreren vertretbaren Alternativen zu treffen ist (z.B. Wahl der Datenpersistenz,
+  Monolith vs. Microservices, REST vs. GraphQL, Wahl des Datenbanksystems, Auth-Strategie) -
+  NICHT optional, auch wenn die Aufgabe sonst klein wirkt; ohne echte Alternative (z.B. reine
+  Konfigurationsänderung, triviale Erweiterung um einen weiteren Endpunkt nach bereits
+  etabliertem Muster) bleibt architect dagegen weiterhin weggelassen
 - project_cleaner einbeziehen, wenn Verzeichnisstrukturen aufgeräumt oder schlank gehalten werden sollen
 """
 

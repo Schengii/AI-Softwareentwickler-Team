@@ -7,6 +7,35 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 📐 ADR-Adoption: architect wird jetzt zuverlässiger eingeplant
+
+Vierter und letzter Fund aus demselben echten End-to-End-Testlauf (siehe die Einträge
+unten): obwohl die Aufgabe explizit eine Technologie-Abwägung mit echter Alternative
+verlangte ("wäge zwischen In-Memory-Liste und SQLite ab und begründe die Entscheidung"),
+plante der Hauptagent den `architect`-Agenten gar nicht erst ein – `backend`/`database`
+trafen die Entscheidung dann selbst, ohne sie je über `record_architecture_decision` zu
+dokumentieren. Zwei unabhängige Gegenmaßnahmen, da keine allein zuverlässig genug ist:
+
+- `core/task_manager.py`: `DECOMPOSE_SYSTEM_PROMPT` bekommt eine explizite,
+  NICHT-optionale Einbeziehungs-Regel für `architect`, analog zu den bestehenden Regeln für
+  `security`/`compliance`/`tester` – sobald eine echte Technologie-/Architektur-Entscheidung
+  mit mehreren vertretbaren Alternativen ansteht (Datenpersistenz, Monolith vs.
+  Microservices, REST vs. GraphQL, Datenbanksystem, Auth-Strategie), nicht nur bei
+  offensichtlich komplexen Aufgaben.
+- `agents/base_agent.py`: zweite Verteidigungslinie – Code-schreibende Agenten
+  (`CODE_WRITING_AGENT_IDS`) bekommen in ihrem Werkzeug-Anweisungsblock zusätzlich einen
+  expliziten Hinweis auf `record_architecture_decision`, falls `architect` trotzdem nicht
+  eingeplant wird. Gezielt NUR für diese Rollen (nicht z.B. `copywriter`/`i18n`, die legitim
+  keine Architektur-Entscheidungen treffen) – kein unnötiger Prompt-Text für Rollen, die ihn
+  nie brauchen.
+- 3 neue Tests (`test_adr_adoption.py`): die neue `architect`-Regel steht wirklich (und als
+  "NICHT optional") im Prompt – bewusst nur ein Text-Regressionstest, kein Beweis, dass ein
+  echtes LLM ihr folgt, das kann nur ein weiterer echter Lauf zeigen; ein Code-schreibender
+  Agent sieht den ADR-Hinweis, ein reiner Text-Agent (`copywriter`) nicht. Volle Suite
+  (440 Tests) grün, ruff sauber.
+
+---
+
 ## 🛠️ Code-schreibende Agenten liefern Code nicht mehr unbemerkt nur im Antworttext
 
 Dritter Fund aus demselben echten End-to-End-Testlauf (siehe die beiden Einträge unten):

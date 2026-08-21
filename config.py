@@ -177,6 +177,18 @@ DEPLOY_TIMEOUT_SECONDS: float = float(os.getenv("DEPLOY_TIMEOUT_SECONDS", "300")
 # ──────────────────────────────────────────
 ENABLE_DEPARTMENT_LEAD_EXECUTION: bool = os.getenv("ENABLE_DEPARTMENT_LEAD_EXECUTION", "true").lower() in ("true", "1", "yes")
 
+# Realer Fund aus einem echten End-to-End-Testlauf: eine triviale Ein-Endpunkt-Aufgabe
+# (1 Datei Code + 1 Testdatei) verbrauchte 66.000 Tokens, weil JEDES der 3 beteiligten
+# Fachbereiche (dev/qa/governance) trotz jeweils nur EINES einzigen Mitglieds die volle
+# Teamleiter-Delegation+Konsolidierung durchlief - der Lauf diagnostizierte sich in seiner
+# eigenen Retrospektive selbst als "Token-Inflation"/"Over-Engineering". Bei aktivem Flag
+# überspringt core/task_manager.py._is_micro_task() (rein deterministisch aus dem bereits
+# erstellten Aufgabenplan, KEIN zusätzlicher LLM-Aufruf) Delegation+Konsolidierung für
+# Fachbereiche mit GENAU EINEM Mitglied, wenn die Gesamtaufgabe als klein eingestuft wurde -
+# Fachbereiche mit mehreren Mitgliedern behalten die Teamleiter-Koordination immer, da dort
+# echter Abstimmungsbedarf besteht (z.B. doppelte Parallel-Implementierungen vermeiden).
+ENABLE_TASK_COMPLEXITY_SCALING: bool = os.getenv("ENABLE_TASK_COMPLEXITY_SCALING", "true").lower() in ("true", "1", "yes")
+
 # ──────────────────────────────────────────
 # Hartes Lauf-Budget (echter Abbruch statt nur Reporting)
 # ──────────────────────────────────────────

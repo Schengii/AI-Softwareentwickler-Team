@@ -7,6 +7,38 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## ⚡ Team-Komplexitäts-Skalierung: kein Teamleiter-Overhead mehr bei trivialen Aufgaben
+
+Realer Fund aus Probelauf 3 (FastAPI-Ping-API, ein einziger Endpunkt + ein Test): 66.000
+Tokens verbraucht, obwohl am Ende nur 2 Dateien entstanden – der Lauf selbst diagnostizierte
+sich in seiner eigenen Retrospektive als "Token-Inflation" und "Over-Engineering". Ursache:
+jeder der 3 beteiligten Fachbereiche (dev/qa/governance) hatte jeweils nur EIN einziges
+Mitglied (backend, tester, code_reviewer), durchlief aber trotzdem die volle
+Teamleiter-Delegation UND -Konsolidierung – macht 6 zusätzliche LLM-Aufrufe für 3 tatsächliche
+Arbeitsergebnisse. Ein Teamleiter, der mit sich selbst über die Aufgabenverteilung an EIN
+Mitglied "abstimmt", stiftet keinen echten Nutzen.
+
+- `core/task_manager.py`: neue Funktion `is_micro_task()` – rein deterministisch aus dem
+  bereits erstellten Aufgabenplan berechnet (KEIN zusätzlicher LLM-Aufruf, keine neue
+  Schätzung). Eine Aufgabe gilt als klein, wenn höchstens 4 Spezialisten eingeplant wurden UND
+  keiner davon zu `_COMPLEXITY_SIGNAL_AGENT_IDS` gehört (architect, security, compliance,
+  finops, performance, data_engineer, ml, mobile, product_owner, business_analyst,
+  web_research – Rollen, die laut den bestehenden `DECOMPOSE_SYSTEM_PROMPT`-Regeln ohnehin nur
+  bei echter Komplexität eingeplant werden).
+- `agents/orchestrator.py._run_department_hierarchy()`: neues Flag `ENABLE_TASK_COMPLEXITY_SCALING`
+  (Standard an). Hat ein Fachbereich bei einer kleinen Aufgabe nur EIN Mitglied, entfallen
+  Delegation UND Konsolidierung durch den Teamleiter – das Mitglied bekommt seine bereits
+  präzise Aufgabenbeschreibung aus `decompose()` direkt. Fachbereiche mit MEHREREN Mitgliedern
+  behalten die Teamleiter-Koordination immer (echter Abstimmungsbedarf, z.B. um doppelte
+  Parallel-Implementierungen zu vermeiden).
+- 9 neue Tests (`test_task_complexity_scaling.py`): `is_micro_task()`-Klassifikation inkl. des
+  real beobachteten backend+tester+code_reviewer-Plans; Einzelmitglied-Fachbereiche überspringen
+  Delegation/Konsolidierung bei kleiner Aufgabe; Mehrmitglied-Fachbereiche behalten sie immer;
+  abgeschaltetes Flag stellt exakt das alte Verhalten wieder her. Volle Suite (458 Tests) grün,
+  ruff sauber.
+
+---
+
 ## 📐 ADR-Adoption Teil 2: architect ruft das Werkzeug jetzt auch wirklich auf
 
 Fund aus einem ZWEITEN echten End-to-End-Testlauf, der gezielt prüfte, ob die vorherige

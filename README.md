@@ -490,6 +490,7 @@ Details zu `--check-issues`: [🎫 Autonome, getriggerte Arbeit](#issue-watcher)
 | `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
 | `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |
 | `/push` | Führt manuell einen Git-Commit & Push aus (mit Secret-Scan, Verifikations-Warnung & PR-Workflow) |
+| `/release` | Erstellt einen echten SemVer-Tag + GitHub-Release aus den Commits seit dem letzten Release (leitet den Bump aus feat:/fix:/BREAKING CHANGE ab, mit Vorschau & Bestätigung) |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
 | `/hilfe` | Zeigt die Befehlsübersicht an |

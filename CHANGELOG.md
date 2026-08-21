@@ -7,6 +7,30 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🏷️ Echtes Release-Management: `/release` erstellt SemVer-Tags + GitHub-Releases
+
+Realer Fund bei einer Bestandsaufnahme des eigenen Teams: CHANGELOG.md wird bei jedem PR
+manuell um einen Eintrag ergänzt, aber über die gesamte Projekthistorie gab es keine einzige
+Versionsnummer, keinen einzigen Git-Tag, keine einzige GitHub-Release – das README zeigte
+"v4.3" nur als hart einprogrammierte Zeichenkette ohne jeden Bezug zu Commits oder Tags.
+
+- `core/release_manager.py` (neu): leitet den nächsten SemVer-Bump aus den TATSÄCHLICHEN
+  Commit-Messages seit dem letzten Tag ab – nutzt die im Projekt bereits durchgängig
+  etablierte Commit-Konvention (`feat:` → Minor, `fix:` → Patch, `!`/`BREAKING CHANGE` →
+  Major, alles andere → Patch, damit kein "leeres" Release ohne jeden Grund entsteht).
+  Release-Notes bestehen aus den ECHTEN, kategorisierten Commit-Subjects – kein LLM-Text, der
+  Änderungen erfindet. `create_release()` erstellt einen echten annotierten Git-Tag, pusht ihn
+  und erstellt eine echte GitHub-Release per `gh release create`.
+- `interface/cli.py`: neuer Befehl `/release` – zeigt Vorschau (aktuelle → nächste Version,
+  Bump-Grund, Release-Notes) mit Bestätigungs-Gate wie `/rollback`/`/delete-project`.
+- 25 neue Tests (`test_release_manager.py`, `test_release_cli_command.py`): SemVer-Bump-Logik
+  (inkl. Breaking-Change-Erkennung), Versionsberechnung, Notizen-Kategorisierung, echte
+  Tag-/Log-Operationen gegen ein echtes lokales Git-Repo mit Bare-Remote, ein fehlgeschlagenes
+  `gh release create` lässt den bereits gepushten Tag bewusst stehen. Volle Suite (487 Tests)
+  grün, ruff sauber.
+
+---
+
 ## ⚡ Team-Komplexitäts-Skalierung: kein Teamleiter-Overhead mehr bei trivialen Aufgaben
 
 Realer Fund aus Probelauf 3 (FastAPI-Ping-API, ein einziger Endpunkt + ein Test): 66.000

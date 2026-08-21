@@ -28,6 +28,7 @@ from rich.text import Text
 from agents.department_lead_agent import DEPARTMENT_DEFINITIONS
 from agents.orchestrator import PHASE_ORDER, Orchestrator
 from config import ENABLE_PLAN_CONFIRMATION, ENABLE_PR_WORKFLOW, GIT_PROTECTED_BRANCHES, validate_config
+from core import release_manager
 from core.backlog_store import STATUSES, list_tickets, new_ticket_id, upsert_ticket
 from core.code_sandbox import CodeSandbox
 from core.message_bus import AgentTask
@@ -76,6 +77,7 @@ HELP_TEXT = """
 | `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
 | `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |
 | `/push` | Führt manuell einen Git-Commit & Push aus |
+| `/release` | Erstellt einen echten SemVer-Tag + GitHub-Release aus den Commits seit dem letzten Release (mit Vorschau & Bestätigung) |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
 | `/hilfe` | Zeigt diese Hilfe an |
@@ -543,6 +545,54 @@ class CLIInterface:
         else:  # "no_run"
             console.print(f"ℹ️ [dim]CI-Status nicht prüfbar: {detail}[/dim]")
 
+    async def _create_release_with_confirmation(self) -> None:
+        """
+        Echtes Release-Management: leitet den nächsten SemVer-Bump aus den tatsächlichen
+        Commit-Messages seit dem letzten Tag ab (core/release_manager.py, nutzt die im
+        Projekt bereits etablierte feat:/fix:-Konvention) und erstellt bei Bestätigung einen
+        echten Git-Tag + eine echte GitHub-Release. Realer Fund bei einer Bestandsaufnahme
+        des eigenen Teams: CHANGELOG.md wird bei jedem PR manuell gepflegt, aber es gab über
+        die gesamte Projekthistorie keine einzige Versionsnummer, keinen Git-Tag, keine
+        GitHub-Release – nur eine hart einprogrammierte Zeichenkette im README.
+        """
+        github_agent = self._orchestrator._agents.get("github")
+        if not github_agent or not github_agent.gh_ready():
+            console.print("⚠️ `gh`-CLI nicht verfügbar/eingeloggt – Release braucht echten GitHub-Zugriff.", style="yellow")
+            return
+
+        latest_tag = release_manager.get_latest_tag()
+        commits = release_manager.get_commits_since(latest_tag)
+        bump = release_manager.determine_version_bump(commits)
+        if bump is None:
+            console.print(
+                f"ℹ️ Keine neuen Commits seit `{latest_tag or '(noch kein Release)'}` – nichts zu releasen.",
+                style="dim",
+            )
+            return
+
+        next_version = release_manager.bump_version(latest_tag or "v0.0.0", bump)
+        notes = release_manager.build_release_notes(commits)
+        console.print(
+            Panel(
+                f"[bold green]{latest_tag or '(kein bisheriger Release)'} → {next_version}[/bold green] "
+                f"({bump}-Bump, {len(commits)} Commit(s) seit dem letzten Release)\n\n{notes}",
+                title="🏷️ Release: Vorschau", border_style="green",
+            )
+        )
+        try:
+            should_release = Confirm.ask(f"Release `{next_version}` WIRKLICH erstellen (echter Tag + GitHub-Release)?", default=False)
+        except Exception:
+            should_release = False
+        if not should_release:
+            console.print("↩️ Release abgebrochen.", style="dim")
+            return
+
+        success, output = release_manager.create_release(next_version, notes)
+        if success:
+            console.print(f"🏷️ [bold green]Release {next_version} erstellt:[/bold green] {output}")
+        else:
+            console.print(f"⚠️ Release nicht vollständig erstellt: {output}", style="yellow")
+
     async def _delete_project_with_confirmation(self, project_name: str) -> None:
         """
         Löscht ein komplettes Projektverzeichnis aus workspace/ – IRREVERSIBEL (kompletter
@@ -916,6 +966,9 @@ class CLIInterface:
 
         elif cmd in ("/push", "/git"):
             await self._ask_for_git_push("manuelles Update")
+
+        elif cmd in ("/release", "/tag"):
+            await self._create_release_with_confirmation()
 
         elif cmd in ("/run-tests", "/test"):
             proj_name = args[0] if args else "jobsuche-app"

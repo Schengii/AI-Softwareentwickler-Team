@@ -164,15 +164,19 @@ Aufgabe, Pull Request, Merge erst nach grüner CI und Freigabe.
   eindeutigen Feature-Branch an (`feat/<slug-der-aufgabe>-<uuid>`), pusht ihn und öffnet
   per `gh pr create` einen Pull Request gegen den ursprünglichen Hauptbranch – der
   Vorschau-Dialog vor der Bestätigung zeigt das vorab an, kein blindes Ja/Nein.
-- **Zurück auf den Hauptbranch:** Nach Push + PR-Erstellung wechselt der Agent lokal wieder
-  auf den ursprünglichen Hauptbranch zurück, damit die nächste Aufgabe wieder von einem
-  sauberen Stand aus einen neuen Feature-Branch anlegt statt unbemerkt auf demselben
-  Feature-Branch weiterzuarbeiten.
-- **Graceful Degradation:** Ist bereits ein Feature-/Worktree-Branch aktiv (kein
-  Hauptbranch), oder ist `gh` nicht installiert/nicht eingeloggt, oder schlägt das Anlegen
-  des Branches fehl, fällt der Ablauf automatisch auf den bisherigen Direct-Push zurück –
-  der Nutzer wird informiert, aber nicht blockiert. `ENABLE_PR_WORKFLOW=false` schaltet den
-  gesamten PR-Workflow ab und stellt das alte Verhalten wieder her.
+- **Arbeitsverzeichnis bleibt auf dem Feature-Branch:** Nach Push + PR-Erstellung wechselt
+  der Agent NICHT zurück zum Hauptbranch (realer Fund: ein `git checkout` hätte jede Datei,
+  die nur auf dem Feature-Branch committet ist, aus dem Arbeitsverzeichnis entfernt – das
+  gerade generierte Projekt wäre bis zum Merge lokal unsichtbar gewesen). Der NÄCHSTE Lauf
+  erkennt einen so zurückgelassenen `feat/`-Branch automatisch als eigenen Leftover-Zustand
+  und zweigt seinen neuen Feature-Branch trotzdem korrekt vom konfigurierten Hauptbranch ab,
+  nicht vom Leftover-Branch.
+- **Graceful Degradation:** Ist bereits ein manuell ausgecheckter Feature-/Worktree-Branch
+  aktiv (kein Hauptbranch und kein eigener `feat/`-Leftover), oder ist `gh` nicht
+  installiert/nicht eingeloggt, oder schlägt das Anlegen des Branches fehl, fällt der Ablauf
+  automatisch auf den bisherigen Direct-Push zurück – der Nutzer wird informiert, aber nicht
+  blockiert. `ENABLE_PR_WORKFLOW=false` schaltet den gesamten PR-Workflow ab und stellt das
+  alte Verhalten wieder her.
 
 ---
 

@@ -7,6 +7,42 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔀 PR-Workflow ließ generierte Projekte lokal verschwinden (echter End-to-End-Testlauf)
+
+Erster echter End-to-End-Testlauf seit Einführung des PR-Workflows (reale FastAPI-Notiz-API,
+echte LLM-Aufrufe über alle Fachbereiche, echter Push gegen GitHub) deckte einen schweren
+Bug auf: `_ask_for_git_push()` wechselte nach Commit+Push+PR-Erstellung per `git checkout
+<hauptbranch>` zurück – da das neu generierte Projekt NUR auf dem Feature-Branch committet
+war (nicht auf `main`), entfernte dieser Checkout es **komplett aus dem
+Arbeitsverzeichnis**. Der Code war nicht weg (sicher im Commit, gepusht, im offenen PR
+sichtbar), aber lokal bis zum Merge unsichtbar – `/load <projekt>` und jeder Folgeauftrag am
+selben Projekt hätten es fälschlich als neu angelegt interpretiert, weil
+`WorkspaceManager.list_projects()` es nicht mehr fand. Bricht damit die bestehende
+Projekt-Kontinuität über Sitzungen hinweg. Kein Unit-Test hat das gefangen: alle
+PR-Workflow-Tests liefen entweder komplett gemockt oder in einem isolierten Test-Repo, nie im
+echten Arbeitsverzeichnis mit echten, weiterzuentwickelnden Projekten daneben.
+
+- `agents/github_agent.py`: `create_branch()` akzeptiert jetzt ein optionales `base` –
+  branch explizit von einem bestimmten Branch abzweigen statt vom aktuellen HEAD, das nach
+  diesem Fix nicht mehr zuverlässig der Hauptbranch ist.
+- `interface/cli.py._ask_for_git_push()` / `core/issue_watcher.py._process_single_issue()`:
+  Kein `git checkout <hauptbranch>` mehr NACH Push+PR – das Arbeitsverzeichnis bleibt bewusst
+  auf dem Feature-Branch stehen, damit gerade erst generierte Dateien sichtbar bleiben. Damit
+  der NÄCHSTE Lauf trotzdem korrekt vom echten Hauptbranch abzweigt (nicht vom
+  Leftover-Feature-Branch dieses Laufs): `original_branch` wird jetzt zusätzlich als
+  "Leftover-Zustand" erkannt, wenn er mit `feat/` beginnt und kein konfigurierter
+  Hauptbranch ist (die eigene Namenskonvention, siehe `build_feature_branch_name()`) – dann
+  wird trotzdem der PR-Workflow genutzt, aber explizit vom ersten konfigurierten
+  Hauptbranch (`GIT_PROTECTED_BRANCHES[0]`) abgezweigt statt vom Leftover-Branch selbst.
+- 2 neue Tests gegen ein echtes lokales Git-Repo (`test_pr_workflow.py`): beweisen, dass die
+  gerade committete Datei nach einem Lauf lokal sichtbar BLEIBT, und dass ein zweiter Lauf
+  direkt danach trotzdem korrekt vom Hauptbranch (nicht vom Leftover-Branch des ersten Laufs)
+  abzweigt – der Beweis erfolgt über einen echten `git diff`, der zeigt, dass Branch 2 NICHT
+  die Datei aus Lauf 1 enthält. Bestehende Tests, die den (jetzt entfernten) Rückwechsel
+  erwarteten, entsprechend korrigiert. Volle Suite (433 Tests) grün, ruff sauber.
+
+---
+
 ## 🪙 Groq-Backstop für die STANDARD/LITE-Gemini-Fallback-Kette (echter Testlauf)
 
 Derselbe echte End-to-End-Testlauf wie beim PR-Workflow-Fund (siehe unten): der QA-Tester

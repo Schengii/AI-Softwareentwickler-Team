@@ -20,6 +20,7 @@ import shutil
 import tempfile
 import unittest
 
+from agents.architect_agent import ArchitectAgent
 from agents.backend_agent import BackendAgent
 from core.llm_factory import LLMResponse, ToolCall
 from core.message_bus import AgentTask
@@ -175,6 +176,118 @@ class TestFinalIterationStopUsingTools(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertIn("Maximale Werkzeug-Iterationen", result.content)
+
+
+class TestCodeInTextWithoutFileWriteRetry(unittest.TestCase):
+    """
+    Realer Fund aus einem echten End-to-End-Testlauf: mehrere Code-schreibende Agenten
+    lieferten fertigen Code AUSSCHLIESSLICH im Antworttext statt über write_file/edit_file –
+    zusammen ~48.000 Tokens verpufft, ohne dass etwas Nutzbares im Projekt ankam. Der
+    Regex-Text-Fallback (core/workspace.py.parse_and_save_files()) fängt das nicht
+    zuverlässig auf, wenn kein erkennbarer Dateipfad-Marker im Fließtext steht.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_code_fence_without_any_write_triggers_retry_that_then_writes_the_file(self):
+        write_call = LLMResponse(
+            text="", model_name="fake-model", prompt_tokens=10, completion_tokens=5, total_tokens=15,
+            tool_calls=[ToolCall(id="c1", name="write_file", arguments={"path": "app.py", "content": "print('hi')\n"})],
+        )
+        fake_llm = _ScriptedLLM([
+            _final_response("Hier ist der Code:\n```python\nprint('hi')\n```"),
+            write_call,
+            _final_response("Datei gespeichert."),
+        ])
+        agent = BackendAgent()
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="backend", description="Baue app.py",
+                          project_dir=self.temp_dir, max_tool_iterations=5)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.content, "Datei gespeichert.")
+        self.assertEqual(result.files_written, ["app.py"])
+        self.assertEqual(fake_llm.call_count, 3)
+        retry_messages_text = " ".join(m.text for m in fake_llm.seen_messages[1])
+        self.assertIn("KEINE Datei", retry_messages_text)
+
+    def test_plain_text_summary_without_code_fence_is_not_retried(self):
+        fake_llm = _ScriptedLLM([_final_response("Ich habe app.py erstellt und getestet.")])
+        agent = BackendAgent()
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="backend", description="Baue app.py",
+                          project_dir=self.temp_dir, max_tool_iterations=5)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(fake_llm.call_count, 1)  # kein Code-Fence -> kein Retry-Grund
+
+    def test_no_retry_when_a_file_was_already_written_earlier_in_the_task(self):
+        write_call = LLMResponse(
+            text="", model_name="fake-model", prompt_tokens=10, completion_tokens=5, total_tokens=15,
+            tool_calls=[ToolCall(id="c1", name="write_file", arguments={"path": "app.py", "content": "print('hi')\n"})],
+        )
+        fake_llm = _ScriptedLLM([
+            write_call,
+            _final_response("Fertig, zur Referenz nochmal der Kern:\n```python\nprint('hi')\n```"),
+        ])
+        agent = BackendAgent()
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="backend", description="Baue app.py",
+                          project_dir=self.temp_dir, max_tool_iterations=5)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.files_written, ["app.py"])
+        self.assertEqual(fake_llm.call_count, 2)  # bereits geschrieben -> kein Retry trotz Code-Fence in der Zusammenfassung
+
+    def test_no_retry_for_agent_outside_code_writing_set(self):
+        fake_llm = _ScriptedLLM([_final_response("Vorschlag:\n```python\nprint('hi')\n```")])
+        agent = ArchitectAgent()  # "architect" ist NICHT in CODE_WRITING_AGENT_IDS
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="architect", description="Entwirf die Architektur",
+                          project_dir=self.temp_dir, max_tool_iterations=5)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(fake_llm.call_count, 1)
+
+    def test_only_one_retry_even_if_agent_still_writes_no_file(self):
+        fake_llm = _ScriptedLLM([
+            _final_response("Erster Versuch:\n```python\nprint('a')\n```"),
+            _final_response("Zweiter Versuch, ignoriert den Hinweis:\n```python\nprint('b')\n```"),
+        ])
+        agent = BackendAgent()
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="backend", description="Baue app.py",
+                          project_dir=self.temp_dir, max_tool_iterations=5)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(fake_llm.call_count, 2)  # nur EIN Retry, kein zweiter trotz erneut fehlender Datei
+        self.assertEqual(result.files_written, [])
+
+    def test_no_retry_when_no_iterations_remain(self):
+        fake_llm = _ScriptedLLM([_final_response("Code:\n```python\nprint('hi')\n```")])
+        agent = BackendAgent()
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="backend", description="Baue app.py",
+                          project_dir=self.temp_dir, max_tool_iterations=1)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(fake_llm.call_count, 1)  # max_tool_iterations=1 -> keine Iteration für einen Retry übrig
 
 
 if __name__ == "__main__":

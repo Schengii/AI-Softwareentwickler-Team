@@ -41,6 +41,24 @@ def _is_disallowed_tool_call_error(exc: Exception) -> bool:
     return any(marker in text for marker in _DISALLOWED_TOOL_CALL_ERROR_MARKERS)
 
 
+# Rollen, deren eigentlicher Auftrag darin besteht, echte Artefakte im Projekt zu hinterlassen
+# (nicht nur Planungs-/Analyse-Text). Realer Fund aus einem echten Lauf: der backend-Agent
+# meldete success=True, verbrauchte echte 36.000+ Tokens und lieferte fertigen Code – aber
+# AUSSCHLIESSLICH als Markdown-Codeblock im Antworttext statt über write_file/edit_file, sodass
+# git status danach komplett leer war (0 Dateien geändert). Ohne Gegenmaßnahme sieht ein
+# solcher Lauf im Report identisch zu einem echten Erfolg aus und der komplette
+# Tokenverbrauch verpufft, ohne dass irgendetwas Nutzbares im Projekt ankommt. Bewusst NUR
+# die Rollen mit eindeutigem Artefakt-Auftrag (kein product_owner/architect/ui_ux/etc. –
+# deren Aufgabe legitim reiner Text sein kann), um Fehlalarme gering zu halten. Lebt hier
+# (nicht in agents/orchestrator.py, das die Konstante nur noch importiert), weil
+# _run_agentic_loop() unten sie direkt für einen Korrektur-Retry braucht.
+CODE_WRITING_AGENT_IDS = {
+    "backend", "frontend", "database", "api_integration", "data_engineer",
+    "mobile", "ml", "devops", "tester", "resilience_guard", "refactoring",
+    "readme", "documentation",
+}
+
+
 class BaseAgent(ABC):
     """
     Abstrakte Basisklasse für alle Unteragenten des KI-Teams.
@@ -165,6 +183,7 @@ class BaseAgent(ABC):
         response: LLMResponse | None = None
         active_llm = self._llm
         disallowed_tool_call_retry_used = False
+        no_file_written_retry_used = False
 
         for iteration in range(1, max_iterations + 1):
             if iteration == max_iterations and max_iterations > 1:
@@ -225,6 +244,37 @@ class BaseAgent(ABC):
                         f"⚠️ Maximale Werkzeug-Iterationen ({max_iterations}) erreicht, bevor eine finale "
                         f"Zusammenfassung generiert wurde. Bisher geschriebene/geänderte Dateien: {files_note}."
                     )
+                elif (
+                    not response.tool_calls
+                    and iteration < max_iterations
+                    and not no_file_written_retry_used
+                    and self.agent_id in CODE_WRITING_AGENT_IDS
+                    and not toolbox.files_written
+                    and "```" in response.text
+                ):
+                    # Realer Fund aus einem echten End-to-End-Testlauf: mehrere Code-schreibende
+                    # Agenten lieferten fertigen Code AUSSCHLIESSLICH im Antworttext statt über
+                    # write_file/edit_file (trotz expliziter Anweisung in
+                    # _augment_with_tool_instructions unten) – zusammen ~48.000 Tokens verpufft,
+                    # ohne dass etwas Nutzbares im Projekt ankam (siehe CODE_WRITING_AGENT_IDS).
+                    # Der Regex-Text-Fallback (core/workspace.py.parse_and_save_files(), siehe
+                    # agents/orchestrator.py) fängt das NICHT zuverlässig auf, wenn der Code ohne
+                    # erkennbaren Dateipfad-Marker im Fließtext steht. EIN gezielter
+                    # Korrektur-Hinweis statt die Antwort unkorrigiert zu akzeptieren – Code
+                    # gefunden (Fence-Marker "```"), aber toolbox.files_written ist über die
+                    # GESAMTE bisherige Aufgabe leer.
+                    no_file_written_retry_used = True
+                    turns.append(AgentMessage(role="assistant", text=response.text, tool_calls=[]))
+                    turns.append(AgentMessage(
+                        role="user",
+                        text=(
+                            "Deine Antwort enthält Code, aber du hast noch KEINE Datei über "
+                            "write_file/edit_file gespeichert. Rufe JETZT für jede Datei, die du "
+                            "gerade beschrieben hast, das passende Werkzeug auf – erst danach "
+                            "eine kurze Abschlusszusammenfassung ohne erneuten Code."
+                        ),
+                    ))
+                    continue
                 break
 
             turns.append(AgentMessage(role="assistant", text=response.text, tool_calls=response.tool_calls))

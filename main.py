@@ -26,7 +26,25 @@ def main():
     config.ISSUE_TRIGGER_LABEL und beendet sich danach wieder – gedacht für einen externen
     Aufruf per Cron/Windows-Taskplaner/GitHub-Actions-Schedule (siehe core/issue_watcher.py),
     kein eingebauter Dauer-Scheduler.
+    Mit `--check-dependencies` läuft EIN Scan-Zyklus über ALLE Workspace-Projekte auf bekannte
+    Schwachstellen in ihren Abhängigkeiten und beendet sich danach wieder – ebenfalls für einen
+    externen, wiederkehrenden Aufruf gedacht (siehe core/dependency_watch.py).
     """
+    if "--check-dependencies" in sys.argv:
+        import asyncio
+
+        from core.dependency_watch import run_dependency_watch_cycle
+
+        report = asyncio.run(run_dependency_watch_cycle(status_callback=print))
+        if report.scanned_projects == 0:
+            print("ℹ️  Keine Projekte im Workspace gefunden.")
+        elif not report.results:
+            print(f"✅ {report.scanned_projects} Projekt(e) geprüft – keine bekannten Schwachstellen gefunden.")
+        else:
+            for r in report.results:
+                print(f"🔓 {r.project_name}: {r.detail}")
+        return
+
     if "--check-issues" in sys.argv:
         import asyncio
 

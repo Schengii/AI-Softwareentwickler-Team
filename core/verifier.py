@@ -175,6 +175,22 @@ class LintReport:
     reason_skipped: str = ""
 
 
+@dataclass
+class CoverageReport:
+    """
+    Ergebnis einer echten Testabdeckungs-Messung (`pytest-cov`) – wie bei DockerBuildReport/
+    DependencyAuditReport/LintReport gilt: fehlendes `pytest-cov` im Projekt ist KEIN Fehler,
+    nur nicht prüfbar (attempted=False). Das Framework installiert `pytest-cov` NICHT selbst
+    nachträglich in die Projekt-venv – dieselbe Zurückhaltung wie bei ESLint/tsc (siehe
+    LintReport): kein ungefragter Eingriff in ein Projekt, das sich nie für dieses Tool
+    entschieden hat. `agents/tester_agent.py` nimmt `pytest-cov` inzwischen selbst in neu
+    generierte `requirements.txt` auf, damit die Messung im Alltagsfall überhaupt greift.
+    """
+    attempted: bool
+    percent: float = 0.0
+    reason_skipped: str = ""
+
+
 class ProjectVerifier:
     """Installiert Abhängigkeiten isoliert und führt die reale Testsuite eines Projekts aus."""
 
@@ -646,6 +662,47 @@ class ProjectVerifier:
             issues.append(LintIssue(file_path=rel, line_number=int(line_no), message=message.strip(), rule=code))
 
         return LintReport(attempted=True, passed=False, tool="tsc", issues=issues)
+
+    def check_coverage(self, timeout_seconds: float = 60.0) -> CoverageReport:
+        """
+        Misst die echte Python-Testabdeckung per `pytest-cov`, WENN das Projekt es bereits
+        selbst als Abhängigkeit mitbringt (siehe CoverageReport-Docstring) UND echte
+        Python-Testdateien existieren. Bewusst kein separater Node/Coverage-Zweig - anders als
+        Testausführung/Lint gibt es kein annähernd einheitliches Coverage-Tool über die
+        verschiedenen Node-Test-Runner hinweg (Jest/Vitest/Mocha je eigenes Format).
+        """
+        if not self._find_python_test_files():
+            return CoverageReport(attempted=False, reason_skipped="Keine Python-Testdateien gefunden.")
+
+        python_exe = self._resolve_python()
+        cov_check = CodeSandbox.run_command(
+            [python_exe, "-c", "import pytest_cov"], cwd=self.project_dir, timeout_seconds=10.0,
+        )
+        if cov_check.exit_code != 0:
+            return CoverageReport(
+                attempted=False,
+                reason_skipped="`pytest-cov` ist in diesem Projekt nicht installiert - das "
+                               "Framework fügt es nicht selbst nachträglich hinzu.",
+            )
+
+        report_file = self.project_dir / "coverage_report.json"
+        try:
+            result = CodeSandbox.run_command(
+                [python_exe, "-m", "pytest", "-q", "--tb=no",
+                 f"--cov={self.project_dir}", f"--cov-report=json:{report_file}"],
+                cwd=self.project_dir, timeout_seconds=timeout_seconds,
+            )
+            if not report_file.exists():
+                tail = (result.stdout + result.stderr).strip()[-500:]
+                return CoverageReport(attempted=False, reason_skipped=f"pytest-cov lieferte kein Ergebnis: {tail}")
+            try:
+                data = json.loads(report_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as e:
+                return CoverageReport(attempted=False, reason_skipped=f"Coverage-JSON nicht lesbar: {e}")
+            percent = round(data.get("totals", {}).get("percent_covered", 0.0), 1)
+            return CoverageReport(attempted=True, percent=percent)
+        finally:
+            report_file.unlink(missing_ok=True)
 
     def _run_pytest_or_unittest(self, python_exe: str, timeout_seconds: float) -> ExecutionResult:
         pytest_check = CodeSandbox.run_command([python_exe, "-c", "import pytest"], cwd=self.project_dir, timeout_seconds=10.0)

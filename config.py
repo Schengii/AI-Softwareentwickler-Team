@@ -159,6 +159,16 @@ AGENT_MAX_TOOL_ITERATIONS: dict[str, int] = {
 MAX_VERIFICATION_ITERATIONS: int = int(os.getenv("MAX_VERIFICATION_ITERATIONS", "2"))
 DEPENDENCY_INSTALL_TIMEOUT_SECONDS: float = float(os.getenv("DEPENDENCY_INSTALL_TIMEOUT_SECONDS", "120"))
 TEST_RUN_TIMEOUT_SECONDS: float = float(os.getenv("TEST_RUN_TIMEOUT_SECONDS", "60"))
+# Realer Fund: die Verifikation misst bisher nur Pass/Fail, keine Abdeckung - ein Projekt mit
+# 3 bestandenen Tests bei 500 Zeilen ungetestetem Code gilt genauso als "verifiziert" wie eines
+# mit echter Abdeckung. MIN_TEST_COVERAGE=0 (Standard) deaktiviert die Prüfung, bestehende
+# Läufe bleiben unangetastet. Gesetzt (z.B. 70 = 70%), misst core/verifier.py.check_coverage()
+# die echte Abdeckung per pytest-cov (nur wenn das Projekt es selbst installiert hat - siehe
+# CoverageReport-Docstring) und setzt agents/orchestrator.py._run_verification_loop()s
+# verification_ok explizit auf False, wenn die Schwelle unterschritten wird - anders als ein
+# Lint-Fund (rein informativ) ist eine EXPLIZIT konfigurierte Schwelle als echte Anforderung
+# gemeint, kein bloßes FYI.
+MIN_TEST_COVERAGE: float = float(os.getenv("MIN_TEST_COVERAGE", "0"))
 
 # ──────────────────────────────────────────
 # Governance-Kritisch-Fix-Schleife (core/review_gate.py, agents/orchestrator.py._run_governance_fix_loop)

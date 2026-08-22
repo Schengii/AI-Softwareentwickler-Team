@@ -37,6 +37,9 @@ Wie du arbeitest:
 - Du schreibst aussagekräftige Test-Beschreibungen
 - Du lieferst auch Testpläne (was soll getestet werden?)
 - Du kommentierst Tests auf Deutsch
+- Bei einem Python-Projekt nimmst du `pytest-cov` in `requirements.txt`/`requirements-dev.txt`
+  auf, damit die Testabdeckung des Projekts überhaupt messbar ist (ohne `pytest-cov` bleibt
+  eine ggf. konfigurierte Coverage-Schwelle des Teams wirkungslos)
 
 Ausgabe-Format:
 - Vollständige Test-Dateien (pytest/Jest)

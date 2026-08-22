@@ -75,6 +75,7 @@ from config import (
     MAX_REVIEW_ITERATIONS,
     MAX_RUN_TOKENS,
     MAX_VERIFICATION_ITERATIONS,
+    MIN_TEST_COVERAGE,
     ORCHESTRATOR_MODEL,
     PLAN_CONFIRMATION_MIN_TASKS,
 )
@@ -93,7 +94,7 @@ from core.result_aggregator import ResultAggregator
 from core.review_gate import find_critical_findings, route_findings_to_owners
 from core.task_manager import TaskManager, is_micro_task
 from core.token_guard import token_guard
-from core.verifier import ProjectVerifier
+from core.verifier import ProjectVerifier, VerificationReport
 from core.workspace import WorkspaceManager
 from memory.conversation_history import ConversationHistory
 from memory.cost_history import record_run_usage
@@ -1153,6 +1154,10 @@ class Orchestrator:
         budget_aborted = False
         manually_cancelled = False
         verification_ok = False
+        # Bleibt None, wenn die Schleife unten (z.B. MAX_VERIFICATION_ITERATIONS<=0) nie
+        # durchläuft - der Coverage-Check danach prüft explizit auf None, statt sich auf eine
+        # garantierte Zuweisung zu verlassen.
+        report: VerificationReport | None = None
 
         notify("🧪 [bold cyan]Verifikation:[/bold cyan] Installiere Abhängigkeiten in isolierter Umgebung...")
         install_log = await asyncio.to_thread(verifier.ensure_environment)
@@ -1300,6 +1305,26 @@ class Orchestrator:
                 else:
                     notify(f"  🎨 [bold green]{lint.tool}: keine Lint-Funde.[/bold green]")
                     summary_lines.append(f"- 🎨 {lint.tool}: keine Lint-Funde.")
+
+        # Realer Fund bei einer Bestandsaufnahme des eigenen Teams: die Verifikation misst
+        # bisher nur Pass/Fail, keine Abdeckung - ein Projekt mit 3 bestandenen Tests bei 500
+        # Zeilen ungetestetem Code gilt genauso als "verifiziert" wie eines mit echter
+        # Abdeckung. Opt-in über MIN_TEST_COVERAGE (Standard 0 = deaktiviert, siehe config.py) -
+        # nur sinnvoll, wenn die Testsuite überhaupt gelaufen UND bestanden ist (report kann
+        # None sein, wenn die Schleife oben nie durchlief, z.B. MAX_VERIFICATION_ITERATIONS<=0).
+        if not (budget_aborted or manually_cancelled) and MIN_TEST_COVERAGE > 0 and report is not None and report.ran and report.passed:
+            coverage_report = await asyncio.to_thread(verifier.check_coverage)
+            if coverage_report.attempted:
+                if coverage_report.percent >= MIN_TEST_COVERAGE:
+                    notify(f"  📊 [bold green]Testabdeckung: {coverage_report.percent}%[/bold green] (Schwelle: {MIN_TEST_COVERAGE}%).")
+                    summary_lines.append(f"- 📊 Testabdeckung: {coverage_report.percent}% (Schwelle von {MIN_TEST_COVERAGE}% erreicht).")
+                else:
+                    # Anders als ein Lint-Fund (rein informativ) ist eine EXPLIZIT konfigurierte
+                    # Schwelle als echte Anforderung gemeint - verification_ok wird deshalb
+                    # tatsächlich zurückgesetzt, nicht nur protokolliert.
+                    notify(f"  📊 [bold red]Testabdeckung {coverage_report.percent}% UNTER der Schwelle von {MIN_TEST_COVERAGE}%.[/bold red]")
+                    summary_lines.append(f"- 📊 ❌ Testabdeckung {coverage_report.percent}% UNTER der konfigurierten Schwelle (`MIN_TEST_COVERAGE={MIN_TEST_COVERAGE}%`).")
+                    verification_ok = False
 
         verification_summary = "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n" + (
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."

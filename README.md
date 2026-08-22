@@ -576,6 +576,24 @@ gegen `main` automatisch aus (Python 3.11 & 3.12) – kostenlos, ohne Secrets n�
 ein Syntax-Check aller Quelldateien. Echte End-to-End-Läufe mit echten LLM-Aufrufen
 bleiben bewusst ein manueller, gezielter Schritt und sind nicht Teil der CI.
 
+**Empfehlung: vor größeren Releases einmal `--eval` mit echten Keys laufen lassen.** Die
+gemockte Suite prüft nur die Logik-Zweige, die ein Mock auch tatsächlich durchläuft – ein
+realer Fund beim Code-Review zeigte genau die Lücke: ein `NameError` in
+`core/browser_verifier.py` (fehlendes `import sys`) und ein stiller, nicht gemeldeter
+Runtime-Smoke-Test-Fehlschlag in `agents/orchestrator.py` blieben unbemerkt, weil kein Mock
+je den echten, dynamischen Codepfad ausgeführt hat. Ein einmaliger, gezielter Lauf mit
+echten Provider-Keys fängt genau solche Lücken auf, die reine Mocks strukturell nicht
+sehen können:
+
+```bash
+python main.py --eval          # alle Benchmark-Aufgaben, echte LLM-Aufrufe (kostenpflichtig)
+python main.py --list-evals    # Übersicht aller Aufgaben, falls nur eine Teilmenge nötig ist
+```
+
+Bewusst weiterhin kein automatisierter Cloud-Workflow dafür: das würde wiederkehrende, echte
+API-Kosten verursachen und eigene Secrets-Freigaben im Repo voraussetzen – dieser Schritt
+bleibt deshalb manuell und gezielt, nicht Teil von CI oder des Scheduler-Workflows.
+
 ## 🧹 Lint (ruff)
 
 ```bash
@@ -586,3 +604,17 @@ ruff check .
 Konfiguration in `ruff.toml` (bewusst auf den Framework-Code beschränkt, `workspace/`
 mit den vom Team selbst generierten Beispielprojekten ist ausgeschlossen). Läuft als
 eigener, paralleler `lint`-Job in `.github/workflows/ci.yml` bei jedem Push/PR.
+
+**Lokales Pre-Commit-Lint-Gate (empfohlen, einmalig einrichten):** Ein realer Fund zeigte,
+dass ein rot-lintender Stand (u.a. ein echter `NameError`, siehe oben) unbemerkt bis auf
+`main` gelangen konnte, weil `ruff` nirgends VOR dem Commit lief – erst der CI-Lint-Job in
+der Cloud fing es auf, nachdem der Stand bereits gepusht war. `scripts/git-hooks/pre-commit`
+holt genau diese Prüfung lokal nach vorne (bricht `git commit` ab, wenn `ruff check .`
+Funde meldet; umgehbar mit `git commit --no-verify`):
+
+```bash
+# Windows:
+powershell -ExecutionPolicy Bypass -File scripts/install-git-hooks.ps1
+# macOS/Linux:
+sh scripts/install-git-hooks.sh
+```

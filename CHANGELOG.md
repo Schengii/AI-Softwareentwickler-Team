@@ -7,6 +7,60 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔍 Code-Review-Runde: drei stille Verifikations-Lücken, Lint-Gate & Test-Isolation
+
+Eine gezielte Bestandsaufnahme des gesamten Frameworks (nicht aus einem einzelnen Lauf,
+sondern aus systematischem Code-Review + echtem Ausführen von `ruff`/der vollen Testsuite)
+förderte drei echte Bugs zutage, die ausgerechnet die eigenen Verifikations-Features
+betrafen – also genau die Stellen, denen ein autonomer Lauf am meisten vertraut:
+
+- **`core/browser_verifier.py`:** `sys.executable` wurde verwendet, obwohl `import sys` im
+  Modul fehlte. Der resultierende `NameError` wurde vom umgebenden `except Exception: return
+  None` lautlos verschluckt – der dynamische Playwright-Check lief dadurch **nie**, selbst
+  wenn Playwright installiert war, und das System fiel bei JEDEM Lauf unbemerkt auf die
+  statische DOM-Prüfung zurück (`engine` blieb fälschlich `"static_dom"`).
+- **`agents/orchestrator.py`:** Der `else`-Zweig für einen fehlgeschlagenen Runtime-Smoke-Test
+  (App startet nachweislich nicht) baute nur eine ungenutzte `err`-Variable (von `ruff` als
+  `F841` markiert) – ohne `notify()`, ohne Eintrag in `summary_lines`, ohne `verification_ok`
+  zurückzusetzen. Ein echter Startfehler blieb dadurch komplett unsichtbar UND unblockiert,
+  obwohl genau das der Zweck dieses Checks ist ("Tests grün != App startet", siehe Eintrag
+  weiter unten). Jetzt analog zur Testabdeckungs-Schwelle behandelt: sichtbar gemeldet UND
+  `verification_ok = False`.
+- **`interface/web_dashboard.py`:** `DashboardServer.shutdown()` stoppte den Event-Loop, ohne
+  den dauerhaft laufenden `_dispatch_loop()`-Task vorher zu canceln – sichtbar als `Task was
+  destroyed but it is pending!`/`RuntimeError: Event loop is closed`-Rauschen am Ende der
+  Testsuite. Rein kosmetisch (keine Tests schlugen dadurch fehl), aber ein sauberer Shutdown
+  sollte keine offenen Tasks lautlos zurücklassen.
+
+**Nebenbefund beim Verifizieren der Fixes:** `tests/test_commit_message_summary.py` war nicht
+workspace-isoliert (fehlende `self.orchestrator._workspace = WorkspaceManager(tempdir)`,
+anders als `test_coverage_integration.py` & Co.) und schrieb bei JEDEM Testlauf über
+`core/project_status.py.record_run()` eine echte `.ai_team_status.json` in einen neuen, nie
+committeten `workspace/fastapi_health_check/`-Ordner im echten Framework-Workspace – die
+volle Testsuite hat also bei jedem Durchlauf den eigenen Workspace vollgemüllt. Jetzt isoliert.
+
+`ruff check .` fand darüber hinaus 36 Lint-Fehler auf `main` (u.a. genau der `NameError` oben
+als `F821`) – der CI-Lint-Job war zum Zeitpunkt dieser Bestandsaufnahme also tatsächlich rot,
+nur bemerkte es niemand, weil `ruff` nirgends lokal vor dem Commit lief:
+
+- **Neues lokales Pre-Commit-Lint-Gate** (`scripts/git-hooks/pre-commit` +
+  `scripts/install-git-hooks.ps1`/`.sh`, einmalig zu installieren): bricht `git commit` ab,
+  wenn `ruff check .` Funde meldet (umgehbar mit `--no-verify`). `.gitattributes` (neu, gab es
+  bisher gar nicht) erzwingt LF für diese Shell-Skripte, da `core.autocrlf=true` (Windows-
+  Standard) sie sonst beim nächsten Checkout auf CRLF umgestellt und damit an der
+  Shebang-Zeile gebrochen hätte.
+- **README-Empfehlung statt automatisiertem Workflow:** ein regelmäßiger `--eval`-Lauf mit
+  echten Provider-Keys vor größeren Releases wurde bewusst NUR als dokumentierter manueller
+  Schritt ergänzt (README, Abschnitt "Tests ausführen"), nicht als automatisierter
+  GitHub-Actions-Workflow – das würde wiederkehrende, echte API-Kosten verursachen und eigene
+  Secrets-Freigaben voraussetzen, eine Entscheidung, die bewusst beim Repo-Betreiber bleibt.
+
+4 neue Regressionstests (Playwright-`sys.executable`-Aufruf, Smoke-Test-Sichtbarkeit im
+Erfolgs- UND Fehlerfall, Dashboard-Shutdown-Task-Cleanup); volle Suite (568 Tests) grün, ruff
+sauber.
+
+---
+
 ## 🔔 Externe Benachrichtigung bei Vorfällen, die menschliche Aufmerksamkeit brauchen
 
 Dritter Fund derselben Bestandsaufnahme (siehe die beiden Einträge unten): Blockaden waren

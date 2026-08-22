@@ -45,12 +45,33 @@ _KNOWN_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("Private-Key-Block", re.compile(r"-----BEGIN (RSA |EC |OPENSSH |DSA |)PRIVATE KEY-----")),
 ]
 
-# Generische Zuweisung: name = "wert" / name: "wert", wo der Name nach einem Secret
-# aussieht UND der Wert lang genug ist, um kein einzelnes Wort/Kürzel zu sein.
+# Generische Zuweisung: name = "wert" / name: "wert" / name=wert (unquoted, klassisches
+# .env-Format), wo der Name nach einem Secret aussieht UND der Wert lang genug ist, um kein
+# einzelnes Wort/Kürzel zu sein.
+#
+# Bugfix (Code-Review-Fund): das vorherige \b vor der Alternation matcht NICHT zwischen '_'
+# und einem Buchstaben, da beide \w sind - "DATABASE_PASSWORD"/"AWS_SECRET_ACCESS_KEY"/
+# "STRIPE_SECRET_KEY" wurden dadurch NIE erkannt, obwohl genau dieses Präfix-Muster (Name des
+# Diensts/der Komponente + "_" + Secret-Art) die in der Praxis häufigste Variablenbenennung
+# für Secrets ist - deutlich häufiger als der bloße, unpräfigierte Name. Das führende \b ist
+# jetzt entfernt (die Keyword-Liste ist spezifisch genug - z.B. "api_key", nicht nur "key" -,
+# um dadurch keine neuen Fehlalarme auf unrelated Wörtern zu erzeugen).
+#
+# Zusätzlich erkennt die zweite Alternative jetzt auch UNGEQUOTETE Werte (`KEY=wert` ohne
+# Anführungszeichen, begrenzt durch Whitespace/Kommentar/Zeilenende) - das native .env-Format,
+# das dieses Modul laut eigenem Docstring oben explizit als Risiko-Beispiel nennt, wurde vorher
+# NIE erkannt, weil die generische Regel zwingend Anführungszeichen verlangte.
+#
+# Zusätzlicher Bugfix: "secret"/"token" ALLEINSTEHEND fehlten bisher komplett - nur die
+# Verbindungen "secret_key"/"access_token"/"auth_token" waren gelistet. Reale, sehr verbreitete
+# Variablennamen wie STRIPE_SECRET, CLIENT_SECRET, APP_SECRET, CSRF_TOKEN oder REFRESH_TOKEN
+# (ohne "_KEY"-Suffix) wurden dadurch NIE erkannt. "key" bleibt bewusst NUR in Verbindung mit
+# "api" gelistet (bloßes "key" allein wäre zu generisch - primary_key, sort_key, cache_key,
+# dict.keys() usw. - und würde die Warnung mit Fehlalarmen entwerten).
 _GENERIC_ASSIGNMENT = re.compile(
-    r"""(?i)\b(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|password|passwd)\b
+    r"""(?i)(?:api[_-]?key|secret|token|password|passwd)[a-z0-9_]*
         \s*[:=]\s*
-        ['"]([A-Za-z0-9_\-/+=]{12,})['"]""",
+        (?:['"]([A-Za-z0-9_\-/+=]{12,})['"]|([A-Za-z0-9_\-/+=]{12,})(?=\s|\#|$))""",
     re.VERBOSE,
 )
 
@@ -71,6 +92,12 @@ def _redact(content: str) -> str:
     """Kürzt/zensiert eine Zeile für die Anzeige – nie der volle Secret-Wert im Terminal/Log."""
     stripped = content.strip()
     stripped = re.sub(r"""['"][A-Za-z0-9_\-/+=]{6,}['"]""", '"***REDACTED***"', stripped)
+    # Bugfix (Code-Review-Fund): ungequotete Werte (natives .env-Format `KEY=wert`, seit dem
+    # Fix oben von _GENERIC_ASSIGNMENT ebenfalls erkannt) wurden hier NICHT zensiert - die
+    # obige Ersetzung greift nur bei Anführungszeichen. Ohne diese Zeile hätte ein neu
+    # erkannter unquoted-Fund den echten Geheimwert unredigiert im Terminal/Log gezeigt,
+    # obwohl genau das die dokumentierte Zusicherung dieser Funktion ist.
+    stripped = re.sub(r"""([:=]\s*)[A-Za-z0-9_\-/+=]{6,}(?=\s|#|$)""", r"\1***REDACTED***", stripped)
     if len(stripped) > 80:
         stripped = stripped[:77] + "…"
     return stripped
@@ -83,8 +110,10 @@ def _scan_line(file_path: str, line_number: int, content: str) -> list[SecretFin
         if match and "example" not in content.lower():
             findings.append(SecretFinding(file_path, line_number, rule_name, _redact(content)))
     generic_match = _GENERIC_ASSIGNMENT.search(content)
-    if generic_match and not _is_placeholder(content, generic_match.group(2)):
-        findings.append(SecretFinding(file_path, line_number, "Generisches Secret-Muster", _redact(content)))
+    if generic_match:
+        generic_value = generic_match.group(1) or generic_match.group(2)
+        if not _is_placeholder(content, generic_value):
+            findings.append(SecretFinding(file_path, line_number, "Generisches Secret-Muster", _redact(content)))
     return findings
 
 

@@ -71,6 +71,75 @@ class TestGenericAssignmentPattern(unittest.TestCase):
         self.assertEqual(findings, [])
 
 
+class TestGenericPatternRecognizesRealWorldSecretNames(unittest.TestCase):
+    """
+    Regression-Tests für einen Code-Review-Fund: die generische Regel verpasste bisher die in
+    der Praxis häufigste Klasse von Secret-Funden komplett.
+
+    1. Das führende `\\b` vor der Keyword-Alternation matcht NICHT zwischen `_` und einem
+       Buchstaben (beide sind `\\w`) - Variablennamen mit Dienst-/Komponenten-Präfix wie
+       `DATABASE_PASSWORD` oder `STRIPE_SECRET_KEY` wurden dadurch NIE erkannt, obwohl dieses
+       Präfix-Muster deutlich häufiger vorkommt als der bloße, unpräfigierte Name.
+    2. Die Regel verlangte zwingend Anführungszeichen um den Wert - das native, ungequotete
+       `.env`-Format (`KEY=wert`), das das Modul in seinem eigenen Docstring explizit als
+       Risikoszenario nennt, wurde dadurch NIE erkannt.
+    3. "secret"/"token" fehlten als alleinstehende Schlüsselwörter - nur die Verbindungen
+       "secret_key"/"access_token"/"auth_token" waren gelistet. Namen wie STRIPE_SECRET,
+       CLIENT_SECRET oder CSRF_TOKEN (ohne "_KEY"-Suffix) wurden dadurch NIE erkannt.
+    """
+
+    def test_detects_prefixed_variable_name_with_quotes(self):
+        diff = _diff("config.py", ['DATABASE_PASSWORD = "Sup3rSecretPassw0rd99"'])
+        findings = scan_diff(diff)
+        self.assertTrue(any(f.rule == "Generisches Secret-Muster" for f in findings))
+
+    def test_detects_unquoted_dotenv_style_assignment(self):
+        diff = _diff(".env.local", ["DATABASE_PASSWORD=Sup3rSecretPassw0rd99"])
+        findings = scan_diff(diff)
+        self.assertTrue(any(f.rule == "Generisches Secret-Muster" for f in findings))
+
+    def test_detects_unquoted_shell_export(self):
+        diff = _diff("setup.sh", ["export API_TOKEN=abcdef0123456789abcdef0123456789"])
+        findings = scan_diff(diff)
+        self.assertTrue(any(f.rule == "Generisches Secret-Muster" for f in findings))
+
+    def test_detects_unquoted_yaml_style_assignment(self):
+        diff = _diff("docker-compose.yml", ["  DB_PASSWORD: Sup3rSecretPassw0rd99"])
+        findings = scan_diff(diff)
+        self.assertTrue(any(f.rule == "Generisches Secret-Muster" for f in findings))
+
+    def test_detects_bare_secret_keyword_without_key_suffix(self):
+        diff = _diff("config.py", ['STRIPE_SECRET = "whsec_1234567890abcdefghijklmnopqrstuv"'])
+        findings = scan_diff(diff)
+        self.assertTrue(any(f.rule == "Generisches Secret-Muster" for f in findings))
+
+    def test_detects_bare_token_keyword_without_auth_prefix(self):
+        diff = _diff("config.py", ['CSRF_TOKEN = "abcdef0123456789abcdef0123456789"'])
+        findings = scan_diff(diff)
+        self.assertTrue(any(f.rule == "Generisches Secret-Muster" for f in findings))
+
+    def test_unquoted_finding_is_still_fully_redacted(self):
+        # Zusätzlicher Bugfix: _redact() zensierte bisher nur gequotete Werte - ein neu
+        # erkannter unquoted-Fund hätte den echten Geheimwert unredigiert im Snippet gezeigt.
+        diff = _diff(".env.local", ["DATABASE_PASSWORD=Sup3rSecretPassw0rd99"])
+        findings = scan_diff(diff)
+        self.assertEqual(len(findings), 1)
+        self.assertNotIn("Sup3rSecretPassw0rd99", findings[0].snippet)
+        self.assertIn("REDACTED", findings[0].snippet)
+
+    def test_unquoted_placeholder_is_still_ignored(self):
+        diff = _diff(".env.example", ["API_TOKEN=changeme"])
+        findings = scan_diff(diff)
+        self.assertEqual(findings, [])
+
+    def test_generic_key_alone_is_not_flagged_to_avoid_noise(self):
+        # "key" bleibt bewusst NUR in Verbindung mit "api" gelistet - bloßes "key" wäre zu
+        # generisch (primary_key, sort_key, cache_key, ...) und würde die Warnung entwerten.
+        diff = _diff("models.py", ['primary_key = "not_a_real_secret_value_at_all"'])
+        findings = scan_diff(diff)
+        self.assertEqual(findings, [])
+
+
 class TestOnlyAddedLinesCount(unittest.TestCase):
     def test_removed_secret_is_not_flagged(self):
         diff = _diff("config.py", ["import os"], removed_lines=['AWS_KEY = "AKIAABCDEFGHIJKLMNOP"'])

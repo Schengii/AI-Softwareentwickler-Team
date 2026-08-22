@@ -85,6 +85,22 @@ class TestCheckMergedTickets(unittest.TestCase):
 
         self.fake_github.get_pr_status.assert_called_once_with("https://github.com/x/y/pull/6")
 
+    def test_detects_pr_url_embedded_in_descriptive_detail_text(self):
+        # core/dependency_watch.py hängt die PR-URL hinter einen beschreibenden Text statt
+        # detail NUR auf die URL zu setzen (siehe Docstring in core/merge_watcher.py) -
+        # ein reiner startswith("http")-Check würde das übersehen.
+        backlog_store.upsert_ticket(
+            "depwatch-app", "Dependency-Schwachstellen: app", "dependency_watch", "review",
+            detail="2 bekannte Schwachstelle(n): urllib3 ... — Automatischer Update-PR: https://github.com/x/y/pull/7",
+        )
+        self.fake_github.get_pr_status.return_value = ("merged", "")
+
+        updated = check_merged_tickets(self.fake_github)
+
+        self.assertEqual(updated, ["depwatch-app"])
+        self.fake_github.get_pr_status.assert_called_once_with("https://github.com/x/y/pull/7")
+        self.assertEqual(backlog_store.list_tickets()[0].status, "done")
+
     def test_skips_entirely_when_gh_not_ready(self):
         backlog_store.upsert_ticket("issue-1", "Health-Check", "issue", "review", detail="https://github.com/x/y/pull/1")
         self.fake_github.gh_ready.return_value = False

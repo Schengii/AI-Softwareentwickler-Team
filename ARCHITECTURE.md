@@ -102,5 +102,5 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
 | **MCP-Server** | `interface/mcp_server.py` | Standardisiertes Model Context Protocol für IDE-Integrationen (VS Code, Cursor, Antigravity). |
 | **GitHub-Issue-Watcher** | `core/issue_watcher.py` | Automatische Bearbeitung von GitHub-Issues mit Label-Trigger (`--check-issues`). |
 | **PR-Review-Watcher** | `core/pr_review_watcher.py` | Automatische Einarbeitung von menschlichem PR-Feedback (`--check-pr-reviews`). |
-| **Dependency-Scanner** | `core/dependency_watch.py` | Regelmäßige Sicherheitsprüfung aller Workspace-Projekte (`--check-dependencies`). |
+| **Dependency-Scanner** | `core/dependency_watch.py`, `core/dependency_updater.py` | Regelmäßige Sicherheitsprüfung aller Workspace-Projekte (`--check-dependencies`) – hebt verwundbare Python-Pakete mit bekannter `fix_versions`-Angabe automatisch an und öffnet dafür einen Pull Request. |
 | **Benchmark-Suite** | `evals/runner.py` | Ausführung standardisierter Benchmarks (`python main.py --eval`). |

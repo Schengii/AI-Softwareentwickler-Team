@@ -302,6 +302,14 @@ ENABLE_PR_WORKFLOW: bool = os.getenv("ENABLE_PR_WORKFLOW", "true").lower() in ("
 GIT_PROTECTED_BRANCHES: tuple[str, ...] = tuple(
     b.strip() for b in os.getenv("GIT_PROTECTED_BRANCHES", "main,master").split(",") if b.strip()
 )
+# `/protect-branch` (interface/cli.py) aktiviert echte GitHub-Branch-Protection (Pflicht-
+# Reviews vor dem Merge, kein Force-Push/Löschen) für den Hauptbranch – der PR-Workflow oben
+# verhindert nur, dass DIESES Tool direkt auf den Hauptbranch pusht, nicht dass ein Mensch (oder
+# ein anderes Tool) es weiterhin tut. Bewusst ein manueller, einmaliger CLI-Befehl statt eines
+# automatischen Laufs beim Start – eine Repo-Einstellungsänderung mit echten
+# Admin-API-Rechten verdient dieselbe bewusste Bestätigung wie `/deploy`, nicht ein
+# stillschweigender Seiteneffekt.
+BRANCH_PROTECTION_REQUIRED_REVIEWS: int = int(os.getenv("BRANCH_PROTECTION_REQUIRED_REVIEWS", "1"))
 
 # ──────────────────────────────────────────
 # Autonome, getriggerte Arbeit: GitHub-Issues als Backlog (core/issue_watcher.py)
@@ -323,6 +331,21 @@ ISSUE_BLOCKED_LABEL: str = os.getenv("ISSUE_BLOCKED_LABEL", "ai-team-blocked")
 # Cron-Tick nach längerer Pause gleich eine ganze Batch teurer Läufe lostritt; der nächste
 # Zyklus greift das nächste Issue auf.
 ISSUE_POLL_MAX_PER_CYCLE: int = int(os.getenv("ISSUE_POLL_MAX_PER_CYCLE", "1"))
+
+# ──────────────────────────────────────────
+# Dependency-Watch: automatischer Update-PR statt reiner Warnung (core/dependency_updater.py)
+# ──────────────────────────────────────────
+# core/dependency_watch.py (`python main.py --check-dependencies`) fand bekannte CVEs in
+# Workspace-Projekten bisher nur und meldete sie als blockiertes Ticket – ein echtes Team hat
+# einen Dependabot-/Renovate-artigen Mechanismus, der direkt einen fertigen Update-PR öffnet.
+# ENABLE_DEPENDENCY_AUTO_UPDATE=true (Standard) hebt betroffene Python-Pakete (requirements.txt,
+# nur wenn pip-audit eine `fix_versions`-Angabe liefert) automatisch an und öffnet dafür über
+# denselben agents/github_agent.py-PR-Mechanismus wie core/issue_watcher.py einen Pull Request –
+# OHNE menschliche Bestätigung (unbeaufsichtigter Poll-Zyklus, ein Mensch reviewt/merged den PR
+# anschließend ganz normal über GitHub, siehe /protect-branch oben für einen erzwungenen
+# Review vor dem Merge). Node/Rust/Go bleiben bewusst bei der reinen Meldung (siehe
+# core/dependency_updater.py-Modul-Docstring für die Begründung).
+ENABLE_DEPENDENCY_AUTO_UPDATE: bool = os.getenv("ENABLE_DEPENDENCY_AUTO_UPDATE", "true").lower() in ("true", "1", "yes")
 
 # ──────────────────────────────────────────
 # Externe Benachrichtigung bei Vorfällen, die menschliche Aufmerksamkeit brauchen (core/notifier.py)

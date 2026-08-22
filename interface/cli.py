@@ -27,7 +27,13 @@ from rich.text import Text
 
 from agents.department_lead_agent import DEPARTMENT_DEFINITIONS
 from agents.orchestrator import PHASE_ORDER, Orchestrator
-from config import ENABLE_PLAN_CONFIRMATION, ENABLE_PR_WORKFLOW, GIT_PROTECTED_BRANCHES, validate_config
+from config import (
+    BRANCH_PROTECTION_REQUIRED_REVIEWS,
+    ENABLE_PLAN_CONFIRMATION,
+    ENABLE_PR_WORKFLOW,
+    GIT_PROTECTED_BRANCHES,
+    validate_config,
+)
 from core.backlog_store import STATUSES, list_tickets, new_ticket_id, upsert_ticket
 from core.code_sandbox import CodeSandbox
 from core.message_bus import AgentTask
@@ -77,6 +83,7 @@ HELP_TEXT = """
 | `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
 | `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |
 | `/push` | Führt manuell einen Git-Commit & Push aus |
+| `/protect-branch [branch]` | Aktiviert echte GitHub-Branch-Protection (Pflicht-Reviews, kein Force-Push) für den Hauptbranch – mit Vorschau & Bestätigung |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
 | `/hilfe` | Zeigt diese Hilfe an |
@@ -943,6 +950,9 @@ class CLIInterface:
         elif cmd in ("/deploy-stop", "/undeploy"):
             await self._stop_deployment(args[0] if args else None)
 
+        elif cmd in ("/protect-branch", "/branch-protection"):
+            await self._protect_branch_with_confirmation(args[0] if args else None)
+
         elif cmd in ("/load", "/laden", "/open", "/oeffnen", "/import"):
             if not args:
                 console.print("⚠️ Bitte gib den Pfad oder Namen des Projekts an:\n👉 `/load <pfad_oder_name>`", style="yellow")
@@ -1135,6 +1145,52 @@ class CLIInterface:
             console.print("⏹️ [bold green]Deployment gestoppt.[/bold green]")
         else:
             console.print(f"❌ Stoppen fehlgeschlagen:\n{result.output}", style="red")
+
+    async def _protect_branch_with_confirmation(self, branch: str | None) -> None:
+        """
+        Aktiviert echte GitHub-Branch-Protection (agents/github_agent.py.set_branch_protection())
+        für `branch` (Standard: der erste konfigurierte GIT_PROTECTED_BRANCHES-Eintrag, i.d.R.
+        "main") – mit Vorschau + Bestätigung, analog zu /deploy: eine Änderung an den
+        Repo-Einstellungen selbst über die GitHub-API ist ein bewusster, schwer beiläufig
+        rückgängig zu machender Schritt, verdient dieselbe Bestätigungs-Gate-Philosophie statt
+        stillschweigend loszulaufen. Realer struktureller Fund: der PR-Workflow verhindert nur,
+        dass DIESES Tool direkt auf den Hauptbranch pusht – ohne dieses Kommando könnte ein
+        Mensch (oder ein anderes Tool) weiterhin `git push origin main` direkt ausführen.
+        """
+        target_branch = branch or (GIT_PROTECTED_BRANCHES[0] if GIT_PROTECTED_BRANCHES else "main")
+        github_agent = self._orchestrator._agents.get("github")
+        if github_agent is None or not github_agent.gh_ready():
+            console.print(
+                "⚠️ `gh`-CLI nicht installiert/nicht eingeloggt – Branch-Protection kann nicht "
+                "gesetzt werden. Prüfe `gh auth status`.", style="yellow",
+            )
+            return
+
+        console.print(
+            Panel(
+                f"[bold]Branch:[/bold] `{target_branch}`\n"
+                f"[bold]Pflicht-Freigaben vor Merge:[/bold] {BRANCH_PROTECTION_REQUIRED_REVIEWS}\n"
+                "[bold]Zusätzlich:[/bold] kein Force-Push, keine Branch-Löschung, gilt auch für Repo-Admins.\n"
+                "[dim]Erfordert Admin-Rechte auf dem Repo (die aktuelle `gh`-Anmeldung).[/dim]",
+                title="🔒 Branch-Protection: Vorschau",
+                border_style="cyan",
+            )
+        )
+        try:
+            should_apply = Confirm.ask(f"Branch-Protection für `{target_branch}` wirklich aktivieren?", default=False)
+        except Exception:
+            should_apply = False
+        if not should_apply:
+            console.print("↩️ Übersprungen.", style="dim")
+            return
+
+        success, output = await asyncio.to_thread(
+            github_agent.set_branch_protection, target_branch, BRANCH_PROTECTION_REQUIRED_REVIEWS,
+        )
+        if success:
+            console.print(f"✅ [bold green]Branch-Protection für `{target_branch}` aktiviert.[/bold green]")
+        else:
+            console.print(f"❌ [bold red]Fehlgeschlagen:[/bold red]\n{output}", style="red")
 
     def _render_status_panel(self, lines: list[str]) -> Panel:
         if not lines:

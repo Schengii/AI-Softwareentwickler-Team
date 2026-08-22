@@ -15,8 +15,17 @@ Issue-getriggerte Arbeit läuft (core/issue_watcher.py.run_issue_poll_cycle(), a
 zusätzlicher Cron-Eintrag nötig, das Board zieht sich einfach bei jeder Gelegenheit nach.
 """
 
+import re
+
 from agents.github_agent import GitHubAgent
 from core.backlog_store import list_tickets, upsert_ticket
+
+# Die meisten "review"-Tickets (PR-Workflow, Issue-Watcher) haben NUR die PR-URL als
+# detail-Feld – core/dependency_watch.py hängt die URL dagegen hinter einen beschreibenden
+# Text ("... — Automatischer Update-PR: https://..."), damit die Schwachstellen-Beschreibung
+# im Board sichtbar bleibt. Ein einfacher Substring-Match statt eines strikten Prefix-Checks
+# deckt beide Fälle ab, ohne die bestehende Konvention für die anderen Quellen zu ändern.
+_URL_PATTERN = re.compile(r"https?://\S+")
 
 
 def check_merged_tickets(github_agent: GitHubAgent | None = None) -> list[str]:
@@ -36,10 +45,11 @@ def check_merged_tickets(github_agent: GitHubAgent | None = None) -> list[str]:
 
     updated: list[str] = []
     for ticket in list_tickets(status="review"):
-        if not ticket.detail.startswith("http"):
+        url_match = _URL_PATTERN.search(ticket.detail)
+        if not url_match:
             continue  # kein PR-Link im detail-Feld (z.B. manuell gesetzter Status) - nichts prüfbar
 
-        pr_state, _detail = github_agent.get_pr_status(ticket.detail)
+        pr_state, _detail = github_agent.get_pr_status(url_match.group(0))
         if pr_state == "merged":
             new_status, new_detail = "done", ticket.detail
         elif pr_state == "closed":

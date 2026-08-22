@@ -121,6 +121,11 @@ class DependencyVulnerability:
     vulnerability_id: str
     description: str
     severity: str = ""
+    # Nur von pip-audit geliefert (aufsteigend sortierte Liste kompatibler sicherer Versionen
+    # direkt aus der Advisory-Datenbank) - Grundlage für core/dependency_updater.py, das
+    # verwundbare Pakete automatisch auf die erste (niedrigste sichere) Version anhebt. npm
+    # audit liefert keine vergleichbar einfache Angabe, bleibt daher leer.
+    fix_versions: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -558,6 +563,7 @@ class ProjectVerifier:
                 version=dep.get("version", "?"),
                 vulnerability_id=vuln.get("id", "?"),
                 description=(vuln.get("description") or "").strip()[:300],
+                fix_versions=list(vuln.get("fix_versions") or []),
             )
             for dep in data.get("dependencies", [])
             for vuln in dep.get("vulns", [])

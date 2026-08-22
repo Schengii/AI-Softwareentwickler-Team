@@ -7,6 +7,63 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🤖 Drei Lücken gegenüber einem echten Profi-Team: stille Datei-Kollisionen, passiver Dependency-Scan, fehlende Branch-Protection
+
+Gezielte Bestandsaufnahme auf Nutzeranfrage ("was fehlt noch, damit das Team wie ein echtes
+Entwicklerteam arbeitet?"), keine aus einem einzelnen Lauf beobachteten Symptome, sondern drei
+strukturelle Lücken beim Durchsehen des Orchestrierungs-Codes selbst:
+
+- **Datei-Kollisionen zwischen parallel arbeitenden Fachteam-Mitgliedern blieben stumm:**
+  `agents/orchestrator.py._run_department_hierarchy()` lässt Fachbereiche mit 3+ Mitgliedern
+  echt parallel per `asyncio.gather` laufen (der bestehende Kommentar dort dokumentiert
+  bereits, dass sich Agenten dabei NIE gegenseitig sehen – Grundlage für die schon vorhandene
+  Zwei-Mitglieder-Ausnahme). `core/agent_toolbox.py._tool_write_file()` überschreibt eine
+  Datei dabei blind (kein Lock/Merge) – schreiben zwei Agenten dieselbe Datei (z.B.
+  `requirements.txt`), gewann bisher stillschweigend nur der laut Ergebnis-Reihenfolge letzte
+  Schreiber als `file_owners`-Eintrag, ohne dass irgendjemand vom Verlust der zuerst
+  geschriebenen Version erfuhr. `_detect_file_write_collisions()` (neu) erkennt Kollisionen
+  direkt nach jedem parallelen Ausführungs-Batch, meldet sie live UND sammelt sie für einen
+  neuen, deterministischen `### ⚠️ Datei-Kollisionen`-Abschnitt im Abschlussbericht
+  (`_build_file_collision_section()`) – automatisch entscheidbar, welche Version richtig ist,
+  ist es nicht, deshalb "melden statt raten", dieselbe Philosophie wie bei fehlgeschlagener
+  Verifikation. Rein additiv über den neuen, optionalen `collision_sink`-Parameter durchgereicht
+  – bestehende Aufrufer/Tests ohne Interesse daran bleiben unverändert.
+- **`--check-dependencies` warnte nur, statt wie ein echter Dependabot/Renovate zu handeln:**
+  `core/dependency_watch.py` fand bekannte CVEs, legte aber nur ein `blocked`-Ticket an – ein
+  Mensch musste die Abhängigkeit danach manuell selbst anheben. `core/dependency_updater.py`
+  (neu) hebt jedes Paket mit bekannter Schwachstelle UND mindestens einer von `pip-audit`
+  gelieferten `fix_versions`-Angabe in `requirements.txt` automatisch auf die erste (niedrigste
+  sichere) Version an – bewusst NUR für Python: `pip-audit` liefert eine einfache, verlässliche
+  "eine sichere Version"-Angabe direkt aus der Advisory-Datenbank, `npm audit` dagegen nicht
+  (oft ein ganzer Abhängigkeitsbaum-Umbau mit möglichen Breaking Changes) – Node/Rust/Go
+  bleiben deshalb bei der reinen Meldung. Der Update-PR läuft über denselben
+  `agents/github_agent.py`-Mechanismus wie der Issue-Watcher, ohne menschliche Bestätigung
+  (unbeaufsichtigter Poll-Zyklus – ein Mensch reviewt/merged den PR anschließend ganz normal
+  über GitHub). Nebenbefund beim Verdrahten: `core/merge_watcher.py` erkannte eine PR-URL im
+  Ticket-`detail`-Feld bisher nur per striktem `startswith("http")` – die neuen
+  Dependency-Update-Tickets hängen die URL aber hinter einen beschreibenden Text (damit die
+  Schwachstellen-Beschreibung im Board sichtbar bleibt), wären also NIE automatisch von
+  "review" auf "done" gezogen worden. Auf einen Substring-Regex-Match umgestellt (deckt beide
+  Fälle ab, keine Verhaltensänderung für die bestehenden PR-Workflow-/Issue-Tickets).
+  `ENABLE_DEPENDENCY_AUTO_UPDATE=true` (Standard) schaltet es ab.
+- **Der PR-Workflow verhinderte nur eigene Direct-Pushes, nicht die eines Menschen:**
+  `agents/github_agent.py.create_branch()`/`create_pull_request()` sorgen dafür, dass DIESES
+  Tool nicht direkt auf `main` committet – GitHub selbst kannte davon nichts, ein `git push
+  origin main` von Hand (oder einem anderen Tool) wäre weiterhin klaglos durchgegangen. Neue
+  Methoden `get_repo_slug()`/`set_branch_protection()` aktivieren echte Branch-Protection über
+  `gh api --method PUT ... --input -` (Pflicht-Freigaben vor dem Merge, kein
+  Force-Push/Löschen, gilt auch für Repo-Admins). Neuer CLI-Befehl `/protect-branch [branch]`
+  mit Vorschau + Bestätigung (`BRANCH_PROTECTION_REQUIRED_REVIEWS`, Standard `1`) – bewusst nur
+  ein expliziter, einmaliger Befehl statt eines automatischen Laufs, da eine Änderung an den
+  Repo-Einstellungen selbst Admin-Rechte voraussetzt und ein bewusster Schritt sein soll, kein
+  Seiteneffekt eines normalen Team-Laufs.
+
+46 neue Tests (`test_file_write_collisions.py`, `test_dependency_updater.py`, Erweiterungen an
+`test_dependency_watch.py`/`test_merge_watcher.py`/`test_github_agent_issue_methods.py`, neues
+`test_protect_branch_command.py`). Volle Suite (614 Tests) grün, ruff sauber.
+
+---
+
 ## 🔍 Code-Review-Runde: drei stille Verifikations-Lücken, Lint-Gate & Test-Isolation
 
 Eine gezielte Bestandsaufnahme des gesamten Frameworks (nicht aus einem einzelnen Lauf,

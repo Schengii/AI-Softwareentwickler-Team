@@ -378,6 +378,7 @@ class Orchestrator:
                 t.context += f"\n\n{adr_context}"
 
         # Führe hierarchische Fachbereichs-Ausführung durch
+        file_collisions: list[dict] = []
         results, file_owners, budget_aborted, manually_cancelled = await self._run_department_hierarchy(
             user_request=user_request,
             task_summary=task_summary,
@@ -386,6 +387,7 @@ class Orchestrator:
             run_start_tokens=run_start_tokens,
             notify=notify,
             cancel_requested=cancel_requested,
+            collision_sink=file_collisions,
         )
 
         # Fallback-Dateispeicherung: Falls ein Agent trotz Werkzeug-Zugriff Code nur im
@@ -543,11 +545,13 @@ class Orchestrator:
         # entsprechend angepasste SYNTHESIZE_SYSTEM_PROMPT-Anweisung, keinen vollständigen
         # Code mehr zu reproduzieren.
         real_files_section = self._build_real_files_section(project_dir, file_owners)
+        collision_section = self._build_file_collision_section(file_collisions)
 
         final_output = (
             f"{final_solution}\n\n"
             f"---\n\n"
             + (f"{real_files_section}\n\n---\n\n" if real_files_section else "")
+            + (f"{collision_section}\n\n---\n\n" if collision_section else "")
             + (f"{governance_fix_summary}\n\n---\n\n" if governance_fix_summary else "")
             + f"{verification_summary}\n\n"
             f"---\n\n"
@@ -708,6 +712,7 @@ class Orchestrator:
         notify: Callable[[str], None],
         run_start_tokens: int | None = None,
         cancel_requested: Callable[[], bool] | None = None,
+        collision_sink: list[dict] | None = None,
     ) -> tuple[list[AgentResult], dict[str, str], bool, bool]:
         """
         Führt alle 5 Fachbereichs-Phasen aus. Jede Phase lässt (sofern
@@ -722,6 +727,13 @@ class Orchestrator:
         werden verbleibende Fachbereiche übersprungen, die bisherigen Ergebnisse aber
         trotzdem ausgeliefert (dieselbe Graceful-Degradation, nur mit unterschiedlichem, für
         den Nutzer ehrlich benanntem Grund).
+
+        collision_sink: Wenn gesetzt, sammelt process() hier gefundene Datei-Kollisionen
+        zwischen parallel laufenden Fachteam-Mitgliedern ein (siehe
+        _detect_file_write_collisions) für den deterministischen Abschnitt im Abschlussbericht
+        (_build_file_collision_section). None (Standard) = nur die Live-Warnung, keine
+        Sammlung – bestehende Aufrufer/Tests ohne Interesse an diesem Detail bleiben
+        unverändert.
         """
         all_results: list[AgentResult] = []
         file_owners: dict[str, str] = {}
@@ -800,6 +812,30 @@ class Orchestrator:
                 for task in member_tasks:
                     notify(f"  ▶️ [yellow]Fachteam arbeitet:[/yellow] {self._agents[task.agent_id].name}...")
                 member_results = await self._run_agents_parallel(member_tasks, notify=notify)
+                # Direkte Folge desselben strukturellen Problems wie im Kommentar oben: sehen
+                # sich parallel laufende Agenten nie gegenseitig, kann das auch dazu führen,
+                # dass ZWEI von ihnen dieselbe Datei schreiben (z.B. requirements.txt,
+                # README.md) - core/agent_toolbox.py._tool_write_file() überschreibt dabei
+                # blind, KEIN Lock/Merge. _update_file_owners() unten würde den zuerst
+                # geschriebenen Stand dann still verwerfen (nur der laut Ergebnis-Reihenfolge
+                # letzte Schreiber gewinnt als "Owner"). Da automatisch nicht entscheidbar ist,
+                # welche Version die richtige ist, wird der Fund hier NUR sichtbar gemacht
+                # (Live-Warnung + Eintrag in collision_sink für den Abschlussbericht) statt
+                # geblockt - dieselbe "melden statt raten"-Philosophie wie bei fehlgeschlagener
+                # Verifikation.
+                collisions = self._detect_file_write_collisions(member_results)
+                if collisions:
+                    collision_desc = "; ".join(
+                        f"`{path}` ({', '.join(agents)})" for path, agents in collisions.items()
+                    )
+                    notify(
+                        f"  ⚠️ [bold yellow]Datei-Kollision:[/bold yellow] mehrere gleichzeitig "
+                        f"arbeitende Fachteam-Mitglieder haben dieselbe Datei geschrieben – die "
+                        f"zuerst geschriebene Version könnte überschrieben worden sein: {collision_desc}"
+                    )
+                    if collision_sink is not None:
+                        for path, agents in collisions.items():
+                            collision_sink.append({"phase": phase_label, "path": path, "agents": agents})
             else:
                 member_results = []
                 for task in member_tasks:
@@ -957,6 +993,41 @@ class Orchestrator:
         for res in results:
             for rel_path in res.files_written:
                 file_owners[rel_path] = res.agent_id
+
+    @staticmethod
+    def _detect_file_write_collisions(member_results: list[AgentResult]) -> dict[str, list[str]]:
+        """
+        Erkennt, ob innerhalb EINES parallelen Ausführungs-Batches (mehrere Fachteam-
+        Mitglieder gleichzeitig per asyncio.gather, siehe _run_agents_parallel) mehr als ein
+        Agent dieselbe Datei geschrieben hat. Nur für parallele Batches relevant: bei
+        sequenzieller Ausführung sieht ein späterer Agent den Stand des früheren bereits auf
+        der Platte, ein Überschreiben dort ist eine informierte Entscheidung, keine blinde
+        Kollision. Gibt {rel_path: [agent_id, ...]} nur für tatsächlich betroffene Pfade
+        zurück (mind. 2 unterschiedliche Schreiber), in stabiler Reihenfolge nach erstem
+        Auftreten.
+        """
+        writers: dict[str, list[str]] = {}
+        for res in member_results:
+            for rel_path in res.files_written:
+                agents = writers.setdefault(rel_path, [])
+                if res.agent_id not in agents:
+                    agents.append(res.agent_id)
+        return {path: agents for path, agents in writers.items() if len(agents) > 1}
+
+    @staticmethod
+    def _build_file_collision_section(collisions: list[dict]) -> str:
+        """Deterministischer Abschnitt im Abschlussbericht (kein LLM-Aufruf) – siehe collision_sink."""
+        if not collisions:
+            return ""
+        lines = [
+            "### ⚠️ Datei-Kollisionen bei paralleler Fachteam-Arbeit",
+            "Mehrere gleichzeitig arbeitende Fachteam-Mitglieder haben dieselbe Datei "
+            "geschrieben – die jeweils zuerst geschriebene Version könnte überschrieben "
+            "worden sein. Bitte die betroffene(n) Datei(en) vor der Weiterverwendung prüfen:",
+        ]
+        for entry in collisions:
+            lines.append(f"- `{entry['path']}` in {entry['phase']}: {', '.join(entry['agents'])}")
+        return "\n".join(lines)
 
     def _format_results_for_review(self, results: list[AgentResult]) -> str:
         blocks = []

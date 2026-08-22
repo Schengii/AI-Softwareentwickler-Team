@@ -3,6 +3,7 @@
 <div align="center">
 
 [![CI](https://github.com/Schengii/AI-Softwareentwickler-Team/actions/workflows/ci.yml/badge.svg)](https://github.com/Schengii/AI-Softwareentwickler-Team/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Hierarchy](https://img.shields.io/badge/Fachbereichs--Hierarchie-5_Teamleiter-blue?style=for-the-badge)
 ![Specialists](https://img.shields.io/badge/KI--Spezialisten-33_Agenten-success?style=for-the-badge)
@@ -618,3 +619,7 @@ powershell -ExecutionPolicy Bypass -File scripts/install-git-hooks.ps1
 # macOS/Linux:
 sh scripts/install-git-hooks.sh
 ```
+
+## 📄 Lizenz
+
+MIT – siehe [LICENSE](LICENSE).

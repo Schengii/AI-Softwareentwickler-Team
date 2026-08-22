@@ -1,5 +1,7 @@
 # Secrets
 .env
+*.env.*
+!.env.example
 
 # Python
 __pycache__/
@@ -10,6 +12,13 @@ dist/
 build/
 *.egg
 .eggs/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+coverage_report.json
 
 # Virtual environments
 venv/
@@ -17,9 +26,17 @@ venv/
 env/
 **/.ai_team_venv/
 
-# Persistenter RAG-Embedding-Cache pro Generiertem Projekt (core/embedding_index.py) –
-# enthält reine Vektor-Caches, keine Quelldateien, muss nicht versioniert werden.
+# AI Team Worktrees & RAG Caches
+.ai-team-worktrees/
+**/.ai-team-worktrees/
 **/.ai_team_rag/
+
+# Node & Frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
 # IDEs
 .vscode/
@@ -32,6 +49,7 @@ memory/*.db
 memory/*.json
 logs/
 *.log
+evals/eval_history.json
 
 # OS
 .DS_Store

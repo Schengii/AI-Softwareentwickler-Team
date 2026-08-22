@@ -125,6 +125,44 @@ AGENT_MODELS: dict[str, str] = {
     "project_cleaner":   os.getenv("PROJECT_CLEANER_MODEL", LITE_MODEL),
 }
 
+# Fachbereichs-Zuweisungen für bereichsweite Modell-Konfiguration
+DEPARTMENT_PLANNING_AGENTS = {"planning_lead", "team_lead", "product_owner", "business_analyst", "web_research", "architect", "finops"}
+DEPARTMENT_DEV_AGENTS = {"dev_lead", "backend", "frontend", "database", "api_integration", "data_engineer", "mobile", "ml", "prompt_engineer", "performance"}
+DEPARTMENT_CREATIVE_AGENTS = {"creative_lead", "image_generator", "copywriter", "ui_ux", "accessibility", "i18n", "documentation", "readme"}
+DEPARTMENT_QA_AGENTS = {"qa_lead", "devops", "tester", "security", "resilience_guard", "github"}
+DEPARTMENT_GOVERNANCE_AGENTS = {"governance_lead", "code_reviewer", "refactoring", "compliance", "project_cleaner", "agent_trainer", "retrospective"}
+
+DEPARTMENT_MODELS: dict[str, str] = {
+    "planning": os.getenv("DEPARTMENT_PLANNING_MODEL", ""),
+    "dev": os.getenv("DEPARTMENT_DEV_MODEL", ""),
+    "creative": os.getenv("DEPARTMENT_CREATIVE_MODEL", ""),
+    "qa": os.getenv("DEPARTMENT_QA_MODEL", ""),
+    "governance": os.getenv("DEPARTMENT_GOVERNANCE_MODEL", ""),
+}
+
+
+def get_model_for_agent(agent_id: str) -> str:
+    """Ermittelt das konfigurierte LLM-Modell für einen Agenten unter Berücksichtigung von Overrides."""
+    # 1. Spezifischer Rollen-Override
+    if agent_id in AGENT_MODELS and os.getenv(f"{agent_id.upper()}_MODEL"):
+        return AGENT_MODELS[agent_id]
+
+    # 2. Fachbereichsweiter Override
+    if agent_id in DEPARTMENT_PLANNING_AGENTS and DEPARTMENT_MODELS["planning"]:
+        return DEPARTMENT_MODELS["planning"]
+    if agent_id in DEPARTMENT_DEV_AGENTS and DEPARTMENT_MODELS["dev"]:
+        return DEPARTMENT_MODELS["dev"]
+    if agent_id in DEPARTMENT_CREATIVE_AGENTS and DEPARTMENT_MODELS["creative"]:
+        return DEPARTMENT_MODELS["creative"]
+    if agent_id in DEPARTMENT_QA_AGENTS and DEPARTMENT_MODELS["qa"]:
+        return DEPARTMENT_MODELS["qa"]
+    if agent_id in DEPARTMENT_GOVERNANCE_AGENTS and DEPARTMENT_MODELS["governance"]:
+        return DEPARTMENT_MODELS["governance"]
+
+    # 3. Standard-Zuordnung aus AGENT_MODELS oder Fallback
+    return AGENT_MODELS.get(agent_id, DEFAULT_AGENT_MODEL)
+
+
 # ──────────────────────────────────────────
 # Sprache & Verhalten
 # ──────────────────────────────────────────

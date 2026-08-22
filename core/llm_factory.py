@@ -1132,6 +1132,7 @@ class LLMFactory:
 
     @staticmethod
     def create_for_agent(agent_id: str):
-        from config import AGENT_MODELS, DEFAULT_AGENT_MODEL
-        model_name = AGENT_MODELS.get(agent_id, DEFAULT_AGENT_MODEL)
+        from config import get_model_for_agent
+        model_name = get_model_for_agent(agent_id)
         return LLMFactory.create_for_model(model_name)
+

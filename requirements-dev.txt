@@ -10,3 +10,10 @@ ruff>=0.16.3,<0.17.0
 # LLM-basierten Einschätzung des security-Agenten). Ohne installiertes pip-audit wird dieser
 # Scan pro Projekt übersprungen (attempted=False), kein Fehler - siehe DependencyAuditReport.
 pip-audit>=2.7.0
+
+# Echte Testabdeckungs-Messung für generierte Python-Projekte (core/verifier.py.check_coverage)
+pytest-cov>=4.1.0
+
+# Headless-Browser UI- & Frontend-Validierung (core/browser_verifier.py)
+playwright>=1.40.0
+

@@ -1,0 +1,17 @@
+# .gitattributes – erzwingt konsistente Zeilenenden unabhängig vom lokalen core.autocrlf.
+#
+# Realer Grund: dieses Repo hat core.autocrlf=true (Windows-typisch) und hatte bisher gar
+# kein .gitattributes. Shell-Skripte mit CRLF-Zeilenenden brechen an ihrer Shebang-Zeile
+# (`#!/bin/sh\r` findet keinen Interpreter `/bin/sh\r`) - ohne diese Datei hätte jeder
+# Windows-Checkout scripts/git-hooks/pre-commit & scripts/install-git-hooks.sh beim
+# nächsten Checkout automatisch auf CRLF umgestellt und damit unbrauchbar gemacht.
+
+*.sh text eol=lf
+scripts/git-hooks/* text eol=lf
+
+# PowerShell-Skripte bleiben nativ CRLF (Windows-Standardwerkzeug dieses Projekts).
+*.ps1 text eol=crlf
+
+# Restlicher Text: normalisieren, aber kein hartes eol erzwingen (autocrlf des jeweiligen
+# Checkouts entscheidet weiterhin, wie es lokal aussieht - nur die o.g. Skripte sind kritisch).
+* text=auto

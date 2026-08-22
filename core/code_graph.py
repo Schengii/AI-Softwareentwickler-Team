@@ -168,7 +168,7 @@ class CodebaseGraph:
                             calls.append(child.func.attr)
 
                 kind = "method" if self.current_class else "function"
-                prefix = f"async def " if is_async else "def "
+                prefix = "async def " if is_async else "def "
                 sig = f"{prefix}{node.name}({', '.join(args)})"
                 doc = ast.get_docstring(node) or ""
 
@@ -298,9 +298,9 @@ class CodebaseGraph:
         def_file = definitions[0].file_path if definitions else ""
 
         refs = self.find_references(symbol_name)
-        ref_files = sorted(list(set(r["file_path"] for r in refs if r["file_path"] != def_file)))
-        calling_syms = sorted(list(set(r["caller_symbol"] for r in refs if r["caller_symbol"] != "<import>")))
-        imported_in = sorted(list(set(r["file_path"] for r in refs if r["kind"] == "import")))
+        ref_files = sorted({r["file_path"] for r in refs if r["file_path"] != def_file})
+        calling_syms = sorted({r["caller_symbol"] for r in refs if r["caller_symbol"] != "<import>"})
+        imported_in = sorted({r["file_path"] for r in refs if r["kind"] == "import"})
 
         return ImpactAnalysis(
             symbol_name=symbol_name,

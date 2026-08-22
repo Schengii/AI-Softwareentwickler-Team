@@ -5,7 +5,7 @@ tests/test_verifier_multilang.py – Testet Multi-Sprachen-Unterstützung (Rust 
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from core.code_sandbox import ExecutionResult
 from core.verifier import ProjectVerifier

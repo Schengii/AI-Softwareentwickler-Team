@@ -5,10 +5,10 @@ tests/test_verifier_smoke.py – Testet die Runtime-Smoke-Prüfung (core/verifie
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from core.code_sandbox import ExecutionResult
-from core.verifier import ProjectVerifier, RuntimeSmokeReport
+from core.verifier import ProjectVerifier
 
 
 class TestCheckRuntimeSmoke(unittest.TestCase):

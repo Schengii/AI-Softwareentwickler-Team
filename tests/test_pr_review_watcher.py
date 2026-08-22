@@ -6,12 +6,10 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import core.backlog_store as backlog_store
 from core.pr_review_watcher import (
-    PRReviewComment,
-    PRReviewPollResult,
     run_pr_review_cycle,
 )
 

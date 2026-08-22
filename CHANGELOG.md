@@ -7,6 +7,29 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🎨 Design-vor-Dev-Phasenaufteilung: Vorab-Design & Post-Dev-Content/Dokumentation
+
+Strukturelle Weiterentwicklung der Fachbereichs-Hierarchie basierend auf dem von Claude
+gekennzeichneten Architektur-Diskussionspunkt:
+
+- **Aufspaltung der Design- und Content-Phasen:** Bisher lief `dev_lead` vor `creative_lead`
+  – `creative_lead` enthielt jedoch sowohl vorlaufende Rollen (`ui_ux`, `image_generator`, `copywriter`),
+  die Entwürfe und Assets vor dem Coden liefern sollten, als auch nachlaufende Rollen
+  (`accessibility`, `i18n`, `documentation`, `readme`), die zwingend auf fertigen Code angewiesen sind.
+- **6-Phasen-Ablauf:**
+  1. `planning_lead`: Anforderungsanalyse, Scope & Architektur-Blueprint.
+  2. `design_lead`: Wireframes, Design-Tokens, SVG-Icons/Logos & Copywriting vorab.
+  3. `dev_lead`: Fullstack-, Backend- und Frontend-Entwicklung basierend auf den Design-Spezifikationen.
+  4. `content_lead`: Barrierefreiheit (a11y), Mehrsprachigkeit (i18n), Dokumentation & README auf dem erzeugten Code.
+  5. `qa_lead`: Echte Testsuite, Security-Audits & Resilience-Prüfung.
+  6. `governance_lead`: Code-Review, Refactoring, DSGVO/Compliance & Hygiene.
+- **Rückwärtskompatibilität:** `config.py` unterstützt weiterhin `CREATIVE_LEAD_MODEL` und
+  `DEPARTMENT_CREATIVE_MODEL` als Fallbacks für `design_lead` und `content_lead`.
+- **Neue Tests:** `tests/test_department_phase_order.py` validiert die strikte Phasenfolge und den
+  Kontextfluss zwischen Design, Dev und Content/Doku.
+
+---
+
 ## 🤖 Drei weitere Lücken gegenüber einem echten Profi-Team: Pro-Projekt-Budget, Release-Tagging, Sprint-Priorisierung
 
 Zweite Runde derselben Nutzeranfrage-getriebenen Bestandsaufnahme (siehe Eintrag unten):

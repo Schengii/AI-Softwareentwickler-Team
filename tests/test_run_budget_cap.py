@@ -79,13 +79,14 @@ class TestRunBudgetCap(unittest.TestCase):
         self.assertIn("governance_lead", result_agent_ids)  # letzte Phase lief noch komplett durch
 
     def test_hierarchy_stops_before_later_phases_once_budget_exceeded(self):
-        # Ein Task pro Fachbereich, in PHASE_ORDER-Reihenfolge: planning -> dev -> creative -> qa -> governance.
+        # Ein Task pro Fachbereich, in PHASE_ORDER-Reihenfolge: planning -> design -> dev -> content -> qa -> governance.
         agent_tasks = [
             AgentTask(task_id="t1", agent_id="product_owner", description="Scope"),
-            AgentTask(task_id="t2", agent_id="backend", description="API"),
-            AgentTask(task_id="t3", agent_id="ui_ux", description="UI"),
-            AgentTask(task_id="t4", agent_id="tester", description="Tests"),
-            AgentTask(task_id="t5", agent_id="compliance", description="DSGVO-Check"),
+            AgentTask(task_id="t2", agent_id="ui_ux", description="UI"),
+            AgentTask(task_id="t3", agent_id="backend", description="API"),
+            AgentTask(task_id="t4", agent_id="documentation", description="Doku"),
+            AgentTask(task_id="t5", agent_id="tester", description="Tests"),
+            AgentTask(task_id="t6", agent_id="compliance", description="DSGVO-Check"),
         ]
         # Phase 1 (planning_lead) verbraucht bereits 3 Aufrufe x 5.000 = 15.000 Tokens
         # (Delegation + product_owner + Konsolidierung) -> übersteigt das 8.000-Budget deutlich,
@@ -103,8 +104,8 @@ class TestRunBudgetCap(unittest.TestCase):
         self.assertIn("planning_lead", result_agent_ids)
         self.assertIn("product_owner", result_agent_ids)
 
-        # Alle nachfolgenden Phasen (2-5) wurden NICHT mehr gestartet.
-        for skipped_id in ("dev_lead", "backend", "creative_lead", "ui_ux", "qa_lead", "tester", "governance_lead", "compliance"):
+        # Alle nachfolgenden Phasen (2-6) wurden NICHT mehr gestartet.
+        for skipped_id in ("design_lead", "ui_ux", "dev_lead", "backend", "content_lead", "documentation", "qa_lead", "tester", "governance_lead", "compliance"):
             self.assertNotIn(skipped_id, result_agent_ids, f"'{skipped_id}' hätte nach Budget-Überschreitung nicht mehr laufen dürfen")
 
     def test_tokens_used_since_reflects_only_delta(self):

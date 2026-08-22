@@ -5,7 +5,7 @@
 [![CI](https://github.com/Schengii/AI-Softwareentwickler-Team/actions/workflows/ci.yml/badge.svg)](https://github.com/Schengii/AI-Softwareentwickler-Team/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![Hierarchy](https://img.shields.io/badge/Fachbereichs--Hierarchie-5_Teamleiter-blue?style=for-the-badge)
+![Hierarchy](https://img.shields.io/badge/Fachbereichs--Hierarchie-6_Teamleiter-blue?style=for-the-badge)
 ![Specialists](https://img.shields.io/badge/KI--Spezialisten-33_Agenten-success?style=for-the-badge)
 ![Resilience-Guard](https://img.shields.io/badge/Resilience--Guard-Fault--Tolerance_&_CircuitBreaker-orange?style=for-the-badge)
 ![RAG](https://img.shields.io/badge/Codebase_RAG-Gemini_Embeddings_%2B_BM25--Fallback-orange?style=for-the-badge)
@@ -15,7 +15,7 @@
 ![Sandbox-Validation](https://img.shields.io/badge/Sandbox_Auto--Validierung-Aktiv-blueviolet?style=for-the-badge)
 
 **Ein autonomes, hierarchisch strukturiertes KI-Team für vollständige, token-optimierte Softwareentwicklung.**  
-33 hochspezialisierte KI-Experten – aufgeteilt in **5 Fachbereiche mit jeweils eigenem Teamleiter**, **Resilience-Guard (Circuit Breakers, Backoff, Graceful Degradation & Chaos Tests)**, **persistentem Langzeit-Gedächtnis & automatischer Selbstoptimierung**, **Prompt-Engineering**, **WCAG 2.2 Barrierefreiheit (a11y)**, **integriertem RAG-Vektorindex**, **Model Context Protocol (MCP)**, **Web-Dashboard**, **Sandbox-Code-Validierung**, **Tavily Live-Web-Recherche**, **DeepSeek Reasoning**, **Groq Turbo Inferenz** und Workspace-Dateisystem.
+33 hochspezialisierte KI-Experten – aufgeteilt in **6 Fachbereiche mit jeweils eigenem Teamleiter**, **Resilience-Guard (Circuit Breakers, Backoff, Graceful Degradation & Chaos Tests)**, **persistentem Langzeit-Gedächtnis & automatischer Selbstoptimierung**, **Prompt-Engineering**, **WCAG 2.2 Barrierefreiheit (a11y)**, **integriertem RAG-Vektorindex**, **Model Context Protocol (MCP)**, **Web-Dashboard**, **Sandbox-Code-Validierung**, **Tavily Live-Web-Recherche**, **DeepSeek Reasoning**, **Groq Turbo Inferenz** und Workspace-Dateisystem.
 
 </div>
 
@@ -125,9 +125,11 @@ Was die Grafik oben zeigt, läuft technisch über zwei einfache Datenstrukturen
 1. **Zerlegung:** `TaskManager.decompose()` lässt den Hauptagenten die Nutzeranfrage in eine
    Liste von `AgentTask`-Objekten (Agent-ID + präzise Teilaufgabe) aufteilen – nur die
    Spezialisten, die für die Aufgabe wirklich gebraucht werden.
-2. **Phasen-Durchlauf:** Die 5 Fachbereiche laufen in fester Reihenfolge (`PHASE_ORDER`):
-   Planung → Entwicklung → Design/Content → QA/Security → Governance. Planung und
-   Governance laufen sequenziell, die anderen drei parallel (`asyncio.gather`).
+2. **Phasen-Durchlauf:** Die 6 Fachbereiche laufen in fester Reihenfolge (`PHASE_ORDER`):
+   Planung → Vorab-Design → Software-Entwicklung → Content & Doku → QA/Security → Governance.
+   Planung und Governance laufen sequenziell, die anderen parallel (`asyncio.gather`).
+   Vorab-Design (UI/UX, Assets, Wireframes) liefert Spezifikationen direkt an die Entwickler,
+   während Content & Dokumentation nachgelagert auf dem echten Code aufbauen.
 3. **Echte Delegation:** Vor jeder Phase bekommt der zuständige Teamleiter einen echten
    LLM-Aufruf mit der Aufgabenliste seines Fachteams und liefert priorisierte
    Arbeitsanweisungen zurück, die den Mitgliedern als Zusatzkontext mitgegeben werden. **Ausnahme
@@ -535,8 +537,9 @@ eingeloggt?"* die passende `auth.py`, obwohl dort nirgends "einloggen" steht.
 | Fachbereich | Teamleiter | Spezialisten im Team |
 |---|---|---|
 | 🔵 **Planung, Analyse & Architektur** | `planning_lead` | `product_owner`, `business_analyst`, `web_research`, `architect`, `finops`, `team_lead` |
+| 🎨 **Vorab-Design, UI/UX & Media** | `design_lead` | `ui_ux`, `image_generator`, `copywriter` |
 | 🟢 **Software-Entwicklung** | `dev_lead` | `backend`, `frontend`, `database`, `api_integration`, `data_engineer`, `mobile`, `ml`, `prompt_engineer`, `performance` |
-| 🎨 **Design, Media & Content** | `creative_lead` | `image_generator`, `copywriter`, `ui_ux`, `accessibility`, `i18n`, `documentation`, `readme` |
+| 📚 **Content, Doku & Barrierefreiheit** | `content_lead` | `accessibility`, `i18n`, `documentation`, `readme` |
 | 🟡 **Qualität, DevOps & Security** | `qa_lead` | `devops`, `tester`, `security`, `resilience_guard`, `github` |
 | 🔴 **Excellence & Governance** | `governance_lead` | `code_reviewer`, `refactoring`, `compliance`, `project_cleaner`, `agent_trainer`, `retrospective` |
 
@@ -591,7 +594,7 @@ nicht, ein Mensch prüft die betroffene(n) Datei(en) gezielt nach.
 | `/load <pfad/name>` | Lädt ein bestehendes Projekt (Workspace oder externer Pfad) zur Weiterentwicklung |
 | `/tokens` | Zeigt den aktuellen Tokenverbrauch dieser Sitzung UND den kumulierten Verbrauch über alle bisherigen Läufe an |
 | `/rag <begriff>` | Führt eine semantische Code-Recherche im geladenen Projekt durch |
-| `/team` | Zeigt alle 5 Fachbereiche, Teamleiter und 33 Spezialisten an |
+| `/team` | Zeigt alle 6 Fachbereiche, Teamleiter und 33 Spezialisten an |
 | `/workspace [projekt]` | Listet alle generierten Dateien im Projektordner auf |
 | `/export [projekt]` | Packt das Projektverzeichnis in ein ZIP-Archiv |
 | `/run-tests [projekt]` | Führt automatische Unit-Tests im Projekt aus |

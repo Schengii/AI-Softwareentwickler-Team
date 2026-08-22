@@ -1,36 +1,36 @@
 # 🏗️ System-Architektur: KI-Softwareentwickler-Team
 
-Das **KI-Softwareentwickler-Team** ist ein autonomes, hierarchisch strukturiertes Multi-Agenten-System für die vollständige, token-optimierte Softwareentwicklung. Es bildet ein professionelles Entwicklerteam aus 33 spezialisierten KI-Experten und 5 Fachbereichs-Teamleitern ab.
+Das **KI-Softwareentwickler-Team** ist ein autonomes, hierarchisch strukturiertes Multi-Agenten-System für die vollständige, token-optimierte Softwareentwicklung. Es bildet ein professionelles Entwicklerteam aus 33 spezialisierten KI-Experten und 6 Fachbereichs-Teamleitern ab.
 
 ---
 
 ## 1. Fachbereichs- & Teamleiter-Hierarchie
 
-Das Gesamtsystem gliedert sich in **5 Fachbereiche**, die jeweils von einem eigenen **Department Lead** geführt werden. Der Orchestrator delegiert Phasen an die Teamleiter, welche wiederum konkrete Arbeitsaufträge an ihre Fachteams verteilen:
+Das Gesamtsystem gliedert sich in **6 Fachbereiche**, die jeweils von einem eigenen **Department Lead** geführt werden. Der Orchestrator delegiert Phasen an die Teamleiter, welche wiederum konkrete Arbeitsaufträge an ihre Fachteams verteilen:
 
 ```
                                   ┌────────────────────────┐
                                   │      Orchestrator      │
                                   └───────────┬────────────┘
                                               │
-         ┌──────────────────┬─────────────────┼─────────────────┬──────────────────┐
-         │                  │                 │                 │                  │
-         ▼                  ▼                 ▼                 ▼                  ▼
-  🔵 Fachbereich 1    🟢 Fachbereich 2  🎨 Fachbereich 3  🟡 Fachbereich 4  🔴 Fachbereich 5
-   Planung & Arch.       Entwicklung      Design & Media    Qualität & Ops    Review & Gov.
-  (Planning Lead)        (Dev Lead)      (Creative Lead)      (QA Lead)     (Governance Lead)
-         │                  │                 │                 │                  │
-  ┌──────┴──────┐    ┌──────┴──────┐   ┌──────┴──────┐   ┌──────┴──────┐    ┌──────┴──────┐
-  │team_lead    │    │frontend     │   │ui_ux        │   │tester       │    │code_reviewer│
-  │product_owner│    │backend      │   │copywriter   │   │security     │    │refactoring  │
-  │business_an. │    │database     │   │image_gen.   │   │devops       │    │compliance   │
-  │architect    │    │api_integ.   │   │accessibility│   │resilience_g.│    │proj_cleaner │
-  │finops       │    │data_engineer│   │i18n         │   └─────────────┘    │agent_trainer│
-  │web_research │    │mobile       │   │documentation│                      │retrospective│
-  └─────────────┘    │ml           │   └─────────────┘                      │readme       │
-                     │prompt_eng.  │                                        └─────────────┘
-                     │performance  │
-                     └─────────────┘
+         ┌───────────────┬────────────────┬───┴──────────┬────────────────┬───────────────┐
+         │               │                │              │                │               │
+         ▼               ▼                ▼              ▼                ▼               ▼
+  🔵 Phase 1      🎨 Phase 2       🟢 Phase 3     📚 Phase 4       🟡 Phase 5      🔴 Phase 6
+   Planung         Design & UI/UX   Entwicklung    Content & Doku   Qualität & Ops  Review & Gov.
+  (Planning Lead) (Design Lead)    (Dev Lead)     (Content Lead)   (QA Lead)       (Governance Lead)
+         │               │                │              │                │               │
+  ┌──────┴──────┐ ┌──────┴──────┐  ┌──────┴──────┐┌──────┴──────┐  ┌──────┴──────┐ ┌──────┴──────┐
+  │team_lead    │ │ui_ux        │  │frontend     ││accessibility│  │tester       │ │code_reviewer│
+  │product_owner│ │image_gen.   │  │backend      ││i18n         │  │security     │ │refactoring  │
+  │business_an. │ │copywriter   │  │database     ││documentation│  │devops       │ │compliance   │
+  │architect    │ └─────────────┘  │api_integ.   ││readme       │  │resilience_g.│ │proj_cleaner │
+  │finops       │                  │data_engineer│└─────────────┘  │github       │ │agent_trainer│
+  │web_research │                  │mobile       │                 └─────────────┘ │retrospective│
+  └─────────────┘                  │ml           │                                 └─────────────┘
+                                   │prompt_eng.  │
+                                   │performance  │
+                                   └─────────────┘
 ```
 
 ---

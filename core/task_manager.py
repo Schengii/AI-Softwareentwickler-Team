@@ -48,6 +48,23 @@ AVAILABLE_AGENTS = {
         "description": "Kalkuliert Cloud-Kosten (AWS/GCP/Hetzner), TCO, Serverless vs. VM und AI-Token-Budgets.",
     },
 
+    # ── Phase 2: Vorab-Design, UI/UX & Media ──────────────
+    "ui_ux": {
+        "name": "UI/UX Designer",
+        "phase": 2,
+        "description": "Wireframes, Design-Systeme, Farbpaletten und Design-Tokens.",
+    },
+    "image_generator": {
+        "name": "Bild- & Grafik-Designer",
+        "phase": 2,
+        "description": "Erstellt SVG-Grafiken/Logos und optimierte Bild-Prompts für Imagen 3 / Midjourney.",
+    },
+    "copywriter": {
+        "name": "Copywriter & Content Specialist",
+        "phase": 2,
+        "description": "Schreibt Landingpage-Texte, UI-Microcopy (Buttons, Errors), SEO-Texte und FAQs.",
+    },
+
     # ── Phase 3: Kern-Entwicklung ─────────────────────────
     "frontend": {
         "name": "Frontend-Entwickler",
@@ -95,101 +112,86 @@ AVAILABLE_AGENTS = {
         "description": "Load-Testing, Profiling, Query-Optimierung und Latenz-Minimierung.",
     },
 
-    # ── Phase 3: Medien, Content & Design ─────────────────
-    "image_generator": {
-        "name": "Bild- & Grafik-Designer",
-        "phase": 3,
-        "description": "Erstellt SVG-Grafiken/Logos und optimierte Bild-Prompts für Imagen 3 / Midjourney.",
-    },
-    "copywriter": {
-        "name": "Copywriter & Content Specialist",
-        "phase": 3,
-        "description": "Schreibt Landingpage-Texte, UI-Microcopy (Buttons, Errors), SEO-Texte und FAQs.",
-    },
-    "ui_ux": {
-        "name": "UI/UX Designer",
-        "phase": 3,
-        "description": "Wireframes, Design-Systeme, Farbpaletten und Design-Tokens.",
-    },
+    # ── Phase 4: Content, Doku & Barrierefreiheit ─────────
     "accessibility": {
         "name": "Accessibility & a11y Specialist",
-        "phase": 3,
+        "phase": 4,
         "description": "WCAG 2.2 AA/AAA Barrierefreiheit, ARIA-Attribute, Tastaturnavigation, Screenreader.",
     },
     "i18n": {
         "name": "Internationalisierungs-Spezialist",
-        "phase": 3,
+        "phase": 4,
         "description": "Mehrsprachigkeit (i18n/l10n), RTL-Unterstützung und Formatierungen.",
     },
     "documentation": {
         "name": "Dokumentant",
-        "phase": 3,
+        "phase": 4,
         "description": "API-Dokumentation, Inline-Kommentare und Architekturguides.",
     },
+    "readme": {
+        "name": "README & Tech-Writer",
+        "phase": 4,
+        "description": "Erstellt professionelle README.md, Quickstart-Guides und Projektübersichten.",
+    },
 
-    # ── Phase 3: Infrastruktur & Qualität ─────────────────
+    # ── Phase 5: Infrastruktur & Qualität ─────────────────
     "devops": {
         "name": "DevOps-Ingenieur",
-        "phase": 3,
+        "phase": 5,
         "description": "Dockerfile, docker-compose, CI/CD GitHub Actions Pipelines, K8s.",
     },
     "tester": {
         "name": "QA-Tester",
-        "phase": 3,
+        "phase": 5,
         "description": "Unit-Tests (pytest), Integrationstests und E2E-Testpläne.",
     },
     "security": {
         "name": "Sicherheits-Analyst",
-        "phase": 3,
+        "phase": 5,
         "description": "OWASP Top 10, Auth-Audits, Input-Sanitization, Security-Headers.",
     },
     "resilience_guard": {
         "name": "Resilience-Guard (QA & Fault-Tolerance)",
-        "phase": 3,
+        "phase": 5,
         "description": "Circuit Breaker, Retries mit Backoff/Jitter, Ausfalltoleranz, Graceful Degradation & Chaos Tests.",
     },
 
-    # ── Phase 4: Review, Refactoring, Compliance & Hygiene
+    # ── Phase 6: Review, Refactoring, Compliance & Hygiene ─
     "code_reviewer": {
         "name": "Code-Reviewer",
-        "phase": 4,
+        "phase": 6,
         "description": "Qualitätskontrolle, Konsistenzprüfung, Code-Scoring und Bug-Detektion.",
     },
     "refactoring": {
         "name": "Refactoring Specialist",
-        "phase": 4,
+        "phase": 6,
         "description": "Beseitigt Code Smells, refaktoriert Module und sichert strikte Typsicherheit.",
     },
     "compliance": {
         "name": "Legal & Compliance Specialist",
-        "phase": 4,
+        "phase": 6,
         "description": "DSGVO/GDPR-Audits, Lizenzprüfung (GPL vs MIT), WCAG 2.1 Barrierefreiheit.",
     },
     "project_cleaner": {
         "name": "Projekt-Hygiene & Struktur-Wächter",
-        "phase": 4,
+        "phase": 6,
         "description": "Bereinigt alte/tote Dateien, verhindert Projekt-Bloat und optimiert Ordnerstrukturen.",
     },
 
-    # ── Phase 5: Ausbildung, Retrospektive & Utilities ────
+    # ── Phase 6: Ausbildung, Retrospektive & Evolution ─────
     "agent_trainer": {
         "name": "Ausbilder & Agent-Optimizer",
-        "phase": 4,
+        "phase": 6,
         "description": "Optimiert System-Prompts, analysiert Fehler der Agenten und bildet neue Rollen aus.",
     },
     "retrospective": {
         "name": "Retrospektive & Lessons Learned Agent",
-        "phase": 4,
+        "phase": 6,
         "description": "Erstellt die Abschluss-Retrospektive (Was lief gut/schlecht, Lessons Learned).",
-    },
-    "readme": {
-        "name": "README-Agent",
-        "phase": 3,
-        "description": "Erstellt oder aktualisiert die Projekt-README.md.",
     },
     "github": {
         "name": "GitHub-Agent",
-        "phase": 3,
+        "phase": 5,
         "description": "Generiert Commit-Messages und führt automatische Git-Pushes durch.",
     },
 }

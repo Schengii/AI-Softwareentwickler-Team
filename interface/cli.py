@@ -57,7 +57,7 @@ BANNER = """
 ║        🤖  KI-Softwareentwickler-Team (v4.3)  🤖            ║
 ║        ─────────────────────────────────────                 ║
 ║  Dein 33-köpfiges autonomes KI-Entwickler-Team               ║
-║  5 Fachbereiche • RAG • Sandbox • MCP & Web-Dashboard        ║
+║  6 Fachbereiche • RAG • Sandbox • MCP & Web-Dashboard        ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -75,7 +75,7 @@ HELP_TEXT = """
 | `/load <pfad/name>` | Lädt ein bestehendes Projekt (Workspace oder externer Pfad) zur Weiterentwicklung |
 | `/tokens` | Zeigt den aktuellen Tokenverbrauch und verbleibende Kontingente an |
 | `/rag <begriff>` | Führt eine semantische Code-Recherche im geladenen Projekt durch |
-| `/team` | Zeigt alle 5 Fachbereiche, Teamleiter und 33 Spezialisten an |
+| `/team` | Zeigt alle 6 Fachbereiche, Teamleiter und 33 Spezialisten an |
 | `/workspace [projekt]` | Listet alle generierten Dateien im Projektordner auf |
 | `/export [projekt]` | Packt das Projektverzeichnis in ein ZIP-Archiv |
 | `/run-tests [projekt]` | Führt automatische Unit-Tests im Projekt aus |

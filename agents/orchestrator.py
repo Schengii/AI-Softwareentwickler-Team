@@ -3,10 +3,11 @@ agents/orchestrator.py – Der Hauptagent (Orchestrator) mit Fachbereichs-Teamle
 
 Workflow:
 1. Der Nutzer übergibt die Gesamtaufgabe an den Hauptagenten (Orchestrator).
-2. Der Hauptagent teilt die Gesamtaufgabe in 5 Fachbereiche auf:
+2. Der Hauptagent teilt die Gesamtaufgabe in 6 Fachbereiche auf:
    - 🔵 Planung, Analyse & Architektur (geführt von Planning Lead)
+   - 🎨 Vorab-Design, UI/UX & Media (geführt von Design Lead)
    - 🟢 Kern-Entwicklung (geführt von Dev Lead)
-   - 🎨 Design, Media & Content (geführt von Creative Lead)
+   - 📚 Content, Doku & Barrierefreiheit (geführt von Content & Doc Lead)
    - 🟡 Qualität, DevOps & Security (geführt von QA & Operations Lead)
    - 🔴 Excellence, Hygiene & Evolution (geführt von Governance Lead)
 3. Jeder Fachbereichs-Teamleiter delegiert per ECHTEM LLM-Aufruf konkrete
@@ -116,21 +117,27 @@ StatusCallback = Callable[[str], None]
 # dadurch bewusst nicht-interaktiv, siehe config.ENABLE_PLAN_CONFIRMATION).
 PlanConfirmationCallback = Callable[[str, str, list[AgentTask]], Awaitable[bool]]
 
-# Reihenfolge & Anzeige der 5 Fachbereichs-Phasen. Die Mitgliederlisten stammen
+# Reihenfolge & Anzeige der 6 Fachbereichs-Phasen. Die Mitgliederlisten stammen
 # zentral aus DEPARTMENT_DEFINITIONS (agents/department_lead_agent.py), damit
 # Orchestrator und Teamleiter-Prompts nie auseinanderlaufen können.
+#
+# Design-vor-Dev: UI/UX, Design-Tokens und visuelle Assets (design_lead) werden
+# VOR der Software-Entwicklung (dev_lead) erstellt, damit Entwickler diese direkt
+# einbinden können. Dokumentation, i18n und Barrierefreiheit (content_lead) laufen
+# NACH der Entwicklung auf dem tatsächlich erzeugten Code.
 PHASE_ORDER = [
-    ("planning_lead", "Fachbereich 1/5: Planung & Architektur", "👔", "sequential"),
-    ("dev_lead", "Fachbereich 2/5: Software-Entwicklung", "⚡", "parallel"),
-    ("creative_lead", "Fachbereich 3/5: Design & Content", "🎨", "parallel"),
-    ("qa_lead", "Fachbereich 4/5: Qualität & Security", "🛡️", "parallel"),
-    ("governance_lead", "Fachbereich 5/5: Review & Governance", "🔍", "sequential"),
+    ("planning_lead",   "Fachbereich 1/6: Planung & Architektur", "👔", "sequential"),
+    ("design_lead",     "Fachbereich 2/6: UI/UX, Design & Media", "🎨", "parallel"),
+    ("dev_lead",        "Fachbereich 3/6: Software-Entwicklung", "⚡", "parallel"),
+    ("content_lead",    "Fachbereich 4/6: Content, Doku & Barrierefreiheit", "📚", "parallel"),
+    ("qa_lead",         "Fachbereich 5/6: Qualität & Security", "🛡️", "parallel"),
+    ("governance_lead", "Fachbereich 6/6: Review & Governance", "🔍", "sequential"),
 ]
 
 
 class Orchestrator:
     """
-    Hauptagent, der die 5 Fachbereichs-Teamleiter und deren 33 Spezialisten koordiniert.
+    Hauptagent, der die 6 Fachbereichs-Teamleiter und deren 33 Spezialisten koordiniert.
     """
 
     def __init__(self):
@@ -1789,25 +1796,25 @@ class Orchestrator:
         return "\n".join(lines)
 
     def get_team_info(self) -> str:
-        """Gibt eine strukturierte Übersicht über alle 5 Fachbereiche und deren Teamleiter zurück."""
+        """Gibt eine strukturierte Übersicht über alle 6 Fachbereiche und deren Teamleiter zurück."""
         sections = [
             "## 🏢 Strukturierte Fachbereiche & Teamleiter-Hierarchie\n",
             "```",
-            "                   Du (Nutzer)",
-            "                       │ Aufgabe",
-            "                       ▼",
-            "          ┌─────────────────────────┐",
-            "          │  🤖 HAUPTAGENT          │ (Gesamtkoordination)",
-            "          └────────────┬────────────┘",
-            "                       │ Delegiert Aufgabenbereiche",
-            "       ┌───────────────┼───────────────┬───────────────┬───────────────┐",
-            "       ▼               ▼               ▼               ▼               ▼",
-            " ┌───────────┐   ┌───────────┐   ┌───────────┐   ┌───────────┐   ┌───────────┐",
-            " │ 👔 Lead   │   │ ⚡ Lead   │   │ 🎨 Lead   │   │ 🛡️ Lead   │   │ 🔍 Lead   │",
-            " │ Planung   │   │ Dev       │   │ Creative  │   │ QA/DevOps │   │ Governance│",
-            " └─────┬─────┘   └─────┬─────┘   └─────┬─────┘   └─────┬─────┘   └─────┬─────┘",
-            "       │               │               │               │               │",
-            "    Fachteam        Fachteam        Fachteam        Fachteam        Fachteam",
+            "                                     Du (Nutzer)",
+            "                                         │ Aufgabe",
+            "                                         ▼",
+            "                            ┌─────────────────────────┐",
+            "                            │  🤖 HAUPTAGENT          │ (Gesamtkoordination)",
+            "                            └────────────┬────────────┘",
+            "                                         │ Delegiert Aufgabenbereiche",
+            "       ┌─────────────────┬───────────────┼───────────────┬─────────────────┬───────────────┐",
+            "       ▼                 ▼               ▼               ▼                 ▼               ▼",
+            " ┌───────────┐     ┌───────────┐   ┌───────────┐   ┌───────────┐     ┌───────────┐   ┌───────────┐",
+            " │ 👔 Lead   │     │ 🎨 Lead   │   │ ⚡ Lead   │   │ 📚 Lead   │     │ 🛡️ Lead   │   │ 🔍 Lead   │",
+            " │ Planung   │ ──► │ Design    │──►│ Dev       │──►│ Content   │ ──► │ QA/DevOps │──►│ Governance│",
+            " └─────┬─────┘     └─────┬─────┘   └─────┬─────┘   └─────┬─────┘     └─────┬─────┘   └─────┬─────┘",
+            "       │                 │               │               │                 │               │",
+            "    Fachteam          Fachteam        Fachteam        Fachteam          Fachteam        Fachteam",
             "```\n",
         ]
 

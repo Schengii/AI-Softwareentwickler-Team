@@ -76,8 +76,8 @@ class TestWebDashboard(unittest.TestCase):
     def test_status_endpoint_reflects_real_orchestrator(self):
         status = self._get_json("/api/status")
         self.assertEqual(status["agents_count"], 33)
-        self.assertEqual(status["departments_count"], 5)
-        self.assertEqual(len(status["departments"]), 5)
+        self.assertEqual(status["departments_count"], 6)
+        self.assertEqual(len(status["departments"]), 6)
 
     def test_index_page_loads_and_contains_start_button(self):
         with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/") as r:

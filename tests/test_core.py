@@ -33,7 +33,7 @@ class TestCoreModules(unittest.TestCase):
             self.assertIn("phase", data)
             self.assertIn("description", data)
             self.assertIsInstance(data["phase"], int)
-            self.assertTrue(1 <= data["phase"] <= 5)
+            self.assertTrue(1 <= data["phase"] <= 6)
 
     def test_token_guard_recording_and_warnings(self):
         """Prüft, dass TokenGuard Verbräuche misst und Warnungen auslöst."""

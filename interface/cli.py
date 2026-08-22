@@ -31,6 +31,7 @@ from config import ENABLE_PLAN_CONFIRMATION, ENABLE_PR_WORKFLOW, GIT_PROTECTED_B
 from core.backlog_store import STATUSES, list_tickets, new_ticket_id, upsert_ticket
 from core.code_sandbox import CodeSandbox
 from core.message_bus import AgentTask
+from core.notifier import notify_external
 from core.task_manager import AVAILABLE_AGENTS
 
 console = Console()
@@ -501,7 +502,16 @@ class CLIInterface:
                 else:
                     console.print("🚀 [bold green]Änderungen erfolgreich auf GitHub gepusht![/bold green]")
                     ticket_status = "done"
-                await self._report_ci_status(github_agent)
+                # Realer Fund: das CI-Ergebnis wurde bisher nur angezeigt, nie ausgewertet - ein
+                # eröffneter PR/Direct-Push blieb im Backlog auf "review"/"done" stehen, selbst
+                # wenn die echte CI-Pipeline danach tatsächlich rot wurde. Rote CI zieht den
+                # Ticket-Status jetzt auf "blocked" (braucht menschliche Aufmerksamkeit), bevor
+                # jemand versehentlich einen kaputten PR mergt. "passed"/"timeout"/"no_run"
+                # ändern nichts am bisherigen Verhalten.
+                ci_status, ci_detail = await self._report_ci_status(github_agent)
+                if ci_status == "failed":
+                    ticket_status = "blocked"
+                    ticket_detail = f"{ticket_detail} | CI fehlgeschlagen: {ci_detail}" if ticket_detail else f"CI fehlgeschlagen: {ci_detail}"
             else:
                 console.print(f"⚠️ Push nicht abgeschlossen: {out_p}", style="yellow")
                 ticket_detail = out_p
@@ -524,12 +534,16 @@ class CLIInterface:
         # abgezweigt) einen neuen Feature-Branch anlegt statt fälschlich direkt auf diesen
         # Leftover-Branch zu committen.
 
-    async def _report_ci_status(self, github_agent) -> None:
+    async def _report_ci_status(self, github_agent) -> tuple[str, str]:
         """
         Wartet auf die echte CI-Pipeline (.github/workflows/ci.yml, läuft bei jedem Push) und
         meldet das tatsächliche Ergebnis – realer Fund: push() war bisher "fire and forget",
         ob CI tatsächlich grün wurde, hat das Team nie erfahren. Ein `no_run`-Ergebnis (kein
         `gh` verfügbar, kein GitHub-Remote, ...) ist dabei kein Fehler, nur nicht prüfbar.
+
+        Gibt (status, detail) zurück – zweiter realer Fund: das Ergebnis wurde bisher nur
+        angezeigt, nie ausgewertet. _ask_for_git_push() nutzt es jetzt, um den Backlog-Ticket-
+        Status bei roter CI auf "blocked" zu ziehen, statt bei "review"/"done" stehen zu bleiben.
         """
         branch = github_agent.get_current_branch()
         console.print(f"🔄 [dim]Warte auf CI-Status für `{branch}` (max. 90s)...[/dim]")
@@ -538,10 +552,12 @@ class CLIInterface:
             console.print(f"✅ [bold green]CI grün:[/bold green] {detail}")
         elif status == "failed":
             console.print(f"❌ [bold red]CI fehlgeschlagen:[/bold red] {detail}", style="red")
+            await asyncio.to_thread(notify_external, "CI fehlgeschlagen", f"Branch `{branch}`: {detail}")
         elif status == "timeout":
             console.print(f"⏳ [yellow]{detail}[/yellow] – prüfe den Status später manuell.")
         else:  # "no_run"
             console.print(f"ℹ️ [dim]CI-Status nicht prüfbar: {detail}[/dim]")
+        return status, detail
 
     async def _delete_project_with_confirmation(self, project_name: str) -> None:
         """

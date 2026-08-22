@@ -7,6 +7,87 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔔 Externe Benachrichtigung bei Vorfällen, die menschliche Aufmerksamkeit brauchen
+
+Dritter Fund derselben Bestandsaufnahme (siehe die beiden Einträge unten): Blockaden waren
+bisher nur sichtbar, wenn jemand aktiv ins Dashboard/Log/Issue schaute – core/issue_watcher.py
+(Cron-Poll-Zyklus) und interface/web_dashboard.py (Hintergrund-Jobs) laufen aber gerade
+UNBEAUFSICHTIGT, anders als interface/cli.py.
+
+- `core/notifier.py` (neu): `notify_external(event, message)` – No-op ohne konfiguriertes
+  `NOTIFY_WEBHOOK_URL` (Standard), sonst ein einfacher JSON-POST (`{"text": "..."}`,
+  Slack-Incoming-Webhook-kompatibel) über die bereits vorhandene `httpx`-Abhängigkeit. Ein
+  Fehlschlag beim Senden wird verschluckt – darf nie einen sonst erfolgreichen Lauf zum
+  Scheitern bringen, dieselbe Best-Effort-Philosophie wie `memory/run_history.py.record_run()`.
+- Vier Integrationsstellen, bewusst an bereits bestehenden "das braucht Aufmerksamkeit"-Punkten
+  statt neuer verstreuter Logik: `agents/orchestrator.py` (ein zentraler Aufruf dort, wo das
+  erreichte Lauf-Budget bereits in die Statistik einfließt – deckt alle drei Stellen ab, an
+  denen `budget_aborted` gesetzt werden kann), `core/issue_watcher.py` (EIN Aufruf direkt neben
+  dem bestehenden `upsert_ticket()`-Mapping-Ort in `run_issue_poll_cycle()`, feuert für jeden
+  Outcome außer dem echten Erfolgsfall `pr_opened`), `interface/web_dashboard.py`
+  (`_execute_job()` bei `ticket_status == "blocked"`), `interface/cli.py._report_ci_status()`
+  (siehe CI-Feedback-Loop-Eintrag unten).
+- 3 neue Tests (`tests/test_notifier.py`) plus je ein Test an den vier Integrationsstellen
+  (`tests/test_governance_fix_loop.py`, `tests/test_issue_watcher.py`,
+  `tests/test_web_dashboard.py`, `tests/test_cli_push_gate.py`).
+
+---
+
+## 🔀 CI-Feedback-Loop geschlossen: rote CI zieht den Backlog-Status jetzt nach
+
+Zweiter Fund derselben Bestandsaufnahme: `agents/github_agent.py.wait_for_ci_status()` wurde
+nach einem Push zwar aufgerufen, das Ergebnis aber nur angezeigt/geloggt – der
+Backlog-Ticket-Status (`core/backlog_store.py`) blieb "review"/"done" stehen, selbst wenn die
+echte CI-Pipeline danach tatsächlich rot wurde. `core/issue_watcher.py` prüfte CI nach einem PR
+bisher gar nicht.
+
+- `interface/cli.py._report_ci_status()` gibt jetzt `(status, detail)` statt `None` zurück.
+  `_ask_for_git_push()` zieht den Ticket-Status bei `"failed"` auf `"blocked"` (statt bei
+  "review"/"done" stehen zu bleiben) und ergänzt die CI-Fehlermeldung im Ticket-Detail –
+  `"passed"`/`"timeout"`/`"no_run"` ändern nichts am bisherigen Verhalten.
+- `core/issue_watcher.py`: nach erfolgreicher PR-Erstellung wird jetzt zusätzlich
+  `wait_for_ci_status()` abgefragt. Neuer Ausgang `"pr_opened_ci_failed"` (Label bleibt
+  `ai-team-done` – ein PR WURDE eröffnet, das beschreibt das Label bereits korrekt; die
+  CI-Info steht stattdessen im Issue-Kommentar), gemappt auf Backlog-Status `"blocked"` – über
+  denselben bereits bestehenden EIN-Mapping-Ort (`_OUTCOME_TO_TICKET_STATUS` in
+  `run_issue_poll_cycle()`), kein neuer Sonderfall an einer zweiten Stelle.
+- 4 neue Tests in `tests/test_cli_push_gate.py`, 4 neue Tests in `tests/test_issue_watcher.py`.
+  `tests/test_ci_feedback_loop.py` (reine `wait_for_ci_status()`-Unit-Tests) unverändert.
+
+---
+
+## 🛡️ Governance-Fix-Loop: kritische Review-Befunde lösen jetzt einen Korrekturauftrag aus
+
+Erster Fund einer Bestandsaufnahme des eigenen Teams (kein einzelner End-to-End-Testlauf
+diesmal, sondern eine gezielte Durchsicht, ob das Team wie ein echtes Entwicklerteam
+funktioniert): `code_reviewer`/`security`/`compliance` (`REVIEW_ONLY_AGENT_IDS`)
+kategorisieren Befunde in ihren Reports selbst nach Schweregrad ("Kritisch") – das löste aber
+NIE einen Korrekturauftrag aus, nur ein echter Testfehler tat das
+(`agents/orchestrator.py._run_verification_loop()`). Ein "Kritisch" im Code-Review ist bei
+einem echten Team ein Blocker, kein FYI im Abschlussbericht.
+
+- `core/review_gate.py` (neu): `find_critical_findings()` erkennt kritisch markierte
+  Abschnitte per Text-Heuristik (🔴-Emoji und/oder das Wort "Kritisch", mit Negativ-Filter gegen
+  "keine kritischen Befunde"-Bestätigungen) – bewusst KEIN vollständiger Markdown-Parser,
+  sondern gezielt auf die drei tatsächlich in den System-Prompts vorgeschriebenen Formate
+  getestet (analog zu `_ADR_TEXT_MARKERS`/`_is_rate_limit_error()` an anderer Stelle im
+  Projekt). `route_findings_to_owners()` gleicht Backtick-Dateipfade in jedem Fund gegen
+  `file_owners` ab und ordnet ihn dem zuständigen Agenten zu; nicht zuordenbare Funde landen
+  transparent im Protokoll statt still zu verschwinden.
+- `agents/orchestrator.py._run_governance_fix_loop()`: neue Methode, strukturell ein
+  Geschwister von `_run_verification_loop()` (gleiche Budget-/Abbruch-Prüfpunkte, gleiches
+  Fix-Dispatch-Muster über `file_owners`). Läuft NACH der Fachbereichs-Hierarchie und VOR der
+  echten Testverifikation. `MAX_REVIEW_ITERATIONS` (bisher ein toter, nie verdrahteter Rest aus
+  einer früheren Version unter "Sprache & Verhalten" – ebenfalls ein realer Fund dieser
+  Bestandsaufnahme) steuert jetzt tatsächlich, ob nach einem Fix-Versuch die ursprünglich
+  meldenden Review-Rollen frisch erneut geprüft werden (Standard `1` = genau ein Fix-Dispatch
+  ohne erneute Prüfung). Neuer Flag `ENABLE_GOVERNANCE_FIX_LOOP` (Standard an).
+- 12 neue Tests (`tests/test_review_gate.py`), 6 neue Tests
+  (`tests/test_governance_fix_loop.py`, voller `Orchestrator.process()`-Lauf mit gemocktem LLM).
+- Volle Suite (506 Tests) grün, ruff sauber.
+
+---
+
 ## ⚡ Team-Komplexitäts-Skalierung: kein Teamleiter-Overhead mehr bei trivialen Aufgaben
 
 Realer Fund aus Probelauf 3 (FastAPI-Ping-API, ein einziger Endpunkt + ein Test): 66.000

@@ -73,6 +73,43 @@ class TestPushConfirmationGate(unittest.TestCase):
             mock_confirm.assert_not_called()
         self.fake_github.commit.assert_not_called()
 
+    @patch("interface.cli.Confirm.ask", return_value=True)
+    def test_failed_ci_pulls_ticket_status_to_blocked(self, mock_confirm):
+        """
+        Realer Fund: wait_for_ci_status() wurde nach einem erfolgreichen Push zwar aufgerufen,
+        das Ergebnis aber nur angezeigt, nie ausgewertet - das Backlog-Ticket blieb auf
+        "done" stehen, selbst wenn die echte CI-Pipeline danach rot wurde.
+        """
+        self.fake_github.wait_for_ci_status = AsyncMock(return_value=("failed", "1 Job fehlgeschlagen – https://x/y"))
+        asyncio.run(self.cli._ask_for_git_push("Testaufgabe", ticket_id="t-ci-failed"))
+
+        ticket = next(t for t in backlog_store.list_tickets() if t.id == "t-ci-failed")
+        self.assertEqual(ticket.status, "blocked")
+        self.assertIn("CI fehlgeschlagen", ticket.detail)
+
+    @patch("interface.cli.Confirm.ask", return_value=True)
+    def test_passed_ci_leaves_ticket_status_unchanged(self, mock_confirm):
+        self.fake_github.wait_for_ci_status = AsyncMock(return_value=("passed", "https://x/y"))
+        asyncio.run(self.cli._ask_for_git_push("Testaufgabe", ticket_id="t-ci-passed"))
+
+        ticket = next(t for t in backlog_store.list_tickets() if t.id == "t-ci-passed")
+        self.assertEqual(ticket.status, "done")  # Direct-Push-Pfad (gh_ready()=False) -> "done"
+
+    @patch("interface.cli.Confirm.ask", return_value=True)
+    @patch("interface.cli.notify_external")
+    def test_failed_ci_triggers_external_notification(self, mock_notify, mock_confirm):
+        self.fake_github.wait_for_ci_status = AsyncMock(return_value=("failed", "CI kaputt"))
+        asyncio.run(self.cli._ask_for_git_push("Testaufgabe"))
+        mock_notify.assert_called_once()
+        self.assertIn("CI", mock_notify.call_args[0][0])
+
+    @patch("interface.cli.Confirm.ask", return_value=True)
+    @patch("interface.cli.notify_external")
+    def test_passed_ci_does_not_notify(self, mock_notify, mock_confirm):
+        self.fake_github.wait_for_ci_status = AsyncMock(return_value=("passed", "https://x/y"))
+        asyncio.run(self.cli._ask_for_git_push("Testaufgabe"))
+        mock_notify.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

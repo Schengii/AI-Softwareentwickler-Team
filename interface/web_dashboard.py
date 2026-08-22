@@ -50,6 +50,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 from agents.orchestrator import Orchestrator
 from config import DASHBOARD_AUTH_TOKEN, DASHBOARD_HOST, DASHBOARD_MAX_CONCURRENT_JOBS
 from core.backlog_store import list_tickets, upsert_ticket
+from core.notifier import notify_external
+from memory.run_history import get_agent_success_rates, get_recent_runs
 
 MAX_LOG_LINES_KEPT = 500
 # Adressen, die als "nur von diesem Rechner erreichbar" gelten – hier darf das Dashboard
@@ -141,6 +143,21 @@ class DashboardServer:
             job.status = "cancelled"
         return True
 
+    def shutdown(self, timeout: float = 5.0) -> None:
+        """
+        Stoppt den Hintergrund-Event-Loop-Thread wieder sauber. Der Produktivbetrieb
+        (`run_dashboard()`) läuft absichtlich bis zum Prozessende und ruft dies nie auf – aber
+        Tests, die pro Testklasse eine eigene `DashboardServer()`-Instanz erzeugen (siehe
+        tests/test_web_dashboard.py, tests/test_observability_endpoint.py), MÜSSEN ihn
+        aufrufen: `self._loop.run_forever()` liefe sonst als daemon-Thread unbegrenzt über das
+        Testende hinaus weiter. Realer Fund: mit zwei solchen Testdateien in derselben
+        `unittest discover`-Suite blieben zwei dauerhaft laufende Event-Loops gleichzeitig im
+        Prozess zurück – die volle Suite hing sich dabei reproduzierbar minutenlang auf,
+        obwohl jede Datei einzeln ausgeführt in unter 2s durchlief.
+        """
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=timeout)
+
     async def _execute_job(self, job_id: str) -> None:
         job = self.jobs.get(job_id)
         if not job or job.status == "cancelled":
@@ -180,6 +197,14 @@ class DashboardServer:
         # dieselbe Konvention.
         ticket_status = "blocked" if job.status == "error" else job.status
         upsert_ticket(ticket_id=f"dashboard-{job_id}", title=job.prompt[:80], source="dashboard", status=ticket_status)
+        if ticket_status == "blocked":
+            # Dashboard-Jobs laufen als Hintergrund-Worker (siehe Docstring oben) - anders als
+            # bei der CLI sieht hier niemand zwangsläufig aktiv zu, dass ein Job fehlgeschlagen
+            # ist. core/notifier.py ist no-op ohne konfiguriertes NOTIFY_WEBHOOK_URL.
+            await asyncio.to_thread(
+                notify_external, "Dashboard-Job fehlgeschlagen",
+                f"'{job.prompt[:80]}': {job.error or 'unbekannter Fehler'}",
+            )
 
     def deploy(self, project_name: str) -> None:
         """Startet ein echtes lokales Docker-Deployment für ein Workspace-Projekt
@@ -296,6 +321,19 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   <h2 style="color: var(--text-white); font-size: 18px; margin-bottom: 16px;">🎫 Backlog / Kanban-Board</h2>
   <p style="color: var(--text-muted); font-size: 12.5px; margin-bottom: 14px; margin-top: -12px;">Alle Tickets über CLI, Dashboard und autonome GitHub-Issue-Läufe hinweg (core/backlog_store.py) – persistent, überlebt einen Neustart.</p>
   <div class="kanban" id="kanbanBoard"><p style="color: var(--text-muted);">Lade Backlog…</p></div>
+
+  <h2 style="color: var(--text-white); font-size: 18px; margin-bottom: 16px;">📈 Observability & Trends</h2>
+  <p style="color: var(--text-muted); font-size: 12.5px; margin-bottom: 14px; margin-top: -12px;">Erfolgsquote je Agent und jüngste Läufe über ALLE Trigger-Quellen hinweg (memory/run_history.py) – persistent, überlebt einen Neustart.</p>
+  <div class="grid" style="margin-bottom: 24px;">
+    <div class="card">
+      <h3>Erfolgsquote je Agent (letzte 50 Läufe)</h3>
+      <div id="successRatesList"><p style="color: var(--text-muted);">Lade Trends…</p></div>
+    </div>
+    <div class="card">
+      <h3>Jüngste Läufe</h3>
+      <div id="recentRunsList"><p style="color: var(--text-muted);">Lade Läufe…</p></div>
+    </div>
+  </div>
 
   <h2 style="color: var(--text-white); font-size: 18px; margin-bottom: 16px;">🏢 Fachbereichs- & Teamleiter-Hierarchie</h2>
   <div class="grid" id="departmentGrid"><p style="color: var(--text-muted);">Lade Teamstruktur…</p></div>
@@ -417,6 +455,42 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       }
     }
 
+    async function loadObservability() {
+      const res = await fetch('/api/observability');
+      if (!res.ok) return;
+      const data = await res.json();
+
+      const ratesEl = document.getElementById('successRatesList');
+      if (!data.agent_success_rates.length) {
+        ratesEl.innerHTML = '<p style="color: var(--text-muted);">Noch keine Läufe aufgezeichnet.</p>';
+      } else {
+        ratesEl.innerHTML = data.agent_success_rates.map(r => {
+          const color = r.success_rate >= 80 ? '#2ea043' : (r.success_rate >= 50 ? '#d29922' : '#da3633');
+          return `
+            <div style="margin-bottom: 10px;">
+              <div style="display: flex; justify-content: space-between; font-size: 12.5px; color: var(--text-muted); margin-bottom: 3px;">
+                <span><code>${escapeHtml(r.agent_id)}</code> (${r.calls} Aufruf${r.calls === 1 ? '' : 'e'})</span>
+                <span>${r.success_rate}%</span>
+              </div>
+              <div style="background: #0d1117; border-radius: 4px; height: 8px; overflow: hidden;">
+                <div style="width: ${r.success_rate}%; background: ${color}; height: 100%;"></div>
+              </div>
+            </div>`;
+        }).join('');
+      }
+
+      const runsEl = document.getElementById('recentRunsList');
+      if (!data.recent_runs.length) {
+        runsEl.innerHTML = '<p style="color: var(--text-muted);">Noch keine Läufe aufgezeichnet.</p>';
+      } else {
+        runsEl.innerHTML = data.recent_runs.slice(0, 8).map(r => `
+          <div class="ticket">
+            <div class="ticket-title">${r.verification_ok ? '✅' : '⚠️'} ${escapeHtml(r.task_summary)}</div>
+            <div class="ticket-meta">${escapeHtml(r.project_slug)} · ${r.total_tokens.toLocaleString()} Tokens · ${r.duration_seconds}s · ${escapeHtml(r.timestamp.slice(0, 16).replace('T', ' '))}</div>
+          </div>`).join('');
+      }
+    }
+
     async function loadProjects() {
       const res = await fetch('/api/projects');
       const data = await res.json();
@@ -483,7 +557,9 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     loadStatus();
     loadBacklog();
     loadProjects();
+    loadObservability();
     setInterval(loadBacklog, 5000);
+    setInterval(loadObservability, 15000);
   </script>
 </body>
 </html>
@@ -578,6 +654,15 @@ def make_handler(server: DashboardServer):
                 self._send_json({"tickets": [vars(t) for t in list_tickets()]})
             elif path_only == "/api/projects":
                 self._send_json({"projects": server.orchestrator._workspace.list_projects()})
+            elif path_only == "/api/observability":
+                # Realer Fund bei einer Bestandsaufnahme des eigenen Teams: das Dashboard
+                # zeigte bisher nur den aktuellen/letzten Job, keine Trends über die Zeit
+                # (siehe memory/run_history.py) - über ALLE Trigger-Quellen hinweg, nicht nur
+                # Dashboard-Jobs, genau wie /api/backlog oben.
+                self._send_json({
+                    "recent_runs": get_recent_runs(limit=20),
+                    "agent_success_rates": get_agent_success_rates(limit_runs=50),
+                })
             elif path_only.startswith("/api/deploy-status/"):
                 project_name = unquote(path_only.rsplit("/", 1)[-1])
                 self._send_json({"project": project_name, **server.deployments.get(project_name, {"status": "none"})})

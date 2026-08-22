@@ -70,7 +70,9 @@ from config import (
     AUTO_SAVE_WORKSPACE,
     BASE_DIR,
     ENABLE_DEPARTMENT_LEAD_EXECUTION,
+    ENABLE_GOVERNANCE_FIX_LOOP,
     ENABLE_TASK_COMPLEXITY_SCALING,
+    MAX_REVIEW_ITERATIONS,
     MAX_RUN_TOKENS,
     MAX_VERIFICATION_ITERATIONS,
     ORCHESTRATOR_MODEL,
@@ -84,15 +86,18 @@ from core.git_isolation import (
     has_uncommitted_changes,
 )
 from core.message_bus import AgentResult, AgentTask
+from core.notifier import notify_external
 from core.project_constitution import format_constitution_for_agents
 from core.project_status import format_context_for_agents, record_run
 from core.result_aggregator import ResultAggregator
+from core.review_gate import find_critical_findings, route_findings_to_owners
 from core.task_manager import TaskManager, is_micro_task
 from core.token_guard import token_guard
 from core.verifier import ProjectVerifier
 from core.workspace import WorkspaceManager
 from memory.conversation_history import ConversationHistory
 from memory.cost_history import record_run_usage
+from memory.run_history import record_run as record_run_history
 
 # Reine Prüf-/Berichts-Agenten: sollen bestehenden Code LESEN und bewerten, aber nicht
 # selbst umschreiben (das ist Aufgabe von refactoring/backend/etc.) – spart nebenbei auch
@@ -408,16 +413,33 @@ class Orchestrator:
             if saved_files_count > 0:
                 notify(f"💾 [green]Workspace:[/green] {saved_files_count} zusätzliche Projektdateien (Text-Fallback) in `{project_dir}` gespeichert.")
 
+        # Governance-Fix-Schleife: kritische Befunde aus code_reviewer/security/compliance
+        # (REVIEW_ONLY_AGENT_IDS) gezielt an den zuständigen Datei-Owner zur Korrektur
+        # zurückspielen, BEVOR die echte Testsuite läuft (siehe core/review_gate.py). Bei
+        # bereits während der Fachbereichs-Phasen überschrittenem Lauf-Budget ODER manuellem
+        # Abbruch wird sie komplett übersprungen, wie die anschließende Verifikation auch.
+        governance_fix_summary = ""
+        if budget_aborted or manually_cancelled:
+            governance_fix_summary = ""
+        else:
+            results, governance_fix_summary, budget_aborted, manually_cancelled = await self._run_governance_fix_loop(
+                project_dir=project_dir,
+                all_results=results,
+                file_owners=file_owners,
+                run_start_tokens=run_start_tokens,
+                notify=notify,
+                cancel_requested=cancel_requested,
+            )
+
         # Echte Verifikation: Abhängigkeiten installieren, Tests wirklich ausführen,
         # bei Fehlschlägen gezielt den verantwortlichen Agenten korrigieren lassen.
-        # Bei bereits während der Fachbereichs-Phasen überschrittenem Lauf-Budget ODER
-        # manuellem Abbruch wird die (potenziell token-/zeitintensive) Fix-Schleife komplett
-        # übersprungen.
+        # Bei bereits während der Fachbereichs-Phasen ODER der Governance-Fix-Schleife
+        # überschrittenem Lauf-Budget ODER manuellem Abbruch wird die (potenziell token-/
+        # zeitintensive) Fix-Schleife komplett übersprungen.
         if budget_aborted or manually_cancelled:
-            reason = (
-                f"Lauf-Budget (`MAX_RUN_TOKENS={MAX_RUN_TOKENS:,}`) wurde bereits während der "
-                "Fachbereichs-Phasen erreicht" if budget_aborted else
-                "Lauf wurde bereits während der Fachbereichs-Phasen manuell abgebrochen"
+            reason = self._budget_or_cancel_reason(
+                budget_aborted, manually_cancelled,
+                "während der Fachbereichs-Phasen oder der Governance-Fix-Schleife",
             )
             verification_summary = (
                 "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n"
@@ -465,6 +487,15 @@ class Orchestrator:
 
         if budget_aborted:
             notify(f"🚫 [bold red]Lauf-Budget erreicht:[/bold red] Retrospektive & Selbstoptimierung werden übersprungen ({self._tokens_used_since(run_start_tokens):,}/{MAX_RUN_TOKENS:,} Tokens).")
+            # EIN zentraler Benachrichtigungs-Ort statt an jeder der drei Stellen, an denen
+            # budget_aborted innerhalb der Fachbereichs-/Governance-Fix-/Verifikations-Schleifen
+            # gesetzt werden kann (core/notifier.py, no-op ohne NOTIFY_WEBHOOK_URL) - relevant
+            # v.a. für unbeaufsichtigte Läufe (Dashboard-Job, Issue-Watcher), wo sonst niemand
+            # aktiv zusieht, dass ein Lauf vorzeitig beendet wurde.
+            await asyncio.to_thread(
+                notify_external, "Lauf-Budget erreicht",
+                f"{task_summary[:150]}: {self._tokens_used_since(run_start_tokens):,}/{MAX_RUN_TOKENS:,} Tokens verbraucht.",
+            )
         elif manually_cancelled:
             notify("⏹️ [bold red]Lauf manuell abgebrochen:[/bold red] Retrospektive & Selbstoptimierung werden übersprungen.")
         else:
@@ -516,6 +547,7 @@ class Orchestrator:
             f"{final_solution}\n\n"
             f"---\n\n"
             + (f"{real_files_section}\n\n---\n\n" if real_files_section else "")
+            + (f"{governance_fix_summary}\n\n---\n\n" if governance_fix_summary else "")
             + f"{verification_summary}\n\n"
             f"---\n\n"
             f"{retro_result.content if retro_result else ''}\n\n"
@@ -547,6 +579,22 @@ class Orchestrator:
         # Prozesses - sonst würde ein zweiter Lauf in derselben Sitzung den ersten erneut
         # mitzählen.
         record_run_usage(self._model_usage_deltas(run_start_model_stats))
+
+        # Realer Fund bei einer Bestandsaufnahme des eigenen Teams: core/project_status.py
+        # speichert Historie NUR pro Projekt, memory/cost_history.py NUR kumulierte Summen
+        # pro Modell - es gab keine Möglichkeit zu sehen, welche Agenten über die Zeit
+        # häufiger scheitern oder wie sich Tokenverbrauch/Dauer PROJEKTÜBERGREIFEND
+        # entwickeln (Grundlage für die Observability-Ansicht im Dashboard). Rein additiv
+        # wie record_run()/record_run_usage() oben, darf einen sonst erfolgreichen Lauf
+        # niemals zum Scheitern bringen.
+        record_run_history(
+            project_slug=self.last_project_slug,
+            task_summary=task_summary,
+            verification_ok=verification_ok,
+            total_tokens=sum(r.total_tokens for r in results),
+            duration_seconds=total_duration,
+            agent_results=[{"agent_id": r.agent_id, "success": r.success, "total_tokens": r.total_tokens} for r in results],
+        )
 
         # Realer Fund: bisher endete JEDER Lauf mit demselben uneingeschränkten "✅ Fertig!",
         # auch wenn die Verifikation nie bestätigt werden konnte (keine Tests gefunden,
@@ -890,6 +938,19 @@ class Orchestrator:
         return cls._tokens_used_since(start_tokens) >= MAX_RUN_TOKENS
 
     @staticmethod
+    def _budget_or_cancel_reason(budget_aborted: bool, manually_cancelled: bool, stage: str) -> str:
+        """
+        Begründungstext für einen übersprungenen nachfolgenden Schritt (Governance-Fix-Schleife/
+        Verifikation) – EIN gebündelter Ort statt der Budget-vs.-Abbruch-Fallunterscheidung
+        mehrfach inline zu duplizieren. Nur sinnvoll aufrufbar, wenn budget_aborted ODER
+        manually_cancelled bereits True ist (siehe process()).
+        """
+        if budget_aborted:
+            return f"Lauf-Budget (`MAX_RUN_TOKENS={MAX_RUN_TOKENS:,}`) wurde bereits {stage} erreicht"
+        assert manually_cancelled, "aufrufbar nur wenn budget_aborted ODER manually_cancelled True ist"
+        return f"Lauf wurde bereits {stage} manuell abgebrochen"
+
+    @staticmethod
     def _update_file_owners(file_owners: dict[str, str], results: list[AgentResult]) -> None:
         """Merkt sich, welcher Agent welche Datei tatsächlich geschrieben hat (für die Verifikationsschleife)."""
         for res in results:
@@ -903,6 +964,159 @@ class Orchestrator:
                 files_note = f" (Dateien: {', '.join(r.files_written)})" if r.files_written else ""
                 blocks.append(f"### Ergebnis von {r.agent_name}{files_note}:\n{r.content[:2000]}")
         return "\n\n".join(blocks)
+
+    # ──────────────────────────────────────────────────────────────
+    # Governance-Fix-Schleife: kritische Review-Befunde -> gezielter Korrekturauftrag
+    # ──────────────────────────────────────────────────────────────
+
+    async def _run_governance_fix_loop(
+        self,
+        project_dir: str,
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        notify: Callable[[str], None],
+        run_start_tokens: int | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> tuple[list[AgentResult], str, bool, bool]:
+        """
+        Realer Fund bei einer Bestandsaufnahme des eigenen Teams: code_reviewer/security/
+        compliance (REVIEW_ONLY_AGENT_IDS) kategorisieren Befunde in ihren Reports selbst nach
+        Schweregrad ("Kritisch") - das löste bisher NIE einen Korrekturauftrag aus, nur ein
+        echter Testfehler tat das (siehe _run_verification_loop unten). Ein "Kritisch" im
+        Code-Review ist bei einem echten Team ein Blocker, kein FYI im Abschlussbericht.
+
+        Läuft NACH der Fachbereichs-Hierarchie (die Governance-Phase ist bereits gelaufen,
+        all_results enthält also schon die individuellen Review-Ergebnisse) und VOR der echten
+        Testverifikation - Kritisch-Fixes zuerst, damit die anschließende Testsuite den
+        reparierten Stand prüft. core/review_gate.py liefert die (bewusst als Best-Effort
+        dokumentierte) Text-Heuristik zur Fund-Erkennung/-Zuordnung, kein LLM-Aufruf dafür nötig.
+
+        Gibt (all_results, summary, budget_aborted, manually_cancelled) zurück - summary ist
+        "", wenn nichts zu tun war (kein Rauschen im Normalfall, siehe process()).
+        """
+        if not ENABLE_GOVERNANCE_FIX_LOOP:
+            return all_results, "", False, False
+
+        review_agent_ids = {
+            r.agent_id for r in all_results
+            if r.agent_id in REVIEW_ONLY_AGENT_IDS and r.success and r.content
+        }
+        if not review_agent_ids:
+            # Keine der Review-Rollen war Teil dieses Plans (z.B. eine kleine Aufgabe ohne
+            # QA/Governance) - kein Verhaltensunterschied zu vor dieser Erweiterung.
+            return all_results, "", False, False
+
+        summary_lines: list[str] = []
+        budget_aborted = False
+        manually_cancelled = False
+
+        def _latest_review_results() -> list[AgentResult]:
+            # Neuestes Ergebnis JE Rolle - bei einem Re-Check ab Versuch 2 überschreibt das
+            # frische Ergebnis das ursprüngliche für die Fund-Extraktion.
+            latest: dict[str, AgentResult] = {}
+            for r in all_results:
+                if r.agent_id in review_agent_ids and r.success and r.content:
+                    latest[r.agent_id] = r
+            return list(latest.values())
+
+        for attempt in range(1, MAX_REVIEW_ITERATIONS + 1):
+            if run_start_tokens is not None and self._run_budget_exceeded(run_start_tokens):
+                budget_aborted = True
+                notify("  🚫 [bold red]Lauf-Budget erreicht[/bold red] – weitere Governance-Fixversuche werden übersprungen.")
+                summary_lines.append(f"- 🚫 Lauf-Budget (`MAX_RUN_TOKENS={MAX_RUN_TOKENS:,}`) erreicht – Governance-Fix-Schleife nach Versuch {attempt - 1} abgebrochen.")
+                break
+            if cancel_requested and cancel_requested():
+                manually_cancelled = True
+                notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – weitere Governance-Fixversuche werden übersprungen.")
+                summary_lines.append(f"- ⏹️ Manuell abgebrochen – Governance-Fix-Schleife nach Versuch {attempt - 1} beendet.")
+                break
+
+            if attempt == 1:
+                review_results = _latest_review_results()
+            else:
+                # Nur relevant, wenn MAX_REVIEW_ITERATIONS per .env erhöht wurde (Standard 1
+                # macht diesen Zweig nie sichtbar) - ruft dieselben Review-Rollen frisch auf,
+                # um zu prüfen, ob nach dem letzten Fix-Versuch noch kritische Befunde bestehen.
+                notify(f"  🔍 [yellow]Versuch {attempt}/{MAX_REVIEW_ITERATIONS}:[/yellow] Governance-Rollen prüfen den aktuellen Stand erneut...")
+                recheck_tasks = [
+                    AgentTask(
+                        task_id=f"governance_recheck_{agent_id}_{attempt}",
+                        agent_id=agent_id,
+                        description=(
+                            f"Prüfe den AKTUELLEN Stand des Projekts erneut auf kritische Probleme "
+                            f"(Versuch {attempt}) - vorherige kritische Befunde wurden inzwischen zur "
+                            f"Korrektur an die zuständigen Agenten zurückgespielt."
+                        ),
+                        context="", project_dir=project_dir, allow_tools=True, tools_read_only=True,
+                    )
+                    for agent_id in sorted(review_agent_ids)
+                ]
+                recheck_results = await self._run_agents_parallel(recheck_tasks, notify=notify)
+                all_results.extend(recheck_results)
+                review_results = [r for r in recheck_results if r.success and r.content]
+
+            findings: list[tuple[str, str]] = [
+                (res.agent_id, block)
+                for res in review_results
+                for block in find_critical_findings(res.content)
+            ]
+
+            if not findings:
+                notify("  ✅ [bold green]Keine kritischen Governance-Befunde.[/bold green]")
+                summary_lines.append(
+                    f"- ✅ Keine kritischen Befunde in den Governance-Reports"
+                    f"{f' (Versuch {attempt})' if attempt > 1 else ''}."
+                )
+                break
+
+            agents_to_fix, unrouted = route_findings_to_owners(findings, file_owners)
+
+            if unrouted:
+                shown = "; ".join(u[:150] for u in unrouted[:3])
+                more = f" … und {len(unrouted) - 3} weitere" if len(unrouted) > 3 else ""
+                summary_lines.append(
+                    f"- ⚠️ {len(unrouted)} kritische(r) Befund(e) ohne eindeutigen Datei-Bezug "
+                    f"– braucht manuelle Prüfung: {shown}{more}"
+                )
+
+            if not agents_to_fix:
+                notify("  ⚠️ [yellow]Kritische Governance-Befunde konnten keinem Agenten eindeutig zugeordnet werden – Auto-Fix übersprungen.[/yellow]")
+                break
+
+            fix_tasks = []
+            for agent_id, texts in agents_to_fix.items():
+                finding_text = "\n\n".join(texts)[:3000]
+                fix_tasks.append(AgentTask(
+                    task_id=f"governance_fix_{agent_id}_{attempt}",
+                    agent_id=agent_id,
+                    description=(
+                        f"Das Governance-Review (code_reviewer/security/compliance) hat ein "
+                        f"KRITISCHES Problem in deinem Code gefunden. Nutze read_file, um die "
+                        f"betroffene(n) Datei(en) zu prüfen, und edit_file/write_file, um das "
+                        f"Problem zu beheben.\n\n{finding_text}"
+                    ),
+                    context="", project_dir=project_dir,
+                ))
+
+            notify(f"  🛠️ [bold yellow]Governance-Fix:[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())} mit {len(findings)} kritischem/kritischen Befund(en)...")
+            fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+            self._update_file_owners(file_owners, fix_results)
+            all_results.extend(fix_results)
+            summary_lines.append(
+                f"- 🛠️ Versuch {attempt}: {len(findings)} kritische(r) Governance-Befund(e) → gezielt "
+                f"zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt (der Fix wird NICHT "
+                f"erneut vom Reviewer bestätigt – das übernimmt für automatisiert testbares Verhalten "
+                f"nur die anschließende echte Testverifikation, nicht die qualitative Review-Aussage selbst)."
+            )
+
+            if attempt == MAX_REVIEW_ITERATIONS:
+                summary_lines.append(f"- ℹ️ Nach {MAX_REVIEW_ITERATIONS} Versuch(en) letzter Stand übernommen.")
+
+        summary = (
+            "### 🔍 Governance-Fix-Protokoll (kritische Review-Befunde)\n" + "\n".join(summary_lines)
+            if summary_lines else ""
+        )
+        return all_results, summary, budget_aborted, manually_cancelled
 
     # ──────────────────────────────────────────────────────────────
     # Echte Verifikation: Dependency-Installation + tatsächliche Testausführung

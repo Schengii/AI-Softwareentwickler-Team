@@ -37,10 +37,17 @@ class TestDashboardHostGuard(unittest.TestCase):
         # Nur prüfen, dass die Sicherheitssperre bei gesetztem Token NICHT greift – kein
         # echter Socket-Bind auf "0.0.0.0" (löst unter Windows sonst einen blockierenden
         # Firewall-Dialog aus), daher wird ThreadingHTTPServer selbst komplett gemockt.
+        # DashboardServer wird ebenfalls gemockt: run_dashboard() erzeugt es intern (kein
+        # Rückgabewert, den der Test greifen könnte), eine ECHTE Instanz würde einen
+        # dauerhaften Hintergrund-Event-Loop-Thread starten (siehe
+        # DashboardServer.shutdown()-Docstring), den dieser Test nie stoppen könnte.
         fake_httpd = MagicMock()
         fake_httpd.__enter__.return_value = fake_httpd
         fake_httpd.__exit__.return_value = False
+        fake_server = MagicMock()
+        fake_server.orchestrator._agents = {}
         with patch.object(web_dashboard, "DASHBOARD_AUTH_TOKEN", "geheim123"), \
+             patch.object(web_dashboard, "DashboardServer", return_value=fake_server), \
              patch.object(web_dashboard, "ThreadingHTTPServer", return_value=fake_httpd) as mock_server_cls, \
              patch("builtins.print"):  # Start-Print enthält Emojis -> auf cp1252-Konsolen (Windows) sonst UnicodeEncodeError
             run_dashboard(port=PORT, host="0.0.0.0")  # darf NICHT raisen
@@ -77,6 +84,11 @@ class TestDashboardTokenAuth(unittest.TestCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.thread.join(timeout=2)
+        # Ohne dies liefe der interne Event-Loop-Thread von DashboardServer (siehe
+        # DashboardServer.shutdown()-Docstring) als daemon-Thread unbegrenzt weiter - bei
+        # mehreren Testdateien mit demselben Muster in derselben `unittest discover`-Suite
+        # führte das reproduzierbar zu einem minutenlangen Hänger der vollen Suite.
+        cls.server_state.shutdown()
         cls._auth_patch.stop()
 
     def _base_url(self) -> str:

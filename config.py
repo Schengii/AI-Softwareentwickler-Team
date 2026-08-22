@@ -132,8 +132,6 @@ AGENT_LANGUAGE: str = os.getenv("AGENT_LANGUAGE", "de")
 MAX_OUTPUT_TOKENS: int = int(os.getenv("MAX_OUTPUT_TOKENS", "4096"))
 TEMPERATURE: float = float(os.getenv("TEMPERATURE", "0.4"))
 
-# Iterative Review & Fix Settings
-MAX_REVIEW_ITERATIONS: int = int(os.getenv("MAX_REVIEW_ITERATIONS", "1"))
 AUTO_SAVE_WORKSPACE: bool = os.getenv("AUTO_SAVE_WORKSPACE", "true").lower() in ("true", "1", "yes")
 
 # ──────────────────────────────────────────
@@ -161,6 +159,27 @@ AGENT_MAX_TOOL_ITERATIONS: dict[str, int] = {
 MAX_VERIFICATION_ITERATIONS: int = int(os.getenv("MAX_VERIFICATION_ITERATIONS", "2"))
 DEPENDENCY_INSTALL_TIMEOUT_SECONDS: float = float(os.getenv("DEPENDENCY_INSTALL_TIMEOUT_SECONDS", "120"))
 TEST_RUN_TIMEOUT_SECONDS: float = float(os.getenv("TEST_RUN_TIMEOUT_SECONDS", "60"))
+
+# ──────────────────────────────────────────
+# Governance-Kritisch-Fix-Schleife (core/review_gate.py, agents/orchestrator.py._run_governance_fix_loop)
+# ──────────────────────────────────────────
+# Realer Fund: code_reviewer/security/compliance (REVIEW_ONLY_AGENT_IDS) kategorisieren Befunde
+# selbst nach Schweregrad ("Kritisch") - das löste bisher NIE einen Korrekturauftrag aus, nur
+# echte Testfehler taten das (siehe MAX_VERIFICATION_ITERATIONS oben). Ein "Kritisch" im
+# Code-Review ist bei einem echten Team ein Blocker, kein FYI im Abschlussbericht.
+# ENABLE_GOVERNANCE_FIX_LOOP=true (Standard) lässt den Orchestrator kritische Befunde per
+# Text-Heuristik erkennen (core/review_gate.py) und gezielt an den Datei-Owner zur Korrektur
+# zurückspielen, BEVOR die echte Testverifikation läuft.
+ENABLE_GOVERNANCE_FIX_LOOP: bool = os.getenv("ENABLE_GOVERNANCE_FIX_LOOP", "true").lower() in ("true", "1", "yes")
+# MAX_REVIEW_ITERATIONS war früher ein nie verdrahteter Rest aus einer früheren Version dieses
+# Features (stand unter "Sprache & Verhalten", ohne dass irgendein Code ihn je gelesen hätte -
+# echter Fund bei einer Bestandsaufnahme). Steuert jetzt tatsächlich, wie oft die Schleife
+# läuft: Standard 1 = genau EIN Fix-Dispatch, OHNE die Review-Rollen danach erneut aufzurufen
+# (die anschließende echte Testverifikation deckt technische Regressionen ab, nicht aber die
+# qualitative Review-Aussage selbst). Ein höherer Wert ruft die ursprünglich meldenden
+# Review-Rollen nach jedem Fix-Versuch frisch erneut auf, um zu prüfen, ob noch kritische
+# Befunde bestehen - kostet entsprechend mehr LLM-Aufrufe pro zusätzlicher Runde.
+MAX_REVIEW_ITERATIONS: int = int(os.getenv("MAX_REVIEW_ITERATIONS", "1"))
 
 # ──────────────────────────────────────────
 # Echtes lokales Deployment: Docker Compose (core/deployment.py, manuell per /deploy ausgelöst)
@@ -256,6 +275,18 @@ ISSUE_BLOCKED_LABEL: str = os.getenv("ISSUE_BLOCKED_LABEL", "ai-team-blocked")
 # Cron-Tick nach längerer Pause gleich eine ganze Batch teurer Läufe lostritt; der nächste
 # Zyklus greift das nächste Issue auf.
 ISSUE_POLL_MAX_PER_CYCLE: int = int(os.getenv("ISSUE_POLL_MAX_PER_CYCLE", "1"))
+
+# ──────────────────────────────────────────
+# Externe Benachrichtigung bei Vorfällen, die menschliche Aufmerksamkeit brauchen (core/notifier.py)
+# ──────────────────────────────────────────
+# core/issue_watcher.py (Cron-Poll-Zyklus) und interface/web_dashboard.py (Hintergrund-Jobs)
+# laufen unbeaufsichtigt - anders als interface/cli.py sieht dort in dem Moment niemand aktiv
+# zu, in dem etwas menschliche Aufmerksamkeit braucht (blockiertes Issue, rote CI, erreichtes
+# Lauf-Budget, fehlgeschlagener Dashboard-Job). NOTIFY_WEBHOOK_URL="" (Standard) deaktiviert
+# das Feature komplett - gesetzt, schickt core/notifier.py einen einfachen JSON-POST
+# ({"text": "..."}, Slack-Incoming-Webhook-kompatibel) dorthin. Best-effort: ein Fehlschlag
+# beim Senden darf NIE einen sonst erfolgreichen Lauf zum Scheitern bringen.
+NOTIFY_WEBHOOK_URL: str = os.getenv("NOTIFY_WEBHOOK_URL", "")
 
 # ──────────────────────────────────────────
 # Web-Dashboard: sichere Standardwerte (nur lokal, optionaler Token für Netzwerkzugriff)

@@ -140,7 +140,14 @@ Was die Grafik oben zeigt, läuft technisch über zwei einfache Datenstrukturen
    (bei einem einzelnen Mitglied und kleiner Gesamtaufgabe entfällt auch dieser Schritt, siehe
    Punkt 3). Eine `file_owners`-Map merkt sich dabei, welcher Agent welche Datei geschrieben
    hat – die Grundlage für die gezielte Fehlerbehebung in der Verifikationsphase (siehe unten).
-6. **Synthese:** Der Hauptagent fasst alle Fachbereichsberichte über `ResultAggregator`
+6. **Governance-Fix-Loop:** `code_reviewer`/`security`/`compliance` kategorisieren Befunde in
+   ihren Reports selbst nach Schweregrad ("Kritisch") – `agents/orchestrator.py._run_governance_fix_loop()`
+   (`core/review_gate.py`) erkennt diese Befunde per Text-Heuristik und spielt sie GEZIELT an
+   den laut `file_owners` zuständigen Agenten zur Korrektur zurück, BEVOR die echte
+   Testverifikation läuft – ein "Kritisch" im Review ist bei einem echten Team ein Blocker,
+   kein FYI im Abschlussbericht. Abschaltbar über `ENABLE_GOVERNANCE_FIX_LOOP=false`, Anzahl
+   der Fix-/Recheck-Runden über `MAX_REVIEW_ITERATIONS` (Standard `1`).
+7. **Synthese:** Der Hauptagent fasst alle Fachbereichsberichte über `ResultAggregator`
    zu einem einheitlichen Gesamtergebnis zusammen und liefert es an den Nutzer zurück.
 
 ---
@@ -216,6 +223,17 @@ zuverlässiger die vorhandene Infrastruktur.
 - **Ergebnis immer als Issue-Kommentar sichtbar:** PR-Link, Blockade-Grund oder Fehler landen
   als Kommentar auf dem Issue – die einzige Rückmeldung, die ohne CLI/Dashboard-Ansicht
   überhaupt ankommt.
+- **CI-Feedback-Loop:** Nach der PR-Erstellung wartet `core/issue_watcher.py` zusätzlich auf
+  die echte CI-Pipeline (`agents/github_agent.py.wait_for_ci_status()`). Wird sie tatsächlich
+  rot, zieht das Backlog-Ticket auf `blocked` (statt bei `review` stehen zu bleiben) und der
+  Issue-Kommentar warnt explizit – das `ai-team-done`-Label bleibt trotzdem gesetzt, da ein PR
+  ja tatsächlich eröffnet wurde. Derselbe Mechanismus (inkl. Ticket-Status) gilt auch für den
+  interaktiven `/push`-Dialog in der CLI (`interface/cli.py._ask_for_git_push()`).
+- **Externe Benachrichtigung:** `NOTIFY_WEBHOOK_URL` (Standard leer = deaktiviert) schickt bei
+  jedem Ausgang, der menschliche Aufmerksamkeit braucht (blockiertes Issue, rote CI,
+  erreichtes Lauf-Budget, fehlgeschlagener Dashboard-Job), einen einfachen JSON-POST
+  (Slack-Incoming-Webhook-kompatibel) über `core/notifier.py` – wichtig gerade hier, da beim
+  Poll-Zyklus (und bei Dashboard-Hintergrund-Jobs) anders als in der CLI niemand aktiv zusieht.
 
 **Einrichtung unter Windows** (`scripts/run_issue_watcher.ps1`): ruft `--check-issues` auf
 und hängt die Ausgabe UTF-8-sicher an `logs/issue_watcher.log` an (nicht versioniert, siehe
@@ -289,6 +307,11 @@ Ein echter, funktionsfähiger HTTP-Server (`interface/web_dashboard.py`, stdlib
   plus das fertige Ergebnis, sobald der Lauf abgeschlossen ist.
 - **`GET /api/status`:** Echte Team-Metadaten (Agentenanzahl, Fachbereiche, Mitglieder) aus
   einer festen `Orchestrator`-Instanz statt fest verdrahteter Werte.
+- **`GET /api/observability`** + Panel "📈 Observability & Trends": Erfolgsquote je Agent
+  (letzte 50 Läufe) als Balkenanzeige + Liste der jüngsten Läufe (Tokens, Dauer, Ergebnis) –
+  aus `memory/run_history.py`, über ALLE Trigger-Quellen hinweg (CLI/Dashboard/Issue-Watcher),
+  nicht nur Dashboard-Jobs. Ergänzt die bereits bestehende kumulierte Kosten-Historie
+  (`/tokens`) um echte Trends statt nur Gesamtsummen.
 
 **🔒 Sicherheit standardmäßig aktiv:** Der Server bindet per Default nur auf `127.0.0.1`
 (`config.DASHBOARD_HOST`) – aus dem Netzwerk nicht erreichbar. Wer das Dashboard bewusst im

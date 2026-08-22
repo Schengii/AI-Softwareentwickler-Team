@@ -1,0 +1,98 @@
+# 🏗️ System-Architektur: KI-Softwareentwickler-Team
+
+Das **KI-Softwareentwickler-Team** ist ein autonomes, hierarchisch strukturiertes Multi-Agenten-System für die vollständige, token-optimierte Softwareentwicklung. Es bildet ein professionelles Entwicklerteam aus 33 spezialisierten KI-Experten und 5 Fachbereichs-Teamleitern ab.
+
+---
+
+## 1. Fachbereichs- & Teamleiter-Hierarchie
+
+Das Gesamtsystem gliedert sich in **5 Fachbereiche**, die jeweils von einem eigenen **Department Lead** geführt werden. Der Orchestrator delegiert Phasen an die Teamleiter, welche wiederum konkrete Arbeitsaufträge an ihre Fachteams verteilen:
+
+```
+                                  ┌────────────────────────┐
+                                  │      Orchestrator      │
+                                  └───────────┬────────────┘
+                                              │
+         ┌──────────────────┬─────────────────┼─────────────────┬──────────────────┐
+         │                  │                 │                 │                  │
+         ▼                  ▼                 ▼                 ▼                  ▼
+  🔵 Fachbereich 1    🟢 Fachbereich 2  🎨 Fachbereich 3  🟡 Fachbereich 4  🔴 Fachbereich 5
+   Planung & Arch.       Entwicklung      Design & Media    Qualität & Ops    Review & Gov.
+  (Planning Lead)        (Dev Lead)      (Creative Lead)      (QA Lead)     (Governance Lead)
+         │                  │                 │                 │                  │
+  ┌──────┴──────┐    ┌──────┴──────┐   ┌──────┴──────┐   ┌──────┴──────┐    ┌──────┴──────┐
+  │team_lead    │    │frontend     │   │ui_ux        │   │tester       │    │code_reviewer│
+  │product_owner│    │backend      │   │copywriter   │   │security     │    │refactoring  │
+  │business_an. │    │database     │   │image_gen.   │   │devops       │    │compliance   │
+  │architect    │    │api_integ.   │   │accessibility│   │resilience_g.│    │proj_cleaner │
+  │finops       │    │data_engineer│   │i18n         │   └─────────────┘    │agent_trainer│
+  │web_research │    │mobile       │   │documentation│                      │retrospective│
+  └─────────────┘    │ml           │   └─────────────┘                      │readme       │
+                     │prompt_eng.  │                                        └─────────────┘
+                     │performance  │
+                     └─────────────┘
+```
+
+---
+
+## 2. Der Orchestrierungs- & Ausführungszyklus
+
+Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
+
+1. **Task-Dekomposition & Skalierung (`core/task_manager.py`)**:
+   - Zerlegung der Gesamtaufgabe in konkrete Teilaufgaben.
+   - **Komplexitäts-Skalierung**: Reine Micro-Tasks (z. B. einfache Bugfixes, Einzelfunktionen) laufen direkt und schlank ohne Teamleiter-Overhead.
+2. **Git-Worktree-Isolation (`core/git_isolation.py`)**:
+   - Jeder Lauf operiert in einem isolierten Git-Worktree, um Datei-Kollisionen bei parallelen Läufen zu verhindern.
+3. **Phasenweise Ausführung (`agents/orchestrator.py`)**:
+   - **Phase 1 (Planung & Architektur)**: Anforderungsanalyse, Architecture Decision Records (ADRs), Spezifikation.
+   - **Phase 2 (Entwicklung)**: Parallele Erstellung von Backend-, Frontend-, Datenbank- und Schnittstellencode.
+   - **Phase 3 (Design & Content)**: UI/UX-Styles, Barrierefreiheit (WCAG 2.2), Mehrsprachigkeit, Dokumentation.
+   - **Phase 4 (Qualität & Sicherheit)**: Testsuite, Security-Audits, DevOps/Docker-Konfiguration.
+   - **Phase 5 (Review & Governance)**: Code-Review, Refactoring, Compliance-Check.
+4. **Dynamische Verifikations-Schleife (`core/verifier.py`)**:
+   - **Isolierte Installation**: Automatische Erstellung einer virtuellen Umgebung (`.ai_team_venv`) und Installation von `requirements.txt` bzw. `package.json`.
+   - **Echte Testausführung**: Ausführung von `pytest` bzw. `unittest` und `npm test`.
+   - **Testabdeckungs-Messung**: Automatische Prüfung der Codeabdeckung (`pytest-cov`) gegen konfigurierte Schwellen (`MIN_TEST_COVERAGE`).
+   - **Statisches Linting**: `ruff` für Python, `eslint`/`tsc` für TypeScript/JavaScript.
+   - **Schwachstellen-Scan**: Echter `pip-audit` / `npm audit` gegen öffentliche CVE-Datenbanken.
+   - **Runtime Smoke-Check**: Teststart der Applikation im Subprozess (z. B. Uvicorn/FastAPI HTTP-Polling oder CLI-Help-Check), um sicherzustellen, dass die Anwendung tatsächlich hochfährt.
+   - **Gezielte Fix-Schleife**: Traceback-Parsing ermittelt die verursachenden Dateien und weist nur dem zuständigen Agenten einen gezielten Korrekturauftrag zu.
+5. **Ergebnis-Synthese & Akzeptanzkriterien-Check (`core/result_aggregator.py`)**:
+   - Zusammenfassung aller Fachberichte und mechanischer Abgleich mit den Given/When/Then-Akzeptanzkriterien.
+
+---
+
+## 3. Resilience, Fault-Tolerance & Token-Schutz
+
+- **Resilience-Guard (`agents/resilience_guard_agent.py`, `core/rate_limiter.py`)**:
+  - Implementiert Circuit Breakers, Exponential Backoff mit Jitter und Graceful Degradation bei Provider-Ausfällen.
+- **Multi-Tier LLM Fallback (`core/llm_factory.py`)**:
+  - Primär- und Fallback-Modelle über Gemini, Anthropic Claude, DeepSeek und Groq.
+- **Token Guard & Quota-Management (`core/token_guard.py`, `core/quota_estimator.py`)**:
+  - Hartes Budget-Limit (`MAX_RUN_TOKENS`) mit kontrolliertem, sicherem Abbruch vor Budget-Überschreitung.
+
+---
+
+## 4. Observability, Historie & Evaluation
+
+- **Run-Historie (`memory/run_history.py`)**:
+  - Protokolliert Erfolgsquoten je Agent, Tokenverbrauch, Laufzeit und Verifikationsergebnisse.
+- **Zentraler Backlog-Store (`core/backlog_store.py`)**:
+  - Einheitliches Kanban-Board für Aufgaben aus CLI, Web-Dashboard, GitHub-Issues und Dependency-Watchern.
+- **Benchmark- & Evaluations-Harness (`evals/`)**:
+  - Kanonische Referenzaufgaben (`evals/tasks.py`) für reproduzierbare Qualitäts- und Regressionstests über `python main.py --eval`.
+- **Periodischer Dependency-Watch (`core/dependency_watch.py`)**:
+  - Automatische Überwachung aller Workspace-Projekte auf neue CVEs über `python main.py --check-dependencies`.
+
+---
+
+## 5. Schnittstellen & Integrationen
+
+| Schnittstelle | Modul / Datei | Zweck |
+| :--- | :--- | :--- |
+| **Interaktive CLI** | `interface/cli.py` | Rich-formatierte Terminal-Oberfläche mit Live-Status und Plan-Gate. |
+| **Web-Dashboard** | `interface/web_dashboard.py` | Dark-Mode Web-UI mit Live-Log, Kanban-Backlog, Observability und Docker-Deploy. |
+| **MCP-Server** | `mcp_server.py` | Standardisiertes Model Context Protocol für IDE-Integrationen (VS Code, Cursor, Antigravity). |
+| **GitHub-Watcher** | `core/issue_watcher.py` | Automatische Bearbeitung von GitHub-Issues mit Label-Trigger. |
+| **Benchmark-Suite** | `evals/runner.py` | Ausführung standardisierter Benchmarks (`python main.py --eval`). |

@@ -26,10 +26,35 @@ def main():
     config.ISSUE_TRIGGER_LABEL und beendet sich danach wieder – gedacht für einen externen
     Aufruf per Cron/Windows-Taskplaner/GitHub-Actions-Schedule (siehe core/issue_watcher.py),
     kein eingebauter Dauer-Scheduler.
-    Mit `--check-dependencies` läuft EIN Scan-Zyklus über ALLE Workspace-Projekte auf bekannte
-    Schwachstellen in ihren Abhängigkeiten und beendet sich danach wieder – ebenfalls für einen
-    externen, wiederkehrenden Aufruf gedacht (siehe core/dependency_watch.py).
+    Mit `--eval [--tasks t1,t2]` startet die kanonische Benchmark-Evaluierungs-Suite
+    (siehe evals/), misst Token-Verbrauch, Dauer und Verifikationsergebnis und speichert
+    die Ergebnisse in der Benchmark-Historie. Mit `--list-evals` werden alle verfügbaren
+    Benchmark-Aufgaben aufgelistet.
     """
+    if "--list-evals" in sys.argv:
+        from evals.tasks import list_tasks
+        print("🎯 Verfügbare Benchmark-Aufgaben:")
+        for t in list_tasks():
+            print(f"  - {t.slug:<20} [{t.category:<8}] {t.name}: {t.description}")
+        return
+
+    if "--eval" in sys.argv:
+        import asyncio
+        from evals.runner import run_benchmark
+
+        tasks_filter = None
+        if "--tasks" in sys.argv:
+            try:
+                tasks_raw = sys.argv[sys.argv.index("--tasks") + 1]
+                tasks_filter = [t.strip() for t in tasks_raw.split(",") if t.strip()]
+            except IndexError:
+                pass
+
+        print("🚀 Starte KI-Team Benchmark-Suite...")
+        suite_res = asyncio.run(run_benchmark(task_slugs=tasks_filter, status_callback=print))
+        print("\n" + suite_res.format_terminal_table())
+        return
+
     if "--check-dependencies" in sys.argv:
         import asyncio
 

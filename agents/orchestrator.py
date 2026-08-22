@@ -1326,6 +1326,19 @@ class Orchestrator:
                     summary_lines.append(f"- 📊 ❌ Testabdeckung {coverage_report.percent}% UNTER der konfigurierten Schwelle (`MIN_TEST_COVERAGE={MIN_TEST_COVERAGE}%`).")
                     verification_ok = False
 
+        # Runtime Smoke-Check: Prüft, ob die generierte App tatsächlich hochfährt / antwortet (Tests grün != App startet)
+        if not (budget_aborted or manually_cancelled) and report is not None and report.ran and report.passed:
+            smoke_report = await asyncio.to_thread(verifier.check_runtime_smoke)
+            if smoke_report.attempted:
+                if smoke_report.passed:
+                    code_info = f" (HTTP {smoke_report.status_code})" if smoke_report.status_code else ""
+                    notify(f"  🚀 [bold green]Runtime-Smoke-Test erfolgreich:[/bold green] `{smoke_report.entrypoint}` [{smoke_report.app_type}]{code_info}.")
+                    summary_lines.append(f"- 🚀 Runtime-Smoke-Test: `{smoke_report.entrypoint}` [{smoke_report.app_type}] startet fehlerfrei{code_info}.")
+                else:
+                    err = f": {smoke_report.output[:150]}" if smoke_report.output else ""
+                    notify(f"  🚀 [bold red]Runtime-Smoke-Test fehlgeschlagen:[/bold red] `{smoke_report.entrypoint}` [{smoke_report.app_type}]{err}.")
+                    summary_lines.append(f"- 🚀 ⚠️ Runtime-Smoke-Test: `{smoke_report.entrypoint}` [{smoke_report.app_type}] konnte nicht gestartet werden{err}.")
+
         verification_summary = "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n" + (
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."
         )

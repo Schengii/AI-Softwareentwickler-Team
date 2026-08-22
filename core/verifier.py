@@ -39,8 +39,12 @@ automatische Stil-/Fehlerprüfung.
 import json
 import re
 import shutil
+import socket
+import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -188,6 +192,21 @@ class CoverageReport:
     """
     attempted: bool
     percent: float = 0.0
+    reason_skipped: str = ""
+
+
+@dataclass
+class RuntimeSmokeReport:
+    """
+    Ergebnis eines echten Runtime-Smoke-Tests (App kurz im Subprozess starten & prüfen, ob
+    sie fehlerfrei hochfährt und ggf. auf HTTP-Anfragen antwortet).
+    """
+    attempted: bool
+    passed: bool = False
+    entrypoint: str = ""
+    app_type: str = ""  # "http_api", "cli_script", "node_server"
+    status_code: int | None = None
+    output: str = ""
     reason_skipped: str = ""
 
 
@@ -796,3 +815,109 @@ class ProjectVerifier:
             failure.files = implicated_files
 
         return list(failures.values())
+
+    def _find_free_port(self) -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    def check_runtime_smoke(self, timeout_seconds: float = 6.0) -> RuntimeSmokeReport:
+        """
+        Prüft durch einen kurzen Teststart im Subprozess, ob die generierte App tatsächlich
+        lauffähig ist (Runtime-Smoke-Test):
+        - Web-/API-Apps (FastAPI/Flask/uvicorn/http.server): Start auf freiem lokalem Port,
+          Polling von GET / oder GET /health, ob der Server antwortet.
+        - CLI-Skripte (mit argparse/click): Start mit `--help`, ob das Skript ohne Syntax-/
+          Importfehler durchläuft.
+        - Node.js-Server (index.js/server.js/app.js): Syntax-/Startprüfung per Node.
+        """
+        python_exe = self._resolve_python()
+
+        # 1. Suche nach Python-Einstiegspunkten
+        for entry_name in ("main.py", "app.py", "server.py", "api.py"):
+            entry_file = self.project_dir / entry_name
+            if entry_file.exists():
+                try:
+                    content = entry_file.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+
+                is_web = any(kw in content for kw in ("FastAPI", "uvicorn", "Flask", "aiohttp", "http.server", "HTTPServer"))
+                if is_web:
+                    port = self._find_free_port()
+                    env = {**CodeSandbox.safe_environment(), "PORT": str(port), "UVICORN_PORT": str(port)}
+                    cmd = [python_exe, str(entry_file)]
+                    if "uvicorn" in content and ("app = FastAPI" in content or "app =" in content):
+                        module_name = entry_name[:-3]
+                        cmd = [python_exe, "-m", "uvicorn", f"{module_name}:app", "--port", str(port), "--host", "127.0.0.1"]
+
+                    proc = None
+                    try:
+                        proc = subprocess.Popen(
+                            cmd, cwd=self.project_dir, env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                        )
+                        start_time = time.monotonic()
+                        status_code = None
+                        while time.monotonic() - start_time < timeout_seconds:
+                            if proc.poll() is not None:
+                                stdout, stderr = proc.communicate(timeout=1.0)
+                                return RuntimeSmokeReport(
+                                    attempted=True, passed=False, entrypoint=entry_name,
+                                    app_type="http_api", output=(stderr or stdout).strip()[-500:],
+                                )
+                            try:
+                                req = urllib.request.Request(f"http://127.0.0.1:{port}/", headers={"User-Agent": "AI-Team-Smoke-Test"})
+                                with urllib.request.urlopen(req, timeout=1.0) as resp:
+                                    status_code = resp.status
+                                    break
+                            except urllib.error.HTTPError as e:
+                                # HTTP 404/401/403/etc. bedeutet: Server LÄUFT und antwortet per HTTP
+                                status_code = e.code
+                                break
+                            except (urllib.error.URLError, ConnectionError, OSError):
+                                time.sleep(0.3)
+
+                        if status_code is not None:
+                            return RuntimeSmokeReport(
+                                attempted=True, passed=True, entrypoint=entry_name,
+                                app_type="http_api", status_code=status_code,
+                            )
+                        else:
+                            return RuntimeSmokeReport(
+                                attempted=True, passed=False, entrypoint=entry_name,
+                                app_type="http_api", output="Timeout: HTTP-Server antwortete nicht innerhalb des Timeouts.",
+                            )
+                    finally:
+                        if proc and proc.poll() is None:
+                            proc.terminate()
+                            try:
+                                proc.wait(timeout=2.0)
+                            except subprocess.TimeoutExpired:
+                                proc.kill()
+                else:
+                    # CLI / Skript: Teststart mit --help
+                    res = CodeSandbox.run_command([python_exe, str(entry_file), "--help"], cwd=self.project_dir, timeout_seconds=timeout_seconds)
+                    if res.exit_code == 0 or "usage:" in (res.stdout + res.stderr).lower() or "--help" in (res.stdout + res.stderr):
+                        return RuntimeSmokeReport(attempted=True, passed=True, entrypoint=entry_name, app_type="cli_script")
+                    elif res.exit_code != 0 and not res.timed_out:
+                        return RuntimeSmokeReport(
+                            attempted=True, passed=False, entrypoint=entry_name,
+                            app_type="cli_script", output=(res.stderr or res.stdout).strip()[-500:],
+                        )
+
+        # 2. Suche nach Node-Einstiegspunkten
+        for entry_name in ("index.js", "server.js", "app.js"):
+            entry_file = self.project_dir / entry_name
+            if entry_file.exists():
+                res = CodeSandbox.run_command(["node", "-c", str(entry_file)], cwd=self.project_dir, timeout_seconds=5.0)
+                if res.exit_code == 0:
+                    return RuntimeSmokeReport(attempted=True, passed=True, entrypoint=entry_name, app_type="node_server")
+                else:
+                    return RuntimeSmokeReport(
+                        attempted=True, passed=False, entrypoint=entry_name,
+                        app_type="node_server", output=(res.stderr or res.stdout).strip()[-500:],
+                    )
+
+        return RuntimeSmokeReport(attempted=False, reason_skipped="Kein ausführbarer Einstiegspunkt (main.py, app.py, server.js) gefunden.")
+

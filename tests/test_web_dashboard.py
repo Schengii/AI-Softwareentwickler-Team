@@ -197,6 +197,24 @@ class TestDashboardServerShutdown(unittest.TestCase):
 
         self.assertFalse(server._thread.is_alive())
 
+    def test_shutdown_leaves_no_pending_dispatch_task_behind(self):
+        """
+        Regression-Test für einen Code-Review-Fund: `shutdown()` rief bisher nur
+        `loop.stop()` auf, ohne den dauerhaft laufenden `_dispatch_loop()`-Task vorher zu
+        canceln - der Task blieb dabei als "pending" hängen und wurde erst beim späteren
+        Garbage-Collect zerstört (`Task was destroyed but it is pending!`/`RuntimeError:
+        Event loop is closed`-Rauschen am Ende der Testsuite). `shutdown()` muss den Task
+        jetzt sauber fertigstellen, bevor der Thread endet.
+        """
+        server = DashboardServer()
+        dispatch_task = server._dispatch_task
+        self.assertIsNotNone(dispatch_task)
+
+        server.shutdown()
+
+        self.assertTrue(dispatch_task.done())
+        self.assertTrue(dispatch_task.cancelled())
+
 
 if __name__ == "__main__":
     unittest.main()

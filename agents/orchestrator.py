@@ -1335,7 +1335,18 @@ class Orchestrator:
                     notify(f"  🚀 [bold green]Runtime-Smoke-Test erfolgreich:[/bold green] `{smoke_report.entrypoint}` [{smoke_report.app_type}]{code_info}.")
                     summary_lines.append(f"- 🚀 Runtime-Smoke-Test: `{smoke_report.entrypoint}` [{smoke_report.app_type}] startet fehlerfrei{code_info}.")
                 else:
+                    # Bugfix (Code-Review-Fund): dieser Zweig baute bisher nur eine `err`-Variable,
+                    # rief aber weder notify() noch summary_lines.append() auf und setzte
+                    # verification_ok nicht zurück - ein fehlgeschlagener Smoke-Test (App startet
+                    # nicht) blieb dadurch komplett unsichtbar UND unblockiert, obwohl genau das
+                    # der Sinn dieses Checks ist ("Tests grün != App startet", siehe Kommentar
+                    # oben). Analog zur Testabdeckungs-Schwelle: eine tatsächlich geprüfte, aber
+                    # nicht startende App ist eine echte Anforderungsverletzung, kein reiner
+                    # Stil-Hinweis wie ein Lint-Fund.
                     err = f": {smoke_report.output[:150]}" if smoke_report.output else ""
+                    notify(f"  🚀 [bold red]Runtime-Smoke-Test fehlgeschlagen:[/bold red] `{smoke_report.entrypoint}` [{smoke_report.app_type}]{err}.")
+                    summary_lines.append(f"- 🚀 ❌ Runtime-Smoke-Test fehlgeschlagen: `{smoke_report.entrypoint}` [{smoke_report.app_type}] startet nicht{err}.")
+                    verification_ok = False
         # Browser / Frontend UI-Check: Prüft statische Assets, Rendering und JS-Konsolenfehler
         if not (budget_aborted or manually_cancelled):
             browser_report = await asyncio.to_thread(verifier.check_browser_ui)

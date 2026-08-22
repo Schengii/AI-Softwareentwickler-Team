@@ -37,6 +37,7 @@ JEDER Request einen gültigen "Authorization: Bearer <token>"-Header (oder "?tok
 """
 
 import asyncio
+import contextlib
 import hmac
 import json
 import re
@@ -93,6 +94,7 @@ class DashboardServer:
         self._max_concurrent_jobs = max_concurrent_jobs
         self._loop = asyncio.new_event_loop()
         self._async_queue: asyncio.Queue[str] | None = None  # im Loop-Thread erzeugt, siehe _run_event_loop
+        self._dispatch_task: asyncio.Task | None = None  # im Loop-Thread erzeugt, siehe _run_event_loop
         loop_ready = threading.Event()
         self._thread = threading.Thread(target=self._run_event_loop, args=(loop_ready,), daemon=True)
         self._thread.start()
@@ -102,7 +104,7 @@ class DashboardServer:
         asyncio.set_event_loop(self._loop)
         self._async_queue = asyncio.Queue()
         loop_ready.set()
-        self._loop.create_task(self._dispatch_loop())
+        self._dispatch_task = self._loop.create_task(self._dispatch_loop())
         self._loop.run_forever()
 
     async def _dispatch_loop(self) -> None:
@@ -154,8 +156,26 @@ class DashboardServer:
         `unittest discover`-Suite blieben zwei dauerhaft laufende Event-Loops gleichzeitig im
         Prozess zurück – die volle Suite hing sich dabei reproduzierbar minutenlang auf,
         obwohl jede Datei einzeln ausgeführt in unter 2s durchlief.
+
+        Cancelt zusätzlich den dauerhaft laufenden `_dispatch_loop()`-Task VOR dem Stoppen
+        des Loops (Bugfix aus Code-Review): vorher wurde nur `loop.stop()` aufgerufen, der
+        `while True`-Dispatch-Task blieb dabei als "pending" hängen und wurde erst beim
+        Garbage-Collect zerstört - sichtbar als `Task was destroyed but it is pending!`/
+        `RuntimeError: Event loop is closed`-Rauschen am Ende jedes Testlaufs mit mehreren
+        DashboardServer-Instanzen. Rein kosmetisch (keine Tests schlugen dadurch fehl), aber
+        ein sauberer Shutdown sollte keine offenen Tasks lautlos zurücklassen.
         """
-        self._loop.call_soon_threadsafe(self._loop.stop)
+        async def _cancel_dispatch_and_stop() -> None:
+            if self._dispatch_task is not None:
+                self._dispatch_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._dispatch_task
+            self._loop.stop()
+
+        if self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(_cancel_dispatch_and_stop(), self._loop)
+        else:
+            self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=timeout)
 
     async def _execute_job(self, job_id: str) -> None:

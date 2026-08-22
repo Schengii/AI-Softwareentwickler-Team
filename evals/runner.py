@@ -6,7 +6,6 @@ Ermöglicht automatisierte, wiederholbare Testläufe gegen die kanonischen Bench
 erzeugte Dateien, um Versionen des Teams objektiv vergleichen zu können.
 """
 
-import asyncio
 import json
 import time
 from collections.abc import Callable
@@ -16,8 +15,7 @@ from pathlib import Path
 
 from agents.orchestrator import Orchestrator
 from core.workspace import WorkspaceManager
-from evals.tasks import BENCHMARK_TASKS, BenchmarkTask, get_task, list_tasks
-from memory.run_history import record_run
+from evals.tasks import BenchmarkTask, get_task, list_tasks
 
 EVALS_HISTORY_FILE = Path(__file__).resolve().parent / "eval_history.json"
 StatusCallback = Callable[[str], None]
@@ -75,18 +73,18 @@ class BenchmarkSuiteResult:
     def format_markdown_report(self) -> str:
         """Erzeugt einen ausführlichen Markdown-Bericht."""
         md = [
-            f"# 🎯 Benchmark-Bericht: KI-Softwareentwickler-Team",
-            f"",
+            "# 🎯 Benchmark-Bericht: KI-Softwareentwickler-Team",
+            "",
             f"- **Datum / Uhrzeit**: {self.timestamp}",
             f"- **Aufgaben gesamt**: {self.total_tasks}",
             f"- **Bestanden**: {self.passed_tasks} ({self.pass_rate}%)",
             f"- **Gesamt-Tokens**: {self.total_tokens:,}",
             f"- **Gesamtdauer**: {self.total_duration_seconds:.1f}s",
-            f"",
-            f"## Übersicht",
-            f"",
-            f"| Task | Kategorie | Status | Verifikation | Dauer | Tokens | Fehlende Dateien |",
-            f"| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+            "",
+            "## Übersicht",
+            "",
+            "| Task | Kategorie | Status | Verifikation | Dauer | Tokens | Fehlende Dateien |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
         ]
         for r in self.results:
             status = "✅ Bestanden" if r.success else "❌ Fehler"

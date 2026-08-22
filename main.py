@@ -40,6 +40,7 @@ def main():
 
     if "--eval" in sys.argv:
         import asyncio
+
         from evals.runner import run_benchmark
 
         tasks_filter = None

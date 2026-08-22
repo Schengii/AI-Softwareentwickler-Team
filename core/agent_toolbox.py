@@ -422,6 +422,7 @@ class AgentToolbox:
 
     async def _tool_find_symbol_definition(self, symbol_name: str) -> dict:
         import asyncio
+
         from core.code_graph import CodebaseGraph
 
         graph = await asyncio.to_thread(CodebaseGraph, self.project_dir)
@@ -445,6 +446,7 @@ class AgentToolbox:
 
     async def _tool_find_symbol_references(self, symbol_name: str) -> dict:
         import asyncio
+
         from core.code_graph import CodebaseGraph
 
         graph = await asyncio.to_thread(CodebaseGraph, self.project_dir)
@@ -453,6 +455,7 @@ class AgentToolbox:
 
     async def _tool_analyze_code_impact(self, symbol_name: str) -> dict:
         import asyncio
+
         from core.code_graph import CodebaseGraph
 
         graph = await asyncio.to_thread(CodebaseGraph, self.project_dir)

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from core.cloud_deployment import CloudDeploymentManager, CloudDeploymentResult
+from core.cloud_deployment import CloudDeploymentManager
 
 
 class TestCloudDeployment(unittest.TestCase):

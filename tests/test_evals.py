@@ -16,7 +16,7 @@ from evals.runner import (
     run_single_task,
     save_benchmark_result,
 )
-from evals.tasks import BENCHMARK_TASKS, BenchmarkTask, get_task, list_tasks
+from evals.tasks import get_task, list_tasks
 
 
 class TestBenchmarkTasks(unittest.TestCase):

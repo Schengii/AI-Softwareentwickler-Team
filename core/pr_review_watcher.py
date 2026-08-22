@@ -13,7 +13,6 @@ import json
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from core.backlog_store import list_tickets, upsert_ticket
 from core.notifier import notify_external

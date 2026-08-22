@@ -71,6 +71,42 @@ class TestBacklogStore(unittest.TestCase):
         self.assertEqual(len(tickets), 2)
         self.assertNotIn("t1", [t.id for t in tickets])  # ältestes zuerst verdrängt
 
+    def test_new_ticket_defaults_to_medium_priority_and_no_estimate(self):
+        ticket = backlog_store.upsert_ticket("t1", "A", "cli", "todo")
+        self.assertEqual(ticket.priority, 2)
+        self.assertEqual(ticket.estimate, "")
+
+    def test_priority_and_estimate_can_be_set_on_creation(self):
+        ticket = backlog_store.upsert_ticket("t1", "A", "cli", "todo", priority=1, estimate="M")
+        self.assertEqual(ticket.priority, 1)
+        self.assertEqual(ticket.estimate, "M")
+
+    def test_priority_and_estimate_survive_a_status_update_without_being_passed_again(self):
+        # Realer struktureller Fund: mehrere Aufrufer (core/issue_watcher.py u.a.) aktualisieren
+        # ein Ticket über seinen Lebenszyklus mehrfach, OHNE priority/estimate erneut
+        # mitzugeben - ein echter Zahlen-Default hätte eine einmal gesetzte Priorität beim
+        # nächsten Update stillschweigend auf "mittel" zurückgesetzt.
+        backlog_store.upsert_ticket("t1", "A", "issue", "in_progress", priority=1, estimate="L")
+        updated = backlog_store.upsert_ticket("t1", "A", "issue", "review", detail="https://x/y/pull/1")
+
+        self.assertEqual(updated.priority, 1)
+        self.assertEqual(updated.estimate, "L")
+
+    def test_priority_and_estimate_can_be_explicitly_changed_on_update(self):
+        backlog_store.upsert_ticket("t1", "A", "cli", "todo", priority=1, estimate="L")
+        updated = backlog_store.upsert_ticket("t1", "A", "cli", "todo", priority=3, estimate="S")
+        self.assertEqual(updated.priority, 3)
+        self.assertEqual(updated.estimate, "S")
+
+    def test_count_by_status(self):
+        backlog_store.upsert_ticket("t1", "A", "cli", "in_progress")
+        backlog_store.upsert_ticket("t2", "B", "cli", "in_progress")
+        backlog_store.upsert_ticket("t3", "C", "cli", "done")
+
+        self.assertEqual(backlog_store.count_by_status("in_progress"), 2)
+        self.assertEqual(backlog_store.count_by_status("done"), 1)
+        self.assertEqual(backlog_store.count_by_status("blocked"), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

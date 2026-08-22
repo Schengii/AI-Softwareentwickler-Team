@@ -30,7 +30,13 @@ FIELDS: dict[str, str] = {
     "code_style": "Code-Stil / Konventionen",
     "deployment_target": "Deployment-Ziel",
     "notes": "Weitere verbindliche Hinweise",
+    "max_project_tokens": "Max. Tokens für dieses Projekt insgesamt (0/leer = unbegrenzt)",
 }
+# max_project_tokens ist eine operative Kennzahl (Grundlage für das harte Budget in
+# agents/orchestrator.py), keine inhaltliche Vorgabe für die Agenten - taucht deshalb NICHT im
+# per format_constitution_for_agents() injizierten Prompt-Kontext auf (ein Zahlenlimit wäre dort
+# nur unnötiger Prompt-Text ohne Wirkung auf die eigentliche Aufgabe).
+_OPERATIONAL_FIELDS: frozenset[str] = frozenset({"max_project_tokens"})
 
 
 def _constitution_path(project_dir: str) -> Path:
@@ -82,12 +88,27 @@ def format_constitution_for_agents(project_dir: str) -> str:
     leerer/unnötiger Abschnitt im Prompt für die Mehrheit der Projekte ohne eine).
     """
     constitution = read_constitution(project_dir)
-    if not constitution:
+    content_fields = {k: v for k, v in constitution.items() if k not in _OPERATIONAL_FIELDS}
+    if not content_fields:
         return ""
 
     lines = ["## 📜 Projekt-Konstitution (verbindliche Tech-Stack-Präferenzen des Nutzers):"]
     for key, label in FIELDS.items():
-        if key in constitution:
-            lines.append(f"- **{label}:** {constitution[key]}")
+        if key in content_fields:
+            lines.append(f"- **{label}:** {content_fields[key]}")
     lines.append("Halte dich an diese Vorgaben, außer die Aufgabe verlangt explizit etwas anderes.")
     return "\n".join(lines)
+
+
+def get_max_project_tokens(project_dir: str) -> int:
+    """
+    Liest `max_project_tokens` aus der Konstitution und gibt es als int zurück (0 = unbegrenzt/
+    nicht gesetzt/ungültiger Wert – kein Crash bei einem versehentlich nicht-numerischen Wert,
+    dieselbe tolerante Grundhaltung wie read_constitution() selbst). Grundlage für das
+    Pro-Projekt-Kostenbudget in agents/orchestrator.py.
+    """
+    raw = read_constitution(project_dir).get("max_project_tokens", "")
+    try:
+        return max(0, int(raw))
+    except (ValueError, TypeError):
+        return 0

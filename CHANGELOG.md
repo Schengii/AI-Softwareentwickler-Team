@@ -7,6 +7,130 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🤖 Drei weitere Lücken gegenüber einem echten Profi-Team: Pro-Projekt-Budget, Release-Tagging, Sprint-Priorisierung
+
+Zweite Runde derselben Nutzeranfrage-getriebenen Bestandsaufnahme (siehe Eintrag unten):
+
+- **Pro-Projekt-Kostenbudget über ALLE Läufe hinweg:** `MAX_RUN_TOKENS` begrenzt nur EINEN
+  einzelnen Lauf – ein Projekt mit vielen aufeinanderfolgenden Läufen (z.B. für einen externen
+  Auftraggeber mit festem Kostenrahmen) hatte kein Limit über die gesamte Projekt-Lebenszeit.
+  `/constitution` (neues Feld `max_project_tokens`) + `memory/run_history.get_total_tokens_for_project()`
+  (bereits vorhandene, project_slug-gefilterte Lauf-Historie, nur neu summiert) schließen die
+  Lücke, unabhängig vom globalen Lauf-Budget geprüft: ist das Projekt-Budget bereits VOR
+  Laufbeginn erschöpft, bricht `agents/orchestrator.py.process()` ab, ohne auch nur einen
+  Agenten zu starten; während des Laufs wird es an denselben drei Prüfpunkten wie
+  `MAX_RUN_TOKENS` mitgeprüft (`_project_budget_exceeded()`). `_budget_exceeded_label()` nennt
+  in jeder Abbruch-Meldung korrekt, WELCHES der beiden unabhängigen Budgets tatsächlich bindend
+  war, statt pauschal auf `MAX_RUN_TOKENS` zu verweisen. `max_project_tokens` ist bewusst NICHT
+  Teil des in den Agenten-Kontext injizierten Konstitutions-Texts (operative Kennzahl, keine
+  inhaltliche Vorgabe).
+- **Generierte Projekte bekommen jetzt eine eigene Versionshistorie:** Der PR-Workflow deckte
+  Feature-Branch → Pull Request → Merge vollständig ab, aber danach passierte nichts mehr – nur
+  das Framework selbst hatte ein gepflegtes CHANGELOG.md. `core/release_manager.py` (neu)
+  taggt automatisch ein neues GitHub-Release (`<projekt>-vX.Y.Z`, fortlaufende Patch-Version je
+  Projekt – workspace/-Projekte liegen im selben Repo wie das Framework, daher das
+  Projekt-Präfix) MIT Release-Notes (Ticket-Titel + PR-Link), sobald `core/merge_watcher.py`
+  einen echten Merge erkennt UND das Ticket ein `project_slug` trägt. Nächste freie Version wird
+  über `gh release list` ermittelt (bewusst NICHT lokale `git tag`-Einträge, die ohne
+  `git fetch --tags` veraltet sein könnten und denselben Tag doppelt vergeben würden). Best
+  effort: ein fehlgeschlagenes Tagging lässt das Ticket trotzdem korrekt auf `done` stehen.
+  Nebenbefund beim Verdrahten: `check_merged_tickets()` hätte für jeden Test versehentlich eine
+  ECHTE, intern neu angelegte `GitHubAgent()`-Instanz für das Tagging verwendet statt der
+  gemockten übergebenen Instanz – gefixt, bevor es zu echten `gh`-Aufrufen während der Tests
+  kommen konnte.
+- **Sprint-/Kapazitäts-Grundlagen im Backlog:** Bisher entstand JEDES Ticket erst, wenn eine
+  Aufgabe bereits lief – keine Möglichkeit, mehrere geplante Aufgaben vorab zu priorisieren, und
+  kein Kapazitätsbegriff über mehrere gleichzeitig laufende Tickets hinweg. `core/backlog_store.py`:
+  `Ticket` bekommt `priority` (1=hoch/2=mittel/3=niedrig, dieselbe Konvention wie
+  `AgentTask.priority`) und `estimate` (freier Text). `upsert_ticket()` behandelt beide als
+  Sentinel (`None` = unverändert übernehmen) statt als echten Default – ein echter Default hätte
+  eine beim Anlegen gesetzte Priorität bei jedem der zahlreichen bestehenden Status-Update-Aufrufe
+  (z.B. `core/issue_watcher.py`, die priority/estimate nie mitgeben) stillschweigend auf
+  "mittel" zurückgesetzt. Neuer CLI-Befehl `/backlog-add [priorität] <titel>` legt ein noch
+  nicht begonnenes, priorisiertes `todo`-Ticket an (führt selbst nichts aus – wird erst zu
+  echter Arbeit, wenn die Aufgabe regulär in den Chat geschrieben wird, genau wie die bereits
+  bestehenden `todo`-Tickets aus `core/pr_review_watcher.py`). `/backlog` sortiert jede Spalte
+  nach Priorität und zeigt eine rein informative WIP-Limit-Warnung (`BACKLOG_WIP_LIMIT_IN_PROGRESS`,
+  Standard `0` = aus) – bewusst kein Hard-Block, ein Kanban-WIP-Limit ist Team-Disziplin, keine
+  technische Zwangsbeschränkung.
+- **Geprüft, aber bewusst NICHT geändert: Design-vor-Dev-Reihenfolge.** Vermutung aus der
+  vorherigen Runde war, Design/Content liefe parallel zu oder nach der Entwicklung. Tatsächliche
+  Prüfung von `_run_department_hierarchy()`: die 5 Fachbereichs-Phasen laufen strikt
+  SEQUENZIELL (eine einfache `for`-Schleife über `PHASE_ORDER`) – nur die Mitglieder INNERHALB
+  eines Fachbereichs können parallel laufen (`run_mode`). Entwicklung (`dev_lead`) läuft also
+  bereits vollständig VOR Design/Content (`creative_lead`) ab, nicht parallel dazu. Eine
+  Umkehrung (Design vor Dev) wäre für `ui_ux`/`image_generator` plausibel wertvoll, aber
+  `creative_lead` enthält auch `accessibility`/`i18n`/`documentation`/`readme` – Rollen, die
+  zwingend AUF bereits existierenden Code angewiesen sind (sie prüfen/beschreiben, was gebaut
+  wurde). Eine pauschale Verschiebung des gesamten Fachbereichs würde diese vier Rollen ohne
+  Not verschlechtern; eine gezielte Aufspaltung (nur `ui_ux`/`image_generator` vor `dev_lead`)
+  wäre eine grössere Strukturänderung mit Auswirkung auf JEDEN künftigen Lauf – bewusst nicht
+  ohne weitere Rücksprache umgesetzt.
+
+42 neue Tests (`test_project_token_budget.py`, `test_release_manager.py`, Erweiterungen an
+`test_project_constitution.py`/`test_run_history.py`/`test_merge_watcher.py`/
+`test_backlog_store.py`, neues `test_cli_backlog_commands.py`). Volle Suite (656 Tests) grün,
+ruff sauber.
+
+---
+
+## 🤖 Drei Lücken gegenüber einem echten Profi-Team: stille Datei-Kollisionen, passiver Dependency-Scan, fehlende Branch-Protection
+
+Gezielte Bestandsaufnahme auf Nutzeranfrage ("was fehlt noch, damit das Team wie ein echtes
+Entwicklerteam arbeitet?"), keine aus einem einzelnen Lauf beobachteten Symptome, sondern drei
+strukturelle Lücken beim Durchsehen des Orchestrierungs-Codes selbst:
+
+- **Datei-Kollisionen zwischen parallel arbeitenden Fachteam-Mitgliedern blieben stumm:**
+  `agents/orchestrator.py._run_department_hierarchy()` lässt Fachbereiche mit 3+ Mitgliedern
+  echt parallel per `asyncio.gather` laufen (der bestehende Kommentar dort dokumentiert
+  bereits, dass sich Agenten dabei NIE gegenseitig sehen – Grundlage für die schon vorhandene
+  Zwei-Mitglieder-Ausnahme). `core/agent_toolbox.py._tool_write_file()` überschreibt eine
+  Datei dabei blind (kein Lock/Merge) – schreiben zwei Agenten dieselbe Datei (z.B.
+  `requirements.txt`), gewann bisher stillschweigend nur der laut Ergebnis-Reihenfolge letzte
+  Schreiber als `file_owners`-Eintrag, ohne dass irgendjemand vom Verlust der zuerst
+  geschriebenen Version erfuhr. `_detect_file_write_collisions()` (neu) erkennt Kollisionen
+  direkt nach jedem parallelen Ausführungs-Batch, meldet sie live UND sammelt sie für einen
+  neuen, deterministischen `### ⚠️ Datei-Kollisionen`-Abschnitt im Abschlussbericht
+  (`_build_file_collision_section()`) – automatisch entscheidbar, welche Version richtig ist,
+  ist es nicht, deshalb "melden statt raten", dieselbe Philosophie wie bei fehlgeschlagener
+  Verifikation. Rein additiv über den neuen, optionalen `collision_sink`-Parameter durchgereicht
+  – bestehende Aufrufer/Tests ohne Interesse daran bleiben unverändert.
+- **`--check-dependencies` warnte nur, statt wie ein echter Dependabot/Renovate zu handeln:**
+  `core/dependency_watch.py` fand bekannte CVEs, legte aber nur ein `blocked`-Ticket an – ein
+  Mensch musste die Abhängigkeit danach manuell selbst anheben. `core/dependency_updater.py`
+  (neu) hebt jedes Paket mit bekannter Schwachstelle UND mindestens einer von `pip-audit`
+  gelieferten `fix_versions`-Angabe in `requirements.txt` automatisch auf die erste (niedrigste
+  sichere) Version an – bewusst NUR für Python: `pip-audit` liefert eine einfache, verlässliche
+  "eine sichere Version"-Angabe direkt aus der Advisory-Datenbank, `npm audit` dagegen nicht
+  (oft ein ganzer Abhängigkeitsbaum-Umbau mit möglichen Breaking Changes) – Node/Rust/Go
+  bleiben deshalb bei der reinen Meldung. Der Update-PR läuft über denselben
+  `agents/github_agent.py`-Mechanismus wie der Issue-Watcher, ohne menschliche Bestätigung
+  (unbeaufsichtigter Poll-Zyklus – ein Mensch reviewt/merged den PR anschließend ganz normal
+  über GitHub). Nebenbefund beim Verdrahten: `core/merge_watcher.py` erkannte eine PR-URL im
+  Ticket-`detail`-Feld bisher nur per striktem `startswith("http")` – die neuen
+  Dependency-Update-Tickets hängen die URL aber hinter einen beschreibenden Text (damit die
+  Schwachstellen-Beschreibung im Board sichtbar bleibt), wären also NIE automatisch von
+  "review" auf "done" gezogen worden. Auf einen Substring-Regex-Match umgestellt (deckt beide
+  Fälle ab, keine Verhaltensänderung für die bestehenden PR-Workflow-/Issue-Tickets).
+  `ENABLE_DEPENDENCY_AUTO_UPDATE=true` (Standard) schaltet es ab.
+- **Der PR-Workflow verhinderte nur eigene Direct-Pushes, nicht die eines Menschen:**
+  `agents/github_agent.py.create_branch()`/`create_pull_request()` sorgen dafür, dass DIESES
+  Tool nicht direkt auf `main` committet – GitHub selbst kannte davon nichts, ein `git push
+  origin main` von Hand (oder einem anderen Tool) wäre weiterhin klaglos durchgegangen. Neue
+  Methoden `get_repo_slug()`/`set_branch_protection()` aktivieren echte Branch-Protection über
+  `gh api --method PUT ... --input -` (Pflicht-Freigaben vor dem Merge, kein
+  Force-Push/Löschen, gilt auch für Repo-Admins). Neuer CLI-Befehl `/protect-branch [branch]`
+  mit Vorschau + Bestätigung (`BRANCH_PROTECTION_REQUIRED_REVIEWS`, Standard `1`) – bewusst nur
+  ein expliziter, einmaliger Befehl statt eines automatischen Laufs, da eine Änderung an den
+  Repo-Einstellungen selbst Admin-Rechte voraussetzt und ein bewusster Schritt sein soll, kein
+  Seiteneffekt eines normalen Team-Laufs.
+
+46 neue Tests (`test_file_write_collisions.py`, `test_dependency_updater.py`, Erweiterungen an
+`test_dependency_watch.py`/`test_merge_watcher.py`/`test_github_agent_issue_methods.py`, neues
+`test_protect_branch_command.py`). Volle Suite (614 Tests) grün, ruff sauber.
+
+---
+
 ## 🔍 Code-Review-Runde: drei stille Verifikations-Lücken, Lint-Gate & Test-Isolation
 
 Eine gezielte Bestandsaufnahme des gesamten Frameworks (nicht aus einem einzelnen Lauf,

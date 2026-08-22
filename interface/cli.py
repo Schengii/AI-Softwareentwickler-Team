@@ -27,8 +27,15 @@ from rich.text import Text
 
 from agents.department_lead_agent import DEPARTMENT_DEFINITIONS
 from agents.orchestrator import PHASE_ORDER, Orchestrator
-from config import ENABLE_PLAN_CONFIRMATION, ENABLE_PR_WORKFLOW, GIT_PROTECTED_BRANCHES, validate_config
-from core.backlog_store import STATUSES, list_tickets, new_ticket_id, upsert_ticket
+from config import (
+    BACKLOG_WIP_LIMIT_IN_PROGRESS,
+    BRANCH_PROTECTION_REQUIRED_REVIEWS,
+    ENABLE_PLAN_CONFIRMATION,
+    ENABLE_PR_WORKFLOW,
+    GIT_PROTECTED_BRANCHES,
+    validate_config,
+)
+from core.backlog_store import STATUSES, count_by_status, list_tickets, new_ticket_id, upsert_ticket
 from core.code_sandbox import CodeSandbox
 from core.message_bus import AgentTask
 from core.notifier import notify_external
@@ -54,6 +61,11 @@ BANNER = """
 ╚══════════════════════════════════════════════════════════════╝
 """
 
+# Priorität eines Backlog-Tickets (core/backlog_store.py.Ticket.priority) - dieselbe
+# 1=hoch/2=mittel/3=niedrig-Konvention wie core/message_bus.py.AgentTask.priority.
+_PRIORITY_LABELS: dict[str, int] = {"1": 1, "hoch": 1, "2": 2, "mittel": 2, "3": 3, "niedrig": 3}
+_PRIORITY_ICONS: dict[int, str] = {1: "🔴 hoch", 2: "🟡 mittel", 3: "🟢 niedrig"}
+
 HELP_TEXT = """
 **Verfügbare Befehle:**
 
@@ -73,10 +85,12 @@ HELP_TEXT = """
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
 | `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/backlog` | Zeigt das Kanban-Board (Todo/In Bearbeitung/Review/Blockiert/Fertig) über CLI, Dashboard UND autonome Issue-Läufe hinweg |
+| `/backlog-add [priorität] <titel>` | Legt manuell ein priorisiertes, noch nicht begonnenes Ticket im Status "todo" an (Priorität: 1/hoch, 2/mittel, 3/niedrig) |
 | `/adr [projekt]` | Zeigt die dokumentierten Architecture Decision Records (Begründungen echter Architektur-Entscheidungen) eines Projekts |
 | `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
 | `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |
 | `/push` | Führt manuell einen Git-Commit & Push aus |
+| `/protect-branch [branch]` | Aktiviert echte GitHub-Branch-Protection (Pflicht-Reviews, kein Force-Push) für den Hauptbranch – mit Vorschau & Bestätigung |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
 | `/hilfe` | Zeigt diese Hilfe an |
@@ -655,17 +669,49 @@ class CLIInterface:
             console.print("📭 Noch keine Tickets im Backlog (memory/backlog.json ist leer).", style="dim")
             return
 
+        if BACKLOG_WIP_LIMIT_IN_PROGRESS > 0:
+            in_progress_count = count_by_status("in_progress")
+            if in_progress_count > BACKLOG_WIP_LIMIT_IN_PROGRESS:
+                console.print(
+                    f"⚠️ [bold yellow]WIP-Limit überschritten:[/bold yellow] {in_progress_count} Tickets "
+                    f"gleichzeitig 'in_progress' (Limit: {BACKLOG_WIP_LIMIT_IN_PROGRESS}) – laufende "
+                    "Arbeit erst abschließen, bevor Neues gestartet wird.", style="yellow",
+                )
+
         table = Table(title="🎫 Backlog / Kanban-Board", box=box.ROUNDED)
         table.add_column("Status", style="cyan")
+        table.add_column("Prio.", justify="center")
+        table.add_column("Schätzung", style="dim")
         table.add_column("Quelle", style="dim")
         table.add_column("Titel")
         table.add_column("Details/Aktualisiert", style="dim")
 
         for status in STATUSES:
-            for ticket in [t for t in tickets if t.status == status]:
-                table.add_row(status, ticket.source, ticket.title, ticket.detail or ticket.updated_at)
+            # Innerhalb einer Spalte nach Priorität sortiert (1=hoch zuerst) - macht sichtbar,
+            # woran als Nächstes gearbeitet werden sollte, statt nur chronologisch.
+            in_column = sorted((t for t in tickets if t.status == status), key=lambda t: t.priority)
+            for ticket in in_column:
+                table.add_row(
+                    status, _PRIORITY_ICONS.get(ticket.priority, str(ticket.priority)), ticket.estimate,
+                    ticket.source, ticket.title, ticket.detail or ticket.updated_at,
+                )
 
         console.print(table)
+
+    def _add_backlog_ticket(self, title: str, priority_arg: str | None) -> None:
+        """
+        Legt manuell ein neues, noch nicht begonnenes Ticket im Status "todo" an (Sprint-/
+        Kapazitäts-Planung: bisher entstand JEDES Ticket erst, wenn eine Aufgabe bereits lief
+        (`_process_task()` legt sofort "in_progress" an) - es gab keine Möglichkeit, mehrere
+        geplante Aufgaben VORAB zu priorisieren, bevor das Team sie tatsächlich angeht. Führt
+        selbst nichts aus – ein "todo"-Ticket wird erst zu echter Arbeit, wenn du die
+        Aufgabe regulär in den Chat schreibst (genau wie core/pr_review_watcher.py bereits
+        "todo"-Tickets aus PR-Kommentaren anlegt, ohne sie automatisch abzuarbeiten).
+        """
+        priority = _PRIORITY_LABELS.get((priority_arg or "").strip().lower(), 2)
+
+        ticket = upsert_ticket(ticket_id=new_ticket_id("cli"), title=title, source="cli", status="todo", priority=priority)
+        console.print(f"✅ [bold green]Ticket angelegt:[/bold green] `{ticket.title}` (Priorität: {_PRIORITY_ICONS[priority]}, Status: todo)")
 
     def _show_adrs(self, project_name: str | None) -> None:
         """
@@ -918,6 +964,23 @@ class CLIInterface:
         elif cmd in ("/backlog", "/board", "/kanban", "/tickets"):
             await self._show_backlog()
 
+        elif cmd in ("/backlog-add", "/plan"):
+            if not args:
+                console.print(
+                    "⚠️ Bitte gib einen Titel an: `/backlog-add [priorität] <titel>` "
+                    "(Priorität optional als erstes Wort: 1/hoch, 2/mittel, 3/niedrig)",
+                    style="yellow",
+                )
+                return False
+            # Priorität nur erkannt, wenn sie als ERSTES Wort steht UND noch ein Titel übrig
+            # bleibt - sonst würde ein Titel, der zufällig mit "hoch"/"1" beginnt, falsch
+            # als Prioritäts-Flag statt als Text interpretiert.
+            if args[0].lower() in _PRIORITY_LABELS and len(args) > 1:
+                priority_arg, title = args[0], " ".join(args[1:])
+            else:
+                priority_arg, title = None, " ".join(args)
+            self._add_backlog_ticket(title, priority_arg)
+
         elif cmd in ("/adr", "/adrs", "/entscheidungen"):
             self._show_adrs(args[0] if args else None)
 
@@ -942,6 +1005,9 @@ class CLIInterface:
 
         elif cmd in ("/deploy-stop", "/undeploy"):
             await self._stop_deployment(args[0] if args else None)
+
+        elif cmd in ("/protect-branch", "/branch-protection"):
+            await self._protect_branch_with_confirmation(args[0] if args else None)
 
         elif cmd in ("/load", "/laden", "/open", "/oeffnen", "/import"):
             if not args:
@@ -1135,6 +1201,52 @@ class CLIInterface:
             console.print("⏹️ [bold green]Deployment gestoppt.[/bold green]")
         else:
             console.print(f"❌ Stoppen fehlgeschlagen:\n{result.output}", style="red")
+
+    async def _protect_branch_with_confirmation(self, branch: str | None) -> None:
+        """
+        Aktiviert echte GitHub-Branch-Protection (agents/github_agent.py.set_branch_protection())
+        für `branch` (Standard: der erste konfigurierte GIT_PROTECTED_BRANCHES-Eintrag, i.d.R.
+        "main") – mit Vorschau + Bestätigung, analog zu /deploy: eine Änderung an den
+        Repo-Einstellungen selbst über die GitHub-API ist ein bewusster, schwer beiläufig
+        rückgängig zu machender Schritt, verdient dieselbe Bestätigungs-Gate-Philosophie statt
+        stillschweigend loszulaufen. Realer struktureller Fund: der PR-Workflow verhindert nur,
+        dass DIESES Tool direkt auf den Hauptbranch pusht – ohne dieses Kommando könnte ein
+        Mensch (oder ein anderes Tool) weiterhin `git push origin main` direkt ausführen.
+        """
+        target_branch = branch or (GIT_PROTECTED_BRANCHES[0] if GIT_PROTECTED_BRANCHES else "main")
+        github_agent = self._orchestrator._agents.get("github")
+        if github_agent is None or not github_agent.gh_ready():
+            console.print(
+                "⚠️ `gh`-CLI nicht installiert/nicht eingeloggt – Branch-Protection kann nicht "
+                "gesetzt werden. Prüfe `gh auth status`.", style="yellow",
+            )
+            return
+
+        console.print(
+            Panel(
+                f"[bold]Branch:[/bold] `{target_branch}`\n"
+                f"[bold]Pflicht-Freigaben vor Merge:[/bold] {BRANCH_PROTECTION_REQUIRED_REVIEWS}\n"
+                "[bold]Zusätzlich:[/bold] kein Force-Push, keine Branch-Löschung, gilt auch für Repo-Admins.\n"
+                "[dim]Erfordert Admin-Rechte auf dem Repo (die aktuelle `gh`-Anmeldung).[/dim]",
+                title="🔒 Branch-Protection: Vorschau",
+                border_style="cyan",
+            )
+        )
+        try:
+            should_apply = Confirm.ask(f"Branch-Protection für `{target_branch}` wirklich aktivieren?", default=False)
+        except Exception:
+            should_apply = False
+        if not should_apply:
+            console.print("↩️ Übersprungen.", style="dim")
+            return
+
+        success, output = await asyncio.to_thread(
+            github_agent.set_branch_protection, target_branch, BRANCH_PROTECTION_REQUIRED_REVIEWS,
+        )
+        if success:
+            console.print(f"✅ [bold green]Branch-Protection für `{target_branch}` aktiviert.[/bold green]")
+        else:
+            console.print(f"❌ [bold red]Fehlgeschlagen:[/bold red]\n{output}", style="red")
 
     def _render_status_panel(self, lines: list[str]) -> Panel:
         if not lines:

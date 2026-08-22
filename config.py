@@ -348,6 +348,18 @@ ISSUE_POLL_MAX_PER_CYCLE: int = int(os.getenv("ISSUE_POLL_MAX_PER_CYCLE", "1"))
 ENABLE_DEPENDENCY_AUTO_UPDATE: bool = os.getenv("ENABLE_DEPENDENCY_AUTO_UPDATE", "true").lower() in ("true", "1", "yes")
 
 # ──────────────────────────────────────────
+# Backlog: Priorität, Schätzung & WIP-Limit (core/backlog_store.py)
+# ──────────────────────────────────────────
+# core/backlog_store.py hielt bisher nur eine flache Ticket-Liste ohne Priorisierung oder
+# Kapazitätsbegriff - ausreichend für Einzelaufträge, aber ohne jede Steuerungsmöglichkeit,
+# sobald mehrere Tickets gleichzeitig anstehen (z.B. `/backlog-add` für mehrere geplante
+# Aufgaben). BACKLOG_WIP_LIMIT_IN_PROGRESS=0 (Standard) deaktiviert die Warnung vollständig -
+# bewusst nur eine WARNUNG (`/backlog` in interface/cli.py), kein Hard-Block: ein echtes
+# Kanban-WIP-Limit ist eine Team-Disziplin-Regel, keine technische Zwangsbeschränkung, die
+# einen bereits laufenden Auftrag verhindern dürfte.
+BACKLOG_WIP_LIMIT_IN_PROGRESS: int = int(os.getenv("BACKLOG_WIP_LIMIT_IN_PROGRESS", "0"))
+
+# ──────────────────────────────────────────
 # Externe Benachrichtigung bei Vorfällen, die menschliche Aufmerksamkeit brauchen (core/notifier.py)
 # ──────────────────────────────────────────
 # core/issue_watcher.py (Cron-Poll-Zyklus) und interface/web_dashboard.py (Hintergrund-Jobs)

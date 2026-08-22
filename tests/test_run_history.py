@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import memory.run_history as run_history_module
-from memory.run_history import get_agent_success_rates, get_recent_runs, record_run
+from memory.run_history import get_agent_success_rates, get_recent_runs, get_total_tokens_for_project, record_run
 
 
 class TestRunHistory(unittest.TestCase):
@@ -100,6 +100,18 @@ class TestRunHistory(unittest.TestCase):
     def test_no_history_yet_returns_empty_lists(self):
         self.assertEqual(get_recent_runs(), [])
         self.assertEqual(get_agent_success_rates(), [])
+
+    def test_total_tokens_for_project_sums_only_that_project(self):
+        record_run(project_slug="proj_a", task_summary="x", verification_ok=True, total_tokens=1000, duration_seconds=1, agent_results=[])
+        record_run(project_slug="proj_a", task_summary="y", verification_ok=True, total_tokens=2500, duration_seconds=1, agent_results=[])
+        record_run(project_slug="proj_b", task_summary="z", verification_ok=True, total_tokens=9999, duration_seconds=1, agent_results=[])
+
+        self.assertEqual(get_total_tokens_for_project("proj_a"), 3500)
+        self.assertEqual(get_total_tokens_for_project("proj_b"), 9999)
+
+    def test_total_tokens_for_unknown_project_is_zero(self):
+        record_run(project_slug="proj_a", task_summary="x", verification_ok=True, total_tokens=1000, duration_seconds=1, agent_results=[])
+        self.assertEqual(get_total_tokens_for_project("never_ran"), 0)
 
 
 if __name__ == "__main__":

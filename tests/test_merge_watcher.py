@@ -112,5 +112,64 @@ class TestCheckMergedTickets(unittest.TestCase):
         self.assertEqual(backlog_store.list_tickets()[0].status, "review")  # unverändert
 
 
+class TestMergedTicketTriggersReleaseTagging(unittest.TestCase):
+    """
+    core/release_manager.py.tag_release() ist hier gemockt (bereits vollständig in
+    tests/test_release_manager.py abgedeckt) - Gegenstand ist NUR, DASS check_merged_tickets()
+    es bei einem echten Merge mit gesetztem project_slug tatsächlich aufruft und das Ergebnis
+    ins Ticket-detail übernimmt, über DIESELBE github_agent-Instanz wie den Rest des Zyklus.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self._patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(self.temp_dir) / "backlog.json")
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+        self.fake_github = MagicMock()
+        self.fake_github.gh_ready.return_value = True
+        self.fake_github.get_pr_status.return_value = ("merged", "")
+
+    @patch("core.merge_watcher.tag_release")
+    def test_merged_ticket_with_project_slug_triggers_release_tagging(self, mock_tag_release):
+        mock_tag_release.return_value = (True, "https://github.com/x/y/releases/tag/notizen_api-v0.1.0")
+        backlog_store.upsert_ticket(
+            "issue-1", "Notiz-Feature", "issue", "review",
+            detail="https://github.com/x/y/pull/1", project_slug="notizen_api",
+        )
+
+        check_merged_tickets(self.fake_github)
+
+        mock_tag_release.assert_called_once_with(
+            "notizen_api", "Notiz-Feature", "https://github.com/x/y/pull/1", github_agent=self.fake_github,
+        )
+        ticket = backlog_store.list_tickets()[0]
+        self.assertEqual(ticket.status, "done")
+        self.assertIn("https://github.com/x/y/pull/1", ticket.detail)  # PR-Link bleibt erhalten
+        self.assertIn("https://github.com/x/y/releases/tag/notizen_api-v0.1.0", ticket.detail)
+
+    @patch("core.merge_watcher.tag_release")
+    def test_ticket_without_project_slug_never_calls_tag_release(self, mock_tag_release):
+        backlog_store.upsert_ticket("issue-1", "Health-Check", "issue", "review", detail="https://github.com/x/y/pull/1")
+
+        check_merged_tickets(self.fake_github)
+
+        mock_tag_release.assert_not_called()
+
+    @patch("core.merge_watcher.tag_release")
+    def test_failed_release_tagging_leaves_ticket_detail_unchanged(self, mock_tag_release):
+        mock_tag_release.return_value = (False, "tag already exists")
+        backlog_store.upsert_ticket(
+            "issue-1", "Notiz-Feature", "issue", "review",
+            detail="https://github.com/x/y/pull/1", project_slug="notizen_api",
+        )
+
+        check_merged_tickets(self.fake_github)
+
+        ticket = backlog_store.list_tickets()[0]
+        self.assertEqual(ticket.status, "done")  # trotzdem korrekt done - Tagging ist best effort
+        self.assertEqual(ticket.detail, "https://github.com/x/y/pull/1")
+
+
 if __name__ == "__main__":
     unittest.main()

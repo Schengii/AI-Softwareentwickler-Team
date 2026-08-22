@@ -83,6 +83,18 @@ def get_agent_success_rates(limit_runs: int = 50) -> list[dict]:
     return sorted(result, key=lambda r: r["calls"], reverse=True)
 
 
+def get_total_tokens_for_project(project_slug: str) -> int:
+    """
+    Summiert `total_tokens` über ALLE bisher aufgezeichneten Läufe eines Projekts (bereits
+    vorhandene Lauf-Historie, nur gefiltert) – Grundlage für das Pro-Projekt-Kostenbudget
+    (`/constitution` `max_project_tokens`, agents/orchestrator.py): MAX_RUN_TOKENS begrenzt nur
+    EINEN einzelnen Lauf, ein Projekt mit vielen aufeinanderfolgenden Läufen hatte bisher kein
+    Limit über ALLE Läufe hinweg. Läuft dieses Projekt noch nie/über MAX_RUNS_KEPT hinaus
+    gealtert -> 0 (unterschätzt in diesem Randfall eher, statt fälschlich zu blockieren).
+    """
+    return sum(run.get("total_tokens", 0) for run in _load() if run.get("project_slug") == project_slug)
+
+
 def _load() -> list[dict]:
     if not RUN_HISTORY_FILE.exists():
         return []

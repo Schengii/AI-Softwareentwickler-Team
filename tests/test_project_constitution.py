@@ -16,6 +16,7 @@ from pathlib import Path
 from core.project_constitution import (
     CONSTITUTION_FILENAME,
     format_constitution_for_agents,
+    get_max_project_tokens,
     read_constitution,
     write_constitution,
 )
@@ -80,6 +81,33 @@ class TestProjectConstitution(unittest.TestCase):
         self.assertIn("Python", context)
         self.assertIn("Docker + Hetzner", context)
         self.assertIn("Projekt-Konstitution", context)
+
+    def test_max_project_tokens_is_excluded_from_agent_context(self):
+        # Operative Kennzahl, keine inhaltliche Vorgabe - würde im Prompt nur unnötigen,
+        # wirkungslosen Text erzeugen (siehe _OPERATIONAL_FIELDS in core/project_constitution.py).
+        write_constitution(self.temp_dir, {"language": "Python", "max_project_tokens": "50000"})
+        context = format_constitution_for_agents(self.temp_dir)
+        self.assertIn("Python", context)
+        self.assertNotIn("50000", context)
+
+    def test_format_for_agents_is_empty_when_only_max_project_tokens_is_set(self):
+        write_constitution(self.temp_dir, {"max_project_tokens": "50000"})
+        self.assertEqual(format_constitution_for_agents(self.temp_dir), "")
+
+    def test_get_max_project_tokens_reads_valid_value(self):
+        write_constitution(self.temp_dir, {"max_project_tokens": "50000"})
+        self.assertEqual(get_max_project_tokens(self.temp_dir), 50000)
+
+    def test_get_max_project_tokens_defaults_to_zero_when_unset(self):
+        self.assertEqual(get_max_project_tokens(self.temp_dir), 0)
+
+    def test_get_max_project_tokens_ignores_non_numeric_value_without_crashing(self):
+        write_constitution(self.temp_dir, {"max_project_tokens": "viel"})
+        self.assertEqual(get_max_project_tokens(self.temp_dir), 0)
+
+    def test_get_max_project_tokens_rejects_negative_value(self):
+        write_constitution(self.temp_dir, {"max_project_tokens": "-100"})
+        self.assertEqual(get_max_project_tokens(self.temp_dir), 0)
 
 
 if __name__ == "__main__":

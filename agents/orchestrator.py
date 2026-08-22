@@ -88,7 +88,7 @@ from core.git_isolation import (
 )
 from core.message_bus import AgentResult, AgentTask
 from core.notifier import notify_external
-from core.project_constitution import format_constitution_for_agents
+from core.project_constitution import format_constitution_for_agents, get_max_project_tokens
 from core.project_status import format_context_for_agents, record_run
 from core.result_aggregator import ResultAggregator
 from core.review_gate import find_critical_findings, route_findings_to_owners
@@ -98,6 +98,7 @@ from core.verifier import ProjectVerifier, VerificationReport
 from core.workspace import WorkspaceManager
 from memory.conversation_history import ConversationHistory
 from memory.cost_history import record_run_usage
+from memory.run_history import get_total_tokens_for_project
 from memory.run_history import record_run as record_run_history
 
 # Reine Prüf-/Berichts-Agenten: sollen bestehenden Code LESEN und bewerten, aber nicht
@@ -209,6 +210,15 @@ class Orchestrator:
         # bestanden ist (siehe _run_verification_loop) – von interface/cli.py genutzt, um vor
         # dem Git-Push-Gate zu warnen, statt unkommentiert "fertig" wirken zu lassen.
         self.last_verification_ok: bool = False
+        # Pro-Projekt-Kostenbudget (core/project_constitution.py `max_project_tokens`,
+        # /constitution) - unabhängig vom globalen MAX_RUN_TOKENS (das begrenzt nur EINEN
+        # einzelnen Lauf). Bei jedem process()-Aufruf frisch aus der Konstitution des jeweils
+        # bearbeiteten Projekts gesetzt; 0 = kein Projekt-Budget aktiv (Standard, Verhalten
+        # unverändert). _project_tokens_before_run ist die bereits über frühere Läufe an
+        # DIESEM Projekt verbrauchte Summe (memory/run_history.py) - der aktuelle Lauf zählt on
+        # top über den bestehenden _tokens_used_since()-Mechanismus.
+        self._project_token_budget: int = 0
+        self._project_tokens_before_run: int = 0
 
     async def process(
         self,
@@ -344,6 +354,27 @@ class Orchestrator:
         # forced_project_dir) – zuverlässiger Commit-Message-Fallback, siehe last_project_slug oben.
         self.last_project_slug = Path(project_dir).name
 
+        # Pro-Projekt-Kostenbudget (siehe __init__): MAX_RUN_TOKENS begrenzt nur DIESEN einen
+        # Lauf - ein Projekt mit vielen aufeinanderfolgenden Läufen (z.B. für einen externen
+        # Auftraggeber mit festem Kostenrahmen) hatte bisher kein Limit über ALLE Läufe hinweg.
+        # Bereits VOR dem ersten Agenten-Aufruf geprüft: ein schon erschöpftes Projekt-Budget
+        # bricht den Lauf ab, ohne auch nur einen Token dafür zu verbrauchen (derselbe
+        # Grundsatz wie beim Plan-Bestätigungs-Abbruch oben).
+        self._project_token_budget = get_max_project_tokens(project_dir)
+        self._project_tokens_before_run = 0
+        if self._project_token_budget > 0:
+            self._project_tokens_before_run = get_total_tokens_for_project(self.last_project_slug)
+            if self._project_tokens_before_run >= self._project_token_budget:
+                response = (
+                    f"🚫 Projekt-Budget erschöpft: `{self._project_tokens_before_run:,}` von "
+                    f"`{self._project_token_budget:,}` erlaubten Tokens für Projekt "
+                    f"`{self.last_project_slug}` bereits über frühere Läufe verbraucht (siehe "
+                    "`/constitution`). Kein Agent wurde für diesen Lauf gestartet – setze das "
+                    "Limit höher oder starte ein neues Projekt."
+                )
+                self._history.add_assistant_message(response)
+                return response
+
         # Projekt-Kontinuität über mehrere Sitzungen hinweg (core/project_status.py): eine
         # neue Sitzung (neues Terminal) hat KEINEN Zugriff auf memory/conversation_history.py
         # (sitzungsgebunden) – die persistente Lauf-Historie DIESES Projekts wird deshalb
@@ -443,6 +474,7 @@ class Orchestrator:
             reason = self._budget_or_cancel_reason(
                 budget_aborted, manually_cancelled,
                 "während der Fachbereichs-Phasen oder der Governance-Fix-Schleife",
+                start_tokens=run_start_tokens,
             )
             verification_summary = (
                 "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n"
@@ -489,15 +521,16 @@ class Orchestrator:
         trainer_result = None
 
         if budget_aborted:
-            notify(f"🚫 [bold red]Lauf-Budget erreicht:[/bold red] Retrospektive & Selbstoptimierung werden übersprungen ({self._tokens_used_since(run_start_tokens):,}/{MAX_RUN_TOKENS:,} Tokens).")
+            notify(f"🚫 [bold red]{self._budget_exceeded_label(run_start_tokens)} erreicht:[/bold red] Retrospektive & Selbstoptimierung werden übersprungen ({self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf).")
             # EIN zentraler Benachrichtigungs-Ort statt an jeder der drei Stellen, an denen
             # budget_aborted innerhalb der Fachbereichs-/Governance-Fix-/Verifikations-Schleifen
             # gesetzt werden kann (core/notifier.py, no-op ohne NOTIFY_WEBHOOK_URL) - relevant
             # v.a. für unbeaufsichtigte Läufe (Dashboard-Job, Issue-Watcher), wo sonst niemand
             # aktiv zusieht, dass ein Lauf vorzeitig beendet wurde.
             await asyncio.to_thread(
-                notify_external, "Lauf-Budget erreicht",
-                f"{task_summary[:150]}: {self._tokens_used_since(run_start_tokens):,}/{MAX_RUN_TOKENS:,} Tokens verbraucht.",
+                notify_external, "Budget erreicht",
+                f"{task_summary[:150]}: {self._budget_exceeded_label(run_start_tokens)} erreicht "
+                f"({self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf verbraucht).",
             )
         elif manually_cancelled:
             notify("⏹️ [bold red]Lauf manuell abgebrochen:[/bold red] Retrospektive & Selbstoptimierung werden übersprungen.")
@@ -523,11 +556,10 @@ class Orchestrator:
         )
         if budget_aborted:
             stats_table += (
-                f"\n\n> 🚫 **Lauf-Budget erreicht:** Dieser Lauf wurde nach "
-                f"`{self._tokens_used_since(run_start_tokens):,}` von `{MAX_RUN_TOKENS:,}` erlaubten Tokens "
-                "vorzeitig beendet (siehe `MAX_RUN_TOKENS` in config.py). Restliche Fachbereiche, "
-                "Verifikations-Fixversuche und/oder Retrospektive/Selbstoptimierung wurden übersprungen; "
-                "die bis dahin erarbeiteten Ergebnisse wurden trotzdem oben zusammengefasst."
+                f"\n\n> 🚫 **{self._budget_exceeded_label(run_start_tokens)} erreicht:** Dieser Lauf wurde nach "
+                f"`{self._tokens_used_since(run_start_tokens):,}` Tokens vorzeitig beendet. Restliche "
+                "Fachbereiche, Verifikations-Fixversuche und/oder Retrospektive/Selbstoptimierung wurden "
+                "übersprungen; die bis dahin erarbeiteten Ergebnisse wurden trotzdem oben zusammengefasst."
             )
         elif manually_cancelled:
             stats_table += (
@@ -749,12 +781,15 @@ class Orchestrator:
         task_is_micro = ENABLE_TASK_COMPLEXITY_SCALING and is_micro_task(agent_tasks)
 
         for dept_id, phase_label, icon, run_mode in PHASE_ORDER:
-            if run_start_tokens is not None and self._run_budget_exceeded(run_start_tokens):
+            if run_start_tokens is not None and (
+                self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+            ):
                 budget_aborted = True
                 notify(
-                    f"🚫 [bold red]Lauf-Budget erreicht:[/bold red] {self._tokens_used_since(run_start_tokens):,}/"
-                    f"{MAX_RUN_TOKENS:,} Tokens verbraucht – überspringe verbleibende Fachbereiche "
-                    f"ab '{phase_label}' und liefere die bisherigen Ergebnisse aus."
+                    f"🚫 [bold red]{self._budget_exceeded_label(run_start_tokens)} erreicht:[/bold red] "
+                    f"{self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf verbraucht – "
+                    f"überspringe verbleibende Fachbereiche ab '{phase_label}' und liefere die bisherigen "
+                    "Ergebnisse aus."
                 )
                 break
             if cancel_requested and cancel_requested():
@@ -974,8 +1009,33 @@ class Orchestrator:
             return False
         return cls._tokens_used_since(start_tokens) >= MAX_RUN_TOKENS
 
-    @staticmethod
-    def _budget_or_cancel_reason(budget_aborted: bool, manually_cancelled: bool, stage: str) -> str:
+    def _project_budget_exceeded(self, start_tokens: int) -> bool:
+        """
+        Pro-Projekt-Kostenbudget (`/constitution` `max_project_tokens`) – unabhängig vom
+        globalen MAX_RUN_TOKENS oben, das nur EINEN einzelnen Lauf begrenzt.
+        self._project_token_budget<=0 (Standard, kein Feld in der Konstitution gesetzt)
+        deaktiviert diese Prüfung vollständig.
+        """
+        if self._project_token_budget <= 0:
+            return False
+        total_for_project = self._project_tokens_before_run + self._tokens_used_since(start_tokens)
+        return total_for_project >= self._project_token_budget
+
+    def _budget_exceeded_label(self, start_tokens: int) -> str:
+        """
+        Menschlich lesbare Kennzeichnung, WELCHES der beiden unabhängigen Budgets (Lauf oder
+        Projekt) eine Abbruch-Meldung ausgelöst hat – für ehrliche Kommunikation statt
+        pauschal auf MAX_RUN_TOKENS zu verweisen, wenn tatsächlich das (u.U. strengere)
+        Projekt-Budget bindend war. Nur sinnvoll aufrufbar, wenn mindestens eines von beiden
+        tatsächlich überschritten ist.
+        """
+        if self._project_budget_exceeded(start_tokens):
+            return f"Projekt-Budget (`/constitution`, `{self._project_token_budget:,}` Tokens für `{self.last_project_slug}`)"
+        return f"Lauf-Budget (`MAX_RUN_TOKENS={MAX_RUN_TOKENS:,}`)"
+
+    def _budget_or_cancel_reason(
+        self, budget_aborted: bool, manually_cancelled: bool, stage: str, start_tokens: int | None = None,
+    ) -> str:
         """
         Begründungstext für einen übersprungenen nachfolgenden Schritt (Governance-Fix-Schleife/
         Verifikation) – EIN gebündelter Ort statt der Budget-vs.-Abbruch-Fallunterscheidung
@@ -983,7 +1043,8 @@ class Orchestrator:
         manually_cancelled bereits True ist (siehe process()).
         """
         if budget_aborted:
-            return f"Lauf-Budget (`MAX_RUN_TOKENS={MAX_RUN_TOKENS:,}`) wurde bereits {stage} erreicht"
+            label = self._budget_exceeded_label(start_tokens) if start_tokens is not None else f"Lauf-Budget (`MAX_RUN_TOKENS={MAX_RUN_TOKENS:,}`)"
+            return f"{label} wurde bereits {stage} erreicht"
         assert manually_cancelled, "aufrufbar nur wenn budget_aborted ODER manually_cancelled True ist"
         return f"Lauf wurde bereits {stage} manuell abgebrochen"
 
@@ -1092,10 +1153,12 @@ class Orchestrator:
             return list(latest.values())
 
         for attempt in range(1, MAX_REVIEW_ITERATIONS + 1):
-            if run_start_tokens is not None and self._run_budget_exceeded(run_start_tokens):
+            if run_start_tokens is not None and (
+                self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+            ):
                 budget_aborted = True
-                notify("  🚫 [bold red]Lauf-Budget erreicht[/bold red] – weitere Governance-Fixversuche werden übersprungen.")
-                summary_lines.append(f"- 🚫 Lauf-Budget (`MAX_RUN_TOKENS={MAX_RUN_TOKENS:,}`) erreicht – Governance-Fix-Schleife nach Versuch {attempt - 1} abgebrochen.")
+                notify("  🚫 [bold red]Budget erreicht[/bold red] – weitere Governance-Fixversuche werden übersprungen.")
+                summary_lines.append(f"- 🚫 {self._budget_exceeded_label(run_start_tokens)} erreicht – Governance-Fix-Schleife nach Versuch {attempt - 1} abgebrochen.")
                 break
             if cancel_requested and cancel_requested():
                 manually_cancelled = True
@@ -1237,10 +1300,12 @@ class Orchestrator:
             summary_lines.append(f"- 📦 {install_log.splitlines()[0]}")
 
         for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
-            if run_start_tokens is not None and self._run_budget_exceeded(run_start_tokens):
+            if run_start_tokens is not None and (
+                self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+            ):
                 budget_aborted = True
-                notify("  🚫 [bold red]Lauf-Budget erreicht[/bold red] – weitere Verifikations-/Fixversuche werden übersprungen.")
-                summary_lines.append(f"- 🚫 Lauf-Budget (`MAX_RUN_TOKENS={MAX_RUN_TOKENS:,}`) erreicht – Verifikation nach Versuch {attempt - 1} abgebrochen.")
+                notify("  🚫 [bold red]Budget erreicht[/bold red] – weitere Verifikations-/Fixversuche werden übersprungen.")
+                summary_lines.append(f"- 🚫 {self._budget_exceeded_label(run_start_tokens)} erreicht – Verifikation nach Versuch {attempt - 1} abgebrochen.")
                 break
             if cancel_requested and cancel_requested():
                 manually_cancelled = True
@@ -1662,6 +1727,17 @@ class Orchestrator:
             pct = min(100, round(used / MAX_RUN_TOKENS * 100))
             budget_icon = "🚨" if used >= MAX_RUN_TOKENS else "🪙"
             lines.append(f"- {budget_icon} **Lauf-Budget:** `{used:,} / {MAX_RUN_TOKENS:,}` Tokens (`{pct}%`)")
+        if self._project_token_budget > 0 and run_start_tokens is not None:
+            # Kumuliert über ALLE bisherigen Läufe an diesem Projekt (nicht nur diesen einen
+            # Lauf, siehe _project_budget_exceeded) - eigene Zeile statt in die Lauf-Budget-
+            # Zeile oben gemischt, da beide Budgets unabhängig konfiguriert/erschöpft sein können.
+            project_used = self._project_tokens_before_run + self._tokens_used_since(run_start_tokens)
+            project_pct = min(100, round(project_used / self._project_token_budget * 100))
+            project_icon = "🚨" if project_used >= self._project_token_budget else "🪙"
+            lines.append(
+                f"- {project_icon} **Projekt-Budget** (`/constitution`, über alle Läufe): "
+                f"`{project_used:,} / {self._project_token_budget:,}` Tokens (`{project_pct}%`)"
+            )
 
         lines += [
             f"- 🛠️ **Werkzeug-Aufrufe (echte Datei-/Testoperationen):** `{total_tool_calls:,}` | **Dateien geschrieben/geändert:** `{total_files_written}`",

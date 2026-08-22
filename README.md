@@ -283,6 +283,21 @@ Quellen schreiben:
   `gh pr view` ab und zieht den Backlog-Status nach: echt gemerged → `done`, ohne Merge
   geschlossen → `blocked`. Läuft automatisch im selben `--check-issues`-Poll-Zyklus mit
   (kein zusätzlicher Cron-Eintrag nötig) UND vor jeder `/backlog`-Anzeige in der CLI.
+- **Automatisches Release-Tagging (`core/release_manager.py`):** Wird ein Ticket dabei echt
+  auf `done` gezogen (der PR also wirklich gemerged wurde) UND hat es ein `project_slug`,
+  öffnet derselbe Zyklus direkt ein neues GitHub-Release (`<projekt>-vX.Y.Z`, fortlaufende
+  Patch-Version je Projekt) mit automatischen Release-Notes (Ticket-Titel + PR-Link) – nicht
+  nur das Framework selbst hatte bisher eine Versionshistorie, generierte Projekte in
+  `workspace/` jetzt auch. Best effort: ein fehlgeschlagenes Tagging (z. B. `gh` fehlt) lässt
+  das Ticket trotzdem korrekt auf `done` stehen.
+- **Priorität, Schätzung & WIP-Limit:** Jedes Ticket trägt jetzt `priority` (1=hoch/2=mittel/
+  3=niedrig, bleibt über den gesamten Lebenszyklus erhalten, auch wenn ein Update sie nicht
+  erneut mitgibt) und optional `estimate` (freier Text). `/backlog-add [priorität] <titel>`
+  legt manuell ein noch nicht begonnenes, priorisiertes `todo`-Ticket an – bisher entstand
+  jedes Ticket erst, wenn eine Aufgabe bereits lief, es gab keine Möglichkeit, mehrere geplante
+  Aufgaben vorab zu priorisieren. `/backlog` sortiert jede Spalte danach und warnt (rein
+  informativ, kein Hard-Block), wenn `BACKLOG_WIP_LIMIT_IN_PROGRESS` (Standard `0` = aus)
+  überschritten ist.
 
 ---
 
@@ -439,6 +454,16 @@ bricht Läufe jetzt tatsächlich ab, sobald das per `.env` konfigurierte `MAX_RU
 - Die `### 📈 Projekt-Kennzahlen`-Tabelle zeigt bei aktivem Budget zusätzlich `Lauf-Budget: X / Y
   Tokens` an, sodass der Verbrauch schon während des Laufs sichtbar ist (nicht erst danach).
 
+**Zusätzlich: Pro-Projekt-Kostenbudget über ALLE Läufe hinweg.** `MAX_RUN_TOKENS` begrenzt nur
+EINEN einzelnen Lauf – ein Projekt mit vielen aufeinanderfolgenden Läufen (z. B. für einen
+externen Auftraggeber mit festem Kostenrahmen) hatte bisher kein Limit über die gesamte
+Projekt-Lebenszeit. `/constitution` (Feld `max_project_tokens`, `0`/leer = unbegrenzt) setzt
+ein zusätzliches, unabhängiges Budget, das den bereits über `memory/run_history.py`
+aufgezeichneten Tokenverbrauch FRÜHERER Läufe an diesem Projekt mit einbezieht – ist es
+bereits VOR Laufbeginn erschöpft, bricht der Lauf ab, ohne auch nur einen Agenten zu starten.
+Beide Budgets sind unabhängig konfigurierbar; die Abbruch-Meldung nennt immer korrekt, welches
+der beiden gerade bindend war.
+
 ---
 
 <a id="persistente-selbstoptimierung"></a>
@@ -576,7 +601,8 @@ nicht, ein Mensch prüft die betroffene(n) Datei(en) gezielt nach.
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
 | `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/adr [projekt]` | Zeigt die dokumentierten Architecture Decision Records (Begründungen echter Architektur-Entscheidungen) eines Projekts |
-| `/backlog` | Zeigt das Kanban-Board (Todo/In Bearbeitung/Review/Blockiert/Fertig) über CLI, Dashboard UND autonome Issue-Läufe hinweg |
+| `/backlog` | Zeigt das Kanban-Board (Todo/In Bearbeitung/Review/Blockiert/Fertig) über CLI, Dashboard UND autonome Issue-Läufe hinweg, inkl. Priorität und WIP-Limit-Warnung |
+| `/backlog-add [priorität] <titel>` | Legt manuell ein priorisiertes, noch nicht begonnenes Ticket im Status "todo" an (Priorität: 1/hoch, 2/mittel, 3/niedrig) |
 | `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
 | `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |
 | `/push` | Führt manuell einen Git-Commit & Push aus (mit Secret-Scan, Verifikations-Warnung & PR-Workflow) |

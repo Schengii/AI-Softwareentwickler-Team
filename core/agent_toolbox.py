@@ -121,9 +121,39 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "required": ["title", "context", "decision", "consequences"],
         },
     },
+    {
+        "name": "find_symbol_definition",
+        "description": "Findet die exakte AST-Definition (Klasse, Funktion, Methode) eines Code-Symbols im gesamten Projektverzeichnis.",
+        "parameters": {
+            "type": "object",
+            "properties": {"symbol_name": {"type": "string", "description": "Name der gesuchten Klasse/Funktion/Methode, z.B. 'User' oder 'get_user'"}},
+            "required": ["symbol_name"],
+        },
+    },
+    {
+        "name": "find_symbol_references",
+        "description": "Findet alle Aufrufe, Imports, Verwendungen und Ableitungen eines Symbols über alle Dateien des Projekts hinweg.",
+        "parameters": {
+            "type": "object",
+            "properties": {"symbol_name": {"type": "string", "description": "Name des Symbols"}},
+            "required": ["symbol_name"],
+        },
+    },
+    {
+        "name": "analyze_code_impact",
+        "description": "Führt eine Auswirkungsanalyse durch: Zeigt welche Dateien, Aufrufer und Module von einer Änderung an 'symbol_name' betroffen sind.",
+        "parameters": {
+            "type": "object",
+            "properties": {"symbol_name": {"type": "string", "description": "Name des zu modifizierenden Symbols"}},
+            "required": ["symbol_name"],
+        },
+    },
 ]
 
-READ_ONLY_TOOL_NAMES = {"read_file", "list_files", "search_code"}
+READ_ONLY_TOOL_NAMES = {
+    "read_file", "list_files", "search_code",
+    "find_symbol_definition", "find_symbol_references", "analyze_code_impact",
+}
 
 
 class ToolExecutionError(Exception):
@@ -387,6 +417,53 @@ class AgentToolbox:
         clean_rel = str(path.relative_to(self.project_dir)).replace("\\", "/")
         self.files_written.add(clean_rel)
         return {"path": clean_rel, "status": "ok"}
+
+    # ── Code-Knowledge-Graph Werkzeuge ───────────────────────────────
+
+    async def _tool_find_symbol_definition(self, symbol_name: str) -> dict:
+        import asyncio
+        from core.code_graph import CodebaseGraph
+
+        graph = await asyncio.to_thread(CodebaseGraph, self.project_dir)
+        nodes = graph.find_definition(symbol_name)
+        if not nodes:
+            return {"found": False, "note": f"Symbol '{symbol_name}' nicht im Projekt-Index gefunden."}
+        return {
+            "found": True,
+            "definitions": [
+                {
+                    "name": n.name,
+                    "kind": n.kind,
+                    "file_path": n.file_path,
+                    "line_number": n.line_number,
+                    "signature": n.signature,
+                    "docstring": n.docstring[:200] if n.docstring else "",
+                }
+                for n in nodes
+            ],
+        }
+
+    async def _tool_find_symbol_references(self, symbol_name: str) -> dict:
+        import asyncio
+        from core.code_graph import CodebaseGraph
+
+        graph = await asyncio.to_thread(CodebaseGraph, self.project_dir)
+        refs = graph.find_references(symbol_name)
+        return {"symbol": symbol_name, "references_count": len(refs), "references": refs[:25]}
+
+    async def _tool_analyze_code_impact(self, symbol_name: str) -> dict:
+        import asyncio
+        from core.code_graph import CodebaseGraph
+
+        graph = await asyncio.to_thread(CodebaseGraph, self.project_dir)
+        impact = graph.analyze_impact(symbol_name)
+        return {
+            "symbol": impact.symbol_name,
+            "defining_file": impact.defining_file,
+            "referencing_files": impact.referencing_files,
+            "calling_symbols": impact.calling_symbols,
+            "imported_in": impact.imported_in,
+        }
 
     @staticmethod
     def _split_command(command: str) -> list[str]:

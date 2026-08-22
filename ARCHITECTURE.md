@@ -51,11 +51,11 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
    - **Phase 4 (Qualität & Sicherheit)**: Testsuite, Security-Audits, DevOps/Docker-Konfiguration.
    - **Phase 5 (Review & Governance)**: Code-Review, Refactoring, Compliance-Check.
 4. **Dynamische Verifikations-Schleife (`core/verifier.py`)**:
-   - **Isolierte Installation**: Automatische Erstellung einer virtuellen Umgebung (`.ai_team_venv`) und Installation von `requirements.txt` bzw. `package.json`.
-   - **Echte Testausführung**: Ausführung von `pytest` bzw. `unittest` und `npm test`.
+   - **Multi-Sprachen-Unterstützung**: Echte isolierte Testumgebungen für Python (`pytest`/`unittest`), Node/TS (`npm test`), Rust (`cargo test`) und Go (`go test`).
    - **Testabdeckungs-Messung**: Automatische Prüfung der Codeabdeckung (`pytest-cov`) gegen konfigurierte Schwellen (`MIN_TEST_COVERAGE`).
-   - **Statisches Linting**: `ruff` für Python, `eslint`/`tsc` für TypeScript/JavaScript.
-   - **Schwachstellen-Scan**: Echter `pip-audit` / `npm audit` gegen öffentliche CVE-Datenbanken.
+   - **Statisches & AST-Linting**: `ruff` für Python, `eslint`/`tsc` für TypeScript/JavaScript, `cargo clippy` für Rust, `go vet` für Go.
+   - **Headless Browser & Frontend-UI-Validierung (`core/browser_verifier.py`)**: Startet Web-Frontends, fängt JavaScript-Konsolenfehler (`console.error`) ab und prüft Asset-404s (Playwright / statisches DOM).
+   - **Schwachstellen-Scan**: Echter `pip-audit`, `npm audit`, `cargo audit` und `govulncheck` gegen öffentliche CVE-Datenbanken.
    - **Runtime Smoke-Check**: Teststart der Applikation im Subprozess (z. B. Uvicorn/FastAPI HTTP-Polling oder CLI-Help-Check), um sicherzustellen, dass die Anwendung tatsächlich hochfährt.
    - **Gezielte Fix-Schleife**: Traceback-Parsing ermittelt die verursachenden Dateien und weist nur dem zuständigen Agenten einen gezielten Korrekturauftrag zu.
 5. **Ergebnis-Synthese & Akzeptanzkriterien-Check (`core/result_aggregator.py`)**:
@@ -74,12 +74,18 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
 
 ---
 
-## 4. Observability, Historie & Evaluation
+## 4. Code-Knowledge-Graph, Observability & Cloud-Deployments
 
+- **AST-Codebase-Graph & Symbol-Index (`core/code_graph.py`)**:
+  - Parst Quelltext in einen typisierten AST-Index (`find_symbol_definition`, `find_symbol_references`, `analyze_code_impact`) für fehlerfreie Refactorings in großen Projekten.
 - **Run-Historie (`memory/run_history.py`)**:
   - Protokolliert Erfolgsquoten je Agent, Tokenverbrauch, Laufzeit und Verifikationsergebnisse.
 - **Zentraler Backlog-Store (`core/backlog_store.py`)**:
   - Einheitliches Kanban-Board für Aufgaben aus CLI, Web-Dashboard, GitHub-Issues und Dependency-Watchern.
+- **GitHub PR-Review Feedback-Loop (`core/pr_review_watcher.py`)**:
+  - Liest Inline-Kommentare aus GitHub-Pull-Requests und erstellt gezielte Korrektur-Tickets (`python main.py --check-pr-reviews`).
+- **Cloud-Preview-Deployments (`core/cloud_deployment.py`)**:
+  - Automatische Generierung von Manifesten (`fly.toml`, `vercel.json`, `render.yaml`) und Bereitstellung weltweiter Preview-URLs.
 - **Benchmark- & Evaluations-Harness (`evals/`)**:
   - Kanonische Referenzaufgaben (`evals/tasks.py`) für reproduzierbare Qualitäts- und Regressionstests über `python main.py --eval`.
 - **Periodischer Dependency-Watch (`core/dependency_watch.py`)**:
@@ -93,6 +99,8 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
 | :--- | :--- | :--- |
 | **Interaktive CLI** | `interface/cli.py` | Rich-formatierte Terminal-Oberfläche mit Live-Status und Plan-Gate. |
 | **Web-Dashboard** | `interface/web_dashboard.py` | Dark-Mode Web-UI mit Live-Log, Kanban-Backlog, Observability und Docker-Deploy. |
-| **MCP-Server** | `mcp_server.py` | Standardisiertes Model Context Protocol für IDE-Integrationen (VS Code, Cursor, Antigravity). |
-| **GitHub-Watcher** | `core/issue_watcher.py` | Automatische Bearbeitung von GitHub-Issues mit Label-Trigger. |
+| **MCP-Server** | `interface/mcp_server.py` | Standardisiertes Model Context Protocol für IDE-Integrationen (VS Code, Cursor, Antigravity). |
+| **GitHub-Issue-Watcher** | `core/issue_watcher.py` | Automatische Bearbeitung von GitHub-Issues mit Label-Trigger (`--check-issues`). |
+| **PR-Review-Watcher** | `core/pr_review_watcher.py` | Automatische Einarbeitung von menschlichem PR-Feedback (`--check-pr-reviews`). |
+| **Dependency-Scanner** | `core/dependency_watch.py` | Regelmäßige Sicherheitsprüfung aller Workspace-Projekte (`--check-dependencies`). |
 | **Benchmark-Suite** | `evals/runner.py` | Ausführung standardisierter Benchmarks (`python main.py --eval`). |

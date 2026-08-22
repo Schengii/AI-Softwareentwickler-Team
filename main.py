@@ -70,6 +70,21 @@ def main():
                 print(f"🔓 {r.project_name}: {r.detail}")
         return
 
+    if "--check-pr-reviews" in sys.argv:
+        import asyncio
+
+        from core.pr_review_watcher import run_pr_review_cycle
+
+        report = asyncio.run(run_pr_review_cycle(status_callback=print))
+        if not report.gh_available:
+            print("ℹ️  `gh`-CLI nicht installiert/nicht authentifiziert – PR-Review-Check übersprungen.")
+        else:
+            if report.created_ticket_ids:
+                print(f"📥 {len(report.created_ticket_ids)} neues PR-Review Feedback Ticket(s) erstellt: {', '.join(report.created_ticket_ids)}")
+            else:
+                print(f"✅ {report.scanned_prs} offene(r) PR(s) geprüft – kein neues Review-Feedback gefunden.")
+        return
+
     if "--check-issues" in sys.argv:
         import asyncio
 

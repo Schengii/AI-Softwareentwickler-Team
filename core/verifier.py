@@ -245,7 +245,31 @@ class ProjectVerifier:
             logs.append(self._ensure_python_environment(req_file, timeout_seconds))
         for node_dir in self._find_node_projects():
             logs.append(self._ensure_node_environment(node_dir, timeout_seconds))
+        if self._has_rust_project():
+            logs.append(self._ensure_rust_environment(timeout_seconds))
+        if self._has_go_project():
+            logs.append(self._ensure_go_environment(timeout_seconds))
         return "\n".join(log for log in logs if log)
+
+    def _has_rust_project(self) -> bool:
+        return (self.project_dir / "Cargo.toml").exists()
+
+    def _has_go_project(self) -> bool:
+        return (self.project_dir / "go.mod").exists()
+
+    def _ensure_rust_environment(self, timeout_seconds: float) -> str:
+        if shutil.which("cargo") is None:
+            return "⚠️ `cargo` ist auf diesem System nicht installiert/verfügbar – Rust-Check übersprungen."
+        result = CodeSandbox.run_command(["cargo", "check"], cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        status = "✅" if result.exit_code == 0 else "⚠️"
+        return f"{status} cargo check (exit_code={result.exit_code})"
+
+    def _ensure_go_environment(self, timeout_seconds: float) -> str:
+        if shutil.which("go") is None:
+            return "⚠️ `go` ist auf diesem System nicht installiert/verfügbar – Go-Abhängigkeiten übersprungen."
+        result = CodeSandbox.run_command(["go", "mod", "download"], cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        status = "✅" if result.exit_code == 0 else "⚠️"
+        return f"{status} go mod download (exit_code={result.exit_code})"
 
     def _ensure_python_environment(self, req_file: Path, timeout_seconds: float) -> str:
         venv_python = self._venv_python()
@@ -327,11 +351,20 @@ class ProjectVerifier:
         npm_available = shutil.which("npm") is not None
         runnable_node_projects = node_projects if npm_available else []
 
-        if not python_test_files and not runnable_node_projects:
+        has_rust = self._has_rust_project()
+        has_go = self._has_go_project()
+        cargo_available = shutil.which("cargo") is not None
+        go_available = shutil.which("go") is not None
+
+        if not python_test_files and not runnable_node_projects and not (has_rust and cargo_available) and not (has_go and go_available):
             if node_projects and not npm_available:
                 reason = "npm-Test-Skript(e) gefunden, aber `npm` ist auf diesem System nicht installiert/verfügbar – Verifikation übersprungen."
+            elif has_rust and not cargo_available:
+                reason = "Cargo.toml gefunden, aber `cargo` ist auf diesem System nicht installiert/verfügbar – Verifikation übersprungen."
+            elif has_go and not go_available:
+                reason = "go.mod gefunden, aber `go` ist auf diesem System nicht installiert/verfügbar – Verifikation übersprungen."
             else:
-                reason = 'Keine Testdateien (test_*.py) und kein npm-Test-Skript (package.json mit "scripts.test") im Projekt gefunden – Verifikation übersprungen.'
+                reason = 'Keine Testdateien (test_*.py), kein npm-Test-Skript und kein Rust/Go-Projekt gefunden – Verifikation übersprungen.'
             return VerificationReport(
                 ran=False, passed=True, exit_code=0, stdout="", stderr="",
                 duration_seconds=time.monotonic() - start, reason_skipped=reason,
@@ -364,6 +397,28 @@ class ProjectVerifier:
                 passed = False
                 exit_code = exit_code or exec_result.exit_code
                 failures.extend(self._parse_node_failures(exec_result, node_dir))
+
+        if has_rust and cargo_available:
+            exec_result = CodeSandbox.run_command(
+                ["cargo", "test"], cwd=self.project_dir, timeout_seconds=timeout_seconds,
+            )
+            stdout_chunks.append(f"--- cargo test ---\n{exec_result.stdout}")
+            stderr_chunks.append(exec_result.stderr)
+            if exec_result.exit_code != 0:
+                passed = False
+                exit_code = exit_code or exec_result.exit_code
+                failures.append(TestFailure(test_id="cargo test", message=(exec_result.stderr or exec_result.stdout)[-800:]))
+
+        if has_go and go_available:
+            exec_result = CodeSandbox.run_command(
+                ["go", "test", "-v", "./..."], cwd=self.project_dir, timeout_seconds=timeout_seconds,
+            )
+            stdout_chunks.append(f"--- go test ---\n{exec_result.stdout}")
+            stderr_chunks.append(exec_result.stderr)
+            if exec_result.exit_code != 0:
+                passed = False
+                exit_code = exit_code or exec_result.exit_code
+                failures.append(TestFailure(test_id="go test", message=(exec_result.stderr or exec_result.stdout)[-800:]))
 
         if node_projects and not npm_available:
             stdout_chunks.insert(0, "⚠️ npm nicht verfügbar – gefundene npm-Test-Skripte wurden übersprungen.")
@@ -402,21 +457,73 @@ class ProjectVerifier:
         return DockerBuildReport(attempted=True, success=result.exit_code == 0, output=output)
 
     def check_dependency_vulnerabilities(self, timeout_seconds: float = 120.0) -> list[DependencyAuditReport]:
-        """
-        Führt für JEDEN im Projekt gefundenen Stack einen echten Vulnerability-Scan gegen
-        eine öffentliche Advisory-Datenbank aus: `pip-audit` für Python (requirements.txt),
-        `npm audit` für Node (dieselben package.json-Verzeichnisse wie run_tests(), inkl.
-        derselben package-lock.json, die ensure_environment() dort bereits angelegt hat).
-        Ersetzt die rein LLM-basierte Sicherheitseinschätzung durch einen echten Abgleich –
-        gibt eine Liste zurück, da ein Projekt mehrere Stacks/Node-Unterprojekte haben kann.
-        """
         reports: list[DependencyAuditReport] = []
         req_file = self._requirements_file()
         if req_file:
             reports.append(self._audit_python_dependencies(req_file, timeout_seconds))
         for node_dir in self._find_node_projects():
             reports.append(self._audit_node_dependencies(node_dir, timeout_seconds))
+        if self._has_rust_project():
+            reports.append(self._audit_rust_dependencies(timeout_seconds))
+        if self._has_go_project():
+            reports.append(self._audit_go_dependencies(timeout_seconds))
         return reports
+
+    def _audit_rust_dependencies(self, timeout_seconds: float) -> DependencyAuditReport:
+        if shutil.which("cargo") is None:
+            return DependencyAuditReport(
+                attempted=False, vulnerable=False, tool="cargo-audit",
+                reason_skipped="`cargo` ist auf diesem System nicht installiert/verfügbar.",
+            )
+        result = CodeSandbox.run_command(["cargo", "audit", "--json"], cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        if result.exit_code != 0 and "not found" in (result.stderr or "").lower():
+            return DependencyAuditReport(
+                attempted=False, vulnerable=False, tool="cargo-audit",
+                reason_skipped="`cargo-audit` ist nicht installiert (`cargo install cargo-audit`).",
+            )
+        return DependencyAuditReport(attempted=True, vulnerable=result.exit_code != 0, tool="cargo-audit")
+
+    def _audit_go_dependencies(self, timeout_seconds: float) -> DependencyAuditReport:
+        if shutil.which("govulncheck") is None:
+            return DependencyAuditReport(
+                attempted=False, vulnerable=False, tool="govulncheck",
+                reason_skipped="`govulncheck` ist auf diesem System nicht installiert (`go install golang.org/x/vuln/cmd/govulncheck@latest`).",
+            )
+        result = CodeSandbox.run_command(["govulncheck", "./..."], cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        return DependencyAuditReport(attempted=True, vulnerable=result.exit_code != 0, tool="govulncheck")
+
+    def check_lint(self, timeout_seconds: float = 60.0) -> list[LintReport]:
+        reports: list[LintReport] = []
+        if self._has_python_files():
+            reports.append(self._lint_python(timeout_seconds))
+        for node_dir in self._find_node_projects():
+            eslint_report = self._lint_node_eslint(node_dir, timeout_seconds)
+            if eslint_report is not None:
+                reports.append(eslint_report)
+            tsc_report = self._typecheck_node_tsc(node_dir, timeout_seconds)
+            if tsc_report is not None:
+                reports.append(tsc_report)
+        if self._has_rust_project():
+            rust_lint = self._lint_rust(timeout_seconds)
+            if rust_lint is not None:
+                reports.append(rust_lint)
+        if self._has_go_project():
+            go_lint = self._lint_go(timeout_seconds)
+            if go_lint is not None:
+                reports.append(go_lint)
+        return reports
+
+    def _lint_rust(self, timeout_seconds: float) -> LintReport | None:
+        if shutil.which("cargo") is None:
+            return LintReport(attempted=False, passed=True, tool="clippy", reason_skipped="`cargo` nicht verfügbar.")
+        result = CodeSandbox.run_command(["cargo", "clippy", "--message-format=json"], cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        return LintReport(attempted=True, passed=result.exit_code == 0, tool="clippy")
+
+    def _lint_go(self, timeout_seconds: float) -> LintReport | None:
+        if shutil.which("go") is None:
+            return LintReport(attempted=False, passed=True, tool="go vet", reason_skipped="`go` nicht verfügbar.")
+        result = CodeSandbox.run_command(["go", "vet", "./..."], cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        return LintReport(attempted=True, passed=result.exit_code == 0, tool="go vet")
 
     def _audit_python_dependencies(self, req_file: Path, timeout_seconds: float) -> DependencyAuditReport:
         if shutil.which("pip-audit") is None:
@@ -517,27 +624,6 @@ class ProjectVerifier:
             attempted=True, vulnerable=total > 0, tool="npm audit", vulnerabilities=vulnerabilities,
         )
 
-    def check_lint(self, timeout_seconds: float = 60.0) -> list[LintReport]:
-        """
-        Prüft generierten Code JEDES gefundenen Stacks mit echten Tools statt LLM-Meinung:
-        - Python: IMMER per ruff, wenn .py-Dateien existieren (braucht keine Projekt-
-          Konfiguration, läuft isoliert von der eigenen ruff.toml des Frameworks).
-        - Node: ESLint/tsc NUR, wenn das jeweilige Projekt sie selbst bereits als Dev-
-          Abhängigkeit UND Konfiguration mitbringt – keine ungefragte Meinungsänderung an
-          einem Projekt, das sich nie für diese Tools entschieden hat.
-        Gibt eine Liste zurück (mehrere Stacks/Node-Unterprojekte, ESLint UND tsc möglich).
-        """
-        reports: list[LintReport] = []
-        if self._has_python_files():
-            reports.append(self._lint_python(timeout_seconds))
-        for node_dir in self._find_node_projects():
-            eslint_report = self._lint_node_eslint(node_dir, timeout_seconds)
-            if eslint_report is not None:
-                reports.append(eslint_report)
-            tsc_report = self._typecheck_node_tsc(node_dir, timeout_seconds)
-            if tsc_report is not None:
-                reports.append(tsc_report)
-        return reports
 
     def _has_python_files(self) -> bool:
         return any(
@@ -920,4 +1006,14 @@ class ProjectVerifier:
                     )
 
         return RuntimeSmokeReport(attempted=False, reason_skipped="Kein ausführbarer Einstiegspunkt (main.py, app.py, server.js) gefunden.")
+
+    def check_browser_ui(self, timeout_seconds: float = 8.0):
+        """
+        Prüft Frontend-/Web-Projekte per Headless-Browser oder statischer DOM-Validierung
+        auf fehlende Assets, JavaScript-Fehler und Rendering-Probleme.
+        """
+        from core.browser_verifier import BrowserVerifier
+        verifier = BrowserVerifier(self.project_dir)
+        return verifier.verify_frontend(timeout_seconds=timeout_seconds)
+
 

@@ -1336,8 +1336,18 @@ class Orchestrator:
                     summary_lines.append(f"- 🚀 Runtime-Smoke-Test: `{smoke_report.entrypoint}` [{smoke_report.app_type}] startet fehlerfrei{code_info}.")
                 else:
                     err = f": {smoke_report.output[:150]}" if smoke_report.output else ""
-                    notify(f"  🚀 [bold red]Runtime-Smoke-Test fehlgeschlagen:[/bold red] `{smoke_report.entrypoint}` [{smoke_report.app_type}]{err}.")
-                    summary_lines.append(f"- 🚀 ⚠️ Runtime-Smoke-Test: `{smoke_report.entrypoint}` [{smoke_report.app_type}] konnte nicht gestartet werden{err}.")
+        # Browser / Frontend UI-Check: Prüft statische Assets, Rendering und JS-Konsolenfehler
+        if not (budget_aborted or manually_cancelled):
+            browser_report = await asyncio.to_thread(verifier.check_browser_ui)
+            if browser_report.attempted:
+                if browser_report.passed:
+                    engine_info = f" [{browser_report.engine}]"
+                    notify(f"  🌐 [bold green]Frontend/UI-Check erfolgreich:[/bold green] `{browser_report.tested_url}`{engine_info}.")
+                    summary_lines.append(f"- 🌐 Frontend/UI-Check: `{browser_report.tested_url}`{engine_info} fehlerfrei.")
+                else:
+                    err_details = "; ".join(browser_report.missing_assets + browser_report.console_errors)[:150]
+                    notify(f"  🌐 [bold red]Frontend/UI-Check Warnung:[/bold red] {err_details}.")
+                    summary_lines.append(f"- 🌐 ⚠️ Frontend/UI-Check: {err_details}.")
 
         verification_summary = "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n" + (
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."

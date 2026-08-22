@@ -34,13 +34,16 @@ damit dieses README als aktuelle Funktionsübersicht schlank bleibt.
 - [Hierarchische Team- & Fachbereichsstruktur (Grafik)](#teamstruktur)
 - [Kommunikations- & Delegations-Workflow](#kommunikations-workflow)
 - [🛡️ Neuer Spezialist: Resilience-Guard (QA & Fault-Tolerance)](#resilience-guard)
-- [🔀 PR-Workflow: Feature-Branch + Pull Request statt Direct-Push](#pr-workflow)
+- [🔀 PR-Workflow & Kollaborativer Review-Loop](#pr-workflow)
 - [🎫 Autonome, getriggerte Arbeit: GitHub-Issues als Backlog](#issue-watcher)
 - [📋 Backlog/Kanban-Board über CLI, Dashboard & Issue-Watcher hinweg](#backlog-kanban)
 - [🌐 Modernes Web-Dashboard & Visualisierung](#web-dashboard)
 - [🔌 MCP-Server: Einbindung in Cursor, Windsurf & Antigravity](#mcp-server)
+- [🕸️ AST-Codebase-Graph & Semantische Impact-Analyse](#code-graph)
+- [🎭 Headless-Browser & Frontend-UI-Validierung](#browser-ui)
+- [☁️ Cloud-Preview-Deployments (Fly.io, Vercel, Render)](#cloud-deploy)
 - [🔍 Lokales Codebase-RAG & Semantische Suche](#codebase-rag)
-- [🧪 Sandbox-Code-Validierung & Automatische Test-Execution](#sandbox-validierung)
+- [🧪 Sandbox-Code-Validierung & Multi-Sprachen-Testing](#sandbox-validierung)
 - [🪙 Hartes Lauf-Budget (MAX_RUN_TOKENS)](#lauf-budget)
 - [🧠 Persistente KI-Selbstoptimierung & Langzeitgedächtnis](#persistente-selbstoptimierung)
 - [🎯 Die 33 Spezialisten & Fachbereiche](#die-33-spezialisten)
@@ -356,21 +359,53 @@ Claude Desktop `claude_desktop_config.json`):
 
 ---
 
+<a id="code-graph"></a>
+## 🕸️ AST-Codebase-Graph & Semantische Impact-Analyse
+
+Große Codebases (50+ Dateien) erfordern mehr als reine Vektorsuche: Der [CodebaseGraph](core/code_graph.py) parst den gesamten Quelltext (`.py`, `.js`, `.ts`, `.tsx`) in einen echten Abstract-Syntax-Tree (AST) und stellt Agenten präzise strukturelle Werkzeuge zur Verfügung:
+
+- **`find_symbol_definition`:** Findet die exakte Definition (Klasse, Methode, Funktion) dateiübergreifend mit Signatur und Docstring.
+- **`find_symbol_references`:** Listet alle Aufrufe, Ableitungen und Imports eines Symbols über das gesamte Projekt hinweg.
+- **`analyze_code_impact`:** Berechnet vor einem Refactoring die Auswirkung einer Änderung (welche Dateien, Module und Aufrufer brechen bei einer Signaturänderung?).
+
+---
+
+<a id="browser-ui"></a>
+## 🎭 Headless-Browser & Frontend-UI-Validierung
+
+Frontends (HTML/CSS/JS, React, Vue, FastAPI/Flask-Templates) werden durch [BrowserVerifier](core/browser_verifier.py) echten Funktionstests unterzogen:
+
+- **Dynamischer Headless-Browser-Check (Playwright):** Startet die Anwendung auf einem freien Port, fängt JavaScript-Konsolenfehler (`console.error`, Uncaught Exceptions) ab und prüft das Rendering.
+- **Asset- & 404-Integritätsprüfung:** Verifiziert, ob alle in HTML verlinkten CSS-, JS- und Bilddateien existieren.
+- **Graceful Fallback:** Ist kein Browser-Binary installiert, analysiert das System den DOM-Baum statisch und schlägt bei fehlenden Assets oder fehlerhaften Tags an.
+
+---
+
+<a id="cloud-deploy"></a>
+## ☁️ Cloud-Preview-Deployments (Fly.io, Vercel, Render, Railway)
+
+Über das lokale Docker-Deployment hinaus generiert [CloudDeploymentManager](core/cloud_deployment.py) produktionsreife Cloud-Manifeste:
+
+- **Fly.io:** Erstellt `fly.toml` und `Dockerfile` mit Region Frankfurt (`fra`) und Auto-Stop/Start.
+- **Vercel:** Erstellt `vercel.json` für Serverless Python-, Next.js- oder Static-Deployments.
+- **Render / Railway:** Erstellt Blueprints (`render.yaml`, `railway.json`).
+- **CLI & Dashboard:** Kann per Dry-Run oder echten Deploy-Befehl (`flyctl deploy`, `vercel deploy`) direkt eine globale HTTPS-Preview-URL bereitstellen.
+
+---
+
 <a id="sandbox-validierung"></a>
-## 🧪 Sandbox-Code-Validierung & Automatische Test-Execution
+## 🧪 Sandbox-Code-Validierung & Multi-Sprachen-Testing
 
 Zwei unabhängige Prüfebenen, die sich ergänzen:
 
 1. **Statische Validierung** (`core/code_sandbox.py`): Prüft Python-Code per `ast.parse()`
-   auf Syntaxfehler, JSON per `json.loads()`, YAML auf grobe Formatierungsfehler (z. B. Tabs
-   statt Leerzeichen) – schnell, ohne Ausführung, ohne Abhängigkeiten.
-2. **Echte dynamische Verifikation** (`core/verifier.py`, `ProjectVerifier`): Legt bei
-   vorhandener `requirements.txt` eine isolierte venv im Projekt an, installiert die
-   Abhängigkeiten wirklich per `pip`, und führt die tatsächliche Testsuite aus (`pytest`,
-   falls installiert, sonst `unittest discover`). Schlägt ein Test fehl, wird der reale
-   Traceback geparst (beide Formate: klassischer Python-Traceback und pytest-Kurzformat)
-   und der betroffene Agent anhand der `file_owners`-Map gezielt zur Korrektur beauftragt –
-   bis zu `MAX_VERIFICATION_ITERATIONS` Runden (Standard: 2).
+   auf Syntaxfehler, JSON per `json.loads()`, YAML auf grobe Formatierungsfehler – schnell, ohne Ausführung.
+2. **Echte dynamische Multi-Sprachen-Verifikation** (`core/verifier.py`, `ProjectVerifier`):
+   - **Python:** Isolierte venv, echte Testausführung (`pytest` / `unittest`), Testabdeckungsschwelle (`pytest-cov`), Linting (`ruff`), Security-Audit (`pip-audit`), Runtime-Smoke-Test.
+   - **Node / TypeScript:** Echte Installation (`npm ci`/`npm install`), Testläufe (`npm test`), Linting (`eslint`, `tsc`), Security-Audit (`npm audit`).
+   - **Rust:** `Cargo.toml`-Erkennung, Build-Check (`cargo check`), echte Tests (`cargo test`), Linting (`cargo clippy`), Security-Audit (`cargo audit`).
+   - **Go:** `go.mod`-Erkennung, Modul-Download (`go mod download`), echte Tests (`go test -v ./...`), Linting (`go vet`), Security-Audit (`govulncheck`).
+   Schlägt ein Test fehl, wird der reale Traceback geparst und der betroffene Agent anhand der `file_owners`-Map gezielt zur Korrektur beauftragt (bis zu `MAX_VERIFICATION_ITERATIONS` Runden).
 
 Beide Ebenen laufen automatisch als Teil jedes Orchestrator-Laufs, ohne dass der Nutzer sie
 manuell anstoßen muss. Manuell erreichbar über `/run-tests [projekt]` in der CLI.
@@ -485,9 +520,13 @@ eingeloggt?"* die passende `auth.py`, obwohl dort nirgends "einloggen" steht.
 ## 🚀 Alle CLI-Befehle im Überblick
 
 ```bash
-python main.py                          # Interaktive CLI (Standard)
-python main.py --dashboard [--port N]   # Web-Dashboard unter http://localhost:8080
-python main.py --check-issues           # EIN Poll-Zyklus über offene GitHub-Issues, dann Ende
+python main.py                              # Interaktive CLI (Standard)
+python main.py --dashboard [--port N]       # Web-Dashboard unter http://localhost:8080
+python main.py --check-issues               # EIN Poll-Zyklus über offene GitHub-Issues
+python main.py --check-pr-reviews           # EIN Poll-Zyklus über offene PR-Review-Kommentare
+python main.py --check-dependencies         # Workspace-weiter Schwachstellen-Scan
+python main.py --eval [--tasks t1,t2]       # Reproduzierbare Benchmark-Suite ausführen
+python main.py --list-evals                 # Alle Benchmark-Aufgaben auflisten
 ```
 
 Details zum Web-Dashboard: [🌐 Modernes Web-Dashboard & Visualisierung](#web-dashboard).

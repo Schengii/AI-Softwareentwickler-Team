@@ -7,6 +7,236 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔧 Datenbasierte Selbstoptimierungs-Vorschläge über mehrere Läufe hinweg
+
+Nutzerwunsch: "Loops einbauen, damit das Team eigenständiger arbeiten und sich weiter
+optimieren kann". Nach Rückfrage (drei mögliche Lesarten: eingebauter Daemon-Modus im
+Framework, Claude-Code-`/schedule` für wiederkehrende Läufe, oder eine tiefere
+Selbstoptimierungs-Schleife) fiel die Wahl bewusst auf Letzteres – als reiner VORSCHLAG, keine
+automatische Änderung, dieselbe Linie wie die bereits weiter unten dokumentierte Entscheidung,
+Phasenreihenfolge-Änderungen nicht automatisch, sondern nur nach Rücksprache umzusetzen.
+
+- **`memory/run_history.py.get_agent_model_performance()`**: `agent_results`-Einträge trugen
+  bisher `agent_id`/`success`/`total_tokens`, aber NICHT, welches Modell tatsächlich genutzt
+  wurde (`AgentResult.model_used` existierte bereits, wurde aber nie mit aufgezeichnet) – es
+  gab dadurch keine Möglichkeit zu sehen, ob die aktuell konfigurierte Modellzuweisung eines
+  Agenten (z. B. nach einem manuellen `.env`-Wechsel) empirisch tatsächlich die beste ist.
+  Gruppiert Erfolgsquote/Tokenverbrauch je (Agent, Modell)-Kombination; ältere Historien-
+  Einträge ohne `model_used` landen unter "unbekannt" statt zu crashen.
+- **`core/optimization_advisor.py`** (`analyze()`, `format_report_for_humans()`): rein
+  deterministische Auswertung (keine LLM-Interpretation nötig – Erfolgsquoten sind bereits
+  harte Zahlen) erkennt zwei Muster: (1) ein Agent lief bereits mit mehreren Modellen in der
+  Historie, eines davon deutlich besser (Mindest-Stichprobengröße `MIN_SAMPLE_SIZE=5` je
+  Modell UND Mindest-Lücke `MIN_SUCCESS_RATE_GAP=15` Prozentpunkte, sonst gilt es als
+  Rauschen); (2) ein Agent scheitert auffällig oft gegenüber dem Team-Durchschnitt. Beides
+  bewusst NUR als Empfehlung formatiert, ändert `config.py` nie automatisch.
+- Erscheint automatisch als eigener Abschnitt im Abschlussbericht JEDES Laufs (`agents/
+  orchestrator.py`), aber NUR wenn ein aussagekräftiger Befund vorliegt – kein unnötiger
+  Abschnitt für die Mehrheit der Läufe. Zusätzlich jederzeit ohne neuen Lauf über den neuen
+  CLI-Befehl `/optimize` abrufbar.
+
+23 neue Tests (`test_optimization_advisor.py`, `test_optimization_advisor_integration.py`,
+`test_cli_optimize_command.py`, Erweiterung von `test_run_history.py`). Volle Suite
+(752 Tests) grün, ruff sauber.
+
+---
+
+## ♿ Echter axe-core-Accessibility-Scan statt LLM-Freitext-Checkliste
+
+Letzter offener Punkt aus der Bestandsaufnahme gegen ein professionelles Team: Nach SAST
+(`bandit`) und Lizenz-Audit (`pip-licenses`) blieb der `accessibility`-Agent als dritter Agent
+übrig, dessen Report reine LLM-Einschätzung ohne echten Fundort war – ausgerechnet, obwohl
+`core/browser_verifier.py` bereits per Playwright echt gerenderte Seiten für den UI-Check
+zur Verfügung hatte.
+
+- **`core/browser_verifier.py.verify_accessibility()`** (`AccessibilityReport`,
+  `AccessibilityViolation`): führt `axe-core-python` (WCAG 2.x, dieselbe Engine, die auch
+  `@axe-core/playwright`, `cypress-axe`, `jest-axe` nutzen) gegen den ersten gefundenen
+  HTML-Einstiegspunkt aus – eigener, unabhängiger Playwright-Lauf statt Wiederverwendung des
+  bestehenden UI-Checks, damit ein Fehlschlag hier den Konsolen-/Asset-Check nicht beeinflusst
+  und umgekehrt. `core/verifier.py.check_accessibility()` delegiert dünn daran, exakt wie
+  `check_browser_ui()`. Braucht zwingend eine echt gerenderte Seite (Playwright UND
+  `axe-core-python`) – ohne beides `attempted=False`, NIEMALS fälschlich "keine Verstöße".
+  Rein informativ im Abschlussbericht wie der bestehende Frontend/UI-Check direkt darüber,
+  beeinflusst `verification_ok` nicht.
+- Parsing bewusst defensiv (`.get()`-Ketten statt direkter Zugriffe) gegen axe-core-Versions-
+  Drift, dasselbe Prinzip wie beim k6-Summary-Parser: fehlende/abweichende Felder degradieren
+  konservativ, statt mit `KeyError` zu crashen.
+
+14 neue Tests (`test_accessibility_verifier.py`, `test_accessibility_integration.py`). Neue
+optionale Dev-Abhängigkeit `axe-core-python` in `requirements-dev.txt`. Volle Suite
+(737 Tests) grün, ruff sauber.
+
+Damit sind jetzt alle drei Agenten mechanisiert, die zuvor reine LLM-Einschätzungen ohne
+echten Fundort abgaben: `security` (SAST), `compliance` (Lizenz-Audit) und `accessibility`
+(axe-core) – durchgängig dasselbe Muster wie beim ursprünglichen Dependency-Audit.
+
+---
+
+## 📜 CHANGELOG.md für generierte Projekte & echtes Slack-Block-Kit-Format
+
+Letzte zwei kleinere Punkte aus derselben Bestandsaufnahme:
+
+- **`core/release_manager.py.update_project_changelog()`:** `tag_release()` erstellte bisher
+  nur ein GitHub-Release (Tag + Notes) – nur das Framework-Repo hatte eine im Projekt selbst
+  lesbare Versionshistorie, generierte Projekte in `workspace/` nicht. Nach jedem erfolgreichen
+  Release schreibt derselbe Aufruf jetzt zusätzlich eine echte `CHANGELOG.md` **im generierten
+  Projekt** (`workspace/<projekt>/CHANGELOG.md`, neueste Einträge zuerst) – über die
+  GitHub-Contents-API (`gh api --method PUT`) direkt gegen den Default-Branch, ohne den
+  lokalen Checkout in `BASE_DIR` anzufassen (derselbe Grund wie bei `gh release create`
+  selbst: der lokale Checkout könnte gerade auf einem völlig anderen Branch stehen, z. B.
+  mitten in einem parallelen Lauf). Sicher gegen versehentliches Überschreiben: ohne das
+  korrekte `sha` einer bereits existierenden Datei lehnt GitHubs eigene Contents-API den
+  Schreibvorgang ab, statt ihn stillschweigend zu ersetzen – `_fetch_existing_changelog()`
+  startet deshalb im Fehlerfall bewusst konservativ mit einer frischen Datei, statt zu raten.
+  Erkennt einen fremden/von Hand abweichenden Header, wird der neue Eintrag nur oben angefügt,
+  statt bestehenden Inhalt zu überschreiben. Best effort wie das Release-Tagging selbst: ein
+  fehlgeschlagenes CHANGELOG-Update lässt das bereits erfolgreiche Release NIE nachträglich
+  als Fehlschlag gelten.
+- **`core/notifier.py`:** Das Slack-Webhook-Payload war bisher ein einziger flacher
+  `{"text": "..."}`-String – in Slack kam das unformatiert an, obwohl Slack für genau diesen
+  Zweck ein eigenes Nachrichtenformat (Block Kit) mit fett/Struktur/Farbe anbietet.
+  `_build_slack_payload()` nutzt jetzt echtes Block Kit: fett hervorgehobenes Event-Label,
+  farbiger Rand je nach grob an Schlagworten erkanntem Schweregrad ("fehlgeschlagen"/
+  "blockiert"/"Budget erreicht" → Rot, "Warnung"/"Achtung" → Orange, sonst Blau) und ein
+  Kontext-Footer mit Zeitstempel. Das oberste `"text"`-Feld bleibt zusätzlich gesetzt – Slacks
+  eigene Fallback-Konvention für Push-Vorschauen/Clients ohne Block-Kit-Rendering, zugleich
+  Rückwärtskompatibilität für Fremd-Webhooks, die nur ein einfaches `"text"`-Feld auswerten.
+  Bewusst NICHT umgesetzt: Threads/Mentions – beides bräuchte die `chat.postMessage`-API mit
+  einem echten Bot-Token statt der aktuellen, einfachen Webhook-URL, ein anderes Auth-Modell.
+
+29 neue Tests (`test_release_manager.py` erweitert, `test_notifier.py` erweitert). Volle Suite
+(723 Tests) grün, ruff sauber.
+
+---
+
+## 🏋️ Echte Ausführung der Lastentest-Skripte statt ungeprüfter Ablage
+
+Direkte Fortsetzung der Bestandsaufnahme unten: der `performance`-Agent schrieb bereits
+vollständige k6-/Locust-Lastentest-Skripte, aber – anders als `run_tests()` für die normale
+Testsuite – wurden sie NIE tatsächlich ausgeführt. Ein Skript, das nie läuft, ist praktisch
+wertlos: niemand (Mensch oder Team) weiß, ob es syntaktisch überhaupt funktioniert oder was
+es unter Last ergäbe.
+
+- **`core/verifier.py.check_load_test()`** (`PerfCheckReport`): startet einen gefundenen
+  Python-Web-Einstiegspunkt (dieselbe Erkennung wie im `http_api`-Zweig von
+  `check_runtime_smoke()`) auf einem freien Port und führt einen kurzen SMOKE-Lasttest
+  dagegen aus – wenige Sekunden, wenige virtuelle Nutzer. Bewusst KEIN vollständiger
+  Lasttest/Benchmark (würde Minuten dauern und echte Ressourcen binden), nur eine Prüfung,
+  ob die App unter minimaler gleichzeitiger Last überhaupt fehlerfrei antwortet. Sucht
+  ausschließlich unter der neuen Konvention `tests/load/` (`locustfile.py` hat Vorrang vor
+  `*.js`-k6-Skripten) – `agents/performance_agent.py` wurde entsprechend angepasst, inkl. der
+  Vorgabe, die Ziel-URL NIEMALS hart zu codieren (Locust: `--host` zur Laufzeit; k6:
+  `__ENV.BASE_URL`), da der automatische Testlauf den freien Port erst zur Laufzeit kennt.
+  `locust`-CSV-Ergebnisse werden per `csv.DictReader` geparst (robust gegen Spalten-
+  Reihenfolge-Unterschiede zwischen Locust-Versionen), `k6`-JSON-Summaries defensiv gegen
+  bekannte Format-Abweichungen zwischen Versionen. Wie bei jedem anderen Check: fehlendes
+  Skript/Tool oder ein technischer Fehlschlag (App startet nicht) ist KEIN Fehler, nur nicht
+  prüfbar (`attempted=False`) – in der Praxis für die meisten Projekte ein No-Op. Neuer
+  Opt-out `ENABLE_LOAD_TEST_CHECK=false`, Dauer über `LOAD_TEST_DURATION_SECONDS` (Standard 5s)
+  konfigurierbar. Ein fehlgeschlagener Request zählt wie beim Runtime-Smoke-Test als echte
+  Anforderungsverletzung (`verification_ok = False`), nicht als reiner Stil-Hinweis.
+- **Nebenfund beim Bau des Checks:** `check_runtime_smoke()`s `http_api`-Zweig rief
+  `CodeSandbox.safe_environment()` auf – eine Methode, die nie existiert hat (korrekt ist
+  `_restricted_env()`). Jeder erkannte FastAPI-/Flask-/uvicorn-Einstiegspunkt wäre dadurch mit
+  `AttributeError` gecrasht. Blieb unbemerkt, weil `tests/test_verifier_smoke.py` nur die
+  `cli_script`-/`node_server`-Zweige mit einem echten Aufruf testet, nie den `http_api`-Zweig
+  (der lief bisher ausschließlich über gemockte `check_runtime_smoke()`-Rückgabewerte in
+  Integrationstests) – derselbe Musterfund wie schon beim `browser_verifier.py`-`NameError` im
+  CHANGELOG-Eintrag weiter unten: reine Mocks sehen strukturell nicht jeden echten,
+  dynamischen Codepfad. Direkt mitgefixt.
+
+24 neue Tests (`test_verifier_load_test.py`, `test_load_test_integration.py`), 8 bestehende
+Verifikations-Integrationstests um `check_load_test.return_value.attempted = False` ergänzt
+(dasselbe Musterproblem wie bei `check_docker_build`/`check_browser_ui`: ein komplett
+gemockter `ProjectVerifier` liefert für einen neuen, nicht explizit gemockten Single-Report-
+Check sonst ein truthy `MagicMock` statt `attempted=False`). `agents/orchestrator.py` formatiert
+`p95_ms` zusätzlich per `isinstance()`-Prüfung statt `is not None`, damit ein unvollständig
+gemockter Verifier in künftigen Tests nicht erneut an derselben Stelle crasht. Volle Suite
+(711 Tests) grün, ruff sauber. Neue optionale Dev-Abhängigkeit `locust` in
+`requirements-dev.txt` (`k6` ist kein pip-Paket und muss separat installiert werden, wie
+`docker` bei `check_docker_build()`).
+
+---
+
+## 🕵️ Mechanisierte Security-/Lizenz-Prüfung statt LLM-Raten & persistentes Design-System
+
+Bestandsaufnahme auf explizite Nutzeranfrage ("welche Verbesserungen fehlen für ein
+vollständiges, professionelles Team?"): Der Dependency-Audit (`pip-audit`/`npm audit`) und
+der Lint-Check (`ruff`/`eslint`/`tsc`) hatten die rein LLM-basierte Einschätzung von
+`security`/Code-Qualität bereits durch echte Tool-Läufe ersetzt – zwei weitere Agenten-Reports
+hingen aber noch im alten Zustand fest: reines, ungeprüftes Freitext-Raten des Modells, ohne
+Datei/Zeile oder echte Paket-Metadaten.
+
+- **SAST für generierten Python-Code** (`core/verifier.py.check_sast()`, `SastReport`): Neuer
+  echter statischer Scan (`bandit`) gegen bekannte Schwachstellenmuster (hartcodierte
+  Secrets, unsichere Deserialisierung, SQL-Injection-Vektoren, unsichere Zufallszahlen,
+  `eval`/`exec`, …) – ersetzt die bisherige Freitext-Einschätzung des `security`-Agenten
+  (der Schwachstellen nur "plausibel" vermuten konnte) durch einen geparsten Fund mit
+  exakter Datei/Zeile/Regel/Schweregrad. Dasselbe Graceful-Degradation-Prinzip wie beim
+  Dependency-Audit: fehlendes `bandit` oder ein technischer Fehlschlag ist NIE ein Fehler,
+  nur nicht prüfbar (`attempted=False`), niemals fälschlich als "keine Funde" gemeldet. Rein
+  informativ im Abschlussbericht (wie Lint), kein automatischer Blocker – ein SAST-Fund kann
+  ein False Positive sein und braucht menschliche Einschätzung, anders als ein roter Test.
+  Aktuell nur Python; Node/Rust/Go (z. B. via `semgrep`) sind eine naheliegende spätere
+  Erweiterung, analog dazu, wie auch der Dependency-Audit schrittweise über mehrere Runden
+  auf Node/Rust/Go ausgeweitet wurde.
+- **Echter Lizenz-/SBOM-Scan** (`core/verifier.py.check_licenses()`, `LicenseAuditReport`):
+  `pip-licenses` liest die Lizenzen der TATSÄCHLICH installierten Python-Abhängigkeiten aus
+  der isolierten Projekt-venv (`--python <venv-interpreter>`) und markiert bekannte
+  Copyleft-Lizenzen (GPL/AGPL/LGPL/MPL/CDDL/EUPL/SSPL per Namens-Heuristik) – ersetzt die
+  bisherige, vom `compliance`-Agenten GERATENE Lizenz-Tabelle ("MIT/AGPL 🔴") durch echte
+  Paket-Metadaten. Rechtlich relevant: eine geratene Lizenzangabe bei einem echten
+  Copyleft-Paket ist eine falsche Sicherheit, kein bloßer Stil-Hinweis wie ein Lint-Fund.
+- **Persistentes Projekt-Design-System** (`core/design_system.py`, `/design-system [projekt]`):
+  Die bereits bestehende Projekt-Konstitution (`core/project_constitution.py`) hält feste
+  Tech-Stack-Präferenzen über mehrere Läufe hinweg fest – seit der Design-vor-Dev-
+  Phasenaufteilung (`design_lead` läuft VOR `dev_lead`) fehlte ausgerechnet dem VISUELLEN
+  Design (Farbpalette, Typografie, Spacing-Skala, Komponenten-Namenskonvention, Tonalität für
+  `copywriter`) ein Pendant: ein zweiter Lauf am selben Projekt hätte eine andere
+  Primärfarbe/Schriftart wählen können als der erste, ohne dass die Nutzeranfrage das je
+  erwähnt hätte. Neue Datei `.ai-team-design.toml` im Projektverzeichnis (bewusst NICHT
+  gitignored, wie `.ai-team.toml`), nach demselben Muster gelesen/geschrieben und bei JEDEM
+  künftigen Lauf in den Kontext aller Teilaufgaben injiziert.
+
+50 neue Tests (`test_verifier_sast.py`, `test_sast_integration.py`, `test_verifier_license.py`,
+`test_license_audit_integration.py`, `test_design_system.py`, `test_cli_design_system_command.py`,
+`test_design_system_integration.py`). Volle Suite (692 Tests) grün, ruff sauber. Neue optionale
+Dev-Abhängigkeiten `bandit`/`pip-licenses` in `requirements-dev.txt` (dieselbe Graceful-Skip-
+Philosophie wie `pip-audit`: fehlt das Tool lokal, wird der jeweilige Scan übersprungen statt
+zu crashen oder fälschlich "sauber" zu melden).
+
+**Bewusst zurückgestellt: mechanisierte Ausführung der vom `performance`-Agenten geschriebenen
+k6-/Locust-Lastentests.** Anders als SAST/Lizenz-Scan (einmaliger, kurzer Tool-Aufruf) würde
+ein echter Lasttest die generierte Anwendung tatsächlich unter Last hochfahren müssen – ein
+deutlich größerer Eingriff (Ports, Laufzeit, Ressourcenverbrauch) als die übrigen
+Verifikationsschritte. Als nächster Schritt vorgemerkt, aber nicht Teil dieser Runde.
+
+---
+
+## 🎨 Design-vor-Dev-Phasenaufteilung: Vorab-Design & Post-Dev-Content/Dokumentation
+
+Strukturelle Weiterentwicklung der Fachbereichs-Hierarchie basierend auf dem von Claude
+gekennzeichneten Architektur-Diskussionspunkt:
+
+- **Aufspaltung der Design- und Content-Phasen:** Bisher lief `dev_lead` vor `creative_lead`
+  – `creative_lead` enthielt jedoch sowohl vorlaufende Rollen (`ui_ux`, `image_generator`, `copywriter`),
+  die Entwürfe und Assets vor dem Coden liefern sollten, als auch nachlaufende Rollen
+  (`accessibility`, `i18n`, `documentation`, `readme`), die zwingend auf fertigen Code angewiesen sind.
+- **6-Phasen-Ablauf:**
+  1. `planning_lead`: Anforderungsanalyse, Scope & Architektur-Blueprint.
+  2. `design_lead`: Wireframes, Design-Tokens, SVG-Icons/Logos & Copywriting vorab.
+  3. `dev_lead`: Fullstack-, Backend- und Frontend-Entwicklung basierend auf den Design-Spezifikationen.
+  4. `content_lead`: Barrierefreiheit (a11y), Mehrsprachigkeit (i18n), Dokumentation & README auf dem erzeugten Code.
+  5. `qa_lead`: Echte Testsuite, Security-Audits & Resilience-Prüfung.
+  6. `governance_lead`: Code-Review, Refactoring, DSGVO/Compliance & Hygiene.
+- **Rückwärtskompatibilität:** `config.py` unterstützt weiterhin `CREATIVE_LEAD_MODEL` und
+  `DEPARTMENT_CREATIVE_MODEL` als Fallbacks für `design_lead` und `content_lead`.
+- **Neue Tests:** `tests/test_department_phase_order.py` validiert die strikte Phasenfolge und den
+  Kontextfluss zwischen Design, Dev und Content/Doku.
+
+---
+
 ## 🤖 Drei weitere Lücken gegenüber einem echten Profi-Team: Pro-Projekt-Budget, Release-Tagging, Sprint-Priorisierung
 
 Zweite Runde derselben Nutzeranfrage-getriebenen Bestandsaufnahme (siehe Eintrag unten):

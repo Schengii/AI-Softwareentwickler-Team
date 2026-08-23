@@ -34,14 +34,36 @@ Konfiguration mitbringt, keine ungefragte Meinungsänderung am Projekt-Stil).
 Bisher lief ruff.toml NUR gegen den Framework-Code selbst (workspace/ dort
 bewusst ausgeschlossen) – generierter Code hatte dadurch überhaupt keine
 automatische Stil-/Fehlerprüfung.
+
+Und: check_sast() ersetzt die bisherige rein LLM-basierte Einschätzung des security-Agenten
+zu Schwachstellen im SELBST GESCHRIEBENEN Code (Freitext-Vermutungen ohne Datei/Zeile) durch
+einen echten statischen Scan (bandit für Python) – dasselbe Prinzip, das
+check_dependency_vulnerabilities() bereits für Fremdpaket-CVEs etabliert hat.
+
+Und: check_licenses() ersetzt die bisherige rein LLM-basierte Lizenz-Tabelle des
+compliance-Agenten ("MIT/AGPL 🔴", geraten) durch einen echten Scan der tatsächlich
+installierten Paket-Lizenzen (pip-licenses für Python) inkl. einfacher Copyleft-Heuristik
+(GPL/AGPL/LGPL/MPL/CDDL/EUPL/SSPL) – kein Raten mehr, welche Lizenz ein Fremdpaket wirklich hat.
+
+Und: check_load_test() führt die vom performance-Agenten geschriebenen k6-/Locust-Lastentest-
+Skripte tatsächlich AUS (bisher landeten sie ungeprüft im Projekt, niemand wusste, ob sie
+überhaupt liefen) – startet die generierte App auf einem freien Port und lässt einen kurzen,
+wenige Sekunden dauernden Smoke-Lasttest dagegen laufen, kein vollständiger Lasttest.
+
+Und: check_accessibility() (core/browser_verifier.py.verify_accessibility()) ersetzt die
+bisherige rein LLM-basierte Einschätzung des accessibility-Agenten (Freitext-Checkliste ohne
+konkreten Fundort) durch einen echten axe-core-Scan (WCAG 2.x) gegen eine echt gerenderte
+Playwright-Seite – dasselbe Prinzip wie check_sast() für Security, nur für Barrierefreiheit.
 """
 
+import csv
 import json
 import re
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -151,6 +173,106 @@ class DependencyAuditReport:
 
 
 @dataclass
+class SastFinding:
+    """Ein einzelnes, aus einer echten `bandit`-Ausgabe geparstes Sicherheits-Fundstück."""
+    file_path: str
+    line_number: int
+    message: str
+    rule: str = ""
+    severity: str = ""  # bandit issue_severity: LOW/MEDIUM/HIGH
+
+
+@dataclass
+class SastReport:
+    """
+    Ergebnis eines echten Static-Application-Security-Testing-Laufs (`bandit` für Python) –
+    ersetzt die bisherige rein LLM-basierte Einschätzung des security-Agenten (Freitext-
+    Vermutungen ohne konkrete Datei/Zeile) durch einen echten, statischen Scan gegen bekannte
+    Schwachstellenmuster im eigenen Code (hartcodierte Secrets, unsichere Deserialisierung,
+    SQL-Injection-Vektoren, unsichere Zufallszahlen/Hashes, `eval`/`exec`, …) – dasselbe
+    Prinzip wie DependencyAuditReport für Abhängigkeits-CVEs, nur für selbst geschriebenen
+    Code statt Fremdpakete.
+
+    Aktuell nur Python (bandit, braucht keine Projekt-Konfiguration – wie ruff bei
+    LintReport). JS/TS/Go/Rust-Unterstützung (z. B. via semgrep) ist eine naheliegende
+    spätere Erweiterung, analog dazu, wie auch der Dependency-Audit schrittweise über
+    mehrere Runden auf Node/Rust/Go ausgeweitet wurde – kein Anspruch auf Vollständigkeit
+    in dieser ersten Stufe.
+
+    Wie bei DependencyAuditReport gilt: fehlendes Tool oder ein technischer Fehlschlag des
+    Scans selbst sind KEIN Fehler, nur nicht prüfbar (attempted=False) – und werden NIEMALS
+    fälschlich als "keine Funde" gemeldet.
+    """
+    attempted: bool
+    vulnerable: bool
+    tool: str
+    findings: list[SastFinding] = field(default_factory=list)
+    reason_skipped: str = ""
+
+
+def _csv_float(row: dict, key: str) -> float | None:
+    """Liest ein Feld aus einer per csv.DictReader gelesenen Zeile als float - None statt
+    Crash bei fehlendem/leerem/nicht-numerischem Wert (z. B. eine Locust-Version ohne diese
+    Spalte)."""
+    raw = row.get(key)
+    if raw in (None, ""):
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+_COPYLEFT_LICENSE_MARKERS = ("GPL", "MPL", "CDDL", "EUPL", "SSPL")
+
+
+def _is_copyleft_license(license_str: str) -> bool:
+    """
+    Einfache Namens-Heuristik (bekannte Copyleft-Lizenz-Bezeichner als Teilstring, z. B.
+    "GNU General Public License v3 (GPLv3)" oder "LGPL") - kein Anspruch auf juristische
+    Vollständigkeit (z. B. Dual-Lizenzierung wird nicht aufgelöst), aber ein echter erster
+    Filter statt reinem Raten. "GPL" fängt bewusst auch AGPL/LGPL als Teilstring mit ab.
+    """
+    upper = (license_str or "").upper()
+    return any(marker in upper for marker in _COPYLEFT_LICENSE_MARKERS)
+
+
+@dataclass
+class LicenseFinding:
+    """Eine einzelne, aus einem echten Lizenz-Scan geparste Abhängigkeit mit ihrer Lizenz."""
+    package: str
+    version: str
+    license: str
+    copyleft: bool = False
+
+
+@dataclass
+class LicenseAuditReport:
+    """
+    Ergebnis eines echten Open-Source-Lizenz-Scans (`pip-licenses` für Python, liest die
+    Metadaten der TATSÄCHLICH installierten Pakete) – ersetzt die bisherige rein
+    LLM-basierte Einschätzung des compliance-Agenten (eine geratene "MIT/AGPL 🔴"-Tabelle im
+    Report) durch eine echte, aus den installierten Paketen gelesene Lizenzliste. Rechtlich
+    riskant: eine geratene Lizenzangabe kann bei einem echten Copyleft-Paket (GPL/AGPL) zu
+    falscher Sicherheit führen, ähnlich wie eine geratene CVE-Einschätzung ohne echten
+    Dependency-Audit.
+
+    Aktuell nur Python (pip-licenses). Node-Unterstützung (z. B. via `license-checker`) ist
+    eine naheliegende spätere Erweiterung, analog dazu, wie auch der Dependency-Audit
+    schrittweise über mehrere Runden auf Node/Rust/Go ausgeweitet wurde.
+
+    Wie bei DependencyAuditReport gilt: fehlendes Tool oder ein technischer Fehlschlag des
+    Scans selbst sind KEIN Fehler, nur nicht prüfbar (attempted=False) – und werden NIEMALS
+    fälschlich als "keine Copyleft-Risiken" gemeldet.
+    """
+    attempted: bool
+    has_copyleft_risk: bool
+    tool: str
+    findings: list[LicenseFinding] = field(default_factory=list)
+    reason_skipped: str = ""
+
+
+@dataclass
 class LintIssue:
     """Ein einzelnes, aus einer echten ruff-/ESLint-/tsc-Ausgabe geparstes Fundstück."""
     file_path: str
@@ -213,6 +335,40 @@ class RuntimeSmokeReport:
     status_code: int | None = None
     output: str = ""
     reason_skipped: str = ""
+
+
+@dataclass
+class PerfCheckReport:
+    """
+    Ergebnis eines echten, kurzen Lastentest-Laufs (k6/locust) gegen die generierte, tatsächlich
+    gestartete App – ersetzt die bisherige Situation, in der der performance-Agent vollständige
+    Lastentest-Skripte schreibt, die aber NIE ausgeführt werden (anders als z. B. run_tests()).
+
+    Bewusst KEIN vollständiger Lasttest (der würde Minuten dauern und echte Ressourcen binden),
+    sondern ein kurzer SMOKE-Lasttest mit wenigen virtuellen Nutzern über wenige Sekunden - genug,
+    um zu prüfen, ob die App unter minimaler gleichzeitiger Last überhaupt fehlerfrei antwortet,
+    kein Performance-Benchmark und keine Kapazitätsaussage.
+
+    Wie bei allen anderen Checks gilt: fehlendes Skript/Tool oder ein technischer Fehlschlag
+    (z. B. die App startet gar nicht) sind KEIN Fehler, nur nicht prüfbar (attempted=False) –
+    und werden NIEMALS fälschlich als "bestanden" gemeldet.
+    """
+    attempted: bool
+    passed: bool = False
+    tool: str = ""
+    script: str = ""
+    total_requests: int = 0
+    failed_requests: int = 0
+    p95_ms: float | None = None
+    output: str = ""
+    reason_skipped: str = ""
+
+
+# Verzeichnis, unter dem der performance-Agent Lastentest-Skripte ablegt (siehe
+# agents/performance_agent.py) - dieselbe Konvention wie specs/openapi.yaml beim
+# api_integration-Agenten: ein fester, dokumentierter Pfad, an dem check_load_test() gezielt
+# suchen kann, statt beliebige Dateinamen im ganzen Projekt erraten zu müssen.
+LOAD_TEST_DIRNAME = "tests/load"
 
 
 class ProjectVerifier:
@@ -496,6 +652,99 @@ class ProjectVerifier:
             )
         result = CodeSandbox.run_command(["govulncheck", "./..."], cwd=self.project_dir, timeout_seconds=timeout_seconds)
         return DependencyAuditReport(attempted=True, vulnerable=result.exit_code != 0, tool="govulncheck")
+
+    def check_sast(self, timeout_seconds: float = 60.0) -> list[SastReport]:
+        reports: list[SastReport] = []
+        if self._has_python_files():
+            reports.append(self._sast_python(timeout_seconds))
+        return reports
+
+    def _sast_python(self, timeout_seconds: float) -> SastReport:
+        if shutil.which("bandit") is None:
+            return SastReport(
+                attempted=False, vulnerable=False, tool="bandit",
+                reason_skipped="`bandit` ist auf diesem System nicht installiert/verfügbar (`pip install bandit`).",
+            )
+        # -x nimmt eine kommagetrennte Liste von Pfaden entgegen (kein wiederholbares Flag
+        # wie ruffs --extend-exclude) – dieselben Build-/Umgebungs-Artefakte wie bei jedem
+        # anderen Check (_IGNORED_DIRS) werden ausgeschlossen, keine vom Team geschriebenen
+        # Projektdateien.
+        exclude = ",".join(str(self.project_dir / d) for d in sorted(_IGNORED_DIRS))
+        command = ["bandit", "-r", str(self.project_dir), "-f", "json", "-x", exclude]
+        result = CodeSandbox.run_command(command, cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        return self._parse_bandit_result(result)
+
+    def _parse_bandit_result(self, result: ExecutionResult) -> SastReport:
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            tail = (result.stdout + result.stderr).strip()[-800:]
+            return SastReport(
+                attempted=False, vulnerable=False, tool="bandit",
+                reason_skipped=f"bandit lieferte kein gültiges Ergebnis: {tail}",
+            )
+
+        findings: list[SastFinding] = []
+        for entry in data.get("results", []):
+            raw_path = entry.get("filename", "?")
+            try:
+                rel = str(Path(raw_path).resolve().relative_to(self.project_dir)).replace("\\", "/")
+            except (ValueError, OSError):
+                rel = raw_path
+            findings.append(SastFinding(
+                file_path=rel,
+                line_number=entry.get("line_number", 0),
+                message=entry.get("issue_text", ""),
+                rule=entry.get("test_id") or "",
+                severity=entry.get("issue_severity", ""),
+            ))
+        return SastReport(attempted=True, vulnerable=len(findings) > 0, tool="bandit", findings=findings)
+
+    def check_licenses(self, timeout_seconds: float = 60.0) -> list[LicenseAuditReport]:
+        reports: list[LicenseAuditReport] = []
+        if self._requirements_file():
+            reports.append(self._license_audit_python(timeout_seconds))
+        return reports
+
+    def _license_audit_python(self, timeout_seconds: float) -> LicenseAuditReport:
+        if shutil.which("pip-licenses") is None:
+            return LicenseAuditReport(
+                attempted=False, has_copyleft_risk=False, tool="pip-licenses",
+                reason_skipped="`pip-licenses` ist auf diesem System nicht installiert/verfügbar (`pip install pip-licenses`).",
+            )
+        # pip-licenses liest Metadaten der TATSÄCHLICH installierten Pakete (kein Netzwerk,
+        # anders als pip-audit) - braucht daher gezielt die isolierte Projekt-venv aus
+        # ensure_environment() statt der Framework-eigenen Umgebung, in der das Tool selbst
+        # installiert ist. --python zeigt auf den Ziel-Interpreter, dessen Pakete geprüft
+        # werden sollen (fällt wie überall sonst auf den System-Interpreter zurück, falls die
+        # venv noch nicht existiert - siehe _resolve_python()).
+        command = ["pip-licenses", "--python", self._resolve_python(), "--format=json"]
+        result = CodeSandbox.run_command(command, cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        return self._parse_pip_licenses_result(result)
+
+    def _parse_pip_licenses_result(self, result: ExecutionResult) -> LicenseAuditReport:
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            tail = (result.stdout + result.stderr).strip()[-800:]
+            return LicenseAuditReport(
+                attempted=False, has_copyleft_risk=False, tool="pip-licenses",
+                reason_skipped=f"pip-licenses lieferte kein gültiges Ergebnis: {tail}",
+            )
+
+        findings: list[LicenseFinding] = []
+        for entry in data:
+            license_str = entry.get("License", "") or ""
+            findings.append(LicenseFinding(
+                package=entry.get("Name", "?"),
+                version=entry.get("Version", "?"),
+                license=license_str,
+                copyleft=_is_copyleft_license(license_str),
+            ))
+        return LicenseAuditReport(
+            attempted=True, has_copyleft_risk=any(f.copyleft for f in findings),
+            tool="pip-licenses", findings=findings,
+        )
 
     def check_lint(self, timeout_seconds: float = 60.0) -> list[LintReport]:
         reports: list[LintReport] = []
@@ -937,7 +1186,14 @@ class ProjectVerifier:
                 is_web = any(kw in content for kw in ("FastAPI", "uvicorn", "Flask", "aiohttp", "http.server", "HTTPServer"))
                 if is_web:
                     port = self._find_free_port()
-                    env = {**CodeSandbox.safe_environment(), "PORT": str(port), "UVICORN_PORT": str(port)}
+                    # Bugfix (beim Bau des Lastentest-Checks entdeckt): CodeSandbox.safe_environment()
+                    # existierte nie - dieser Zweig wäre bei JEDER erkannten Web-App mit
+                    # AttributeError gecrasht. Blieb unbemerkt, weil kein Test den http_api-Zweig je
+                    # mit einem echten Popen-Aufruf durchlaufen hat (siehe tests/test_verifier_smoke.py:
+                    # nur cli_script/node_server sind dort real getestet). Korrekt ist
+                    # CodeSandbox._restricted_env() - dieselbe Secret-Filterung, die run_command()
+                    # bereits für jeden Subprozess nutzt.
+                    env = {**CodeSandbox._restricted_env(), "PORT": str(port), "UVICORN_PORT": str(port)}
                     cmd = [python_exe, str(entry_file)]
                     if "uvicorn" in content and ("app = FastAPI" in content or "app =" in content):
                         module_name = entry_name[:-3]
@@ -1021,5 +1277,218 @@ class ProjectVerifier:
         from core.browser_verifier import BrowserVerifier
         verifier = BrowserVerifier(self.project_dir)
         return verifier.verify_frontend(timeout_seconds=timeout_seconds)
+
+    def check_accessibility(self, timeout_seconds: float = 10.0):
+        """
+        Prüft Frontend-/Web-Projekte per echtem axe-core-Scan (WCAG 2.x) auf konkrete,
+        geparste Barrierefreiheits-Verstöße – ersetzt die bisherige rein LLM-basierte
+        Einschätzung des accessibility-Agenten. Dünne Delegation an BrowserVerifier, exakt wie
+        check_browser_ui().
+        """
+        from core.browser_verifier import BrowserVerifier
+        verifier = BrowserVerifier(self.project_dir)
+        return verifier.verify_accessibility(timeout_seconds=timeout_seconds)
+
+    def check_load_test(self, load_seconds: float = 5.0, timeout_seconds: float = 60.0) -> PerfCheckReport:
+        """
+        Führt einen vom performance-Agenten geschriebenen Lastentest ECHT aus (bisher wurden
+        die Skripte nie ausgeführt). Sucht ausschließlich unter LOAD_TEST_DIRNAME
+        (tests/load/) - `locustfile.py` (echter Standard-Dateiname von Locust) hat Vorrang vor
+        k6-Skripten (*.js), falls beide vorhanden sind. Aktuell nur für Python-Web-Apps (siehe
+        _start_python_web_app) - dieselbe Einstiegspunkt-Erkennung wie check_runtime_smoke(),
+        hier bewusst separat gehalten statt geteilt, da der Lastentest den Prozess über die
+        gesamte Testdauer am Leben halten muss statt ihn nur kurz anzupingen.
+        """
+        load_dir = self.project_dir / LOAD_TEST_DIRNAME
+        locustfile = load_dir / "locustfile.py"
+        k6_scripts = sorted(load_dir.glob("*.js")) if load_dir.exists() else []
+
+        if not locustfile.exists() and not k6_scripts:
+            return PerfCheckReport(
+                attempted=False,
+                reason_skipped=f"Kein Lastentest-Skript unter {LOAD_TEST_DIRNAME}/ gefunden (locustfile.py oder *.js).",
+            )
+
+        tool = "locust" if locustfile.exists() else "k6"
+        script = locustfile if tool == "locust" else k6_scripts[0]
+        if shutil.which(tool) is None:
+            return PerfCheckReport(
+                attempted=False, tool=tool, script=self._relative_label(script.parent) + "/" + script.name,
+                reason_skipped=f"`{tool}` ist auf diesem System nicht installiert/verfügbar.",
+            )
+
+        started = self._start_python_web_app(timeout_seconds)
+        if started is None:
+            return PerfCheckReport(
+                attempted=False, tool=tool, script=self._relative_label(script.parent) + "/" + script.name,
+                reason_skipped="Kein startfähiger Python-Web-Einstiegspunkt gefunden oder die App startet nicht - Lastentest übersprungen.",
+            )
+        proc, port = started
+        try:
+            if tool == "locust":
+                return self._run_locust_load_test(locustfile, port, load_seconds, timeout_seconds)
+            return self._run_k6_load_test(k6_scripts[0], port, load_seconds, timeout_seconds)
+        finally:
+            self._terminate_process(proc)
+
+    def _start_python_web_app(self, timeout_seconds: float) -> tuple[subprocess.Popen, int] | None:
+        """
+        Startet einen gefundenen Python-Web-Einstiegspunkt (main.py/app.py/server.py/api.py mit
+        FastAPI/uvicorn/Flask/aiohttp) im Subprozess auf einem freien Port und wartet, bis er
+        antwortet - dieselbe Erkennung wie im http_api-Zweig von check_runtime_smoke(). Gibt
+        (proc, port) zurück, sobald die App antwortet, sonst None (kein Web-Einstiegspunkt
+        gefunden, oder die App startet nicht rechtzeitig). Der Aufrufer ist für
+        _terminate_process(proc) verantwortlich.
+        """
+        python_exe = self._resolve_python()
+        for entry_name in ("main.py", "app.py", "server.py", "api.py"):
+            entry_file = self.project_dir / entry_name
+            if not entry_file.exists():
+                continue
+            try:
+                content = entry_file.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if not any(kw in content for kw in ("FastAPI", "uvicorn", "Flask", "aiohttp", "http.server", "HTTPServer")):
+                continue
+
+            port = self._find_free_port()
+            env = {**CodeSandbox._restricted_env(), "PORT": str(port), "UVICORN_PORT": str(port)}
+            cmd = [python_exe, str(entry_file)]
+            if "uvicorn" in content and "app =" in content:
+                module_name = entry_name[:-3]
+                cmd = [python_exe, "-m", "uvicorn", f"{module_name}:app", "--port", str(port), "--host", "127.0.0.1"]
+
+            proc = subprocess.Popen(
+                cmd, cwd=self.project_dir, env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            start_time = time.monotonic()
+            while time.monotonic() - start_time < timeout_seconds:
+                if proc.poll() is not None:
+                    return None  # abgestürzt, bevor es antwortete
+                try:
+                    req = urllib.request.Request(f"http://127.0.0.1:{port}/", headers={"User-Agent": "AI-Team-Load-Test"})
+                    with urllib.request.urlopen(req, timeout=1.0):
+                        pass
+                    return proc, port
+                except urllib.error.HTTPError:
+                    return proc, port  # antwortet per HTTP (auch 404/401/... = läuft)
+                except (urllib.error.URLError, ConnectionError, OSError):
+                    time.sleep(0.3)
+            self._terminate_process(proc)
+            return None
+        return None
+
+    def _terminate_process(self, proc: subprocess.Popen) -> None:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    def _run_locust_load_test(self, locustfile: Path, port: int, load_seconds: float, timeout_seconds: float) -> PerfCheckReport:
+        script_label = self._relative_label(locustfile.parent) + "/" + locustfile.name
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_prefix = str(Path(tmp) / "loadtest")
+            command = [
+                "locust", "-f", str(locustfile), "--headless",
+                "-u", "3", "-r", "3", "-t", f"{int(load_seconds)}s",
+                "--host", f"http://127.0.0.1:{port}",
+                "--csv", csv_prefix,
+            ]
+            result = CodeSandbox.run_command(command, cwd=self.project_dir, timeout_seconds=timeout_seconds)
+            stats_file = Path(f"{csv_prefix}_stats.csv")
+            if not stats_file.exists():
+                tail = (result.stdout + result.stderr).strip()[-800:]
+                return PerfCheckReport(
+                    attempted=False, tool="locust", script=script_label,
+                    reason_skipped=f"locust lieferte kein auswertbares Ergebnis: {tail}",
+                )
+            return self._parse_locust_stats(stats_file, script_label)
+
+    def _parse_locust_stats(self, stats_file: Path, script_label: str) -> PerfCheckReport:
+        """
+        Parst die von `locust --csv` geschriebene `<prefix>_stats.csv` per csv.DictReader
+        (liest nach Spalten-NAME, nicht nach Position - robust gegen Spaltenreihenfolge-
+        Unterschiede zwischen Locust-Versionen). Die "Aggregated"-Zeile fasst alle
+        definierten Requests des Laufs zusammen.
+        """
+        try:
+            with stats_file.open(encoding="utf-8", newline="") as f:
+                rows = list(csv.DictReader(f))
+        except OSError as e:
+            return PerfCheckReport(attempted=False, tool="locust", script=script_label, reason_skipped=f"locust-CSV nicht lesbar: {e}")
+
+        aggregated = next((r for r in rows if r.get("Name") == "Aggregated"), None)
+        if aggregated is None:
+            return PerfCheckReport(
+                attempted=False, tool="locust", script=script_label,
+                reason_skipped="locust-CSV enthält keine 'Aggregated'-Zeile - kein auswertbares Ergebnis.",
+            )
+
+        total = int(_csv_float(aggregated, "Request Count") or 0)
+        failed = int(_csv_float(aggregated, "Failure Count") or 0)
+        p95 = _csv_float(aggregated, "95%")
+        return PerfCheckReport(
+            attempted=True, tool="locust", script=script_label, passed=(failed == 0),
+            total_requests=total, failed_requests=failed, p95_ms=p95,
+        )
+
+    def _run_k6_load_test(self, script: Path, port: int, load_seconds: float, timeout_seconds: float) -> PerfCheckReport:
+        script_label = self._relative_label(script.parent) + "/" + script.name
+        with tempfile.TemporaryDirectory() as tmp:
+            summary_file = Path(tmp) / "summary.json"
+            command = [
+                "k6", "run", "--vus", "3", "--duration", f"{int(load_seconds)}s",
+                "-e", f"BASE_URL=http://127.0.0.1:{port}",
+                f"--summary-export={summary_file}", str(script),
+            ]
+            result = CodeSandbox.run_command(command, cwd=self.project_dir, timeout_seconds=timeout_seconds)
+            if not summary_file.exists():
+                tail = (result.stdout + result.stderr).strip()[-800:]
+                return PerfCheckReport(
+                    attempted=False, tool="k6", script=script_label,
+                    reason_skipped=f"k6 lieferte kein auswertbares Ergebnis: {tail}",
+                )
+            return self._parse_k6_summary(summary_file, script_label, result.exit_code)
+
+    def _parse_k6_summary(self, summary_file: Path, script_label: str, exit_code: int) -> PerfCheckReport:
+        """
+        Parst die von `k6 run --summary-export=<datei>` geschriebene JSON-Zusammenfassung.
+        Best effort: k6 hat das Summary-JSON-Format zwischen Versionen leicht verändert
+        (Zahlen mal flach im Metrik-Objekt, mal unter einem "values"-Unterschlüssel) - beide
+        Formen werden akzeptiert, kein Anspruch, jede k6-Version exakt zu kennen. Liefert das
+        JSON keine der erwarteten Metriken, werden konservativ 0/None gemeldet statt zu
+        crashen (dieselbe tolerante Grundhaltung wie beim Best-Effort-Parsing der Node-
+        Testausgaben in _parse_node_failures).
+        """
+        try:
+            data = json.loads(summary_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            return PerfCheckReport(attempted=False, tool="k6", script=script_label, reason_skipped=f"k6-Summary-JSON nicht lesbar: {e}")
+
+        metrics = data.get("metrics", {}) if isinstance(data, dict) else {}
+
+        def _metric_value(name: str, field: str):
+            entry = metrics.get(name)
+            if not isinstance(entry, dict):
+                return None
+            values = entry.get("values", entry)
+            return values.get(field) if isinstance(values, dict) else None
+
+        total = _metric_value("http_reqs", "count")
+        fail_rate = _metric_value("http_req_failed", "rate")
+        p95 = _metric_value("http_req_duration", "p(95)")
+
+        total_requests = int(total) if isinstance(total, (int, float)) else 0
+        failed_requests = int(round(total_requests * fail_rate)) if isinstance(fail_rate, (int, float)) else 0
+        return PerfCheckReport(
+            attempted=True, tool="k6", script=script_label,
+            passed=(exit_code == 0 and failed_requests == 0),
+            total_requests=total_requests, failed_requests=failed_requests,
+            p95_ms=float(p95) if isinstance(p95, (int, float)) else None,
+        )
 
 

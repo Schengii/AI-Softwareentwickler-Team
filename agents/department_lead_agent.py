@@ -24,15 +24,20 @@ DEPARTMENT_DEFINITIONS = {
         "members": ["product_owner", "business_analyst", "web_research", "architect", "finops", "team_lead"],
         "description": "Führt das Planungs- & Architekturteam. Koordiniert Requirements, Marktrecherche, Systemblueprint, FinOps-Kosten und Team-Fokus (Engineering Manager)."
     },
+    "design_lead": {
+        "title": "Teamleiter Design, UI/UX & Media (Design Lead)",
+        "members": ["ui_ux", "image_generator", "copywriter"],
+        "description": "Führt das Vorab-Design- & Media-Team. Erstellt vor dem Schreiben des Codes Design-Systeme, UI/UX-Konzepte, Farbpaletten, SVG-Icons/Grafiken und Copywriting-Texte für die Entwickler."
+    },
     "dev_lead": {
         "title": "Teamleiter Software-Entwicklung (Dev Lead)",
         "members": ["frontend", "backend", "database", "api_integration", "data_engineer", "mobile", "ml", "performance", "prompt_engineer"],
-        "description": "Führt das Kern-Entwicklerteam. Koordiniert Frontend, Backend, Datenbank, APIs, Mobile, ML, Prompt-Engineering und Latenzoptimierung."
+        "description": "Führt das Kern-Entwicklerteam. Setzt Architektur, API-Spezifikationen und UI/UX-Design-Vorgaben in lauffähigen Code um."
     },
-    "creative_lead": {
-        "title": "Teamleiter Design, Media & Content (Creative Lead)",
-        "members": ["image_generator", "copywriter", "ui_ux", "accessibility", "i18n", "documentation", "readme"],
-        "description": "Führt das Kreativ- und Content-Team. Koordiniert UI/UX, a11y Barrierefreiheit, SVG/Bild-Generierung, Copywriting und Dokumentation."
+    "content_lead": {
+        "title": "Teamleiter Content, Doku & Accessibility (Content & Doc Lead)",
+        "members": ["accessibility", "i18n", "documentation", "readme"],
+        "description": "Führt das Content-, Dokumentations- und Accessibility-Team. Prüft den generierten Code auf Barrierefreiheit (a11y), Mehrsprachigkeit (i18n) und erstellt Dokumentation sowie README."
     },
     "qa_lead": {
         "title": "Teamleiter Qualität, DevOps & Security (QA & Operations Lead)",

@@ -83,6 +83,44 @@ def get_agent_success_rates(limit_runs: int = 50) -> list[dict]:
     return sorted(result, key=lambda r: r["calls"], reverse=True)
 
 
+def get_agent_model_performance(limit_runs: int = 100) -> list[dict]:
+    """
+    Erfolgsquote und durchschnittlicher Tokenverbrauch je (Agent, tatsächlich genutztem Modell)-
+    Kombination über die letzten `limit_runs` Läufe – anders als get_agent_success_rates()
+    (Erfolgsquote NUR je Agent) macht das sichtbar, OB die aktuell in config.py konfigurierte
+    Modellzuweisung eines Agenten tatsächlich die empirisch beste ist, z. B. nach einem
+    manuellen Modellwechsel in der .env. Grundlage für core/optimization_advisor.py.
+
+    `agent_results`-Einträge aus Läufen VOR dieser Erweiterung enthalten noch kein
+    `model_used` – werden unter "unbekannt" gruppiert statt zu crashen oder verworfen zu werden
+    (Rückwärtskompatibilität mit bereits bestehenden memory/run_history.json-Einträgen).
+    """
+    runs = _load()[-limit_runs:]
+    stats: dict[tuple[str, str], dict[str, int]] = {}
+    for run in runs:
+        for res in run.get("agent_results", []):
+            agent_id = res.get("agent_id", "?")
+            model = res.get("model_used") or "unbekannt"
+            entry = stats.setdefault((agent_id, model), {"calls": 0, "successes": 0, "total_tokens": 0})
+            entry["calls"] += 1
+            if res.get("success"):
+                entry["successes"] += 1
+            entry["total_tokens"] += res.get("total_tokens", 0)
+
+    result = [
+        {
+            "agent_id": agent_id,
+            "model": model,
+            "calls": s["calls"],
+            "successes": s["successes"],
+            "success_rate": round(100 * s["successes"] / s["calls"], 1) if s["calls"] else 0.0,
+            "avg_tokens": round(s["total_tokens"] / s["calls"], 0) if s["calls"] else 0.0,
+        }
+        for (agent_id, model), s in stats.items()
+    ]
+    return sorted(result, key=lambda r: (r["agent_id"], -r["calls"]))
+
+
 def get_total_tokens_for_project(project_slug: str) -> int:
     """
     Summiert `total_tokens` über ALLE bisher aufgezeichneten Läufe eines Projekts (bereits

@@ -1,36 +1,36 @@
 # 🏗️ System-Architektur: KI-Softwareentwickler-Team
 
-Das **KI-Softwareentwickler-Team** ist ein autonomes, hierarchisch strukturiertes Multi-Agenten-System für die vollständige, token-optimierte Softwareentwicklung. Es bildet ein professionelles Entwicklerteam aus 33 spezialisierten KI-Experten und 5 Fachbereichs-Teamleitern ab.
+Das **KI-Softwareentwickler-Team** ist ein autonomes, hierarchisch strukturiertes Multi-Agenten-System für die vollständige, token-optimierte Softwareentwicklung. Es bildet ein professionelles Entwicklerteam aus 33 spezialisierten KI-Experten und 6 Fachbereichs-Teamleitern ab.
 
 ---
 
 ## 1. Fachbereichs- & Teamleiter-Hierarchie
 
-Das Gesamtsystem gliedert sich in **5 Fachbereiche**, die jeweils von einem eigenen **Department Lead** geführt werden. Der Orchestrator delegiert Phasen an die Teamleiter, welche wiederum konkrete Arbeitsaufträge an ihre Fachteams verteilen:
+Das Gesamtsystem gliedert sich in **6 Fachbereiche**, die jeweils von einem eigenen **Department Lead** geführt werden. Der Orchestrator delegiert Phasen an die Teamleiter, welche wiederum konkrete Arbeitsaufträge an ihre Fachteams verteilen:
 
 ```
                                   ┌────────────────────────┐
                                   │      Orchestrator      │
                                   └───────────┬────────────┘
                                               │
-         ┌──────────────────┬─────────────────┼─────────────────┬──────────────────┐
-         │                  │                 │                 │                  │
-         ▼                  ▼                 ▼                 ▼                  ▼
-  🔵 Fachbereich 1    🟢 Fachbereich 2  🎨 Fachbereich 3  🟡 Fachbereich 4  🔴 Fachbereich 5
-   Planung & Arch.       Entwicklung      Design & Media    Qualität & Ops    Review & Gov.
-  (Planning Lead)        (Dev Lead)      (Creative Lead)      (QA Lead)     (Governance Lead)
-         │                  │                 │                 │                  │
-  ┌──────┴──────┐    ┌──────┴──────┐   ┌──────┴──────┐   ┌──────┴──────┐    ┌──────┴──────┐
-  │team_lead    │    │frontend     │   │ui_ux        │   │tester       │    │code_reviewer│
-  │product_owner│    │backend      │   │copywriter   │   │security     │    │refactoring  │
-  │business_an. │    │database     │   │image_gen.   │   │devops       │    │compliance   │
-  │architect    │    │api_integ.   │   │accessibility│   │resilience_g.│    │proj_cleaner │
-  │finops       │    │data_engineer│   │i18n         │   └─────────────┘    │agent_trainer│
-  │web_research │    │mobile       │   │documentation│                      │retrospective│
-  └─────────────┘    │ml           │   └─────────────┘                      │readme       │
-                     │prompt_eng.  │                                        └─────────────┘
-                     │performance  │
-                     └─────────────┘
+         ┌───────────────┬────────────────┬───┴──────────┬────────────────┬───────────────┐
+         │               │                │              │                │               │
+         ▼               ▼                ▼              ▼                ▼               ▼
+  🔵 Phase 1      🎨 Phase 2       🟢 Phase 3     📚 Phase 4       🟡 Phase 5      🔴 Phase 6
+   Planung         Design & UI/UX   Entwicklung    Content & Doku   Qualität & Ops  Review & Gov.
+  (Planning Lead) (Design Lead)    (Dev Lead)     (Content Lead)   (QA Lead)       (Governance Lead)
+         │               │                │              │                │               │
+  ┌──────┴──────┐ ┌──────┴──────┐  ┌──────┴──────┐┌──────┴──────┐  ┌──────┴──────┐ ┌──────┴──────┐
+  │team_lead    │ │ui_ux        │  │frontend     ││accessibility│  │tester       │ │code_reviewer│
+  │product_owner│ │image_gen.   │  │backend      ││i18n         │  │security     │ │refactoring  │
+  │business_an. │ │copywriter   │  │database     ││documentation│  │devops       │ │compliance   │
+  │architect    │ └─────────────┘  │api_integ.   ││readme       │  │resilience_g.│ │proj_cleaner │
+  │finops       │                  │data_engineer│└─────────────┘  │github       │ │agent_trainer│
+  │web_research │                  │mobile       │                 └─────────────┘ │retrospective│
+  └─────────────┘                  │ml           │                                 └─────────────┘
+                                   │prompt_eng.  │
+                                   │performance  │
+                                   └─────────────┘
 ```
 
 ---
@@ -56,6 +56,9 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
    - **Statisches & AST-Linting**: `ruff` für Python, `eslint`/`tsc` für TypeScript/JavaScript, `cargo clippy` für Rust, `go vet` für Go.
    - **Headless Browser & Frontend-UI-Validierung (`core/browser_verifier.py`)**: Startet Web-Frontends, fängt JavaScript-Konsolenfehler (`console.error`) ab und prüft Asset-404s (Playwright / statisches DOM).
    - **Schwachstellen-Scan**: Echter `pip-audit`, `npm audit`, `cargo audit` und `govulncheck` gegen öffentliche CVE-Datenbanken.
+   - **SAST & Lizenz-Audit**: Echter statischer Sicherheits-Scan (`bandit`) und Lizenz-/Copyleft-Scan (`pip-licenses`) für generierten Python-Code – ersetzt die bisherige LLM-Freitext-Einschätzung von `security`/`compliance` durch geparste Funde mit Datei/Zeile bzw. echte Paket-Metadaten.
+   - **Lastentest (Smoke-Level)**: Startet die generierte App auf einem freien Port und führt einen kurzen k6-/Locust-Lasttest (`tests/load/`) ECHT dagegen aus – ersetzt den bisherigen Zustand, in dem der `performance`-Agent vollständige Lastentest-Skripte schrieb, die nie ausgeführt wurden.
+   - **Accessibility-Scan (axe-core)**: Echter WCAG-2.x-Scan gegen eine per Playwright gerenderte Seite – ersetzt die bisherige LLM-Freitext-Checkliste des `accessibility`-Agenten durch geparste Verstöße mit Regel/Schweregrad/Element.
    - **Runtime Smoke-Check**: Teststart der Applikation im Subprozess (z. B. Uvicorn/FastAPI HTTP-Polling oder CLI-Help-Check), um sicherzustellen, dass die Anwendung tatsächlich hochfährt.
    - **Gezielte Fix-Schleife**: Traceback-Parsing ermittelt die verursachenden Dateien und weist nur dem zuständigen Agenten einen gezielten Korrekturauftrag zu.
 5. **Ergebnis-Synthese & Akzeptanzkriterien-Check (`core/result_aggregator.py`)**:

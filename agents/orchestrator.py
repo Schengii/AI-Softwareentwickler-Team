@@ -3,10 +3,11 @@ agents/orchestrator.py – Der Hauptagent (Orchestrator) mit Fachbereichs-Teamle
 
 Workflow:
 1. Der Nutzer übergibt die Gesamtaufgabe an den Hauptagenten (Orchestrator).
-2. Der Hauptagent teilt die Gesamtaufgabe in 5 Fachbereiche auf:
+2. Der Hauptagent teilt die Gesamtaufgabe in 6 Fachbereiche auf:
    - 🔵 Planung, Analyse & Architektur (geführt von Planning Lead)
+   - 🎨 Vorab-Design, UI/UX & Media (geführt von Design Lead)
    - 🟢 Kern-Entwicklung (geführt von Dev Lead)
-   - 🎨 Design, Media & Content (geführt von Creative Lead)
+   - 📚 Content, Doku & Barrierefreiheit (geführt von Content & Doc Lead)
    - 🟡 Qualität, DevOps & Security (geführt von QA & Operations Lead)
    - 🔴 Excellence, Hygiene & Evolution (geführt von Governance Lead)
 3. Jeder Fachbereichs-Teamleiter delegiert per ECHTEM LLM-Aufruf konkrete
@@ -71,7 +72,10 @@ from config import (
     BASE_DIR,
     ENABLE_DEPARTMENT_LEAD_EXECUTION,
     ENABLE_GOVERNANCE_FIX_LOOP,
+    ENABLE_LOAD_TEST_CHECK,
     ENABLE_TASK_COMPLEXITY_SCALING,
+    LOAD_TEST_DURATION_SECONDS,
+    LOAD_TEST_TIMEOUT_SECONDS,
     MAX_REVIEW_ITERATIONS,
     MAX_RUN_TOKENS,
     MAX_VERIFICATION_ITERATIONS,
@@ -80,6 +84,7 @@ from config import (
     PLAN_CONFIRMATION_MIN_TASKS,
 )
 from core.adr import format_adr_summary_for_context
+from core.design_system import format_design_system_for_agents
 from core.git_isolation import (
     GitIsolationError,
     create_isolated_worktree,
@@ -88,6 +93,8 @@ from core.git_isolation import (
 )
 from core.message_bus import AgentResult, AgentTask
 from core.notifier import notify_external
+from core.optimization_advisor import analyze as analyze_optimization_potential
+from core.optimization_advisor import format_report_for_humans as format_optimization_report
 from core.project_constitution import format_constitution_for_agents, get_max_project_tokens
 from core.project_status import format_context_for_agents, record_run
 from core.result_aggregator import ResultAggregator
@@ -116,21 +123,27 @@ StatusCallback = Callable[[str], None]
 # dadurch bewusst nicht-interaktiv, siehe config.ENABLE_PLAN_CONFIRMATION).
 PlanConfirmationCallback = Callable[[str, str, list[AgentTask]], Awaitable[bool]]
 
-# Reihenfolge & Anzeige der 5 Fachbereichs-Phasen. Die Mitgliederlisten stammen
+# Reihenfolge & Anzeige der 6 Fachbereichs-Phasen. Die Mitgliederlisten stammen
 # zentral aus DEPARTMENT_DEFINITIONS (agents/department_lead_agent.py), damit
 # Orchestrator und Teamleiter-Prompts nie auseinanderlaufen können.
+#
+# Design-vor-Dev: UI/UX, Design-Tokens und visuelle Assets (design_lead) werden
+# VOR der Software-Entwicklung (dev_lead) erstellt, damit Entwickler diese direkt
+# einbinden können. Dokumentation, i18n und Barrierefreiheit (content_lead) laufen
+# NACH der Entwicklung auf dem tatsächlich erzeugten Code.
 PHASE_ORDER = [
-    ("planning_lead", "Fachbereich 1/5: Planung & Architektur", "👔", "sequential"),
-    ("dev_lead", "Fachbereich 2/5: Software-Entwicklung", "⚡", "parallel"),
-    ("creative_lead", "Fachbereich 3/5: Design & Content", "🎨", "parallel"),
-    ("qa_lead", "Fachbereich 4/5: Qualität & Security", "🛡️", "parallel"),
-    ("governance_lead", "Fachbereich 5/5: Review & Governance", "🔍", "sequential"),
+    ("planning_lead",   "Fachbereich 1/6: Planung & Architektur", "👔", "sequential"),
+    ("design_lead",     "Fachbereich 2/6: UI/UX, Design & Media", "🎨", "parallel"),
+    ("dev_lead",        "Fachbereich 3/6: Software-Entwicklung", "⚡", "parallel"),
+    ("content_lead",    "Fachbereich 4/6: Content, Doku & Barrierefreiheit", "📚", "parallel"),
+    ("qa_lead",         "Fachbereich 5/6: Qualität & Security", "🛡️", "parallel"),
+    ("governance_lead", "Fachbereich 6/6: Review & Governance", "🔍", "sequential"),
 ]
 
 
 class Orchestrator:
     """
-    Hauptagent, der die 5 Fachbereichs-Teamleiter und deren 33 Spezialisten koordiniert.
+    Hauptagent, der die 6 Fachbereichs-Teamleiter und deren 33 Spezialisten koordiniert.
     """
 
     def __init__(self):
@@ -390,6 +403,15 @@ class Orchestrator:
         # unnötiger Prompt-Text für die Mehrheit der Projekte).
         constitution_context = format_constitution_for_agents(project_dir)
 
+        # Projekt-Design-System (core/design_system.py): feste visuelle Präferenzen
+        # (Farbpalette, Typografie, Spacing-Skala, Komponenten-Namenskonvention, Tonalität),
+        # die der Nutzer einmal per /design-system festlegt - das Pendant zur Konstitution
+        # oben, nur für Design statt Tech-Stack. Ohne das würde ein zweiter Lauf am selben
+        # Projekt eine andere Primärfarbe/Schriftart wählen können, ohne dass die
+        # Nutzeranfrage das je erwähnt hätte. Leer für Projekte ohne Design-System (kein
+        # unnötiger Prompt-Text für die Mehrheit der Projekte).
+        design_system_context = format_design_system_for_agents(project_dir)
+
         # Architecture Decision Records (core/adr.py): das WARUM hinter bereits getroffenen
         # Architektur-Entscheidungen (die Konstitution oben hält nur das WAS fest). Ohne das
         # könnten spätere Läufe unbemerkt gegen frühere, bewusst getroffene Entscheidungen
@@ -403,6 +425,8 @@ class Orchestrator:
                 t.tools_read_only = True
             if constitution_context:
                 t.context += f"\n\n{constitution_context}"
+            if design_system_context:
+                t.context += f"\n\n{design_system_context}"
             if project_history_context:
                 t.context += f"\n\n{project_history_context}"
             if adr_context:
@@ -579,6 +603,14 @@ class Orchestrator:
         real_files_section = self._build_real_files_section(project_dir, file_owners)
         collision_section = self._build_file_collision_section(file_collisions)
 
+        # Datenbasierte Selbstoptimierungs-Vorschläge (core/optimization_advisor.py) - rein
+        # deterministische Auswertung der BEREITS BESTEHENDEN, projektübergreifenden
+        # Lauf-Historie (kein zusätzlicher LLM-Aufruf nötig, anders als retrospective/
+        # agent_trainer direkt darunter). Bewusst NUR ein Vorschlag, keine automatische
+        # Änderung an config.py (siehe Modul-Docstring) - leer für die Mehrheit der Läufe ohne
+        # statistisch aussagekräftigen Befund, kein unnötiger Abschnitt im Bericht.
+        optimization_section = format_optimization_report(analyze_optimization_potential())
+
         final_output = (
             f"{final_solution}\n\n"
             f"---\n\n"
@@ -591,7 +623,8 @@ class Orchestrator:
             f"---\n\n"
             f"{trainer_result.content if trainer_result else ''}\n\n"
             f"---\n\n"
-            f"{stats_table}"
+            + (f"{optimization_section}\n\n---\n\n" if optimization_section else "")
+            + f"{stats_table}"
         )
 
         self._history.add_assistant_message(final_output)
@@ -630,7 +663,10 @@ class Orchestrator:
             verification_ok=verification_ok,
             total_tokens=sum(r.total_tokens for r in results),
             duration_seconds=total_duration,
-            agent_results=[{"agent_id": r.agent_id, "success": r.success, "total_tokens": r.total_tokens} for r in results],
+            agent_results=[
+                {"agent_id": r.agent_id, "success": r.success, "total_tokens": r.total_tokens, "model_used": r.model_used}
+                for r in results
+            ],
         )
 
         # Realer Fund: bisher endete JEDER Lauf mit demselben uneingeschränkten "✅ Fertig!",
@@ -1418,6 +1454,50 @@ class Orchestrator:
                     notify(f"  🔒 [bold green]{audit.tool}: keine bekannten Schwachstellen in Abhängigkeiten.[/bold green]")
                     summary_lines.append(f"- 🔒 {audit.tool}: keine bekannten Schwachstellen in Abhängigkeiten gefunden.")
 
+        # Ersetzt die rein LLM-basierte Einschätzung des security-Agenten zu Schwachstellen
+        # im SELBST GESCHRIEBENEN Code (Freitext-Vermutungen ohne Datei/Zeile) durch einen
+        # echten statischen Scan (bandit für Python) – dasselbe Prinzip wie beim Dependency-
+        # Audit oben, nur für eigenen Code statt Fremdpakete. Rein informativ wie der
+        # Lint-Check, beeinflusst verification_ok nicht - ein SAST-Fund kann ein False
+        # Positive sein und braucht menschliche Einschätzung, anders als ein roter Test.
+        if not (budget_aborted or manually_cancelled):
+            sast_reports = await asyncio.to_thread(verifier.check_sast)
+            for sast in sast_reports:
+                if not sast.attempted:
+                    continue
+                if sast.vulnerable:
+                    top = "; ".join(
+                        f"{f.file_path}:{f.line_number} [{f.rule}/{f.severity}]" for f in sast.findings[:5]
+                    )
+                    if len(sast.findings) > 5:
+                        top += f" … und {len(sast.findings) - 5} weitere"
+                    notify(f"  🕵️ [bold red]{sast.tool}: {len(sast.findings)} potenzielle Sicherheits-Fund(e) im Code.[/bold red]")
+                    summary_lines.append(f"- 🕵️ ⚠️ {sast.tool}: {len(sast.findings)} potenzielle Sicherheits-Fund(e) im Code: {top}")
+                else:
+                    notify(f"  🕵️ [bold green]{sast.tool}: keine Sicherheits-Funde im Code.[/bold green]")
+                    summary_lines.append(f"- 🕵️ {sast.tool}: keine Sicherheits-Funde im Code (statischer Scan).")
+
+        # Ersetzt die rein LLM-basierte Lizenz-Tabelle des compliance-Agenten ("MIT/AGPL 🔴",
+        # geraten) durch einen echten Scan der tatsächlich installierten Paket-Lizenzen
+        # (pip-licenses). Rein informativ wie Lint/SAST, beeinflusst verification_ok nicht -
+        # ein Copyleft-Fund ist eine rechtliche Einschätzungsfrage (z. B. Nutzung als Library
+        # vs. verlinkt vs. modifiziert), kein automatisch behebbarer Codefehler.
+        if not (budget_aborted or manually_cancelled):
+            license_reports = await asyncio.to_thread(verifier.check_licenses)
+            for lic in license_reports:
+                if not lic.attempted:
+                    continue
+                if lic.has_copyleft_risk:
+                    copyleft_findings = [f for f in lic.findings if f.copyleft]
+                    top = "; ".join(f"{f.package} {f.version} ({f.license})" for f in copyleft_findings[:5])
+                    if len(copyleft_findings) > 5:
+                        top += f" … und {len(copyleft_findings) - 5} weitere"
+                    notify(f"  📜 [bold red]{lic.tool}: {len(copyleft_findings)} Copyleft-Lizenz(en) in Abhängigkeiten (GPL/LGPL/MPL/…).[/bold red]")
+                    summary_lines.append(f"- 📜 ⚠️ {lic.tool}: {len(copyleft_findings)} Copyleft-Lizenz(en) in Abhängigkeiten: {top}")
+                else:
+                    notify(f"  📜 [bold green]{lic.tool}: keine Copyleft-Lizenzen in Abhängigkeiten.[/bold green]")
+                    summary_lines.append(f"- 📜 {lic.tool}: keine Copyleft-Lizenzen in Abhängigkeiten gefunden ({len(lic.findings)} geprüft).")
+
         # Erstmals überhaupt eine automatische Stil-/Fehlerprüfung für generierten Code -
         # ruff.toml lief bisher NUR gegen den Framework-Code selbst (workspace/ dort bewusst
         # ausgeschlossen). Python wird immer geprüft (ruff braucht keine Projekt-Konfiguration),
@@ -1483,6 +1563,38 @@ class Orchestrator:
                     notify(f"  🚀 [bold red]Runtime-Smoke-Test fehlgeschlagen:[/bold red] `{smoke_report.entrypoint}` [{smoke_report.app_type}]{err}.")
                     summary_lines.append(f"- 🚀 ❌ Runtime-Smoke-Test fehlgeschlagen: `{smoke_report.entrypoint}` [{smoke_report.app_type}] startet nicht{err}.")
                     verification_ok = False
+
+        # Lastentest: führt vom performance-Agenten geschriebene k6-/Locust-Skripte (tests/load/)
+        # tatsächlich AUS statt sie nur unausgeführt im Projekt liegen zu lassen - startet die
+        # App und lässt einen kurzen Smoke-Lasttest (wenige Sekunden, wenige virtuelle Nutzer)
+        # dagegen laufen. Rein informativ wie Lint/SAST (kein Performance-Benchmark, keine
+        # Kapazitätsaussage) - EXCEPT ein fehlgeschlagener Request ist wie beim Runtime-Smoke-
+        # Test eine echte Anforderungsverletzung (die App crasht/fehlerantwortet unter simultaner
+        # Last), kein reiner Stil-Hinweis. In der Praxis für die meisten Projekte ein No-Op
+        # (braucht ein Skript unter tests/load/ UND das jeweilige Tool lokal installiert).
+        if ENABLE_LOAD_TEST_CHECK and not (budget_aborted or manually_cancelled) and report is not None and report.ran and report.passed:
+            perf_report = await asyncio.to_thread(
+                verifier.check_load_test, LOAD_TEST_DURATION_SECONDS, LOAD_TEST_TIMEOUT_SECONDS,
+            )
+            if perf_report.attempted:
+                stats = f"{perf_report.total_requests} Requests, {perf_report.failed_requests} fehlgeschlagen"
+                # isinstance() statt "is not None": ein Test, der ProjectVerifier komplett mockt,
+                # aber check_load_test() nicht explizit auf ein PerfCheckReport setzt (wie bei
+                # check_docker_build/check_runtime_smoke gibt es hier keinen sicheren MagicMock-
+                # Default), liefert für p95_ms sonst ein MagicMock-Objekt statt None - das würde
+                # an der ":.0f"-Formatierung mit TypeError crashen. isinstance() ist für den
+                # echten Produktivpfad (p95_ms ist dort immer float|None) gleichwertig, macht den
+                # Codepfad aber robust gegen unvollständig gemockte Verifier in Tests.
+                if isinstance(perf_report.p95_ms, (int, float)):
+                    stats += f", p95={perf_report.p95_ms:.0f}ms"
+                if perf_report.passed:
+                    notify(f"  🏋️ [bold green]Lastentest ({perf_report.tool}) bestanden:[/bold green] `{perf_report.script}` [{stats}].")
+                    summary_lines.append(f"- 🏋️ Lastentest ({perf_report.tool}) bestanden: `{perf_report.script}` [{stats}].")
+                else:
+                    notify(f"  🏋️ [bold red]Lastentest ({perf_report.tool}) fehlgeschlagen:[/bold red] `{perf_report.script}` [{stats}].")
+                    summary_lines.append(f"- 🏋️ ❌ Lastentest ({perf_report.tool}) fehlgeschlagen: `{perf_report.script}` [{stats}].")
+                    verification_ok = False
+
         # Browser / Frontend UI-Check: Prüft statische Assets, Rendering und JS-Konsolenfehler
         if not (budget_aborted or manually_cancelled):
             browser_report = await asyncio.to_thread(verifier.check_browser_ui)
@@ -1495,6 +1607,24 @@ class Orchestrator:
                     err_details = "; ".join(browser_report.missing_assets + browser_report.console_errors)[:150]
                     notify(f"  🌐 [bold red]Frontend/UI-Check Warnung:[/bold red] {err_details}.")
                     summary_lines.append(f"- 🌐 ⚠️ Frontend/UI-Check: {err_details}.")
+
+        # Accessibility-Check: echter axe-core-Scan (WCAG 2.x) gegen die gerenderte Seite -
+        # ersetzt die rein LLM-basierte Einschätzung des accessibility-Agenten durch geparste
+        # Verstöße mit Regel/Schweregrad/Element. Rein informativ wie Lint/SAST/Lizenz-Scan
+        # (beeinflusst verification_ok nicht) - dieselbe Einstufung wie der bereits bestehende
+        # Frontend/UI-Check direkt darüber, der aus demselben Grund ebenfalls nicht blockiert.
+        if not (budget_aborted or manually_cancelled):
+            a11y_report = await asyncio.to_thread(verifier.check_accessibility)
+            if a11y_report.attempted:
+                if a11y_report.passed:
+                    notify(f"  ♿ [bold green]Accessibility-Check (axe-core) erfolgreich:[/bold green] `{a11y_report.tested_url}`.")
+                    summary_lines.append(f"- ♿ Accessibility-Check (axe-core): `{a11y_report.tested_url}` keine WCAG-Verstöße.")
+                else:
+                    top = "; ".join(f"{v.rule_id} [{v.impact}] {v.target}" for v in a11y_report.violations[:5])
+                    if len(a11y_report.violations) > 5:
+                        top += f" … und {len(a11y_report.violations) - 5} weitere"
+                    notify(f"  ♿ [bold red]Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße.[/bold red]")
+                    summary_lines.append(f"- ♿ ⚠️ Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße: {top}")
 
         verification_summary = "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n" + (
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."
@@ -1789,25 +1919,25 @@ class Orchestrator:
         return "\n".join(lines)
 
     def get_team_info(self) -> str:
-        """Gibt eine strukturierte Übersicht über alle 5 Fachbereiche und deren Teamleiter zurück."""
+        """Gibt eine strukturierte Übersicht über alle 6 Fachbereiche und deren Teamleiter zurück."""
         sections = [
             "## 🏢 Strukturierte Fachbereiche & Teamleiter-Hierarchie\n",
             "```",
-            "                   Du (Nutzer)",
-            "                       │ Aufgabe",
-            "                       ▼",
-            "          ┌─────────────────────────┐",
-            "          │  🤖 HAUPTAGENT          │ (Gesamtkoordination)",
-            "          └────────────┬────────────┘",
-            "                       │ Delegiert Aufgabenbereiche",
-            "       ┌───────────────┼───────────────┬───────────────┬───────────────┐",
-            "       ▼               ▼               ▼               ▼               ▼",
-            " ┌───────────┐   ┌───────────┐   ┌───────────┐   ┌───────────┐   ┌───────────┐",
-            " │ 👔 Lead   │   │ ⚡ Lead   │   │ 🎨 Lead   │   │ 🛡️ Lead   │   │ 🔍 Lead   │",
-            " │ Planung   │   │ Dev       │   │ Creative  │   │ QA/DevOps │   │ Governance│",
-            " └─────┬─────┘   └─────┬─────┘   └─────┬─────┘   └─────┬─────┘   └─────┬─────┘",
-            "       │               │               │               │               │",
-            "    Fachteam        Fachteam        Fachteam        Fachteam        Fachteam",
+            "                                     Du (Nutzer)",
+            "                                         │ Aufgabe",
+            "                                         ▼",
+            "                            ┌─────────────────────────┐",
+            "                            │  🤖 HAUPTAGENT          │ (Gesamtkoordination)",
+            "                            └────────────┬────────────┘",
+            "                                         │ Delegiert Aufgabenbereiche",
+            "       ┌─────────────────┬───────────────┼───────────────┬─────────────────┬───────────────┐",
+            "       ▼                 ▼               ▼               ▼                 ▼               ▼",
+            " ┌───────────┐     ┌───────────┐   ┌───────────┐   ┌───────────┐     ┌───────────┐   ┌───────────┐",
+            " │ 👔 Lead   │     │ 🎨 Lead   │   │ ⚡ Lead   │   │ 📚 Lead   │     │ 🛡️ Lead   │   │ 🔍 Lead   │",
+            " │ Planung   │ ──► │ Design    │──►│ Dev       │──►│ Content   │ ──► │ QA/DevOps │──►│ Governance│",
+            " └─────┬─────┘     └─────┬─────┘   └─────┬─────┘   └─────┬─────┘     └─────┬─────┘   └─────┬─────┘",
+            "       │                 │               │               │                 │               │",
+            "    Fachteam          Fachteam        Fachteam        Fachteam          Fachteam        Fachteam",
             "```\n",
         ]
 

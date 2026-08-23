@@ -5,7 +5,7 @@
 [![CI](https://github.com/Schengii/AI-Softwareentwickler-Team/actions/workflows/ci.yml/badge.svg)](https://github.com/Schengii/AI-Softwareentwickler-Team/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![Hierarchy](https://img.shields.io/badge/Fachbereichs--Hierarchie-5_Teamleiter-blue?style=for-the-badge)
+![Hierarchy](https://img.shields.io/badge/Fachbereichs--Hierarchie-6_Teamleiter-blue?style=for-the-badge)
 ![Specialists](https://img.shields.io/badge/KI--Spezialisten-33_Agenten-success?style=for-the-badge)
 ![Resilience-Guard](https://img.shields.io/badge/Resilience--Guard-Fault--Tolerance_&_CircuitBreaker-orange?style=for-the-badge)
 ![RAG](https://img.shields.io/badge/Codebase_RAG-Gemini_Embeddings_%2B_BM25--Fallback-orange?style=for-the-badge)
@@ -15,7 +15,7 @@
 ![Sandbox-Validation](https://img.shields.io/badge/Sandbox_Auto--Validierung-Aktiv-blueviolet?style=for-the-badge)
 
 **Ein autonomes, hierarchisch strukturiertes KI-Team für vollständige, token-optimierte Softwareentwicklung.**  
-33 hochspezialisierte KI-Experten – aufgeteilt in **5 Fachbereiche mit jeweils eigenem Teamleiter**, **Resilience-Guard (Circuit Breakers, Backoff, Graceful Degradation & Chaos Tests)**, **persistentem Langzeit-Gedächtnis & automatischer Selbstoptimierung**, **Prompt-Engineering**, **WCAG 2.2 Barrierefreiheit (a11y)**, **integriertem RAG-Vektorindex**, **Model Context Protocol (MCP)**, **Web-Dashboard**, **Sandbox-Code-Validierung**, **Tavily Live-Web-Recherche**, **DeepSeek Reasoning**, **Groq Turbo Inferenz** und Workspace-Dateisystem.
+33 hochspezialisierte KI-Experten – aufgeteilt in **6 Fachbereiche mit jeweils eigenem Teamleiter**, **Resilience-Guard (Circuit Breakers, Backoff, Graceful Degradation & Chaos Tests)**, **persistentem Langzeit-Gedächtnis & automatischer Selbstoptimierung**, **Prompt-Engineering**, **WCAG 2.2 Barrierefreiheit (a11y)**, **integriertem RAG-Vektorindex**, **Model Context Protocol (MCP)**, **Web-Dashboard**, **Sandbox-Code-Validierung**, **Tavily Live-Web-Recherche**, **DeepSeek Reasoning**, **Groq Turbo Inferenz** und Workspace-Dateisystem.
 
 </div>
 
@@ -125,9 +125,11 @@ Was die Grafik oben zeigt, läuft technisch über zwei einfache Datenstrukturen
 1. **Zerlegung:** `TaskManager.decompose()` lässt den Hauptagenten die Nutzeranfrage in eine
    Liste von `AgentTask`-Objekten (Agent-ID + präzise Teilaufgabe) aufteilen – nur die
    Spezialisten, die für die Aufgabe wirklich gebraucht werden.
-2. **Phasen-Durchlauf:** Die 5 Fachbereiche laufen in fester Reihenfolge (`PHASE_ORDER`):
-   Planung → Entwicklung → Design/Content → QA/Security → Governance. Planung und
-   Governance laufen sequenziell, die anderen drei parallel (`asyncio.gather`).
+2. **Phasen-Durchlauf:** Die 6 Fachbereiche laufen in fester Reihenfolge (`PHASE_ORDER`):
+   Planung → Vorab-Design → Software-Entwicklung → Content & Doku → QA/Security → Governance.
+   Planung und Governance laufen sequenziell, die anderen parallel (`asyncio.gather`).
+   Vorab-Design (UI/UX, Assets, Wireframes) liefert Spezifikationen direkt an die Entwickler,
+   während Content & Dokumentation nachgelagert auf dem echten Code aufbauen.
 3. **Echte Delegation:** Vor jeder Phase bekommt der zuständige Teamleiter einen echten
    LLM-Aufruf mit der Aufgabenliste seines Fachteams und liefert priorisierte
    Arbeitsanweisungen zurück, die den Mitgliedern als Zusatzkontext mitgegeben werden. **Ausnahme
@@ -235,9 +237,13 @@ zuverlässiger die vorhandene Infrastruktur.
   interaktiven `/push`-Dialog in der CLI (`interface/cli.py._ask_for_git_push()`).
 - **Externe Benachrichtigung:** `NOTIFY_WEBHOOK_URL` (Standard leer = deaktiviert) schickt bei
   jedem Ausgang, der menschliche Aufmerksamkeit braucht (blockiertes Issue, rote CI,
-  erreichtes Lauf-Budget, fehlgeschlagener Dashboard-Job), einen einfachen JSON-POST
-  (Slack-Incoming-Webhook-kompatibel) über `core/notifier.py` – wichtig gerade hier, da beim
-  Poll-Zyklus (und bei Dashboard-Hintergrund-Jobs) anders als in der CLI niemand aktiv zusieht.
+  erreichtes Lauf-Budget, fehlgeschlagener Dashboard-Job), einen echten Slack-Block-Kit-POST
+  über `core/notifier.py` – fett hervorgehobenes Event-Label, farbiger Rand je nach grob
+  erkanntem Schweregrad ("fehlgeschlagen"/"blockiert"/… → Rot) und Zeitstempel-Footer statt
+  eines flachen, unformatierten Text-Strings. Ein `"text"`-Fallback-Feld bleibt zusätzlich
+  gesetzt (Slacks eigene Konvention für Push-Vorschauen/Clients ohne Block-Kit-Rendering) –
+  wichtig gerade hier, da beim Poll-Zyklus (und bei Dashboard-Hintergrund-Jobs) anders als in
+  der CLI niemand aktiv zusieht.
 
 **Einrichtung unter Windows** (`scripts/run_issue_watcher.ps1`): ruft `--check-issues` auf
 und hängt die Ausgabe UTF-8-sicher an `logs/issue_watcher.log` an (nicht versioniert, siehe
@@ -289,7 +295,13 @@ Quellen schreiben:
   Patch-Version je Projekt) mit automatischen Release-Notes (Ticket-Titel + PR-Link) – nicht
   nur das Framework selbst hatte bisher eine Versionshistorie, generierte Projekte in
   `workspace/` jetzt auch. Best effort: ein fehlgeschlagenes Tagging (z. B. `gh` fehlt) lässt
-  das Ticket trotzdem korrekt auf `done` stehen.
+  das Ticket trotzdem korrekt auf `done` stehen. Zusätzlich pflegt `update_project_changelog()`
+  bei jedem erfolgreichen Release eine echte `CHANGELOG.md` **im generierten Projekt selbst**
+  (`workspace/<projekt>/CHANGELOG.md`, neueste Einträge zuerst) – über die GitHub-Contents-API
+  direkt gegen den Default-Branch geschrieben (wie `gh release create` selbst operiert das ohne
+  Eingriff in den lokalen Checkout). Bisher hatte nur das Framework-Repo ein gepflegtes
+  CHANGELOG.md; das GitHub-Release allein macht die Versionshistorie nicht auch im Projekt
+  selbst lesbar. Ebenfalls Best effort, ohne Rückwirkung auf den Release-Erfolg.
 - **Priorität, Schätzung & WIP-Limit:** Jedes Ticket trägt jetzt `priority` (1=hoch/2=mittel/
   3=niedrig, bleibt über den gesamten Lebenszyklus erhalten, auch wenn ein Update sie nicht
   erneut mitgibt) und optional `estimate` (freier Text). `/backlog-add [priorität] <titel>`
@@ -421,7 +433,11 @@ Zwei unabhängige Prüfebenen, die sich ergänzen:
    - **Node / TypeScript:** Echte Installation (`npm ci`/`npm install`), Testläufe (`npm test`), Linting (`eslint`, `tsc`), Security-Audit (`npm audit`).
    - **Rust:** `Cargo.toml`-Erkennung, Build-Check (`cargo check`), echte Tests (`cargo test`), Linting (`cargo clippy`), Security-Audit (`cargo audit`).
    - **Go:** `go.mod`-Erkennung, Modul-Download (`go mod download`), echte Tests (`go test -v ./...`), Linting (`go vet`), Security-Audit (`govulncheck`).
-   Schlägt ein Test fehl, wird der reale Traceback geparst und der betroffene Agent anhand der `file_owners`-Map gezielt zur Korrektur beauftragt (bis zu `MAX_VERIFICATION_ITERATIONS` Runden).
+   - **SAST (Static Application Security Testing):** `bandit` scannt generierten Python-Code statisch auf bekannte Schwachstellenmuster (hartcodierte Secrets, unsichere Deserialisierung, SQL-Injection-Vektoren, unsichere Zufallszahlen, `eval`/`exec`, …) – ersetzt die bisher rein LLM-basierte Freitext-Einschätzung des `security`-Agenten (keine Datei/Zeile) durch einen echten, geparsten Fund mit exaktem Fundort. Node/Rust/Go folgen ggf. in einer späteren Runde.
+   - **Lizenz-/SBOM-Audit:** `pip-licenses` liest die Lizenzen der tatsächlich installierten Python-Abhängigkeiten aus und markiert bekannte Copyleft-Lizenzen (GPL/AGPL/LGPL/MPL/CDDL/EUPL/SSPL) – ersetzt die bisher geratene Lizenz-Tabelle des `compliance`-Agenten durch echte Paket-Metadaten statt einer LLM-Vermutung.
+   - **Lastentest (Smoke-Level):** Vom `performance`-Agenten geschriebene k6-/Locust-Skripte (`tests/load/`) werden jetzt tatsächlich AUSGEFÜHRT statt nur unausgeführt im Projekt zu liegen – die App wird auf einem freien Port gestartet, ein kurzer Lasttest (wenige Sekunden, wenige virtuelle Nutzer) läuft dagegen. Kein vollständiger Lasttest/Benchmark, nur eine Prüfung, ob die App unter minimaler gleichzeitiger Last fehlerfrei antwortet. Opt-out über `ENABLE_LOAD_TEST_CHECK=false`.
+   - **Accessibility-Scan (WCAG 2.x):** `axe-core-python` scannt generierte Web-Frontends echt per axe-core gegen eine per Playwright gerenderte Seite – ersetzt die bisher rein LLM-basierte Freitext-Checkliste des `accessibility`-Agenten durch geparste Verstöße mit Regel/Schweregrad/betroffenem Element.
+   Schlägt ein Test fehl, wird der reale Traceback geparst und der betroffene Agent anhand der `file_owners`-Map gezielt zur Korrektur beauftragt (bis zu `MAX_VERIFICATION_ITERATIONS` Runden). SAST- und Lizenz-Funde sind (wie Lint) rein informativ im Abschlussbericht sichtbar – ein Fund braucht menschliche Einschätzung (False Positives, Lizenz-Nutzungskontext) statt eines automatischen Blockers. Ein fehlgeschlagener Lastentest zählt dagegen wie der Runtime-Smoke-Test als echte Anforderungsverletzung.
 
 Beide Ebenen laufen automatisch als Teil jedes Orchestrator-Laufs, ohne dass der Nutzer sie
 manuell anstoßen muss. Manuell erreichbar über `/run-tests [projekt]` in der CLI.
@@ -498,6 +514,15 @@ der beiden gerade bindend war.
   Deployment-Ziel) fest, die bei JEDEM künftigen Lauf an diesem Projekt als verbindlicher
   Kontext an alle Agenten mitgegeben werden – einmal festgelegt statt bei jeder Anfrage neu
   spezifiziert.
+- **Projekt-Design-System** (`core/design_system.py`): Das Pendant zur Konstitution, nur für
+  visuelle statt technische Präferenzen. Seit der Design-vor-Dev-Aufspaltung (`design_lead`
+  läuft VOR `dev_lead`) fehlte ausgerechnet dem Design selbst eine Persistenz über mehrere
+  Läufe hinweg – `ui_ux`/`image_generator`/`copywriter` hätten Farbpalette, Typografie,
+  Spacing-Skala, Komponenten-Namenskonvention und Tonalität bei jedem Lauf am selben Projekt
+  neu erfinden können, ohne dass die Nutzeranfrage das je erwähnt. `/design-system [projekt]`
+  legt diese Werte einmal fest; sie werden danach wie die Konstitution bei JEDEM künftigen
+  Lauf an diesem Projekt in den Kontext aller Teilaufgaben injiziert. Datei `.ai-team-design.toml`
+  im Projektverzeichnis, bewusst nicht gitignored – echte Projekt-Konfiguration.
 - **Architecture Decision Records** (`core/adr.py`): Die Konstitution hält das WAS fest
   (Tech-Stack), aber nicht das WARUM ("REST statt GraphQL, weil…"). Der `architect`-Agent
   (und grundsätzlich jeder Agent im Werkzeug-Loop) dokumentiert echte Trade-off-Entscheidungen
@@ -507,6 +532,19 @@ der beiden gerade bindend war.
   `memory/backlog.json`. Bereits getroffene Entscheidungen werden bei JEDEM künftigen Lauf
   automatisch in den Kontext aller Teilaufgaben injiziert, damit spätere Läufe nicht
   unbemerkt gegen frühere, bewusste Entscheidungen arbeiten. Über `/adr [projekt]` einsehbar.
+- **Datenbasierte Selbstoptimierungs-Vorschläge** (`core/optimization_advisor.py`): `agent_trainer`
+  passt bisher einzelne Agenten-Prompts nach EINEM Lauf per LLM-Interpretation an – es fehlte
+  eine rein deterministische Auswertung über VIELE Läufe hinweg (`memory/run_history.py`), ob
+  die aktuell konfigurierte Modellzuweisung eines Agenten (z. B. nach einem manuellen
+  `.env`-Wechsel) tatsächlich die empirisch beste ist, und ob ein Agent auffällig oft
+  gegenüber dem Team-Durchschnitt scheitert. Kein zusätzlicher LLM-Aufruf nötig (Erfolgsquoten/
+  Tokenverbrauch sind bereits harte Zahlen) – erscheint automatisch am Ende jedes Laufs, wenn
+  ein statistisch aussagekräftiger Befund vorliegt (Mindest-Stichprobengröße + deutlicher
+  Unterschied, kein Rauschen bei knappen Abweichungen), sonst kein zusätzlicher Abschnitt.
+  Bewusst **nur ein Vorschlag, keine automatische Änderung an `config.py`** – eine
+  Modellzuweisung hat neben der reinen Erfolgsquote weitere Faktoren (Kosten, Rate-Limits,
+  bewusste Provider-Präferenzen), die das Modul nicht kennt. Jederzeit auch ohne neuen Lauf
+  über `/optimize` abrufbar.
 
 ---
 
@@ -535,8 +573,9 @@ eingeloggt?"* die passende `auth.py`, obwohl dort nirgends "einloggen" steht.
 | Fachbereich | Teamleiter | Spezialisten im Team |
 |---|---|---|
 | 🔵 **Planung, Analyse & Architektur** | `planning_lead` | `product_owner`, `business_analyst`, `web_research`, `architect`, `finops`, `team_lead` |
+| 🎨 **Vorab-Design, UI/UX & Media** | `design_lead` | `ui_ux`, `image_generator`, `copywriter` |
 | 🟢 **Software-Entwicklung** | `dev_lead` | `backend`, `frontend`, `database`, `api_integration`, `data_engineer`, `mobile`, `ml`, `prompt_engineer`, `performance` |
-| 🎨 **Design, Media & Content** | `creative_lead` | `image_generator`, `copywriter`, `ui_ux`, `accessibility`, `i18n`, `documentation`, `readme` |
+| 📚 **Content, Doku & Barrierefreiheit** | `content_lead` | `accessibility`, `i18n`, `documentation`, `readme` |
 | 🟡 **Qualität, DevOps & Security** | `qa_lead` | `devops`, `tester`, `security`, `resilience_guard`, `github` |
 | 🔴 **Excellence & Governance** | `governance_lead` | `code_reviewer`, `refactoring`, `compliance`, `project_cleaner`, `agent_trainer`, `retrospective` |
 
@@ -591,7 +630,7 @@ nicht, ein Mensch prüft die betroffene(n) Datei(en) gezielt nach.
 | `/load <pfad/name>` | Lädt ein bestehendes Projekt (Workspace oder externer Pfad) zur Weiterentwicklung |
 | `/tokens` | Zeigt den aktuellen Tokenverbrauch dieser Sitzung UND den kumulierten Verbrauch über alle bisherigen Läufe an |
 | `/rag <begriff>` | Führt eine semantische Code-Recherche im geladenen Projekt durch |
-| `/team` | Zeigt alle 5 Fachbereiche, Teamleiter und 33 Spezialisten an |
+| `/team` | Zeigt alle 6 Fachbereiche, Teamleiter und 33 Spezialisten an |
 | `/workspace [projekt]` | Listet alle generierten Dateien im Projektordner auf |
 | `/export [projekt]` | Packt das Projektverzeichnis in ein ZIP-Archiv |
 | `/run-tests [projekt]` | Führt automatische Unit-Tests im Projekt aus |

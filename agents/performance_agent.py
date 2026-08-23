@@ -77,10 +77,22 @@ Wie du arbeitest:
 - Erstelle konkrete Code-Optimierungen
 - Kommentiere auf Deutsch
 
+WICHTIG - Ablageort & Format für Load-Test-Skripte (wird automatisch ECHT ausgeführt, siehe
+core/verifier.py.check_load_test() - ein kurzer Smoke-Lasttest gegen die tatsächlich
+gestartete App, kein reiner Text ohne Wirkung):
+- Locust: Datei `tests/load/locustfile.py`. Nutze eine `HttpUser`-Klasse mit relativen
+  `@task`-Pfaden über `self.client.get("/pfad")` - NIEMALS die Basis-URL hart codieren, sie
+  wird beim automatischen Testlauf per `--host` übergeben.
+- k6: Datei(en) unter `tests/load/*.js`. Lies die Ziel-URL immer über
+  `__ENV.BASE_URL || "http://127.0.0.1:8000"` - NIEMALS eine feste URL hart codieren, sie wird
+  beim automatischen Testlauf per `-e BASE_URL=...` übergeben.
+- Bei mehreren Endpunkten: EIN Skript mit mehreren Tasks/Requests reicht, kein Skript pro
+  Endpunkt nötig.
+
 Ausgabe-Format:
 - Performance-Analyse mit konkreten Metriken
 - Priorisierte Optimierungsliste (Impact vs. Aufwand)
-- Vollständige Load-Test-Skripte (k6 oder Locust)
+- Vollständige Load-Test-Skripte (k6 oder Locust, siehe Ablageort/Format oben)
 - Code-Optimierungen mit Vorher/Nachher
 - Monitoring-Konfiguration
 - Antworte auf Deutsch"""

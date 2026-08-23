@@ -78,6 +78,8 @@ AGENT_MODELS: dict[str, str] = {
     "dev_lead":          os.getenv("DEV_LEAD_MODEL",        HEAVY_MODEL),
     "governance_lead":   os.getenv("GOVERNANCE_LEAD_MODEL", HEAVY_MODEL),
     # Leads mit eher konsolidierender/koordinierender Aufgabe -> STANDARD reicht
+    "design_lead":       os.getenv("DESIGN_LEAD_MODEL",     os.getenv("CREATIVE_LEAD_MODEL", STANDARD_MODEL)),
+    "content_lead":      os.getenv("CONTENT_LEAD_MODEL",    os.getenv("CREATIVE_LEAD_MODEL", STANDARD_MODEL)),
     "creative_lead":     os.getenv("CREATIVE_LEAD_MODEL",   STANDARD_MODEL),
     "qa_lead":           os.getenv("QA_LEAD_MODEL",         STANDARD_MODEL),
 
@@ -127,14 +129,18 @@ AGENT_MODELS: dict[str, str] = {
 
 # Fachbereichs-Zuweisungen für bereichsweite Modell-Konfiguration
 DEPARTMENT_PLANNING_AGENTS = {"planning_lead", "team_lead", "product_owner", "business_analyst", "web_research", "architect", "finops"}
+DEPARTMENT_DESIGN_AGENTS = {"design_lead", "image_generator", "copywriter", "ui_ux"}
 DEPARTMENT_DEV_AGENTS = {"dev_lead", "backend", "frontend", "database", "api_integration", "data_engineer", "mobile", "ml", "prompt_engineer", "performance"}
-DEPARTMENT_CREATIVE_AGENTS = {"creative_lead", "image_generator", "copywriter", "ui_ux", "accessibility", "i18n", "documentation", "readme"}
+DEPARTMENT_CONTENT_AGENTS = {"content_lead", "accessibility", "i18n", "documentation", "readme"}
+DEPARTMENT_CREATIVE_AGENTS = DEPARTMENT_DESIGN_AGENTS | DEPARTMENT_CONTENT_AGENTS | {"creative_lead"}
 DEPARTMENT_QA_AGENTS = {"qa_lead", "devops", "tester", "security", "resilience_guard", "github"}
 DEPARTMENT_GOVERNANCE_AGENTS = {"governance_lead", "code_reviewer", "refactoring", "compliance", "project_cleaner", "agent_trainer", "retrospective"}
 
 DEPARTMENT_MODELS: dict[str, str] = {
     "planning": os.getenv("DEPARTMENT_PLANNING_MODEL", ""),
+    "design": os.getenv("DEPARTMENT_DESIGN_MODEL", os.getenv("DEPARTMENT_CREATIVE_MODEL", "")),
     "dev": os.getenv("DEPARTMENT_DEV_MODEL", ""),
+    "content": os.getenv("DEPARTMENT_CONTENT_MODEL", os.getenv("DEPARTMENT_CREATIVE_MODEL", "")),
     "creative": os.getenv("DEPARTMENT_CREATIVE_MODEL", ""),
     "qa": os.getenv("DEPARTMENT_QA_MODEL", ""),
     "governance": os.getenv("DEPARTMENT_GOVERNANCE_MODEL", ""),
@@ -150,8 +156,12 @@ def get_model_for_agent(agent_id: str) -> str:
     # 2. Fachbereichsweiter Override
     if agent_id in DEPARTMENT_PLANNING_AGENTS and DEPARTMENT_MODELS["planning"]:
         return DEPARTMENT_MODELS["planning"]
+    if agent_id in DEPARTMENT_DESIGN_AGENTS and DEPARTMENT_MODELS["design"]:
+        return DEPARTMENT_MODELS["design"]
     if agent_id in DEPARTMENT_DEV_AGENTS and DEPARTMENT_MODELS["dev"]:
         return DEPARTMENT_MODELS["dev"]
+    if agent_id in DEPARTMENT_CONTENT_AGENTS and DEPARTMENT_MODELS["content"]:
+        return DEPARTMENT_MODELS["content"]
     if agent_id in DEPARTMENT_CREATIVE_AGENTS and DEPARTMENT_MODELS["creative"]:
         return DEPARTMENT_MODELS["creative"]
     if agent_id in DEPARTMENT_QA_AGENTS and DEPARTMENT_MODELS["qa"]:
@@ -207,6 +217,18 @@ TEST_RUN_TIMEOUT_SECONDS: float = float(os.getenv("TEST_RUN_TIMEOUT_SECONDS", "6
 # Lint-Fund (rein informativ) ist eine EXPLIZIT konfigurierte Schwelle als echte Anforderung
 # gemeint, kein bloßes FYI.
 MIN_TEST_COVERAGE: float = float(os.getenv("MIN_TEST_COVERAGE", "0"))
+# Realer Fund: der performance-Agent schreibt vollständige k6-/Locust-Lastentest-Skripte, die
+# aber NIE ausgeführt werden - anders als run_tests() landen sie ungeprüft im Projekt, niemand
+# (Mensch oder Team) weiß, ob sie überhaupt laufen oder was sie ergeben. check_load_test()
+# startet die generierte App auf einem freien Port und führt einen kurzen, wenige Sekunden
+# dauernden SMOKE-Lasttest aus (wenige virtuelle Nutzer) - kein vollständiger Lasttest (würde
+# Minuten dauern und echte Ressourcen binden), nur eine Prüfung, ob die App unter minimaler
+# gleichzeitiger Last überhaupt fehlerfrei antwortet. Läuft nur, wenn ein Skript unter
+# tests/load/ (locustfile.py oder *.js) UND das jeweilige Tool (locust/k6) lokal installiert
+# sind UND die App tatsächlich startet - in der Praxis für die meisten Projekte ein No-Op.
+ENABLE_LOAD_TEST_CHECK: bool = os.getenv("ENABLE_LOAD_TEST_CHECK", "true").lower() in ("true", "1", "yes")
+LOAD_TEST_DURATION_SECONDS: float = float(os.getenv("LOAD_TEST_DURATION_SECONDS", "5"))
+LOAD_TEST_TIMEOUT_SECONDS: float = float(os.getenv("LOAD_TEST_TIMEOUT_SECONDS", "60"))
 
 # ──────────────────────────────────────────
 # Governance-Kritisch-Fix-Schleife (core/review_gate.py, agents/orchestrator.py._run_governance_fix_loop)

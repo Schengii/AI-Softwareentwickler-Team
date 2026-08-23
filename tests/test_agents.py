@@ -102,8 +102,9 @@ class TestAgentSystem(unittest.TestCase):
         info = self.orchestrator.get_team_info()
         self.assertIn("Strukturierte Fachbereiche & Teamleiter-Hierarchie", info)
         self.assertIn("Planning Lead", info)
+        self.assertIn("Design Lead", info)
         self.assertIn("Dev Lead", info)
-        self.assertIn("Creative Lead", info)
+        self.assertIn("Content & Doc Lead", info)
 
 
 if __name__ == "__main__":

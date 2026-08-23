@@ -224,6 +224,7 @@ class TestProcessAbortsBeforeRunWhenProjectBudgetAlreadyExhausted(unittest.TestC
                 ran=True, passed=True, exit_code=0, stdout="", stderr="", duration_seconds=0.1,
             )
             mock_verifier.check_docker_build.return_value.attempted = False
+            mock_verifier.check_load_test.return_value.attempted = False
             mock_verifier.check_dependency_vulnerabilities.return_value = []
             mock_verifier.check_lint.return_value = []
             mock_hierarchy.return_value = ([], {}, False, False)

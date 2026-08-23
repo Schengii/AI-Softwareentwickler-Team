@@ -13,7 +13,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 import memory.run_history as run_history_module
-from memory.run_history import get_agent_success_rates, get_recent_runs, get_total_tokens_for_project, record_run
+from memory.run_history import (
+    get_agent_model_performance,
+    get_agent_success_rates,
+    get_recent_runs,
+    get_total_tokens_for_project,
+    record_run,
+)
 
 
 class TestRunHistory(unittest.TestCase):
@@ -112,6 +118,48 @@ class TestRunHistory(unittest.TestCase):
     def test_total_tokens_for_unknown_project_is_zero(self):
         record_run(project_slug="proj_a", task_summary="x", verification_ok=True, total_tokens=1000, duration_seconds=1, agent_results=[])
         self.assertEqual(get_total_tokens_for_project("never_ran"), 0)
+
+    def test_model_performance_grouped_by_agent_and_model(self):
+        record_run(
+            project_slug="a", task_summary="x", verification_ok=True, total_tokens=1, duration_seconds=1,
+            agent_results=[{"agent_id": "backend", "success": True, "total_tokens": 100, "model_used": "gemini-flash"}],
+        )
+        record_run(
+            project_slug="b", task_summary="x", verification_ok=False, total_tokens=1, duration_seconds=1,
+            agent_results=[{"agent_id": "backend", "success": False, "total_tokens": 200, "model_used": "gemini-flash"}],
+        )
+        record_run(
+            project_slug="c", task_summary="x", verification_ok=True, total_tokens=1, duration_seconds=1,
+            agent_results=[{"agent_id": "backend", "success": True, "total_tokens": 50, "model_used": "claude-sonnet"}],
+        )
+
+        perf = get_agent_model_performance()
+
+        flash = next(r for r in perf if r["agent_id"] == "backend" and r["model"] == "gemini-flash")
+        self.assertEqual(flash["calls"], 2)
+        self.assertEqual(flash["successes"], 1)
+        self.assertEqual(flash["success_rate"], 50.0)
+        self.assertEqual(flash["avg_tokens"], 150.0)
+
+        sonnet = next(r for r in perf if r["agent_id"] == "backend" and r["model"] == "claude-sonnet")
+        self.assertEqual(sonnet["calls"], 1)
+        self.assertEqual(sonnet["success_rate"], 100.0)
+
+    def test_model_performance_handles_entries_without_model_used(self):
+        """Ältere Historien-Einträge von vor dieser Erweiterung haben noch kein model_used -
+        müssen unter 'unbekannt' gruppiert werden statt zu crashen."""
+        record_run(
+            project_slug="a", task_summary="x", verification_ok=True, total_tokens=1, duration_seconds=1,
+            agent_results=[{"agent_id": "backend", "success": True, "total_tokens": 100}],
+        )
+
+        perf = get_agent_model_performance()
+
+        entry = next(r for r in perf if r["agent_id"] == "backend")
+        self.assertEqual(entry["model"], "unbekannt")
+
+    def test_model_performance_empty_without_history(self):
+        self.assertEqual(get_agent_model_performance(), [])
 
 
 if __name__ == "__main__":

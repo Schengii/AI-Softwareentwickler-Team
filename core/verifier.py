@@ -424,6 +424,14 @@ class ProjectVerifier:
             logs.append(self._ensure_rust_environment(timeout_seconds))
         if self._has_go_project():
             logs.append(self._ensure_go_environment(timeout_seconds))
+        if self._has_java_project():
+            logs.append(self._ensure_java_environment(timeout_seconds))
+        if self._has_dotnet_project():
+            logs.append(self._ensure_dotnet_environment(timeout_seconds))
+        if self._has_php_project():
+            logs.append(self._ensure_php_environment(timeout_seconds))
+        if self._has_flutter_project():
+            logs.append(self._ensure_flutter_environment(timeout_seconds))
         return "\n".join(log for log in logs if log)
 
     def _has_rust_project(self) -> bool:
@@ -431,6 +439,18 @@ class ProjectVerifier:
 
     def _has_go_project(self) -> bool:
         return (self.project_dir / "go.mod").exists()
+
+    def _has_java_project(self) -> bool:
+        return (self.project_dir / "pom.xml").exists() or (self.project_dir / "build.gradle").exists() or (self.project_dir / "build.gradle.kts").exists()
+
+    def _has_dotnet_project(self) -> bool:
+        return bool(list(self.project_dir.glob("*.csproj")) or list(self.project_dir.glob("*.sln")))
+
+    def _has_php_project(self) -> bool:
+        return (self.project_dir / "composer.json").exists()
+
+    def _has_flutter_project(self) -> bool:
+        return (self.project_dir / "pubspec.yaml").exists()
 
     def _ensure_rust_environment(self, timeout_seconds: float) -> str:
         if shutil.which("cargo") is None:
@@ -445,6 +465,39 @@ class ProjectVerifier:
         result = CodeSandbox.run_command(["go", "mod", "download"], cwd=self.project_dir, timeout_seconds=timeout_seconds)
         status = "✅" if result.exit_code == 0 else "⚠️"
         return f"{status} go mod download (exit_code={result.exit_code})"
+
+    def _ensure_java_environment(self, timeout_seconds: float) -> str:
+        if (self.project_dir / "pom.xml").exists() and shutil.which("mvn"):
+            cmd = ["mvn", "dependency:resolve", "-q"]
+        elif ((self.project_dir / "build.gradle").exists() or (self.project_dir / "build.gradle.kts").exists()) and (shutil.which("gradle") or (self.project_dir / "gradlew").exists()):
+            cmd = ["./gradlew" if (self.project_dir / "gradlew").exists() else "gradle", "dependencies", "-q"]
+        else:
+            return "⚠️ Java Build-Tool (`mvn`/`gradle`) nicht verfügbar – Java-Abhängigkeiten übersprungen."
+        result = CodeSandbox.run_command(cmd, cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        status = "✅" if result.exit_code == 0 else "⚠️"
+        return f"{status} {' '.join(cmd)} (exit_code={result.exit_code})"
+
+    def _ensure_dotnet_environment(self, timeout_seconds: float) -> str:
+        if shutil.which("dotnet") is None:
+            return "⚠️ `dotnet` ist auf diesem System nicht installiert/verfügbar – .NET-Abhängigkeiten übersprungen."
+        result = CodeSandbox.run_command(["dotnet", "restore"], cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        status = "✅" if result.exit_code == 0 else "⚠️"
+        return f"{status} dotnet restore (exit_code={result.exit_code})"
+
+    def _ensure_php_environment(self, timeout_seconds: float) -> str:
+        if shutil.which("composer") is None:
+            return "⚠️ `composer` ist auf diesem System nicht installiert/verfügbar – PHP-Abhängigkeiten übersprungen."
+        result = CodeSandbox.run_command(["composer", "install", "--no-interaction", "--prefer-dist", "-q"], cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        status = "✅" if result.exit_code == 0 else "⚠️"
+        return f"{status} composer install (exit_code={result.exit_code})"
+
+    def _ensure_flutter_environment(self, timeout_seconds: float) -> str:
+        tool = "flutter" if shutil.which("flutter") else ("dart" if shutil.which("dart") else None)
+        if not tool:
+            return "⚠️ `flutter`/`dart` ist nicht verfügbar – Flutter-Abhängigkeiten übersprungen."
+        result = CodeSandbox.run_command([tool, "pub", "get"], cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        status = "✅" if result.exit_code == 0 else "⚠️"
+        return f"{status} {tool} pub get (exit_code={result.exit_code})"
 
     def _ensure_python_environment(self, req_file: Path, timeout_seconds: float) -> str:
         venv_python = self._venv_python()
@@ -528,18 +581,46 @@ class ProjectVerifier:
 
         has_rust = self._has_rust_project()
         has_go = self._has_go_project()
+        has_java = self._has_java_project()
+        has_dotnet = self._has_dotnet_project()
+        has_php = self._has_php_project()
+        has_flutter = self._has_flutter_project()
+
         cargo_available = shutil.which("cargo") is not None
         go_available = shutil.which("go") is not None
+        java_available = shutil.which("mvn") is not None or shutil.which("gradle") is not None or (self.project_dir / "gradlew").exists()
+        dotnet_available = shutil.which("dotnet") is not None
+        php_available = shutil.which("phpunit") is not None or (self.project_dir / "vendor" / "bin" / "phpunit").exists()
+        flutter_available = shutil.which("flutter") is not None or shutil.which("dart") is not None
 
-        if not python_test_files and not runnable_node_projects and not (has_rust and cargo_available) and not (has_go and go_available):
+        has_any_suite = (
+            bool(python_test_files)
+            or bool(runnable_node_projects)
+            or (has_rust and cargo_available)
+            or (has_go and go_available)
+            or (has_java and java_available)
+            or (has_dotnet and dotnet_available)
+            or (has_php and php_available)
+            or (has_flutter and flutter_available)
+        )
+
+        if not has_any_suite:
             if node_projects and not npm_available:
                 reason = "npm-Test-Skript(e) gefunden, aber `npm` ist auf diesem System nicht installiert/verfügbar – Verifikation übersprungen."
             elif has_rust and not cargo_available:
                 reason = "Cargo.toml gefunden, aber `cargo` ist auf diesem System nicht installiert/verfügbar – Verifikation übersprungen."
             elif has_go and not go_available:
                 reason = "go.mod gefunden, aber `go` ist auf diesem System nicht installiert/verfügbar – Verifikation übersprungen."
+            elif has_java and not java_available:
+                reason = "Java-Projekt gefunden, aber `mvn`/`gradle` nicht verfügbar – Verifikation übersprungen."
+            elif has_dotnet and not dotnet_available:
+                reason = ".NET-Projekt gefunden, aber `dotnet` nicht verfügbar – Verifikation übersprungen."
+            elif has_php and not php_available:
+                reason = "PHP-Projekt gefunden, aber `phpunit` nicht verfügbar – Verifikation übersprungen."
+            elif has_flutter and not flutter_available:
+                reason = "Flutter-Projekt gefunden, aber `flutter`/`dart` nicht verfügbar – Verifikation übersprungen."
             else:
-                reason = 'Keine Testdateien (test_*.py), kein npm-Test-Skript und kein Rust/Go-Projekt gefunden – Verifikation übersprungen.'
+                reason = 'Keine Testdateien (test_*.py), kein npm-Test-Skript und kein Rust/Go/Java/C#/PHP/Flutter-Projekt gefunden – Verifikation übersprungen.'
             return VerificationReport(
                 ran=False, passed=True, exit_code=0, stdout="", stderr="",
                 duration_seconds=time.monotonic() - start, reason_skipped=reason,
@@ -594,6 +675,45 @@ class ProjectVerifier:
                 passed = False
                 exit_code = exit_code or exec_result.exit_code
                 failures.append(TestFailure(test_id="go test", message=(exec_result.stderr or exec_result.stdout)[-800:]))
+
+        if has_java and java_available:
+            j_cmd = ["mvn", "test", "-q"] if (self.project_dir / "pom.xml").exists() else (["./gradlew", "test", "-q"] if (self.project_dir / "gradlew").exists() else ["gradle", "test", "-q"])
+            exec_result = CodeSandbox.run_command(j_cmd, cwd=self.project_dir, timeout_seconds=timeout_seconds)
+            stdout_chunks.append(f"--- Java ({j_cmd[0]}) ---\n{exec_result.stdout}")
+            stderr_chunks.append(exec_result.stderr)
+            if exec_result.exit_code != 0:
+                passed = False
+                exit_code = exit_code or exec_result.exit_code
+                failures.append(TestFailure(test_id="java test", message=(exec_result.stderr or exec_result.stdout)[-800:]))
+
+        if has_dotnet and dotnet_available:
+            exec_result = CodeSandbox.run_command(["dotnet", "test", "-v", "q"], cwd=self.project_dir, timeout_seconds=timeout_seconds)
+            stdout_chunks.append(f"--- .NET test ---\n{exec_result.stdout}")
+            stderr_chunks.append(exec_result.stderr)
+            if exec_result.exit_code != 0:
+                passed = False
+                exit_code = exit_code or exec_result.exit_code
+                failures.append(TestFailure(test_id="dotnet test", message=(exec_result.stderr or exec_result.stdout)[-800:]))
+
+        if has_php and php_available:
+            p_cmd = [str(self.project_dir / "vendor" / "bin" / "phpunit")] if (self.project_dir / "vendor" / "bin" / "phpunit").exists() else ["phpunit"]
+            exec_result = CodeSandbox.run_command(p_cmd, cwd=self.project_dir, timeout_seconds=timeout_seconds)
+            stdout_chunks.append(f"--- PHPUnit ---\n{exec_result.stdout}")
+            stderr_chunks.append(exec_result.stderr)
+            if exec_result.exit_code != 0:
+                passed = False
+                exit_code = exit_code or exec_result.exit_code
+                failures.append(TestFailure(test_id="phpunit", message=(exec_result.stderr or exec_result.stdout)[-800:]))
+
+        if has_flutter and flutter_available:
+            f_cmd = ["flutter", "test"] if shutil.which("flutter") else ["dart", "test"]
+            exec_result = CodeSandbox.run_command(f_cmd, cwd=self.project_dir, timeout_seconds=timeout_seconds)
+            stdout_chunks.append(f"--- {' '.join(f_cmd)} ---\n{exec_result.stdout}")
+            stderr_chunks.append(exec_result.stderr)
+            if exec_result.exit_code != 0:
+                passed = False
+                exit_code = exit_code or exec_result.exit_code
+                failures.append(TestFailure(test_id="flutter test", message=(exec_result.stderr or exec_result.stdout)[-800:]))
 
         if node_projects and not npm_available:
             stdout_chunks.insert(0, "⚠️ npm nicht verfügbar – gefundene npm-Test-Skripte wurden übersprungen.")
@@ -779,6 +899,14 @@ class ProjectVerifier:
             go_lint = self._lint_go(timeout_seconds)
             if go_lint is not None:
                 reports.append(go_lint)
+        if self._has_dotnet_project():
+            dotnet_lint = self._lint_dotnet(timeout_seconds)
+            if dotnet_lint is not None:
+                reports.append(dotnet_lint)
+        if self._has_flutter_project():
+            flutter_lint = self._lint_flutter(timeout_seconds)
+            if flutter_lint is not None:
+                reports.append(flutter_lint)
         return reports
 
     def _lint_rust(self, timeout_seconds: float) -> LintReport | None:
@@ -792,6 +920,19 @@ class ProjectVerifier:
             return LintReport(attempted=False, passed=True, tool="go vet", reason_skipped="`go` nicht verfügbar.")
         result = CodeSandbox.run_command(["go", "vet", "./..."], cwd=self.project_dir, timeout_seconds=timeout_seconds)
         return LintReport(attempted=True, passed=result.exit_code == 0, tool="go vet")
+
+    def _lint_dotnet(self, timeout_seconds: float) -> LintReport | None:
+        if shutil.which("dotnet") is None:
+            return LintReport(attempted=False, passed=True, tool="dotnet format", reason_skipped="`dotnet` nicht verfügbar.")
+        result = CodeSandbox.run_command(["dotnet", "format", "--verify-no-changes"], cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        return LintReport(attempted=True, passed=result.exit_code == 0, tool="dotnet format")
+
+    def _lint_flutter(self, timeout_seconds: float) -> LintReport | None:
+        tool = "flutter" if shutil.which("flutter") else ("dart" if shutil.which("dart") else None)
+        if not tool:
+            return LintReport(attempted=False, passed=True, tool="dart analyze", reason_skipped="`dart`/`flutter` nicht verfügbar.")
+        result = CodeSandbox.run_command([tool, "analyze"], cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        return LintReport(attempted=True, passed=result.exit_code == 0, tool=f"{tool} analyze")
 
     def _audit_python_dependencies(self, req_file: Path, timeout_seconds: float) -> DependencyAuditReport:
         if shutil.which("pip-audit") is None:

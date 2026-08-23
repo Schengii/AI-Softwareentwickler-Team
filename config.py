@@ -204,6 +204,10 @@ AGENT_MAX_TOOL_ITERATIONS: dict[str, int] = {
 # ──────────────────────────────────────────
 # Echte Verifikation (Dependency-Installation + tatsächliche Testausführung)
 # ──────────────────────────────────────────
+ENABLE_PROJECT_PROFILING: bool = os.getenv("ENABLE_PROJECT_PROFILING", "true").lower() in ("true", "1", "yes")
+ENABLE_TDD_WORKFLOW: bool = os.getenv("ENABLE_TDD_WORKFLOW", "true").lower() in ("true", "1", "yes")
+ENABLE_VISUAL_REGRESSION_CHECK: bool = os.getenv("ENABLE_VISUAL_REGRESSION_CHECK", "true").lower() in ("true", "1", "yes")
+
 MAX_VERIFICATION_ITERATIONS: int = int(os.getenv("MAX_VERIFICATION_ITERATIONS", "2"))
 DEPENDENCY_INSTALL_TIMEOUT_SECONDS: float = float(os.getenv("DEPENDENCY_INSTALL_TIMEOUT_SECONDS", "120"))
 TEST_RUN_TIMEOUT_SECONDS: float = float(os.getenv("TEST_RUN_TIMEOUT_SECONDS", "60"))

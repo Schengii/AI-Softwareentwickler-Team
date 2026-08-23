@@ -29,15 +29,10 @@ class BrowserVerificationReport:
     engine: str = "none"  # "playwright", "headless_chrome", "static_dom"
     console_errors: list[str] = field(default_factory=list)
     missing_assets: list[str] = field(default_factory=list)
-    # Realer Fund (Pong-Projekt, siehe agents/orchestrator.py._run_verification_loop): eine
-    # Seite kann fehlerfrei laden (kein Konsolenfehler, keine fehlende Datei) und trotzdem
-    # funktional komplett tot sein, weil nie ein Render-Aufruf stattfindet - kein Fehler wird
-    # dabei geworfen, es fehlt schlicht jeder draw()/requestAnimationFrame-Aufruf. Diese Liste
-    # enthält <canvas>-Elemente, deren Pixelinhalt nach dem Laden byte-identisch mit einem
-    # frisch erzeugten LEEREN Canvas gleicher Größe ist - ein starkes Indiz für genau dieses
-    # Muster, das reine Konsolen-/404-Checks nicht erkennen (siehe _run_playwright_check()).
     blank_canvases: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    visual_layout_issues: list[str] = field(default_factory=list)
+    screenshot_path: str = ""
     tested_url: str = ""
     reason_skipped: str = ""
 
@@ -99,19 +94,29 @@ def handle_response(resp):
 try:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        page = browser.new_page(viewport={'width': 1280, 'height': 800})
         page.on('console', handle_console)
         page.on('response', handle_response)
         page.goto('__TARGET_URL__', timeout=__TIMEOUT_MS__, wait_until='load')
         page.wait_for_timeout(500)
         title = page.title()
 
-        # Heuristik gegen "lädt fehlerfrei, tut aber nichts": ein <canvas>-Element, dessen
-        # Pixelinhalt nach dem Laden byte-identisch mit einem frisch erzeugten LEEREN Canvas
-        # gleicher Größe ist, wurde nachweislich nie gezeichnet - kein Fehler wird dabei
-        # geworfen, es fehlt schlicht jeder Render-Aufruf. Realer Fund: ein Pong-Spiel ohne
-        # draw()/Game-Loop lud fehlerfrei und bestand den bisherigen Check trotzdem, weil
-        # dieser nur auf Konsolenfehler/404s prüfte, nie auf tatsächlich gezeichneten Inhalt.
+        # Screenshot aufnehmen
+        screenshot_path = '__SCREENSHOT_PATH__'
+        if screenshot_path:
+            import os
+            os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
+            page.screenshot(path=screenshot_path, full_page=True)
+
+        # Visuelle Layout-Prüfung: Horizontales Overflow / Breakpoints
+        layout_issues = []
+        try:
+            has_overflow = page.evaluate('() => document.documentElement.scrollWidth > window.innerWidth')
+            if has_overflow:
+                layout_issues.append('Horizontales Scroll-Overflow erkannt: Seiteninhalt ragt über den Viewport hinaus.')
+        except Exception:
+            pass
+
         try:
             blank_canvases = page.evaluate('''
                 () => Array.from(document.querySelectorAll('canvas')).map((cv, i) => {
@@ -128,7 +133,7 @@ try:
         except Exception:
             blank_canvases = []
         browser.close()
-    print(json.dumps({'success': True, 'errors': console_errors, 'missing': missing_assets, 'title': title, 'blank_canvases': blank_canvases}))
+    print(json.dumps({'success': True, 'errors': console_errors, 'missing': missing_assets, 'title': title, 'blank_canvases': blank_canvases, 'layout_issues': layout_issues, 'screenshot_path': screenshot_path}))
 except Exception as e:
     print(json.dumps({'success': False, 'error': str(e)}))
 """
@@ -285,9 +290,12 @@ class BrowserVerifier:
         # f-String für dieses Template mehr (siehe _RUNNER_CODE_TEMPLATE-Docstring dort): die
         # neue Blank-Canvas-Prüfung unten braucht echte JS-Objektliteral-Klammern, die in einem
         # f-String alle verdoppelt werden müssten - Platzhalter + .replace() ist robuster.
+        screenshot_target = self.project_dir / "screenshots" / f"preview_{html_file.stem}.png"
+        screenshot_str = str(screenshot_target).replace("\\", "/")
+
         runner_code = _RUNNER_CODE_TEMPLATE.replace("__TARGET_URL__", target_url).replace(
             "__TIMEOUT_MS__", str(int(timeout * 1000)),
-        )
+        ).replace("__SCREENSHOT_PATH__", screenshot_str)
         try:
             proc = subprocess.run(
                 [sys.executable, "-c", runner_code],
@@ -303,7 +311,9 @@ class BrowserVerifier:
             errors = data.get("errors", [])
             missing = data.get("missing", [])
             blank_canvases = data.get("blank_canvases", [])
-            passed = len(errors) == 0 and len(missing) == 0 and len(blank_canvases) == 0
+            layout_issues = data.get("layout_issues", [])
+            saved_screenshot = screenshot_str if screenshot_target.exists() else ""
+            passed = len(errors) == 0 and len(missing) == 0 and len(blank_canvases) == 0 and len(layout_issues) == 0
 
             return BrowserVerificationReport(
                 attempted=True,
@@ -312,6 +322,8 @@ class BrowserVerifier:
                 console_errors=errors,
                 missing_assets=missing,
                 blank_canvases=blank_canvases,
+                visual_layout_issues=layout_issues,
+                screenshot_path=saved_screenshot,
                 tested_url=target_url,
             )
         except Exception:

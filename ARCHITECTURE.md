@@ -51,15 +51,15 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
    - **Phase 4 (Qualität & Sicherheit)**: Testsuite, Security-Audits, DevOps/Docker-Konfiguration.
    - **Phase 5 (Review & Governance)**: Code-Review, Refactoring, Compliance-Check.
 4. **Dynamische Verifikations-Schleife (`core/verifier.py`)**:
-   - **Multi-Sprachen-Unterstützung**: Echte isolierte Testumgebungen für Python (`pytest`/`unittest`), Node/TS (`npm test`), Rust (`cargo test`) und Go (`go test`).
+   - **Multi-Sprachen-Unterstützung (Polyglot)**: Echte isolierte Testumgebungen für Python (`pytest`/`unittest`), Node/TS (`npm test`), Rust (`cargo test`), Go (`go test`), Java (`mvn test`/`gradle test`), C# / .NET (`dotnet test`), PHP (`phpunit`) und Flutter/Dart (`flutter test`).
    - **Testabdeckungs-Messung**: Automatische Prüfung der Codeabdeckung (`pytest-cov`) gegen konfigurierte Schwellen (`MIN_TEST_COVERAGE`).
-   - **Statisches & AST-Linting**: `ruff` für Python, `eslint`/`tsc` für TypeScript/JavaScript, `cargo clippy` für Rust, `go vet` für Go.
-   - **Headless Browser & Frontend-UI-Validierung (`core/browser_verifier.py`)**: Startet Web-Frontends, fängt JavaScript-Konsolenfehler (`console.error`) ab und prüft Asset-404s (Playwright / statisches DOM).
+   - **Statisches & AST-Linting**: `ruff` für Python, `eslint`/`tsc` für TypeScript/JavaScript, `cargo clippy` für Rust, `go vet` für Go, `dotnet format` für C#, `dart analyze` für Flutter.
+   - **Headless Browser & Visuelle UI-Validierung (`core/browser_verifier.py`)**: Startet Web-Frontends, fängt JavaScript-Konsolenfehler (`console.error`) ab, prüft Asset-404s, nimmt Full-Page-Screenshots auf und erkennt horizontales Layout-Overflow (Playwright / statisches DOM).
    - **Schwachstellen-Scan**: Echter `pip-audit`, `npm audit`, `cargo audit` und `govulncheck` gegen öffentliche CVE-Datenbanken.
    - **SAST & Lizenz-Audit**: Echter statischer Sicherheits-Scan (`bandit`) und Lizenz-/Copyleft-Scan (`pip-licenses`) für generierten Python-Code – ersetzt die bisherige LLM-Freitext-Einschätzung von `security`/`compliance` durch geparste Funde mit Datei/Zeile bzw. echte Paket-Metadaten.
-   - **Lastentest (Smoke-Level)**: Startet die generierte App auf einem freien Port und führt einen kurzen k6-/Locust-Lasttest (`tests/load/`) ECHT dagegen aus – ersetzt den bisherigen Zustand, in dem der `performance`-Agent vollständige Lastentest-Skripte schrieb, die nie ausgeführt wurden.
-   - **Accessibility-Scan (axe-core)**: Echter WCAG-2.x-Scan gegen eine per Playwright gerenderte Seite – ersetzt die bisherige LLM-Freitext-Checkliste des `accessibility`-Agenten durch geparste Verstöße mit Regel/Schweregrad/Element.
-   - **Runtime Smoke-Check**: Teststart der Applikation im Subprozess (z. B. Uvicorn/FastAPI HTTP-Polling oder CLI-Help-Check), um sicherzustellen, dass die Anwendung tatsächlich hochfährt.
+   - **Lastentest (Smoke-Level)**: Startet die generierte App auf einem freien Port und führt einen kurzen k6-/Locust-Lasttest (`tests/load/`) ECHT dagegen aus.
+   - **Accessibility-Scan (axe-core)**: Echter WCAG-2.x-Scan gegen eine per Playwright gerenderte Seite mit Regel/Schweregrad/Element.
+   - **Runtime Smoke-Check**: Teststart der Applikation im Subprozess (z. B. Uvicorn/FastAPI HTTP-Polling oder CLI-Help-Check).
    - **Gezielte Fix-Schleife**: Traceback-Parsing ermittelt die verursachenden Dateien und weist nur dem zuständigen Agenten einen gezielten Korrekturauftrag zu.
 5. **Ergebnis-Synthese & Akzeptanzkriterien-Check (`core/result_aggregator.py`)**:
    - Zusammenfassung aller Fachberichte und mechanischer Abgleich mit den Given/When/Then-Akzeptanzkriterien.
@@ -79,6 +79,10 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
 
 ## 4. Code-Knowledge-Graph, Observability & Cloud-Deployments
 
+- **Automatischer Brownfield-Projekt-Profiler (`core/project_profiler.py`)**:
+  - Scannt bestehende Codebases vor Phase 1 nach Frameworks, Build-Tools, Verzeichnis-Konventionen und Monorepo-Strukturen und injiziert den Kontext in alle Agenten-Prompts.
+- **Test-Driven Development (TDD) Modus**:
+  - Ermöglicht dem Team die Vorab-Spezifikation und Entwicklung gegen automatisierte Testsuiten.
 - **AST-Codebase-Graph & Symbol-Index (`core/code_graph.py`)**:
   - Parst Quelltext in einen typisierten AST-Index (`find_symbol_definition`, `find_symbol_references`, `analyze_code_impact`) für fehlerfreie Refactorings in großen Projekten.
 - **Run-Historie (`memory/run_history.py`)**:
@@ -101,7 +105,7 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
 | Schnittstelle | Modul / Datei | Zweck |
 | :--- | :--- | :--- |
 | **Interaktive CLI** | `interface/cli.py` | Rich-formatierte Terminal-Oberfläche mit Live-Status und Plan-Gate. |
-| **Web-Dashboard** | `interface/web_dashboard.py` | Dark-Mode Web-UI mit Live-Log, Kanban-Backlog, Observability und Docker-Deploy. |
+| **Web-Dashboard** | `interface/web_dashboard.py` | Dark-Mode Web-UI mit Live-Log, Kanban-Backlog, Observability, Git-Diff-Viewer (`/api/diff`) und Docker-Deploy. |
 | **MCP-Server** | `interface/mcp_server.py` | Standardisiertes Model Context Protocol für IDE-Integrationen (VS Code, Cursor, Antigravity). |
 | **GitHub-Issue-Watcher** | `core/issue_watcher.py` | Automatische Bearbeitung von GitHub-Issues mit Label-Trigger (`--check-issues`). |
 | **PR-Review-Watcher** | `core/pr_review_watcher.py` | Automatische Einarbeitung von menschlichem PR-Feedback (`--check-pr-reviews`). |

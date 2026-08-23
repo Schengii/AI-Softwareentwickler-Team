@@ -34,18 +34,19 @@ damit dieses README als aktuelle Funktionsübersicht schlank bleibt.
 
 - [Hierarchische Team- & Fachbereichsstruktur (Grafik)](#teamstruktur)
 - [Kommunikations- & Delegations-Workflow](#kommunikations-workflow)
+- [🔍 Brownfield-Projekt-Profiler & Multi-Projekt-Erkennung](#project-profiler)
+- [🧪 Test-Driven Development (TDD) & Polyglot Parität (Java, C#, PHP, Flutter)](#sandbox-validierung)
 - [🛡️ Neuer Spezialist: Resilience-Guard (QA & Fault-Tolerance)](#resilience-guard)
 - [🔀 PR-Workflow & Kollaborativer Review-Loop](#pr-workflow)
 - [🎫 Autonome, getriggerte Arbeit: GitHub-Issues als Backlog](#issue-watcher)
 - [🤖 Vollständig eigenständige Arbeit: Backlog-Worker & Produktions-Monitoring](#selbstgesteuert)
 - [📋 Backlog/Kanban-Board über CLI, Dashboard & Issue-Watcher hinweg](#backlog-kanban)
-- [🌐 Modernes Web-Dashboard & Visualisierung](#web-dashboard)
+- [🌐 Modernes Web-Dashboard, Visual Diff-Viewer & Observability](#web-dashboard)
 - [🔌 MCP-Server: Einbindung in Cursor, Windsurf & Antigravity](#mcp-server)
 - [🕸️ AST-Codebase-Graph & Semantische Impact-Analyse](#code-graph)
-- [🎭 Headless-Browser & Frontend-UI-Validierung](#browser-ui)
+- [🎭 Headless-Browser, Screenshots & Frontend-UI-Validierung](#browser-ui)
 - [☁️ Cloud-Preview-Deployments (Fly.io, Vercel, Render)](#cloud-deploy)
 - [🔍 Lokales Codebase-RAG & Semantische Suche](#codebase-rag)
-- [🧪 Sandbox-Code-Validierung & Multi-Sprachen-Testing](#sandbox-validierung)
 - [🪙 Hartes Lauf-Budget (MAX_RUN_TOKENS)](#lauf-budget)
 - [🧠 Persistente KI-Selbstoptimierung & Langzeitgedächtnis](#persistente-selbstoptimierung)
 - [🎯 Die 33 Spezialisten & Fachbereiche](#die-33-spezialisten)
@@ -478,22 +479,37 @@ Playwright ist Laufzeit-Abhängigkeit (`requirements.txt`), nicht nur Dev-Tool -
 
 ---
 
+<a id="project-profiler"></a>
+## 🔍 Brownfield-Projekt-Profiler & Multi-Projekt-Erkennung
+
+Der [ProjectProfiler](core/project_profiler.py) scannt jedes Zielprojekt vor Beginn der Planung (Phase 1):
+- **Automatische Stack-Erkennung:** Identifiziert primäre Sprachen (Python, TypeScript/JS, Rust, Go, Java, C#, PHP, Flutter), Frameworks (FastAPI, Django, React, Vue, Next.js, Spring Boot, ASP.NET Core, Laravel) und Paketmanager (pip, poetry, pnpm, yarn, cargo, maven, gradle, dotnet, composer, pub).
+- **Monorepo- & Sub-Package-Erkennung:** Analysiert `pnpm-workspace.yaml`, `lerna.json`, `apps/*`, `packages/*`.
+- **Konventions-Injektion:** Injiziert erkannte Konventionen und Test-Frameworks direkt in die System-Prompts des Planning Lead, Architekten und der Entwickler, damit neuer Code nahtlos in bestehende Repositories integriert wird.
+
+---
+
 <a id="sandbox-validierung"></a>
-## 🧪 Sandbox-Code-Validierung & Multi-Sprachen-Testing
+## 🧪 Sandbox-Code-Validierung & Polyglot-Testing (8 Ökosysteme)
 
 Zwei unabhängige Prüfebenen, die sich ergänzen:
 
 1. **Statische Validierung** (`core/code_sandbox.py`): Prüft Python-Code per `ast.parse()`
    auf Syntaxfehler, JSON per `json.loads()`, YAML auf grobe Formatierungsfehler – schnell, ohne Ausführung.
-2. **Echte dynamische Multi-Sprachen-Verifikation** (`core/verifier.py`, `ProjectVerifier`):
+2. **Echte dynamische Polyglot-Verifikation** (`core/verifier.py`, `ProjectVerifier`):
    - **Python:** Isolierte venv, echte Testausführung (`pytest` / `unittest`), Testabdeckungsschwelle (`pytest-cov`), Linting (`ruff`), Security-Audit (`pip-audit`), Runtime-Smoke-Test.
    - **Node / TypeScript:** Echte Installation (`npm ci`/`npm install`), Testläufe (`npm test`), Linting (`eslint`, `tsc`), Security-Audit (`npm audit`).
    - **Rust:** `Cargo.toml`-Erkennung, Build-Check (`cargo check`), echte Tests (`cargo test`), Linting (`cargo clippy`), Security-Audit (`cargo audit`).
    - **Go:** `go.mod`-Erkennung, Modul-Download (`go mod download`), echte Tests (`go test -v ./...`), Linting (`go vet`), Security-Audit (`govulncheck`).
-   - **SAST (Static Application Security Testing):** `bandit` scannt generierten Python-Code statisch auf bekannte Schwachstellenmuster (hartcodierte Secrets, unsichere Deserialisierung, SQL-Injection-Vektoren, unsichere Zufallszahlen, `eval`/`exec`, …) – ersetzt die bisher rein LLM-basierte Freitext-Einschätzung des `security`-Agenten (keine Datei/Zeile) durch einen echten, geparsten Fund mit exaktem Fundort. Node/Rust/Go folgen ggf. in einer späteren Runde.
-   - **Lizenz-/SBOM-Audit:** `pip-licenses` liest die Lizenzen der tatsächlich installierten Python-Abhängigkeiten aus und markiert bekannte Copyleft-Lizenzen (GPL/AGPL/LGPL/MPL/CDDL/EUPL/SSPL) – ersetzt die bisher geratene Lizenz-Tabelle des `compliance`-Agenten durch echte Paket-Metadaten statt einer LLM-Vermutung.
-   - **Lastentest (Smoke-Level):** Vom `performance`-Agenten geschriebene k6-/Locust-Skripte (`tests/load/`) werden jetzt tatsächlich AUSGEFÜHRT statt nur unausgeführt im Projekt zu liegen – die App wird auf einem freien Port gestartet, ein kurzer Lasttest (wenige Sekunden, wenige virtuelle Nutzer) läuft dagegen. Kein vollständiger Lasttest/Benchmark, nur eine Prüfung, ob die App unter minimaler gleichzeitiger Last fehlerfrei antwortet. Opt-out über `ENABLE_LOAD_TEST_CHECK=false`.
-   - **Accessibility-Scan (WCAG 2.x):** `axe-core-python` scannt generierte Web-Frontends echt per axe-core gegen eine per Playwright gerenderte Seite – ersetzt die bisher rein LLM-basierte Freitext-Checkliste des `accessibility`-Agenten durch geparste Verstöße mit Regel/Schweregrad/betroffenem Element.
+   - **Java / Kotlin:** `pom.xml` / `build.gradle`-Erkennung, Dependency-Resolve (`mvn dependency:resolve` / `gradle dependencies`), echte Tests (`mvn test` / `gradle test`).
+   - **C# / .NET:** `*.csproj` / `*.sln`-Erkennung, Restore (`dotnet restore`), echte Tests (`dotnet test`), Linting (`dotnet format --verify-no-changes`).
+   - **PHP:** `composer.json`-Erkennung, Installation (`composer install`), echte Tests (`phpunit`).
+   - **Flutter / Dart:** `pubspec.yaml`-Erkennung, Pub-Get (`flutter/dart pub get`), echte Tests (`flutter test`), Analyse (`dart analyze`).
+   - **SAST (Static Application Security Testing):** `bandit` scannt generierten Python-Code statisch auf bekannte Schwachstellenmuster (hartcodierte Secrets, unsichere Deserialisierung, SQL-Injection-Vektoren, unsichere Zufallszahlen, `eval`/`exec`, …).
+   - **Lizenz-/SBOM-Audit:** `pip-licenses` liest die Lizenzen der tatsächlich installierten Python-Abhängigkeiten aus und markiert bekannte Copyleft-Lizenzen.
+   - **Lastentest (Smoke-Level):** Vom `performance`-Agenten geschriebene k6-/Locust-Skripte (`tests/load/`) werden tatsächlich AUSGEFÜHRT.
+   - **Accessibility-Scan (WCAG 2.x):** `axe-core-python` scannt generierte Web-Frontends per axe-core gegen eine per Playwright gerenderte Seite.
+   - **Visuelle UI- & Screenshot-Validierung:** Nimmt Full-Page-Screenshots auf (`screenshots/preview_*.png`) und prüft auf Viewport-Overflows.
    Schlägt ein Test fehl, wird der reale Traceback geparst und der betroffene Agent anhand der `file_owners`-Map gezielt zur Korrektur beauftragt (bis zu `MAX_VERIFICATION_ITERATIONS` Runden). SAST- und Lizenz-Funde sind (wie Lint) rein informativ im Abschlussbericht sichtbar – ein Fund braucht menschliche Einschätzung (False Positives, Lizenz-Nutzungskontext) statt eines automatischen Blockers. Ein fehlgeschlagener Lastentest zählt dagegen wie der Runtime-Smoke-Test als echte Anforderungsverletzung.
 
 Beide Ebenen laufen automatisch als Teil jedes Orchestrator-Laufs, ohne dass der Nutzer sie

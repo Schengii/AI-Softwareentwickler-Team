@@ -7,6 +7,26 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🚀 Brownfield-Projekt-Profiler, Polyglot-Erweiterung (Java, C#, PHP, Flutter), TDD-Workflow & Visual Diff-Viewer
+
+Vollständige Erweiterung des KI-Entwicklerteams für beliebige Realwelt-Projekte (Greenfield & Brownfield) und moderne Multi-Sprachen-Ökosysteme:
+
+- **`core/project_profiler.py` (Brownfield & Multi-Projekt-Erkennung)**:
+  - Automatischer Scan von Codebases vor Phase 1 nach Programmiersprachen, Frameworks (Django, FastAPI, Spring Boot, React, Next.js, Flutter), Paketmanagern (poetry, pnpm, cargo, maven, gradle, nuget, composer, pub), Verzeichnis-Konventionen und Monorepo-Strukturen.
+  - Injiziert das formatierte `ProjectProfile` in die System-Prompts aller Planungs- und Entwicklungs-Agenten.
+- **Polyglot Verifikations-Parität (`core/verifier.py`)**:
+  - Erste-Klasse-Unterstützung für **Java / Kotlin** (`pom.xml`, `build.gradle`, `mvn test`, `gradle test`), **C# / .NET** (`*.csproj`, `dotnet restore`, `dotnet test`, `dotnet format`), **PHP** (`composer.json`, `phpunit`) und **Flutter / Dart** (`pubspec.yaml`, `pub get`, `flutter test`, `dart analyze`).
+- **Visuelle UI- & Screenshot-Validierung (`core/browser_verifier.py`)**:
+  - Playwright erfasst Full-Page-Screenshots von gerenderten Web-Frontends (`screenshots/preview_*.png`) und prüft automatisch auf horizontales Scroll-Overflow und Viewport-Layout-Brüche.
+- **Test-Driven Development (TDD) Modus**:
+  - Konfigurierbarer TDD-Workflow (`ENABLE_TDD_WORKFLOW`), der Entwicklungs-Agenten auf testgetriebene Modulstrukturen und automatisierte Testbarkeit ausrichtet.
+- **Web-Dashboard Visual Diff-Viewer (`interface/web_dashboard.py`)**:
+  - Neuer Endpunkt `/api/diff/<job_id>` für Git-Diffs und Status-Inspektionen direkt im Web-UI.
+
+13 neue Unit-Tests (`tests/test_project_profiler.py`, `tests/test_polyglot_verifier.py`, `tests/test_visual_verifier.py`, `tests/test_tdd_workflow.py`, `tests/test_dashboard_diff_viewer.py`), alle 828 Tests bestanden.
+
+---
+
 ## 🤖 Vier Schritte Richtung "echtes Team": Selbstgesteuertes Backlog, Mid-Task-Eskalation, Epics & Produktions-Monitoring
 
 Nutzerwunsch: das Team soll "noch eigenständiger, autonomer, voll funktionsfähiger und

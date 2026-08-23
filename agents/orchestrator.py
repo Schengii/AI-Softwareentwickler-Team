@@ -73,7 +73,9 @@ from config import (
     ENABLE_DEPARTMENT_LEAD_EXECUTION,
     ENABLE_GOVERNANCE_FIX_LOOP,
     ENABLE_LOAD_TEST_CHECK,
+    ENABLE_PROJECT_PROFILING,
     ENABLE_TASK_COMPLEXITY_SCALING,
+    ENABLE_TDD_WORKFLOW,
     LOAD_TEST_DURATION_SECONDS,
     LOAD_TEST_TIMEOUT_SECONDS,
     MAX_REVIEW_ITERATIONS,
@@ -96,6 +98,7 @@ from core.notifier import notify_external
 from core.optimization_advisor import analyze as analyze_optimization_potential
 from core.optimization_advisor import format_report_for_humans as format_optimization_report
 from core.project_constitution import format_constitution_for_agents, get_max_project_tokens
+from core.project_profiler import ProjectProfiler, format_profile_for_agents
 from core.project_status import format_context_for_agents, record_run
 from core.result_aggregator import ResultAggregator
 from core.review_gate import find_critical_findings, route_findings_to_owners
@@ -434,11 +437,22 @@ class Orchestrator:
         # arbeiten. Leer für Projekte ohne bisherige ADRs (kein unnötiger Prompt-Text).
         adr_context = format_adr_summary_for_context(project_dir)
 
+        # Automatischer Brownfield-Scan (core/project_profiler.py): Erkennt vorhandene Stacks,
+        # Paketmanager, Test-Frameworks und Konventionen vorab.
+        profile_context = ""
+        if ENABLE_PROJECT_PROFILING and project_dir:
+            profile = ProjectProfiler.profile_directory(project_dir)
+            profile_context = format_profile_for_agents(profile)
+            if profile.is_brownfield:
+                notify(f"🔍 [bold cyan]Brownfield-Scan:[/bold cyan] {profile.summary}")
+
         for t in agent_tasks:
             t.project_dir = project_dir
             t.max_tool_iterations = AGENT_MAX_TOOL_ITERATIONS.get(t.agent_id)  # None = config.MAX_AGENT_TOOL_ITERATIONS
             if t.agent_id in REVIEW_ONLY_AGENT_IDS:
                 t.tools_read_only = True
+            if profile_context:
+                t.context += f"\n\n{profile_context}"
             if constitution_context:
                 t.context += f"\n\n{constitution_context}"
             if design_system_context:
@@ -447,6 +461,12 @@ class Orchestrator:
                 t.context += f"\n\n{project_history_context}"
             if adr_context:
                 t.context += f"\n\n{adr_context}"
+            if ENABLE_TDD_WORKFLOW and t.agent_id in ("backend", "frontend", "database", "api_integration", "mobile", "tester"):
+                t.context += (
+                    "\n\n## 🧪 Test-Driven Development (TDD) Modus aktiv:\n"
+                    "- Schreibe automatisierte Tests für alle wesentlichen Funktionen und Akzeptanzkriterien.\n"
+                    "- Stelle sicher, dass der Code modular, testbar und direkt durch die Testsuite validierbar ist."
+                )
 
         # Führe hierarchische Fachbereichs-Ausführung durch
         file_collisions: list[dict] = []

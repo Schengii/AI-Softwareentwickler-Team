@@ -46,6 +46,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from agents.orchestrator import Orchestrator
@@ -667,6 +668,21 @@ def make_handler(server: DashboardServer):
                 self._send_json({
                     "job_id": job.job_id, "status": job.status,
                     "log": job.log, "result": job.result, "error": job.error,
+                })
+            elif path_only.startswith("/api/diff/"):
+                job_id = path_only.rsplit("/", 1)[-1]
+                job = server.jobs.get(job_id)
+                if not job:
+                    self._send_json({"error": "Unbekannte job_id"}, status=404)
+                    return
+                # Hole Git Diff des Workspaces/Projekts
+                from core.code_sandbox import CodeSandbox
+                diff_res = CodeSandbox.run_command(["git", "diff", "HEAD"], cwd=Path(".").resolve(), timeout_seconds=5.0)
+                status_res = CodeSandbox.run_command(["git", "status", "--short"], cwd=Path(".").resolve(), timeout_seconds=5.0)
+                self._send_json({
+                    "job_id": job.job_id,
+                    "diff": diff_res.stdout,
+                    "changed_files": status_res.stdout,
                 })
             elif path_only == "/api/backlog":
                 # Alle Tickets über ALLE Trigger-Quellen (CLI/Dashboard/Issue-Watcher), siehe

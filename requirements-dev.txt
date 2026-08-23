@@ -32,3 +32,11 @@ bandit>=1.7.0
 # (attempted=False), kein Fehler - siehe LicenseAuditReport.
 pip-licenses>=4.0.0
 
+# core/verifier.py.check_load_test() führt vom performance-Agenten geschriebene Locust-
+# Lastentest-Skripte (tests/load/locustfile.py) echt gegen die gestartete generierte App aus -
+# statt sie ungeprüft im Projekt liegen zu lassen. Ohne installiertes locust wird dieser Check
+# übersprungen (attempted=False), kein Fehler - siehe PerfCheckReport. k6 (die Alternative für
+# *.js-Lastentest-Skripte) ist KEIN pip-Paket und muss separat installiert werden
+# (https://k6.io/docs/get-started/installation/) - genau wie docker bei check_docker_build().
+locust>=2.20.0
+

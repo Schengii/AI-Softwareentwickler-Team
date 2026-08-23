@@ -7,6 +7,55 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🏋️ Echte Ausführung der Lastentest-Skripte statt ungeprüfter Ablage
+
+Direkte Fortsetzung der Bestandsaufnahme unten: der `performance`-Agent schrieb bereits
+vollständige k6-/Locust-Lastentest-Skripte, aber – anders als `run_tests()` für die normale
+Testsuite – wurden sie NIE tatsächlich ausgeführt. Ein Skript, das nie läuft, ist praktisch
+wertlos: niemand (Mensch oder Team) weiß, ob es syntaktisch überhaupt funktioniert oder was
+es unter Last ergäbe.
+
+- **`core/verifier.py.check_load_test()`** (`PerfCheckReport`): startet einen gefundenen
+  Python-Web-Einstiegspunkt (dieselbe Erkennung wie im `http_api`-Zweig von
+  `check_runtime_smoke()`) auf einem freien Port und führt einen kurzen SMOKE-Lasttest
+  dagegen aus – wenige Sekunden, wenige virtuelle Nutzer. Bewusst KEIN vollständiger
+  Lasttest/Benchmark (würde Minuten dauern und echte Ressourcen binden), nur eine Prüfung,
+  ob die App unter minimaler gleichzeitiger Last überhaupt fehlerfrei antwortet. Sucht
+  ausschließlich unter der neuen Konvention `tests/load/` (`locustfile.py` hat Vorrang vor
+  `*.js`-k6-Skripten) – `agents/performance_agent.py` wurde entsprechend angepasst, inkl. der
+  Vorgabe, die Ziel-URL NIEMALS hart zu codieren (Locust: `--host` zur Laufzeit; k6:
+  `__ENV.BASE_URL`), da der automatische Testlauf den freien Port erst zur Laufzeit kennt.
+  `locust`-CSV-Ergebnisse werden per `csv.DictReader` geparst (robust gegen Spalten-
+  Reihenfolge-Unterschiede zwischen Locust-Versionen), `k6`-JSON-Summaries defensiv gegen
+  bekannte Format-Abweichungen zwischen Versionen. Wie bei jedem anderen Check: fehlendes
+  Skript/Tool oder ein technischer Fehlschlag (App startet nicht) ist KEIN Fehler, nur nicht
+  prüfbar (`attempted=False`) – in der Praxis für die meisten Projekte ein No-Op. Neuer
+  Opt-out `ENABLE_LOAD_TEST_CHECK=false`, Dauer über `LOAD_TEST_DURATION_SECONDS` (Standard 5s)
+  konfigurierbar. Ein fehlgeschlagener Request zählt wie beim Runtime-Smoke-Test als echte
+  Anforderungsverletzung (`verification_ok = False`), nicht als reiner Stil-Hinweis.
+- **Nebenfund beim Bau des Checks:** `check_runtime_smoke()`s `http_api`-Zweig rief
+  `CodeSandbox.safe_environment()` auf – eine Methode, die nie existiert hat (korrekt ist
+  `_restricted_env()`). Jeder erkannte FastAPI-/Flask-/uvicorn-Einstiegspunkt wäre dadurch mit
+  `AttributeError` gecrasht. Blieb unbemerkt, weil `tests/test_verifier_smoke.py` nur die
+  `cli_script`-/`node_server`-Zweige mit einem echten Aufruf testet, nie den `http_api`-Zweig
+  (der lief bisher ausschließlich über gemockte `check_runtime_smoke()`-Rückgabewerte in
+  Integrationstests) – derselbe Musterfund wie schon beim `browser_verifier.py`-`NameError` im
+  CHANGELOG-Eintrag weiter unten: reine Mocks sehen strukturell nicht jeden echten,
+  dynamischen Codepfad. Direkt mitgefixt.
+
+24 neue Tests (`test_verifier_load_test.py`, `test_load_test_integration.py`), 8 bestehende
+Verifikations-Integrationstests um `check_load_test.return_value.attempted = False` ergänzt
+(dasselbe Musterproblem wie bei `check_docker_build`/`check_browser_ui`: ein komplett
+gemockter `ProjectVerifier` liefert für einen neuen, nicht explizit gemockten Single-Report-
+Check sonst ein truthy `MagicMock` statt `attempted=False`). `agents/orchestrator.py` formatiert
+`p95_ms` zusätzlich per `isinstance()`-Prüfung statt `is not None`, damit ein unvollständig
+gemockter Verifier in künftigen Tests nicht erneut an derselben Stelle crasht. Volle Suite
+(711 Tests) grün, ruff sauber. Neue optionale Dev-Abhängigkeit `locust` in
+`requirements-dev.txt` (`k6` ist kein pip-Paket und muss separat installiert werden, wie
+`docker` bei `check_docker_build()`).
+
+---
+
 ## 🕵️ Mechanisierte Security-/Lizenz-Prüfung statt LLM-Raten & persistentes Design-System
 
 Bestandsaufnahme auf explizite Nutzeranfrage ("welche Verbesserungen fehlen für ein

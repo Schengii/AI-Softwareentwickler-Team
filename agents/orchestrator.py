@@ -72,7 +72,10 @@ from config import (
     BASE_DIR,
     ENABLE_DEPARTMENT_LEAD_EXECUTION,
     ENABLE_GOVERNANCE_FIX_LOOP,
+    ENABLE_LOAD_TEST_CHECK,
     ENABLE_TASK_COMPLEXITY_SCALING,
+    LOAD_TEST_DURATION_SECONDS,
+    LOAD_TEST_TIMEOUT_SECONDS,
     MAX_REVIEW_ITERATIONS,
     MAX_RUN_TOKENS,
     MAX_VERIFICATION_ITERATIONS,
@@ -1546,6 +1549,38 @@ class Orchestrator:
                     notify(f"  🚀 [bold red]Runtime-Smoke-Test fehlgeschlagen:[/bold red] `{smoke_report.entrypoint}` [{smoke_report.app_type}]{err}.")
                     summary_lines.append(f"- 🚀 ❌ Runtime-Smoke-Test fehlgeschlagen: `{smoke_report.entrypoint}` [{smoke_report.app_type}] startet nicht{err}.")
                     verification_ok = False
+
+        # Lastentest: führt vom performance-Agenten geschriebene k6-/Locust-Skripte (tests/load/)
+        # tatsächlich AUS statt sie nur unausgeführt im Projekt liegen zu lassen - startet die
+        # App und lässt einen kurzen Smoke-Lasttest (wenige Sekunden, wenige virtuelle Nutzer)
+        # dagegen laufen. Rein informativ wie Lint/SAST (kein Performance-Benchmark, keine
+        # Kapazitätsaussage) - EXCEPT ein fehlgeschlagener Request ist wie beim Runtime-Smoke-
+        # Test eine echte Anforderungsverletzung (die App crasht/fehlerantwortet unter simultaner
+        # Last), kein reiner Stil-Hinweis. In der Praxis für die meisten Projekte ein No-Op
+        # (braucht ein Skript unter tests/load/ UND das jeweilige Tool lokal installiert).
+        if ENABLE_LOAD_TEST_CHECK and not (budget_aborted or manually_cancelled) and report is not None and report.ran and report.passed:
+            perf_report = await asyncio.to_thread(
+                verifier.check_load_test, LOAD_TEST_DURATION_SECONDS, LOAD_TEST_TIMEOUT_SECONDS,
+            )
+            if perf_report.attempted:
+                stats = f"{perf_report.total_requests} Requests, {perf_report.failed_requests} fehlgeschlagen"
+                # isinstance() statt "is not None": ein Test, der ProjectVerifier komplett mockt,
+                # aber check_load_test() nicht explizit auf ein PerfCheckReport setzt (wie bei
+                # check_docker_build/check_runtime_smoke gibt es hier keinen sicheren MagicMock-
+                # Default), liefert für p95_ms sonst ein MagicMock-Objekt statt None - das würde
+                # an der ":.0f"-Formatierung mit TypeError crashen. isinstance() ist für den
+                # echten Produktivpfad (p95_ms ist dort immer float|None) gleichwertig, macht den
+                # Codepfad aber robust gegen unvollständig gemockte Verifier in Tests.
+                if isinstance(perf_report.p95_ms, (int, float)):
+                    stats += f", p95={perf_report.p95_ms:.0f}ms"
+                if perf_report.passed:
+                    notify(f"  🏋️ [bold green]Lastentest ({perf_report.tool}) bestanden:[/bold green] `{perf_report.script}` [{stats}].")
+                    summary_lines.append(f"- 🏋️ Lastentest ({perf_report.tool}) bestanden: `{perf_report.script}` [{stats}].")
+                else:
+                    notify(f"  🏋️ [bold red]Lastentest ({perf_report.tool}) fehlgeschlagen:[/bold red] `{perf_report.script}` [{stats}].")
+                    summary_lines.append(f"- 🏋️ ❌ Lastentest ({perf_report.tool}) fehlgeschlagen: `{perf_report.script}` [{stats}].")
+                    verification_ok = False
+
         # Browser / Frontend UI-Check: Prüft statische Assets, Rendering und JS-Konsolenfehler
         if not (budget_aborted or manually_cancelled):
             browser_report = await asyncio.to_thread(verifier.check_browser_ui)

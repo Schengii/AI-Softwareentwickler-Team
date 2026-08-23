@@ -217,6 +217,18 @@ TEST_RUN_TIMEOUT_SECONDS: float = float(os.getenv("TEST_RUN_TIMEOUT_SECONDS", "6
 # Lint-Fund (rein informativ) ist eine EXPLIZIT konfigurierte Schwelle als echte Anforderung
 # gemeint, kein bloßes FYI.
 MIN_TEST_COVERAGE: float = float(os.getenv("MIN_TEST_COVERAGE", "0"))
+# Realer Fund: der performance-Agent schreibt vollständige k6-/Locust-Lastentest-Skripte, die
+# aber NIE ausgeführt werden - anders als run_tests() landen sie ungeprüft im Projekt, niemand
+# (Mensch oder Team) weiß, ob sie überhaupt laufen oder was sie ergeben. check_load_test()
+# startet die generierte App auf einem freien Port und führt einen kurzen, wenige Sekunden
+# dauernden SMOKE-Lasttest aus (wenige virtuelle Nutzer) - kein vollständiger Lasttest (würde
+# Minuten dauern und echte Ressourcen binden), nur eine Prüfung, ob die App unter minimaler
+# gleichzeitiger Last überhaupt fehlerfrei antwortet. Läuft nur, wenn ein Skript unter
+# tests/load/ (locustfile.py oder *.js) UND das jeweilige Tool (locust/k6) lokal installiert
+# sind UND die App tatsächlich startet - in der Praxis für die meisten Projekte ein No-Op.
+ENABLE_LOAD_TEST_CHECK: bool = os.getenv("ENABLE_LOAD_TEST_CHECK", "true").lower() in ("true", "1", "yes")
+LOAD_TEST_DURATION_SECONDS: float = float(os.getenv("LOAD_TEST_DURATION_SECONDS", "5"))
+LOAD_TEST_TIMEOUT_SECONDS: float = float(os.getenv("LOAD_TEST_TIMEOUT_SECONDS", "60"))
 
 # ──────────────────────────────────────────
 # Governance-Kritisch-Fix-Schleife (core/review_gate.py, agents/orchestrator.py._run_governance_fix_loop)

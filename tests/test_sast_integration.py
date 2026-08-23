@@ -60,6 +60,7 @@ class TestSastInVerificationLoop(unittest.TestCase):
                 ran=True, passed=True, exit_code=0, stdout="", stderr="", duration_seconds=0.1,
             )
             mock_verifier.check_docker_build.return_value.attempted = False
+            mock_verifier.check_load_test.return_value.attempted = False
             mock_verifier.check_sast.return_value = sast_reports
 
             status_logs: list[str] = []

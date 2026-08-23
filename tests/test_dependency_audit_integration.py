@@ -60,6 +60,7 @@ class TestDependencyAuditInVerificationLoop(unittest.TestCase):
                 ran=True, passed=True, exit_code=0, stdout="", stderr="", duration_seconds=0.1,
             )
             mock_verifier.check_docker_build.return_value.attempted = False
+            mock_verifier.check_load_test.return_value.attempted = False
             mock_verifier.check_dependency_vulnerabilities.return_value = audit_reports
 
             status_logs: list[str] = []

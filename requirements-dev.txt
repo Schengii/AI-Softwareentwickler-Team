@@ -17,3 +17,18 @@ pytest-cov>=4.1.0
 # Headless-Browser UI- & Frontend-Validierung (core/browser_verifier.py)
 playwright>=1.40.0
 
+# core/verifier.py.check_sast() nutzt `bandit`, um generierten Python-Code echt statisch auf
+# bekannte Schwachstellenmuster zu scannen (hartcodierte Secrets, unsichere Deserialisierung,
+# SQL-Injection-Vektoren, …) - statt einer rein LLM-basierten Einschätzung des
+# security-Agenten. Ohne installiertes bandit wird dieser Scan übersprungen (attempted=False),
+# kein Fehler - siehe SastReport.
+bandit>=1.7.0
+
+# core/verifier.py.check_licenses() nutzt `pip-licenses`, um die Lizenzen der tatsächlich in
+# einem generierten Python-Projekt installierten Pakete echt auszulesen - statt einer rein
+# LLM-basierten (geratenen) Lizenz-Tabelle des compliance-Agenten. Untergrenze 4.0.0: erst ab
+# dieser Version existiert --python zum gezielten Prüfen der isolierten Projekt-venv statt der
+# Framework-eigenen Umgebung. Ohne installiertes pip-licenses wird dieser Scan übersprungen
+# (attempted=False), kein Fehler - siehe LicenseAuditReport.
+pip-licenses>=4.0.0
+

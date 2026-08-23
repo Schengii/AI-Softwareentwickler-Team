@@ -84,6 +84,7 @@ HELP_TEXT = """
 | `/learnings` | Zeigt alle von den Agenten gelernten Regeln (persistentes Gedächtnis) mit Nummer je Agent an |
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
 | `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
+| `/design-system [projekt]` | Zeigt/bearbeitet feste visuelle Präferenzen (Farbpalette, Typografie, Spacing-Skala, Tonalität, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/backlog` | Zeigt das Kanban-Board (Todo/In Bearbeitung/Review/Blockiert/Fertig) über CLI, Dashboard UND autonome Issue-Läufe hinweg |
 | `/backlog-add [priorität] <titel>` | Legt manuell ein priorisiertes, noch nicht begonnenes Ticket im Status "todo" an (Priorität: 1/hoch, 2/mittel, 3/niedrig) |
 | `/adr [projekt]` | Zeigt die dokumentierten Architecture Decision Records (Begründungen echter Architektur-Entscheidungen) eines Projekts |
@@ -849,6 +850,67 @@ class CLIInterface:
         write_constitution(project_dir, updated)
         console.print(f"✅ [bold green]Projekt-Konstitution für `{project_label}` gespeichert.[/bold green]")
 
+    def _resolve_design_system_target(self, project_arg: str | None) -> tuple[str | None, str | None]:
+        """Gibt (project_dir, error_message) zurück – dieselbe Existenzprüfung wie
+        _resolve_constitution_target, nur mit dem passenden Befehlshinweis in der Fehlermeldung."""
+        if project_arg:
+            exists = (
+                Path(project_arg).exists() if os.path.isabs(project_arg)
+                else project_arg in self._workspace.list_projects()
+            )
+            if not exists:
+                return None, f"⚠️ Projekt `{project_arg}` existiert nicht. Nutze `/projekte` zur Übersicht."
+            return str(self._workspace.get_project_dir(project_arg)), None
+        if self._loaded_project_dir:
+            return self._loaded_project_dir, None
+        return None, "⚠️ Kein Projekt angegeben und keines geladen. Nutze `/design-system <projekt>` oder lade zuerst eines mit `/load <name>`."
+
+    def _manage_design_system(self, project_arg: str | None) -> None:
+        """
+        Zeigt und bearbeitet das Projekt-Design-System (core/design_system.py) – feste
+        visuelle Präferenzen (Farbpalette, Typografie, Spacing-Skala, Komponenten-
+        Namenskonvention, Tonalität), die JEDEM künftigen Lauf an diesem Projekt als
+        verbindlicher Kontext mitgegeben werden – das Pendant zu /constitution, nur für
+        Design statt Tech-Stack.
+        """
+        from core.design_system import FIELDS, read_design_system, write_design_system
+
+        project_dir, error = self._resolve_design_system_target(project_arg)
+        if error:
+            console.print(error, style="yellow")
+            return
+
+        current = read_design_system(project_dir)
+        project_label = Path(project_dir).name
+
+        if current:
+            lines = [f"- **{FIELDS[k]}:** {v}" for k, v in current.items() if k in FIELDS]
+            console.print(Panel(Markdown("\n".join(lines)), title=f"🎨 Projekt-Design-System: {project_label}", border_style="magenta"))
+        else:
+            console.print(f"📭 Noch kein Design-System für `{project_label}` festgelegt.", style="dim")
+
+        try:
+            should_edit = Confirm.ask("Werte jetzt festlegen/bearbeiten?", default=not bool(current))
+        except Exception:
+            should_edit = False
+        if not should_edit:
+            return
+
+        console.print("[dim]Enter = aktuellen Wert behalten, '-' = Feld löschen.[/dim]")
+        updated = dict(current)
+        for key, label in FIELDS.items():
+            try:
+                value = Prompt.ask(label, default=current.get(key, ""))
+            except Exception:
+                break
+            if value.strip() == "-":
+                updated.pop(key, None)
+            elif value.strip():
+                updated[key] = value.strip()
+
+        write_design_system(project_dir, updated)
+        console.print(f"✅ [bold green]Design-System für `{project_label}` gespeichert.[/bold green]")
+
     async def _audit_project(self, target_path: str | None) -> None:
         """
         Lässt den project_cleaner-Agenten mit ECHTEM Lesezugriff (list_files/read_file/
@@ -992,6 +1054,9 @@ class CLIInterface:
 
         elif cmd in ("/constitution", "/konstitution", "/techstack"):
             self._manage_constitution(args[0] if args else None)
+
+        elif cmd in ("/design-system", "/designsystem"):
+            self._manage_design_system(args[0] if args else None)
 
         elif cmd in ("/push", "/git"):
             await self._ask_for_git_push("manuelles Update")

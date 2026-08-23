@@ -423,7 +423,9 @@ Zwei unabhängige Prüfebenen, die sich ergänzen:
    - **Node / TypeScript:** Echte Installation (`npm ci`/`npm install`), Testläufe (`npm test`), Linting (`eslint`, `tsc`), Security-Audit (`npm audit`).
    - **Rust:** `Cargo.toml`-Erkennung, Build-Check (`cargo check`), echte Tests (`cargo test`), Linting (`cargo clippy`), Security-Audit (`cargo audit`).
    - **Go:** `go.mod`-Erkennung, Modul-Download (`go mod download`), echte Tests (`go test -v ./...`), Linting (`go vet`), Security-Audit (`govulncheck`).
-   Schlägt ein Test fehl, wird der reale Traceback geparst und der betroffene Agent anhand der `file_owners`-Map gezielt zur Korrektur beauftragt (bis zu `MAX_VERIFICATION_ITERATIONS` Runden).
+   - **SAST (Static Application Security Testing):** `bandit` scannt generierten Python-Code statisch auf bekannte Schwachstellenmuster (hartcodierte Secrets, unsichere Deserialisierung, SQL-Injection-Vektoren, unsichere Zufallszahlen, `eval`/`exec`, …) – ersetzt die bisher rein LLM-basierte Freitext-Einschätzung des `security`-Agenten (keine Datei/Zeile) durch einen echten, geparsten Fund mit exaktem Fundort. Node/Rust/Go folgen ggf. in einer späteren Runde.
+   - **Lizenz-/SBOM-Audit:** `pip-licenses` liest die Lizenzen der tatsächlich installierten Python-Abhängigkeiten aus und markiert bekannte Copyleft-Lizenzen (GPL/AGPL/LGPL/MPL/CDDL/EUPL/SSPL) – ersetzt die bisher geratene Lizenz-Tabelle des `compliance`-Agenten durch echte Paket-Metadaten statt einer LLM-Vermutung.
+   Schlägt ein Test fehl, wird der reale Traceback geparst und der betroffene Agent anhand der `file_owners`-Map gezielt zur Korrektur beauftragt (bis zu `MAX_VERIFICATION_ITERATIONS` Runden). SAST- und Lizenz-Funde sind (wie Lint) rein informativ im Abschlussbericht sichtbar – ein Fund braucht menschliche Einschätzung (False Positives, Lizenz-Nutzungskontext) statt eines automatischen Blockers.
 
 Beide Ebenen laufen automatisch als Teil jedes Orchestrator-Laufs, ohne dass der Nutzer sie
 manuell anstoßen muss. Manuell erreichbar über `/run-tests [projekt]` in der CLI.
@@ -500,6 +502,15 @@ der beiden gerade bindend war.
   Deployment-Ziel) fest, die bei JEDEM künftigen Lauf an diesem Projekt als verbindlicher
   Kontext an alle Agenten mitgegeben werden – einmal festgelegt statt bei jeder Anfrage neu
   spezifiziert.
+- **Projekt-Design-System** (`core/design_system.py`): Das Pendant zur Konstitution, nur für
+  visuelle statt technische Präferenzen. Seit der Design-vor-Dev-Aufspaltung (`design_lead`
+  läuft VOR `dev_lead`) fehlte ausgerechnet dem Design selbst eine Persistenz über mehrere
+  Läufe hinweg – `ui_ux`/`image_generator`/`copywriter` hätten Farbpalette, Typografie,
+  Spacing-Skala, Komponenten-Namenskonvention und Tonalität bei jedem Lauf am selben Projekt
+  neu erfinden können, ohne dass die Nutzeranfrage das je erwähnt. `/design-system [projekt]`
+  legt diese Werte einmal fest; sie werden danach wie die Konstitution bei JEDEM künftigen
+  Lauf an diesem Projekt in den Kontext aller Teilaufgaben injiziert. Datei `.ai-team-design.toml`
+  im Projektverzeichnis, bewusst nicht gitignored – echte Projekt-Konfiguration.
 - **Architecture Decision Records** (`core/adr.py`): Die Konstitution hält das WAS fest
   (Tech-Stack), aber nicht das WARUM ("REST statt GraphQL, weil…"). Der `architect`-Agent
   (und grundsätzlich jeder Agent im Werkzeug-Loop) dokumentiert echte Trade-off-Entscheidungen

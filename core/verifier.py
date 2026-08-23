@@ -34,6 +34,16 @@ Konfiguration mitbringt, keine ungefragte Meinungsänderung am Projekt-Stil).
 Bisher lief ruff.toml NUR gegen den Framework-Code selbst (workspace/ dort
 bewusst ausgeschlossen) – generierter Code hatte dadurch überhaupt keine
 automatische Stil-/Fehlerprüfung.
+
+Und: check_sast() ersetzt die bisherige rein LLM-basierte Einschätzung des security-Agenten
+zu Schwachstellen im SELBST GESCHRIEBENEN Code (Freitext-Vermutungen ohne Datei/Zeile) durch
+einen echten statischen Scan (bandit für Python) – dasselbe Prinzip, das
+check_dependency_vulnerabilities() bereits für Fremdpaket-CVEs etabliert hat.
+
+Und: check_licenses() ersetzt die bisherige rein LLM-basierte Lizenz-Tabelle des
+compliance-Agenten ("MIT/AGPL 🔴", geraten) durch einen echten Scan der tatsächlich
+installierten Paket-Lizenzen (pip-licenses für Python) inkl. einfacher Copyleft-Heuristik
+(GPL/AGPL/LGPL/MPL/CDDL/EUPL/SSPL) – kein Raten mehr, welche Lizenz ein Fremdpaket wirklich hat.
 """
 
 import json
@@ -147,6 +157,93 @@ class DependencyAuditReport:
     vulnerable: bool
     tool: str
     vulnerabilities: list[DependencyVulnerability] = field(default_factory=list)
+    reason_skipped: str = ""
+
+
+@dataclass
+class SastFinding:
+    """Ein einzelnes, aus einer echten `bandit`-Ausgabe geparstes Sicherheits-Fundstück."""
+    file_path: str
+    line_number: int
+    message: str
+    rule: str = ""
+    severity: str = ""  # bandit issue_severity: LOW/MEDIUM/HIGH
+
+
+@dataclass
+class SastReport:
+    """
+    Ergebnis eines echten Static-Application-Security-Testing-Laufs (`bandit` für Python) –
+    ersetzt die bisherige rein LLM-basierte Einschätzung des security-Agenten (Freitext-
+    Vermutungen ohne konkrete Datei/Zeile) durch einen echten, statischen Scan gegen bekannte
+    Schwachstellenmuster im eigenen Code (hartcodierte Secrets, unsichere Deserialisierung,
+    SQL-Injection-Vektoren, unsichere Zufallszahlen/Hashes, `eval`/`exec`, …) – dasselbe
+    Prinzip wie DependencyAuditReport für Abhängigkeits-CVEs, nur für selbst geschriebenen
+    Code statt Fremdpakete.
+
+    Aktuell nur Python (bandit, braucht keine Projekt-Konfiguration – wie ruff bei
+    LintReport). JS/TS/Go/Rust-Unterstützung (z. B. via semgrep) ist eine naheliegende
+    spätere Erweiterung, analog dazu, wie auch der Dependency-Audit schrittweise über
+    mehrere Runden auf Node/Rust/Go ausgeweitet wurde – kein Anspruch auf Vollständigkeit
+    in dieser ersten Stufe.
+
+    Wie bei DependencyAuditReport gilt: fehlendes Tool oder ein technischer Fehlschlag des
+    Scans selbst sind KEIN Fehler, nur nicht prüfbar (attempted=False) – und werden NIEMALS
+    fälschlich als "keine Funde" gemeldet.
+    """
+    attempted: bool
+    vulnerable: bool
+    tool: str
+    findings: list[SastFinding] = field(default_factory=list)
+    reason_skipped: str = ""
+
+
+_COPYLEFT_LICENSE_MARKERS = ("GPL", "MPL", "CDDL", "EUPL", "SSPL")
+
+
+def _is_copyleft_license(license_str: str) -> bool:
+    """
+    Einfache Namens-Heuristik (bekannte Copyleft-Lizenz-Bezeichner als Teilstring, z. B.
+    "GNU General Public License v3 (GPLv3)" oder "LGPL") - kein Anspruch auf juristische
+    Vollständigkeit (z. B. Dual-Lizenzierung wird nicht aufgelöst), aber ein echter erster
+    Filter statt reinem Raten. "GPL" fängt bewusst auch AGPL/LGPL als Teilstring mit ab.
+    """
+    upper = (license_str or "").upper()
+    return any(marker in upper for marker in _COPYLEFT_LICENSE_MARKERS)
+
+
+@dataclass
+class LicenseFinding:
+    """Eine einzelne, aus einem echten Lizenz-Scan geparste Abhängigkeit mit ihrer Lizenz."""
+    package: str
+    version: str
+    license: str
+    copyleft: bool = False
+
+
+@dataclass
+class LicenseAuditReport:
+    """
+    Ergebnis eines echten Open-Source-Lizenz-Scans (`pip-licenses` für Python, liest die
+    Metadaten der TATSÄCHLICH installierten Pakete) – ersetzt die bisherige rein
+    LLM-basierte Einschätzung des compliance-Agenten (eine geratene "MIT/AGPL 🔴"-Tabelle im
+    Report) durch eine echte, aus den installierten Paketen gelesene Lizenzliste. Rechtlich
+    riskant: eine geratene Lizenzangabe kann bei einem echten Copyleft-Paket (GPL/AGPL) zu
+    falscher Sicherheit führen, ähnlich wie eine geratene CVE-Einschätzung ohne echten
+    Dependency-Audit.
+
+    Aktuell nur Python (pip-licenses). Node-Unterstützung (z. B. via `license-checker`) ist
+    eine naheliegende spätere Erweiterung, analog dazu, wie auch der Dependency-Audit
+    schrittweise über mehrere Runden auf Node/Rust/Go ausgeweitet wurde.
+
+    Wie bei DependencyAuditReport gilt: fehlendes Tool oder ein technischer Fehlschlag des
+    Scans selbst sind KEIN Fehler, nur nicht prüfbar (attempted=False) – und werden NIEMALS
+    fälschlich als "keine Copyleft-Risiken" gemeldet.
+    """
+    attempted: bool
+    has_copyleft_risk: bool
+    tool: str
+    findings: list[LicenseFinding] = field(default_factory=list)
     reason_skipped: str = ""
 
 
@@ -496,6 +593,99 @@ class ProjectVerifier:
             )
         result = CodeSandbox.run_command(["govulncheck", "./..."], cwd=self.project_dir, timeout_seconds=timeout_seconds)
         return DependencyAuditReport(attempted=True, vulnerable=result.exit_code != 0, tool="govulncheck")
+
+    def check_sast(self, timeout_seconds: float = 60.0) -> list[SastReport]:
+        reports: list[SastReport] = []
+        if self._has_python_files():
+            reports.append(self._sast_python(timeout_seconds))
+        return reports
+
+    def _sast_python(self, timeout_seconds: float) -> SastReport:
+        if shutil.which("bandit") is None:
+            return SastReport(
+                attempted=False, vulnerable=False, tool="bandit",
+                reason_skipped="`bandit` ist auf diesem System nicht installiert/verfügbar (`pip install bandit`).",
+            )
+        # -x nimmt eine kommagetrennte Liste von Pfaden entgegen (kein wiederholbares Flag
+        # wie ruffs --extend-exclude) – dieselben Build-/Umgebungs-Artefakte wie bei jedem
+        # anderen Check (_IGNORED_DIRS) werden ausgeschlossen, keine vom Team geschriebenen
+        # Projektdateien.
+        exclude = ",".join(str(self.project_dir / d) for d in sorted(_IGNORED_DIRS))
+        command = ["bandit", "-r", str(self.project_dir), "-f", "json", "-x", exclude]
+        result = CodeSandbox.run_command(command, cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        return self._parse_bandit_result(result)
+
+    def _parse_bandit_result(self, result: ExecutionResult) -> SastReport:
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            tail = (result.stdout + result.stderr).strip()[-800:]
+            return SastReport(
+                attempted=False, vulnerable=False, tool="bandit",
+                reason_skipped=f"bandit lieferte kein gültiges Ergebnis: {tail}",
+            )
+
+        findings: list[SastFinding] = []
+        for entry in data.get("results", []):
+            raw_path = entry.get("filename", "?")
+            try:
+                rel = str(Path(raw_path).resolve().relative_to(self.project_dir)).replace("\\", "/")
+            except (ValueError, OSError):
+                rel = raw_path
+            findings.append(SastFinding(
+                file_path=rel,
+                line_number=entry.get("line_number", 0),
+                message=entry.get("issue_text", ""),
+                rule=entry.get("test_id") or "",
+                severity=entry.get("issue_severity", ""),
+            ))
+        return SastReport(attempted=True, vulnerable=len(findings) > 0, tool="bandit", findings=findings)
+
+    def check_licenses(self, timeout_seconds: float = 60.0) -> list[LicenseAuditReport]:
+        reports: list[LicenseAuditReport] = []
+        if self._requirements_file():
+            reports.append(self._license_audit_python(timeout_seconds))
+        return reports
+
+    def _license_audit_python(self, timeout_seconds: float) -> LicenseAuditReport:
+        if shutil.which("pip-licenses") is None:
+            return LicenseAuditReport(
+                attempted=False, has_copyleft_risk=False, tool="pip-licenses",
+                reason_skipped="`pip-licenses` ist auf diesem System nicht installiert/verfügbar (`pip install pip-licenses`).",
+            )
+        # pip-licenses liest Metadaten der TATSÄCHLICH installierten Pakete (kein Netzwerk,
+        # anders als pip-audit) - braucht daher gezielt die isolierte Projekt-venv aus
+        # ensure_environment() statt der Framework-eigenen Umgebung, in der das Tool selbst
+        # installiert ist. --python zeigt auf den Ziel-Interpreter, dessen Pakete geprüft
+        # werden sollen (fällt wie überall sonst auf den System-Interpreter zurück, falls die
+        # venv noch nicht existiert - siehe _resolve_python()).
+        command = ["pip-licenses", "--python", self._resolve_python(), "--format=json"]
+        result = CodeSandbox.run_command(command, cwd=self.project_dir, timeout_seconds=timeout_seconds)
+        return self._parse_pip_licenses_result(result)
+
+    def _parse_pip_licenses_result(self, result: ExecutionResult) -> LicenseAuditReport:
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            tail = (result.stdout + result.stderr).strip()[-800:]
+            return LicenseAuditReport(
+                attempted=False, has_copyleft_risk=False, tool="pip-licenses",
+                reason_skipped=f"pip-licenses lieferte kein gültiges Ergebnis: {tail}",
+            )
+
+        findings: list[LicenseFinding] = []
+        for entry in data:
+            license_str = entry.get("License", "") or ""
+            findings.append(LicenseFinding(
+                package=entry.get("Name", "?"),
+                version=entry.get("Version", "?"),
+                license=license_str,
+                copyleft=_is_copyleft_license(license_str),
+            ))
+        return LicenseAuditReport(
+            attempted=True, has_copyleft_risk=any(f.copyleft for f in findings),
+            tool="pip-licenses", findings=findings,
+        )
 
     def check_lint(self, timeout_seconds: float = 60.0) -> list[LintReport]:
         reports: list[LintReport] = []

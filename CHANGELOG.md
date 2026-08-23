@@ -7,6 +7,61 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🕵️ Mechanisierte Security-/Lizenz-Prüfung statt LLM-Raten & persistentes Design-System
+
+Bestandsaufnahme auf explizite Nutzeranfrage ("welche Verbesserungen fehlen für ein
+vollständiges, professionelles Team?"): Der Dependency-Audit (`pip-audit`/`npm audit`) und
+der Lint-Check (`ruff`/`eslint`/`tsc`) hatten die rein LLM-basierte Einschätzung von
+`security`/Code-Qualität bereits durch echte Tool-Läufe ersetzt – zwei weitere Agenten-Reports
+hingen aber noch im alten Zustand fest: reines, ungeprüftes Freitext-Raten des Modells, ohne
+Datei/Zeile oder echte Paket-Metadaten.
+
+- **SAST für generierten Python-Code** (`core/verifier.py.check_sast()`, `SastReport`): Neuer
+  echter statischer Scan (`bandit`) gegen bekannte Schwachstellenmuster (hartcodierte
+  Secrets, unsichere Deserialisierung, SQL-Injection-Vektoren, unsichere Zufallszahlen,
+  `eval`/`exec`, …) – ersetzt die bisherige Freitext-Einschätzung des `security`-Agenten
+  (der Schwachstellen nur "plausibel" vermuten konnte) durch einen geparsten Fund mit
+  exakter Datei/Zeile/Regel/Schweregrad. Dasselbe Graceful-Degradation-Prinzip wie beim
+  Dependency-Audit: fehlendes `bandit` oder ein technischer Fehlschlag ist NIE ein Fehler,
+  nur nicht prüfbar (`attempted=False`), niemals fälschlich als "keine Funde" gemeldet. Rein
+  informativ im Abschlussbericht (wie Lint), kein automatischer Blocker – ein SAST-Fund kann
+  ein False Positive sein und braucht menschliche Einschätzung, anders als ein roter Test.
+  Aktuell nur Python; Node/Rust/Go (z. B. via `semgrep`) sind eine naheliegende spätere
+  Erweiterung, analog dazu, wie auch der Dependency-Audit schrittweise über mehrere Runden
+  auf Node/Rust/Go ausgeweitet wurde.
+- **Echter Lizenz-/SBOM-Scan** (`core/verifier.py.check_licenses()`, `LicenseAuditReport`):
+  `pip-licenses` liest die Lizenzen der TATSÄCHLICH installierten Python-Abhängigkeiten aus
+  der isolierten Projekt-venv (`--python <venv-interpreter>`) und markiert bekannte
+  Copyleft-Lizenzen (GPL/AGPL/LGPL/MPL/CDDL/EUPL/SSPL per Namens-Heuristik) – ersetzt die
+  bisherige, vom `compliance`-Agenten GERATENE Lizenz-Tabelle ("MIT/AGPL 🔴") durch echte
+  Paket-Metadaten. Rechtlich relevant: eine geratene Lizenzangabe bei einem echten
+  Copyleft-Paket ist eine falsche Sicherheit, kein bloßer Stil-Hinweis wie ein Lint-Fund.
+- **Persistentes Projekt-Design-System** (`core/design_system.py`, `/design-system [projekt]`):
+  Die bereits bestehende Projekt-Konstitution (`core/project_constitution.py`) hält feste
+  Tech-Stack-Präferenzen über mehrere Läufe hinweg fest – seit der Design-vor-Dev-
+  Phasenaufteilung (`design_lead` läuft VOR `dev_lead`) fehlte ausgerechnet dem VISUELLEN
+  Design (Farbpalette, Typografie, Spacing-Skala, Komponenten-Namenskonvention, Tonalität für
+  `copywriter`) ein Pendant: ein zweiter Lauf am selben Projekt hätte eine andere
+  Primärfarbe/Schriftart wählen können als der erste, ohne dass die Nutzeranfrage das je
+  erwähnt hätte. Neue Datei `.ai-team-design.toml` im Projektverzeichnis (bewusst NICHT
+  gitignored, wie `.ai-team.toml`), nach demselben Muster gelesen/geschrieben und bei JEDEM
+  künftigen Lauf in den Kontext aller Teilaufgaben injiziert.
+
+50 neue Tests (`test_verifier_sast.py`, `test_sast_integration.py`, `test_verifier_license.py`,
+`test_license_audit_integration.py`, `test_design_system.py`, `test_cli_design_system_command.py`,
+`test_design_system_integration.py`). Volle Suite (692 Tests) grün, ruff sauber. Neue optionale
+Dev-Abhängigkeiten `bandit`/`pip-licenses` in `requirements-dev.txt` (dieselbe Graceful-Skip-
+Philosophie wie `pip-audit`: fehlt das Tool lokal, wird der jeweilige Scan übersprungen statt
+zu crashen oder fälschlich "sauber" zu melden).
+
+**Bewusst zurückgestellt: mechanisierte Ausführung der vom `performance`-Agenten geschriebenen
+k6-/Locust-Lastentests.** Anders als SAST/Lizenz-Scan (einmaliger, kurzer Tool-Aufruf) würde
+ein echter Lasttest die generierte Anwendung tatsächlich unter Last hochfahren müssen – ein
+deutlich größerer Eingriff (Ports, Laufzeit, Ressourcenverbrauch) als die übrigen
+Verifikationsschritte. Als nächster Schritt vorgemerkt, aber nicht Teil dieser Runde.
+
+---
+
 ## 🎨 Design-vor-Dev-Phasenaufteilung: Vorab-Design & Post-Dev-Content/Dokumentation
 
 Strukturelle Weiterentwicklung der Fachbereichs-Hierarchie basierend auf dem von Claude

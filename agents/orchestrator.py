@@ -81,6 +81,7 @@ from config import (
     PLAN_CONFIRMATION_MIN_TASKS,
 )
 from core.adr import format_adr_summary_for_context
+from core.design_system import format_design_system_for_agents
 from core.git_isolation import (
     GitIsolationError,
     create_isolated_worktree,
@@ -397,6 +398,15 @@ class Orchestrator:
         # unnötiger Prompt-Text für die Mehrheit der Projekte).
         constitution_context = format_constitution_for_agents(project_dir)
 
+        # Projekt-Design-System (core/design_system.py): feste visuelle Präferenzen
+        # (Farbpalette, Typografie, Spacing-Skala, Komponenten-Namenskonvention, Tonalität),
+        # die der Nutzer einmal per /design-system festlegt - das Pendant zur Konstitution
+        # oben, nur für Design statt Tech-Stack. Ohne das würde ein zweiter Lauf am selben
+        # Projekt eine andere Primärfarbe/Schriftart wählen können, ohne dass die
+        # Nutzeranfrage das je erwähnt hätte. Leer für Projekte ohne Design-System (kein
+        # unnötiger Prompt-Text für die Mehrheit der Projekte).
+        design_system_context = format_design_system_for_agents(project_dir)
+
         # Architecture Decision Records (core/adr.py): das WARUM hinter bereits getroffenen
         # Architektur-Entscheidungen (die Konstitution oben hält nur das WAS fest). Ohne das
         # könnten spätere Läufe unbemerkt gegen frühere, bewusst getroffene Entscheidungen
@@ -410,6 +420,8 @@ class Orchestrator:
                 t.tools_read_only = True
             if constitution_context:
                 t.context += f"\n\n{constitution_context}"
+            if design_system_context:
+                t.context += f"\n\n{design_system_context}"
             if project_history_context:
                 t.context += f"\n\n{project_history_context}"
             if adr_context:
@@ -1424,6 +1436,50 @@ class Orchestrator:
                 else:
                     notify(f"  🔒 [bold green]{audit.tool}: keine bekannten Schwachstellen in Abhängigkeiten.[/bold green]")
                     summary_lines.append(f"- 🔒 {audit.tool}: keine bekannten Schwachstellen in Abhängigkeiten gefunden.")
+
+        # Ersetzt die rein LLM-basierte Einschätzung des security-Agenten zu Schwachstellen
+        # im SELBST GESCHRIEBENEN Code (Freitext-Vermutungen ohne Datei/Zeile) durch einen
+        # echten statischen Scan (bandit für Python) – dasselbe Prinzip wie beim Dependency-
+        # Audit oben, nur für eigenen Code statt Fremdpakete. Rein informativ wie der
+        # Lint-Check, beeinflusst verification_ok nicht - ein SAST-Fund kann ein False
+        # Positive sein und braucht menschliche Einschätzung, anders als ein roter Test.
+        if not (budget_aborted or manually_cancelled):
+            sast_reports = await asyncio.to_thread(verifier.check_sast)
+            for sast in sast_reports:
+                if not sast.attempted:
+                    continue
+                if sast.vulnerable:
+                    top = "; ".join(
+                        f"{f.file_path}:{f.line_number} [{f.rule}/{f.severity}]" for f in sast.findings[:5]
+                    )
+                    if len(sast.findings) > 5:
+                        top += f" … und {len(sast.findings) - 5} weitere"
+                    notify(f"  🕵️ [bold red]{sast.tool}: {len(sast.findings)} potenzielle Sicherheits-Fund(e) im Code.[/bold red]")
+                    summary_lines.append(f"- 🕵️ ⚠️ {sast.tool}: {len(sast.findings)} potenzielle Sicherheits-Fund(e) im Code: {top}")
+                else:
+                    notify(f"  🕵️ [bold green]{sast.tool}: keine Sicherheits-Funde im Code.[/bold green]")
+                    summary_lines.append(f"- 🕵️ {sast.tool}: keine Sicherheits-Funde im Code (statischer Scan).")
+
+        # Ersetzt die rein LLM-basierte Lizenz-Tabelle des compliance-Agenten ("MIT/AGPL 🔴",
+        # geraten) durch einen echten Scan der tatsächlich installierten Paket-Lizenzen
+        # (pip-licenses). Rein informativ wie Lint/SAST, beeinflusst verification_ok nicht -
+        # ein Copyleft-Fund ist eine rechtliche Einschätzungsfrage (z. B. Nutzung als Library
+        # vs. verlinkt vs. modifiziert), kein automatisch behebbarer Codefehler.
+        if not (budget_aborted or manually_cancelled):
+            license_reports = await asyncio.to_thread(verifier.check_licenses)
+            for lic in license_reports:
+                if not lic.attempted:
+                    continue
+                if lic.has_copyleft_risk:
+                    copyleft_findings = [f for f in lic.findings if f.copyleft]
+                    top = "; ".join(f"{f.package} {f.version} ({f.license})" for f in copyleft_findings[:5])
+                    if len(copyleft_findings) > 5:
+                        top += f" … und {len(copyleft_findings) - 5} weitere"
+                    notify(f"  📜 [bold red]{lic.tool}: {len(copyleft_findings)} Copyleft-Lizenz(en) in Abhängigkeiten (GPL/LGPL/MPL/…).[/bold red]")
+                    summary_lines.append(f"- 📜 ⚠️ {lic.tool}: {len(copyleft_findings)} Copyleft-Lizenz(en) in Abhängigkeiten: {top}")
+                else:
+                    notify(f"  📜 [bold green]{lic.tool}: keine Copyleft-Lizenzen in Abhängigkeiten.[/bold green]")
+                    summary_lines.append(f"- 📜 {lic.tool}: keine Copyleft-Lizenzen in Abhängigkeiten gefunden ({len(lic.findings)} geprüft).")
 
         # Erstmals überhaupt eine automatische Stil-/Fehlerprüfung für generierten Code -
         # ruff.toml lief bisher NUR gegen den Framework-Code selbst (workspace/ dort bewusst

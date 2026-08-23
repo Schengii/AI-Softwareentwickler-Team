@@ -665,8 +665,14 @@ erzwingt den sofortigen Abbruch.
 ## 🧪 Tests ausführen
 
 ```bash
-python -m unittest discover -s tests -p "test_*.py"
+python -m unittest discover -s tests -t . -p "test_*.py"
 ```
+
+`-t .` (Top-Level-Dir = Repo-Root) ist wichtig, nicht nur `-s tests`: ohne `-t` importiert
+`unittest discover` jede Testdatei als loses Top-Level-Modul statt als `tests.*`-Paket und
+überspringt dabei `tests/__init__.py` - genau die Datei, die `memory/run_history.py` für die
+gesamte Testsuite strukturell auf ein Temp-Verzeichnis umbiegt, damit Testläufe nicht in die
+echte, projektübergreifende Lauf-Historie schreiben.
 
 Die komplette Testsuite ist vollständig gemockt und läuft **ohne jeden API-Key/echten
 LLM-Aufruf** durch (verifiziert). `.github/workflows/ci.yml` führt sie bei jedem Push/PR

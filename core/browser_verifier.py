@@ -29,6 +29,14 @@ class BrowserVerificationReport:
     engine: str = "none"  # "playwright", "headless_chrome", "static_dom"
     console_errors: list[str] = field(default_factory=list)
     missing_assets: list[str] = field(default_factory=list)
+    # Realer Fund (Pong-Projekt, siehe agents/orchestrator.py._run_verification_loop): eine
+    # Seite kann fehlerfrei laden (kein Konsolenfehler, keine fehlende Datei) und trotzdem
+    # funktional komplett tot sein, weil nie ein Render-Aufruf stattfindet - kein Fehler wird
+    # dabei geworfen, es fehlt schlicht jeder draw()/requestAnimationFrame-Aufruf. Diese Liste
+    # enthält <canvas>-Elemente, deren Pixelinhalt nach dem Laden byte-identisch mit einem
+    # frisch erzeugten LEEREN Canvas gleicher Größe ist - ein starkes Indiz für genau dieses
+    # Muster, das reine Konsolen-/404-Checks nicht erkennen (siehe _run_playwright_check()).
+    blank_canvases: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     tested_url: str = ""
     reason_skipped: str = ""
@@ -66,6 +74,75 @@ class AccessibilityReport:
     violations: list[AccessibilityViolation] = field(default_factory=list)
     tested_url: str = ""
     reason_skipped: str = ""
+
+
+# Playwright-Subprozess-Skript für _run_playwright_check() - eigene Modul-Konstante statt
+# eines f-Strings direkt in der Methode, weil das Blank-Canvas-JS unten echte `{`/`}` braucht
+# (Objektliteral, Arrow-Function-Bodies), die in einem f-String sonst alle verdoppelt werden
+# müssten (siehe json.dumps({{'success': True, ...}}) vorher). __TARGET_URL__/__TIMEOUT_MS__
+# werden per .replace() eingesetzt, siehe _run_playwright_check().
+_RUNNER_CODE_TEMPLATE = """
+import sys, json
+from playwright.sync_api import sync_playwright
+
+console_errors = []
+missing_assets = []
+
+def handle_console(msg):
+    if msg.type in ('error', 'assert'):
+        console_errors.append(msg.text)
+
+def handle_response(resp):
+    if resp.status >= 400 and not resp.url.startswith('chrome-error:'):
+        missing_assets.append(f'HTTP {resp.status}: {resp.url}')
+
+try:
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.on('console', handle_console)
+        page.on('response', handle_response)
+        page.goto('__TARGET_URL__', timeout=__TIMEOUT_MS__, wait_until='load')
+        page.wait_for_timeout(500)
+        title = page.title()
+
+        # Heuristik gegen "lädt fehlerfrei, tut aber nichts": ein <canvas>-Element, dessen
+        # Pixelinhalt nach dem Laden byte-identisch mit einem frisch erzeugten LEEREN Canvas
+        # gleicher Größe ist, wurde nachweislich nie gezeichnet - kein Fehler wird dabei
+        # geworfen, es fehlt schlicht jeder Render-Aufruf. Realer Fund: ein Pong-Spiel ohne
+        # draw()/Game-Loop lud fehlerfrei und bestand den bisherigen Check trotzdem, weil
+        # dieser nur auf Konsolenfehler/404s prüfte, nie auf tatsächlich gezeichneten Inhalt.
+        try:
+            blank_canvases = page.evaluate('''
+                () => Array.from(document.querySelectorAll('canvas')).map((cv, i) => {
+                    try {
+                        if (!cv.width || !cv.height) return null;
+                        const ref = document.createElement('canvas');
+                        ref.width = cv.width; ref.height = cv.height;
+                        return cv.toDataURL() === ref.toDataURL() ? (cv.id || ('canvas[' + i + ']')) : null;
+                    } catch (e) {
+                        return null;
+                    }
+                }).filter(x => x !== null)
+            ''')
+        except Exception:
+            blank_canvases = []
+        browser.close()
+    print(json.dumps({'success': True, 'errors': console_errors, 'missing': missing_assets, 'title': title, 'blank_canvases': blank_canvases}))
+except Exception as e:
+    print(json.dumps({'success': False, 'error': str(e)}))
+"""
+
+
+# Extrahiert den Datei-Referenz-Anteil aus einer "Fehlendes Asset: 'REF' in DATEI.html"-
+# Meldung von _validate_static_assets() - genutzt von verify_frontend(), um sie gegen
+# playwright's eigene "HTTP 404: http://.../REF"-Meldungen abzugleichen (siehe dort).
+_STATIC_MISSING_REF_PATTERN = re.compile(r"Fehlendes Asset: '([^']+)'")
+
+
+def _static_missing_ref(message: str) -> str | None:
+    m = _STATIC_MISSING_REF_PATTERN.search(message)
+    return m.group(1) if m else None
 
 
 class BrowserVerifier:
@@ -112,7 +189,22 @@ class BrowserVerifier:
         # 2. Prüfe, ob Playwright installiert ist
         playwright_report = self._run_playwright_check(entry_html, timeout_seconds)
         if playwright_report and playwright_report.attempted:
-            playwright_report.missing_assets.extend(static_missing)
+            # Realer Fund: Playwright erkennt fehlende Assets bereits selbst über echte
+            # HTTP-404-Antworten (handle_response im Subprozess-Skript, siehe
+            # _RUNNER_CODE_TEMPLATE) - ungefiltertes Anhängen der REGEX-basierten statischen
+            # Funde meldete dieselbe fehlende Datei bisher doppelt (einmal als "HTTP 404:
+            # http://.../datei.css" aus dem echten Request, einmal als "Fehlendes Asset:
+            # 'datei.css' in index.html" aus dem Regex-Scan). Nur wirklich NEUE statische Funde
+            # ergänzen, die playwright nicht bereits über einen echten Request erfasst hat -
+            # z.B. Referenzen, die der Browser beim Laden nie tatsächlich anfordert.
+            new_static_findings = [
+                m for m in static_missing
+                if not any(
+                    (ref := _static_missing_ref(m)) and ref in reported
+                    for reported in playwright_report.missing_assets
+                )
+            ]
+            playwright_report.missing_assets.extend(new_static_findings)
             playwright_report.warnings.extend(static_warnings)
             if static_missing:
                 playwright_report.passed = False
@@ -189,36 +281,13 @@ class BrowserVerifier:
         rel_path = str(html_file.relative_to(self.project_dir)).replace("\\", "/")
         target_url = f"http://127.0.0.1:{port}/{rel_path}"
 
-        # Führe Playwright Test in Subprozess aus (isoliert gegen Crashes)
-        runner_code = f"""
-import sys, json
-from playwright.sync_api import sync_playwright
-
-console_errors = []
-missing_assets = []
-
-def handle_console(msg):
-    if msg.type in ('error', 'assert'):
-        console_errors.append(msg.text)
-
-def handle_response(resp):
-    if resp.status >= 400 and not resp.url.startswith('chrome-error:'):
-        missing_assets.append(f'HTTP {{resp.status}}: {{resp.url}}')
-
-try:
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.on('console', handle_console)
-        page.on('response', handle_response)
-        page.goto('{target_url}', timeout={int(timeout * 1000)}, wait_until='load')
-        page.wait_for_timeout(500)
-        title = page.title()
-        browser.close()
-    print(json.dumps({{'success': True, 'errors': console_errors, 'missing': missing_assets, 'title': title}}))
-except Exception as e:
-    print(json.dumps({{'success': False, 'error': str(e)}}))
-"""
+        # Führe Playwright Test in Subprozess aus (isoliert gegen Crashes). Bewusst KEIN
+        # f-String für dieses Template mehr (siehe _RUNNER_CODE_TEMPLATE-Docstring dort): die
+        # neue Blank-Canvas-Prüfung unten braucht echte JS-Objektliteral-Klammern, die in einem
+        # f-String alle verdoppelt werden müssten - Platzhalter + .replace() ist robuster.
+        runner_code = _RUNNER_CODE_TEMPLATE.replace("__TARGET_URL__", target_url).replace(
+            "__TIMEOUT_MS__", str(int(timeout * 1000)),
+        )
         try:
             proc = subprocess.run(
                 [sys.executable, "-c", runner_code],
@@ -233,7 +302,8 @@ except Exception as e:
 
             errors = data.get("errors", [])
             missing = data.get("missing", [])
-            passed = len(errors) == 0 and len(missing) == 0
+            blank_canvases = data.get("blank_canvases", [])
+            passed = len(errors) == 0 and len(missing) == 0 and len(blank_canvases) == 0
 
             return BrowserVerificationReport(
                 attempted=True,
@@ -241,6 +311,7 @@ except Exception as e:
                 engine="playwright",
                 console_errors=errors,
                 missing_assets=missing,
+                blank_canvases=blank_canvases,
                 tested_url=target_url,
             )
         except Exception:

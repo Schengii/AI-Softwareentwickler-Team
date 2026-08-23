@@ -26,6 +26,14 @@ def main():
     config.ISSUE_TRIGGER_LABEL und beendet sich danach wieder – gedacht für einen externen
     Aufruf per Cron/Windows-Taskplaner/GitHub-Actions-Schedule (siehe core/issue_watcher.py),
     kein eingebauter Dauer-Scheduler.
+    Mit `--work-backlog` läuft EIN Poll-Zyklus über bereits im Backlog wartende, abhängigkeits-
+    freie "todo"-Tickets (siehe core/backlog_worker.py) – das Team wartet dabei NICHT auf einen
+    externen Trigger (Issue-Label), sondern greift eigenständig priorisierte Arbeit auf, die
+    z.B. per `/backlog-add` vorgemerkt wurde.
+    Mit `--check-deployments` läuft EIN Poll-Zyklus, der jedes per `/deploy-cloud` deployte
+    Projekt auf echte Erreichbarkeit prüft und bei einem Ausfall automatisch ein Backlog-Ticket
+    eröffnet (siehe core/production_monitor.py) – dasselbe On-Call-Prinzip wie oben, nur für
+    bereits live laufende Deployments statt für offene Aufgaben.
     Mit `--eval [--tasks t1,t2]` startet die kanonische Benchmark-Evaluierungs-Suite
     (siehe evals/), misst Token-Verbrauch, Dauer und Verifikationsergebnis und speichert
     die Ergebnisse in der Benchmark-Historie. Mit `--list-evals` werden alle verfügbaren
@@ -103,6 +111,34 @@ def main():
                 for r in report.results:
                     detail = f" – {r.detail}" if r.detail else ""
                     print(f"#{r.issue_number} '{r.title}' -> {r.outcome}{detail}")
+        return
+
+    if "--work-backlog" in sys.argv:
+        import asyncio
+
+        from core.backlog_worker import run_backlog_poll_cycle
+
+        report = asyncio.run(run_backlog_poll_cycle(status_callback=print))
+        if report.merged_ticket_ids:
+            print(f"🔀 {len(report.merged_ticket_ids)} Backlog-Ticket(s) auf gemergte PRs aktualisiert: {', '.join(report.merged_ticket_ids)}")
+        if report.skipped_reason:
+            print(f"ℹ️  {report.skipped_reason}")
+        for r in report.results:
+            detail = f" – {r.detail}" if r.detail else ""
+            print(f"`{r.ticket_id}` '{r.title}' -> {r.outcome}{detail}")
+        return
+
+    if "--check-deployments" in sys.argv:
+        import asyncio
+
+        from core.production_monitor import run_deployment_health_check_cycle
+
+        report = asyncio.run(run_deployment_health_check_cycle(status_callback=print))
+        if not report.checked:
+            print("ℹ️  Keine überwachten Deployments gefunden (siehe `/deploy-cloud`).")
+        else:
+            for r in report.checked:
+                print(f"{'✅' if r.healthy else '❌'} {r.project_slug} ({r.url}): {r.detail}")
         return
 
     if "--dashboard" in sys.argv:

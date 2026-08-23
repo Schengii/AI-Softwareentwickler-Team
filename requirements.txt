@@ -12,3 +12,17 @@ httpx>=0.28.1,<1.0.0
 python-dotenv>=1.2.2,<2.0.0
 rich>=15.0.0,<16.0.0
 aiofiles>=25.1.0,<26.0.0
+
+# core/browser_verifier.py nutzt Playwright, um generierte Web-Frontends ECHT in einem
+# Headless-Browser zu laden (JS-Konsolenfehler, kaputte Assets, ein <canvas>, das nie
+# tatsächlich gezeichnet wird - siehe blank_canvases). War bisher nur in requirements-dev.txt:
+# ohne installiertes Playwright fällt der Check STILL auf eine rein statische Datei-Existenz-
+# Prüfung zurück, die kein einziges JavaScript ausführt (core/browser_verifier.py.
+# _run_playwright_check() gibt dann None zurück) - ein generiertes Frontend mit einem echten
+# Laufzeitfehler (z.B. fehlendes `type="module"` bei ES-Modulen) bestand die Verifikation
+# dadurch trotzdem. Für Frontend-Projekte ist dieser Check oft die EINZIGE Instanz, die
+# überhaupt echten Browser-Code ausführt - deshalb jetzt Laufzeit- statt reine Dev-
+# Abhängigkeit. NACH `pip install` zusätzlich einmalig nötig: `playwright install chromium`
+# (lädt das Browser-Binary, kein pip-Paket - CI installiert das bewusst NICHT, da CI keine
+# echten Generierungsläufe ausführt, siehe .github/workflows/ci.yml).
+playwright>=1.40.0,<2.0.0

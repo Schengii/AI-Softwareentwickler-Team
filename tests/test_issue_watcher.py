@@ -44,6 +44,11 @@ class TestIssueWatcherOrchestration(unittest.TestCase):
         self.fake_orchestrator = MagicMock()
         self.fake_orchestrator.process = AsyncMock(return_value="### Fertig\nHealth-Check gebaut.")
         self.fake_orchestrator.last_verification_ok = True
+        # MagicMock generiert JEDES nicht explizit gesetzte Attribut als eigenes (truthy!)
+        # Mock-Objekt - ohne diese beiden Zeilen würde core/issue_watcher.py's
+        # `getattr(orchestrator, "last_needs_human_input", False)` fälschlich True liefern.
+        self.fake_orchestrator.last_needs_human_input = False
+        self.fake_orchestrator.last_clarification_questions = []
 
         self._gh_patcher = patch("core.issue_watcher.GitHubAgent", return_value=self.fake_github)
         self._orch_patcher = patch("core.issue_watcher.Orchestrator", return_value=self.fake_orchestrator)
@@ -164,6 +169,25 @@ class TestIssueWatcherOrchestration(unittest.TestCase):
         self.assertEqual(report.results[0].outcome, "pr_opened")
         pr_body = self.fake_github.create_pull_request.call_args.kwargs["body"]
         self.assertIn("Verifikation nicht bestanden", pr_body)
+
+    def test_open_clarification_question_opens_draft_pr_and_blocks_ticket(self):
+        # Realer Fund: eine mitten in der Aufgabe aufgetretene Rückfrage (core/agent_toolbox.py.
+        # ask_human_for_clarification) blieb im autonomen Issue-Watcher-Pfad bisher komplett
+        # unsichtbar - anders als im interaktiven CLI-Pfad gibt es hier KEINEN Menschen, der
+        # sie im Chat mitliest.
+        self.fake_orchestrator.last_needs_human_input = True
+        self.fake_orchestrator.last_clarification_questions = ["Welches Zahlungssystem soll genutzt werden?"]
+        report = asyncio.run(run_issue_poll_cycle())
+
+        self.assertEqual(report.results[0].outcome, "pr_opened_needs_clarification")
+        pr_kwargs = self.fake_github.create_pull_request.call_args.kwargs
+        self.assertTrue(pr_kwargs["draft"])
+        self.assertIn("Zahlungssystem", pr_kwargs["body"])
+        comment_text = self.fake_github.comment_on_issue.call_args.args[1]
+        self.assertIn("Zahlungssystem", comment_text)
+
+        tickets = backlog_store.list_tickets()
+        self.assertEqual(tickets[0].status, "blocked")
 
     def test_pr_creation_failure_still_removes_in_progress_and_blocks(self):
         self.fake_github.create_pull_request.return_value = (False, "permission denied")

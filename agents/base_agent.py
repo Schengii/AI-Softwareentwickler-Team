@@ -124,6 +124,8 @@ class BaseAgent(ABC):
                 total_tokens=prompt_tokens + completion_tokens,
                 files_written=sorted(toolbox.files_written) if toolbox else [],
                 tool_calls_count=toolbox.call_count if toolbox else 0,
+                needs_human_input=bool(toolbox and toolbox.clarification_requests),
+                clarification_questions=list(toolbox.clarification_requests) if toolbox else [],
             )
 
         except Exception as e:
@@ -139,6 +141,8 @@ class BaseAgent(ABC):
                 model_used=self._llm.model_name,
                 files_written=sorted(toolbox.files_written) if toolbox else [],
                 tool_calls_count=toolbox.call_count if toolbox else 0,
+                needs_human_input=bool(toolbox and toolbox.clarification_requests),
+                clarification_questions=list(toolbox.clarification_requests) if toolbox else [],
             )
 
     async def _run_agentic_loop(
@@ -364,7 +368,13 @@ Du hast direkten Zugriff auf das Projektverzeichnis über Werkzeuge:
 
 Speichere Code IMMER direkt über write_file/edit_file im Projektverzeichnis – gib ihn nicht nur als Text in
 deiner Antwort aus. Deine finale Textantwort soll eine KURZE Zusammenfassung sein (was wurde geschrieben/geändert,
-warum, was ist noch offen) – kein erneutes Einfügen des kompletten Codes.{adr_note}"""
+warum, was ist noch offen) – kein erneutes Einfügen des kompletten Codes.{adr_note}
+
+Triffst du auf eine ECHTE, für die Aufgabe entscheidende Unklarheit, die nur ein Mensch sinnvoll auflösen kann
+(nicht: eine übliche technische Entscheidung, die du selbst treffen kannst) – nutze `ask_human_for_clarification`,
+statt zu raten und trotzdem etwas möglicherweise Falsches auszuliefern. Ein erfahrener Senior-Entwickler fragt bei
+echter Mehrdeutigkeit nach, statt zu spekulieren. Setze deine Arbeit danach so weit wie möglich fort und fasse in
+deiner finalen Antwort ehrlich zusammen, was bereits erledigt ist und was durch die Rückfrage offen bleibt."""
 
     def _build_prompt(self, task: AgentTask) -> str:
         """Baut den finalen Prompt token-effizient zusammen mit strikten Sparsamkeits-Regeln."""

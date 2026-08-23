@@ -7,6 +7,43 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 📜 CHANGELOG.md für generierte Projekte & echtes Slack-Block-Kit-Format
+
+Letzte zwei kleinere Punkte aus derselben Bestandsaufnahme:
+
+- **`core/release_manager.py.update_project_changelog()`:** `tag_release()` erstellte bisher
+  nur ein GitHub-Release (Tag + Notes) – nur das Framework-Repo hatte eine im Projekt selbst
+  lesbare Versionshistorie, generierte Projekte in `workspace/` nicht. Nach jedem erfolgreichen
+  Release schreibt derselbe Aufruf jetzt zusätzlich eine echte `CHANGELOG.md` **im generierten
+  Projekt** (`workspace/<projekt>/CHANGELOG.md`, neueste Einträge zuerst) – über die
+  GitHub-Contents-API (`gh api --method PUT`) direkt gegen den Default-Branch, ohne den
+  lokalen Checkout in `BASE_DIR` anzufassen (derselbe Grund wie bei `gh release create`
+  selbst: der lokale Checkout könnte gerade auf einem völlig anderen Branch stehen, z. B.
+  mitten in einem parallelen Lauf). Sicher gegen versehentliches Überschreiben: ohne das
+  korrekte `sha` einer bereits existierenden Datei lehnt GitHubs eigene Contents-API den
+  Schreibvorgang ab, statt ihn stillschweigend zu ersetzen – `_fetch_existing_changelog()`
+  startet deshalb im Fehlerfall bewusst konservativ mit einer frischen Datei, statt zu raten.
+  Erkennt einen fremden/von Hand abweichenden Header, wird der neue Eintrag nur oben angefügt,
+  statt bestehenden Inhalt zu überschreiben. Best effort wie das Release-Tagging selbst: ein
+  fehlgeschlagenes CHANGELOG-Update lässt das bereits erfolgreiche Release NIE nachträglich
+  als Fehlschlag gelten.
+- **`core/notifier.py`:** Das Slack-Webhook-Payload war bisher ein einziger flacher
+  `{"text": "..."}`-String – in Slack kam das unformatiert an, obwohl Slack für genau diesen
+  Zweck ein eigenes Nachrichtenformat (Block Kit) mit fett/Struktur/Farbe anbietet.
+  `_build_slack_payload()` nutzt jetzt echtes Block Kit: fett hervorgehobenes Event-Label,
+  farbiger Rand je nach grob an Schlagworten erkanntem Schweregrad ("fehlgeschlagen"/
+  "blockiert"/"Budget erreicht" → Rot, "Warnung"/"Achtung" → Orange, sonst Blau) und ein
+  Kontext-Footer mit Zeitstempel. Das oberste `"text"`-Feld bleibt zusätzlich gesetzt – Slacks
+  eigene Fallback-Konvention für Push-Vorschauen/Clients ohne Block-Kit-Rendering, zugleich
+  Rückwärtskompatibilität für Fremd-Webhooks, die nur ein einfaches `"text"`-Feld auswerten.
+  Bewusst NICHT umgesetzt: Threads/Mentions – beides bräuchte die `chat.postMessage`-API mit
+  einem echten Bot-Token statt der aktuellen, einfachen Webhook-URL, ein anderes Auth-Modell.
+
+29 neue Tests (`test_release_manager.py` erweitert, `test_notifier.py` erweitert). Volle Suite
+(723 Tests) grün, ruff sauber.
+
+---
+
 ## 🏋️ Echte Ausführung der Lastentest-Skripte statt ungeprüfter Ablage
 
 Direkte Fortsetzung der Bestandsaufnahme unten: der `performance`-Agent schrieb bereits

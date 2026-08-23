@@ -237,9 +237,13 @@ zuverlässiger die vorhandene Infrastruktur.
   interaktiven `/push`-Dialog in der CLI (`interface/cli.py._ask_for_git_push()`).
 - **Externe Benachrichtigung:** `NOTIFY_WEBHOOK_URL` (Standard leer = deaktiviert) schickt bei
   jedem Ausgang, der menschliche Aufmerksamkeit braucht (blockiertes Issue, rote CI,
-  erreichtes Lauf-Budget, fehlgeschlagener Dashboard-Job), einen einfachen JSON-POST
-  (Slack-Incoming-Webhook-kompatibel) über `core/notifier.py` – wichtig gerade hier, da beim
-  Poll-Zyklus (und bei Dashboard-Hintergrund-Jobs) anders als in der CLI niemand aktiv zusieht.
+  erreichtes Lauf-Budget, fehlgeschlagener Dashboard-Job), einen echten Slack-Block-Kit-POST
+  über `core/notifier.py` – fett hervorgehobenes Event-Label, farbiger Rand je nach grob
+  erkanntem Schweregrad ("fehlgeschlagen"/"blockiert"/… → Rot) und Zeitstempel-Footer statt
+  eines flachen, unformatierten Text-Strings. Ein `"text"`-Fallback-Feld bleibt zusätzlich
+  gesetzt (Slacks eigene Konvention für Push-Vorschauen/Clients ohne Block-Kit-Rendering) –
+  wichtig gerade hier, da beim Poll-Zyklus (und bei Dashboard-Hintergrund-Jobs) anders als in
+  der CLI niemand aktiv zusieht.
 
 **Einrichtung unter Windows** (`scripts/run_issue_watcher.ps1`): ruft `--check-issues` auf
 und hängt die Ausgabe UTF-8-sicher an `logs/issue_watcher.log` an (nicht versioniert, siehe
@@ -291,7 +295,13 @@ Quellen schreiben:
   Patch-Version je Projekt) mit automatischen Release-Notes (Ticket-Titel + PR-Link) – nicht
   nur das Framework selbst hatte bisher eine Versionshistorie, generierte Projekte in
   `workspace/` jetzt auch. Best effort: ein fehlgeschlagenes Tagging (z. B. `gh` fehlt) lässt
-  das Ticket trotzdem korrekt auf `done` stehen.
+  das Ticket trotzdem korrekt auf `done` stehen. Zusätzlich pflegt `update_project_changelog()`
+  bei jedem erfolgreichen Release eine echte `CHANGELOG.md` **im generierten Projekt selbst**
+  (`workspace/<projekt>/CHANGELOG.md`, neueste Einträge zuerst) – über die GitHub-Contents-API
+  direkt gegen den Default-Branch geschrieben (wie `gh release create` selbst operiert das ohne
+  Eingriff in den lokalen Checkout). Bisher hatte nur das Framework-Repo ein gepflegtes
+  CHANGELOG.md; das GitHub-Release allein macht die Versionshistorie nicht auch im Projekt
+  selbst lesbar. Ebenfalls Best effort, ohne Rückwirkung auf den Release-Erfolg.
 - **Priorität, Schätzung & WIP-Limit:** Jedes Ticket trägt jetzt `priority` (1=hoch/2=mittel/
   3=niedrig, bleibt über den gesamten Lebenszyklus erhalten, auch wenn ein Update sie nicht
   erneut mitgibt) und optional `estimate` (freier Text). `/backlog-add [priorität] <titel>`

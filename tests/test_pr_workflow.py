@@ -221,6 +221,24 @@ class TestCLIUsesPRWorkflowOnProtectedBranch(unittest.TestCase):
         self.assertFalse(pr_kwargs["draft"])
         self.assertNotIn("UNVERIFIZIERT", pr_kwargs["title"])
 
+    @patch("interface.cli.Confirm.ask", return_value=True)
+    def test_open_clarification_question_opens_draft_pr_with_question_in_body(self, _mock_confirm):
+        # Realer Fund: eine mitten in der Aufgabe aufgetretene Rückfrage (core/agent_toolbox.py.
+        # ask_human_for_clarification) trug bisher keinerlei Kennzeichnung im PR, obwohl die
+        # Testsuite selbst grün war (verification_ok=True) - ein Reviewer hätte die offene
+        # fachliche Frage nur im Chat-Verlauf gesehen, nie im PR selbst.
+        self.fake_github.get_current_branch.return_value = "main"
+        self.fake_github.gh_ready.return_value = True
+        self.cli._orchestrator.last_verification_ok = True
+        self.cli._orchestrator.last_needs_human_input = True
+        self.cli._orchestrator.last_clarification_questions = ["Welche Zahlungsanbieter sollen unterstützt werden?"]
+        asyncio.run(self.cli._ask_for_git_push("Testaufgabe"))
+
+        pr_kwargs = self.fake_github.create_pull_request.call_args.kwargs
+        self.assertTrue(pr_kwargs["draft"])
+        self.assertIn("RÜCKFRAGE", pr_kwargs["title"])
+        self.assertIn("Zahlungsanbieter", pr_kwargs["body"])
+
 
 class TestCLIFullPRWorkflowAgainstRealRepo(unittest.TestCase):
     """

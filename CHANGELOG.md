@@ -7,6 +7,56 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🤖 Vier Schritte Richtung "echtes Team": Selbstgesteuertes Backlog, Mid-Task-Eskalation, Epics & Produktions-Monitoring
+
+Nutzerwunsch: das Team soll "noch eigenständiger, autonomer, voll funktionsfähiger und
+professioneller genau wie ein echtes Softwareentwickler-Team aus Menschen arbeiten". Vier
+konkrete, verifizierte Lücken gegenüber echtem Team-Verhalten geschlossen:
+
+- **`core/backlog_worker.py`** (`python main.py --work-backlog`): ein "todo"-Ticket aus
+  `/backlog-add` wurde laut eigenem CLI-Hinweistext bisher NIE automatisch angegangen ("Führt
+  selbst nichts aus... wird erst zu echter Arbeit, wenn du die Aufgabe regulär in den Chat
+  schreibst") - core/issue_watcher.py reagiert nur auf NEU gelabelte GitHub-Issues, nicht auf
+  bereits wartende Backlog-Punkte. Greift jetzt eigenständig das höchstpriorisierte,
+  abhängigkeitsfreie Ticket auf, über denselben PR-Workflow/dasselbe Sicherheitsmodell wie
+  der Issue-Watcher. Bewusst NICHT in `.github/workflows/ai-team-scheduler.yml` verdrahtet
+  (eigene `scripts/run_backlog_worker.ps1` für den lokalen Taskplaner) - `memory/backlog.json`
+  ist gitignored, ein GitHub-Actions-Runner mit frischem Checkout hätte hier immer leeren
+  Zustand und würde scheinbar erfolgreich, aber wirkungslos durchlaufen.
+- **`core/backlog_store.py`**: Tickets tragen jetzt `epic`/`depends_on` -
+  `is_ticket_ready()` prüft echte Abhängigkeiten (unbekannte IDs gelten bewusst als NICHT
+  erfüllt, nie stillschweigend ignoriert), `/backlog` markiert blockierte Tickets sichtbar
+  (`🔗 ... wartet auf: ...`). Ein größeres Vorhaben lässt sich jetzt als zusammenhängende,
+  sinnvoll sortierte Ticket-Kette planen statt jede Anfrage isoliert zu bearbeiten.
+- **`ask_human_for_clarification`** (`core/agent_toolbox.py`): Rückfragen passierten bisher
+  nur VOR dem Start einer Aufgabe (core/task_manager.py needs_clarification) - sobald Agenten
+  liefen, gab es kein Mittel mehr, eine echte, entscheidende Unklarheit zu melden, nur
+  Weiterarbeiten mit einer geratenen Annahme. Jeder toolbox-fähige Agent kann jetzt mitten in
+  der Aufgabe eskalieren; sichtbar im Ergebnis, im Git-Push-Gate der CLI, und als eigener,
+  als Draft markierter PR-Zustand in `--check-issues`/`--work-backlog` (core/message_bus.py.
+  AgentResult.needs_human_input/clarification_questions, agents/orchestrator.py.
+  last_needs_human_input).
+- **`core/production_monitor.py`** (`python main.py --check-deployments`) + **`/deploy-cloud`**
+  (interface/cli.py): realer Fund beim Umsetzen - `core/cloud_deployment.py` (Fly.io/Vercel/
+  Render/Railway) existierte bereits vollständig fertig implementiert, war aber NIRGENDS in
+  CLI/Dashboard verdrahtet, obwohl das README das Gegenteil behauptete. Jetzt per
+  `/deploy-cloud <provider> [projekt] [--real]` erreichbar (Standard: sicherer Dry-Run).
+  Dabei zwei weitere echte Bugs in `core/cloud_deployment.py.deploy()` gefunden und behoben:
+  ein "echter" Deploy-Versuch für render/railway behauptete UNGEPRÜFT Erfolg, ohne je einen
+  Deploy-Befehl auszuführen (beide haben kein lokales CLI-Deploy-Kommando - jetzt ehrlich als
+  "nicht möglich" statt fälschlich "erfolgreich" gemeldet); ein "echter" Vercel-Deploy prüfte
+  nur, ob die CLI installiert ist, rief sie aber NIE tatsächlich auf (jetzt ein echter
+  `vercel --prod`-Aufruf). Ein erfolgreicher ECHTER Deploy wird über `core/deployment_status.py`
+  persistiert (gitignored, reiner Laufzeit-Zustand) und von `--check-deployments` periodisch
+  per echtem HTTP-Request auf Erreichbarkeit geprüft - ein Ausfall eröffnet automatisch ein
+  hochpriorisiertes Backlog-Ticket + externe Benachrichtigung, eine Wiederherstellung schließt
+  es automatisch. Dieselbe lokale-Zustand-Begründung wie beim Backlog-Worker: eigene
+  `scripts/run_production_monitor.ps1`, bewusst nicht im GitHub-Actions-Scheduler.
+
+51 neue/angepasste Tests (815 gesamt), `ruff check .` sauber.
+
+---
+
 ## 🕳️ Fünf zusammenhängende Verifikations-Lücken am Pong-Projekt (Frontend "geprüft und ok", aber funktional tot)
 
 Realer Fund: das generierte Pong-Spiel (`workspace/pong-game`) hatte einen grünen PR (#20,

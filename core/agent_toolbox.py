@@ -122,6 +122,26 @@ TOOL_SPECS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "ask_human_for_clarification",
+        "description": (
+            "Meldet, dass ein echter, für die Aufgabe ENTSCHEIDENDER Punkt unklar ist, den nur ein Mensch "
+            "sinnvoll beantworten kann (z.B. eine Geschäftsregel, die im Auftrag fehlt, oder ein Widerspruch "
+            "zwischen Anforderung und bestehendem Code). NICHT für Dinge, die du selbst sinnvoll entscheiden "
+            "kannst (übliche technische Defaults, Namenskonventionen) - dafür entscheide selbst und dokumentiere "
+            "es ggf. über record_architecture_decision. Nutze dies SELTEN, nur bei echter Blockade. Nach dem "
+            "Aufruf beendest du deine Antwort trotzdem mit einer ehrlichen Zusammenfassung: was du bereits "
+            "erledigt hast und was durch diese Rückfrage offen bleibt - kein stilles Abbrechen."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "Die konkrete Frage an den Menschen, präzise genug, um sie ohne Rückfrage beantworten zu können"},
+                "context": {"type": "string", "description": "Warum diese Frage die Aufgabe blockiert und was du bereits versucht/angenommen hast"},
+            },
+            "required": ["question"],
+        },
+    },
+    {
         "name": "find_symbol_definition",
         "description": "Findet die exakte AST-Definition (Klasse, Funktion, Methode) eines Code-Symbols im gesamten Projektverzeichnis.",
         "parameters": {
@@ -153,6 +173,10 @@ TOOL_SPECS: list[dict[str, Any]] = [
 READ_ONLY_TOOL_NAMES = {
     "read_file", "list_files", "search_code",
     "find_symbol_definition", "find_symbol_references", "analyze_code_impact",
+    # ask_human_for_clarification verändert kein Projekt-Dateisystem (reine Aufzeichnung, siehe
+    # _tool_ask_human_for_clarification) - auch ein NUR-LESE-Agent (z.B. eine reine Review-
+    # Rolle) muss auf eine echte Blockade hinweisen können, nicht nur schreibende Rollen.
+    "ask_human_for_clarification",
 }
 
 
@@ -202,6 +226,10 @@ class AgentToolbox:
         self.files_written: set[str] = set()
         self.call_count = 0
         self.call_log: list[dict[str, Any]] = []
+        # Gefüllt von _tool_ask_human_for_clarification() - agents/base_agent.py liest das nach
+        # dem Loop-Ende zurück in AgentResult.clarification_questions (dasselbe Muster wie
+        # files_written oben).
+        self.clarification_requests: list[str] = []
 
     async def list_files_snapshot(self, subdir: str = "") -> list[str]:
         """Wie das `list_files`-Werkzeug, aber OHNE call_count/call_log zu erhöhen – für einen
@@ -401,6 +429,22 @@ class AgentToolbox:
             "stdout": report.stdout,
             "stderr": report.stderr,
             "reason_skipped": report.reason_skipped,
+        }
+
+    # ── Eskalations-Werkzeug ──────────────────────────────────────────
+
+    async def _tool_ask_human_for_clarification(self, question: str, context: str = "") -> dict:
+        if not (question or "").strip():
+            return {"error": "'question' darf nicht leer sein."}
+        entry = question.strip() if not context.strip() else f"{question.strip()} (Kontext: {context.strip()})"
+        self.clarification_requests.append(entry)
+        return {
+            "status": "recorded",
+            "note": (
+                "Rückfrage aufgezeichnet - ein Mensch sieht sie, sobald dieser Lauf abgeschlossen ist. "
+                "Beende deine Antwort JETZT mit einer ehrlichen, kurzen Zusammenfassung: was bereits "
+                "erledigt ist und was durch diese Frage offen bleibt."
+            ),
         }
 
     # ── Dokumentations-Werkzeug ──────────────────────────────────────

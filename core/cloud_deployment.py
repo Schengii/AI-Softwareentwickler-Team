@@ -133,6 +133,25 @@ class CloudDeploymentManager:
                 output="Dry-Run: Manifeste erfolgreich generiert.",
             )
 
+        # Bugfix (realer Fund): render/railway kennen anders als fly/vercel KEIN lokales CLI-
+        # Deploy-Kommando - beide deployen über eine Git-Integration im eigenen Web-Dashboard
+        # (Repo verbinden, dann Push-getriggert). Ein "echter" Deploy-Versuch (dry_run=False)
+        # für diese beiden fiel bisher unbemerkt durch BEIDE folgenden Prüfungen (cli_tool ist
+        # None -> die "CLI fehlt"-Prüfung greift nicht -> der generische Fallback ganz unten
+        # behauptete UNGEPRÜFT success=True, ohne je irgendetwas wirklich deployt zu haben).
+        # Jetzt ehrlich als "nicht möglich" statt fälschlich als "erfolgreich" gemeldet.
+        if not dry_run and provider in ("render", "railway"):
+            return CloudDeploymentResult(
+                attempted=False,
+                provider=provider,
+                generated_files=created,
+                reason_skipped=(
+                    f"{provider} bietet kein lokales CLI-Deploy-Kommando - Manifeste wurden vorbereitet, "
+                    f"tatsächliches Deployment läuft über eine Git-Integration im {provider}-Dashboard "
+                    "(Repository dort verbinden, danach Push-getriggert)."
+                ),
+            )
+
         # Prüfe CLI-Verfügbarkeit
         cli_tool = "flyctl" if provider == "fly" else ("vercel" if provider == "vercel" else None)
         if cli_tool and shutil.which(cli_tool) is None:
@@ -164,11 +183,25 @@ class CloudDeploymentManager:
                     attempted=True, success=False, provider="fly", output=str(e), generated_files=created,
                 )
 
-        return CloudDeploymentResult(
-            attempted=True,
-            success=True,
-            provider=provider,
-            preview_url=f"https://{app_name}.{provider}.app",
-            generated_files=created,
-            output=f"Manifeste für {provider} bereitgestellt.",
-        )
+        # Bugfix (realer Fund): dieser Zweig ist jetzt NUR noch für "vercel" erreichbar
+        # (render/railway oben abgefangen) - lief bisher aber trotzdem NIE `vercel deploy`
+        # wirklich aus, obwohl die CLI-Verfügbarkeit direkt oben extra geprüft wurde.
+        try:
+            res = subprocess.run(
+                ["vercel", "--prod", "--yes"],
+                cwd=self.project_dir, capture_output=True, text=True, timeout=180.0,
+            )
+            success = res.returncode == 0
+            output = (res.stdout + res.stderr).strip()
+            # `vercel --prod` gibt die finale Deployment-URL bei Erfolg als letzte nicht-leere
+            # Ausgabezeile aus (stabiles Verhalten der Vercel-CLI) - genauer als geraten.
+            url = next((line.strip() for line in reversed(output.splitlines()) if line.strip().startswith("https://")), "") if success else ""
+            return CloudDeploymentResult(
+                attempted=True, success=success, provider="vercel",
+                preview_url=url or (f"https://{app_name}.vercel.app" if success else ""),
+                generated_files=created, output=output[-1000:],
+            )
+        except Exception as e:
+            return CloudDeploymentResult(
+                attempted=True, success=False, provider="vercel", output=str(e), generated_files=created,
+            )

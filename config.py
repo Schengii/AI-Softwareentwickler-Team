@@ -382,6 +382,37 @@ ENABLE_DEPENDENCY_AUTO_UPDATE: bool = os.getenv("ENABLE_DEPENDENCY_AUTO_UPDATE",
 BACKLOG_WIP_LIMIT_IN_PROGRESS: int = int(os.getenv("BACKLOG_WIP_LIMIT_IN_PROGRESS", "0"))
 
 # ──────────────────────────────────────────
+# Selbstgesteuertes Backlog-Abarbeiten (core/backlog_worker.py)
+# ──────────────────────────────────────────
+# Realer Fund: core/issue_watcher.py reagiert nur auf NEU gelabelte GitHub-Issues - "todo"-
+# Tickets aus `/backlog-add` (interface/cli.py) oder dem Dashboard wurden bisher laut eigenem
+# Docstring ("Führt selbst nichts aus") NIE automatisch angegangen, ein Mensch musste die
+# Aufgabe irgendwann erneut manuell in den Chat schreiben. Ein echtes Team wartet nicht auf ein
+# Label, um den nächsten Backlog-Punkt zu beginnen. `python main.py --work-backlog` (analog zu
+# --check-issues) greift eigenständig das höchstpriorisierte, abhängigkeitsfreie "todo"-Ticket
+# auf (core/backlog_store.py.is_ticket_ready()) und arbeitet es über denselben Orchestrator +
+# PR-Workflow ab. BACKLOG_WORKER_MAX_PER_CYCLE=1 (Standard) - dieselbe konservative Begrenzung
+# wie ISSUE_POLL_MAX_PER_CYCLE, aus demselben Grund (kein Cron-Tick soll nach einer Pause gleich
+# eine ganze Batch teurer Läufe lostreten).
+BACKLOG_WORKER_MAX_PER_CYCLE: int = int(os.getenv("BACKLOG_WORKER_MAX_PER_CYCLE", "1"))
+# Anders als die reine WIP-Anzeige-Warnung oben (bewusst kein Hard-Block für einen MENSCHEN,
+# der bewusst trotzdem eine weitere Aufgabe startet): hier gibt es NIEMANDEN, der übersteuern
+# könnte - ein erreichtes WIP-Limit blockiert den autonomen Worker deshalb hart, bis laufende
+# Arbeit abgeschlossen ist. 0 (Standard) = deaktiviert, dieselbe Konvention wie oben.
+BACKLOG_WORKER_WIP_LIMIT: int = int(os.getenv("BACKLOG_WORKER_WIP_LIMIT", "0"))
+
+# ──────────────────────────────────────────
+# Produktions-Monitoring nach dem Deploy (core/production_monitor.py)
+# ──────────────────────────────────────────
+# Realer Fund: core/cloud_deployment.py kann ein Projekt echt live deployen (Fly.io/Vercel),
+# aber danach schaute niemand mehr hin - kein echtes On-Call/SRE-Verhalten. `python main.py
+# --check-deployments` (analog zu --check-issues/--work-backlog) prüft periodisch jede per
+# `/deploy-cloud --real` deployte URL (core/deployment_status.py) auf echte Erreichbarkeit und
+# eröffnet bei einem Ausfall automatisch ein Backlog-Ticket, statt dass ein Ausfall unbemerkt
+# bleibt, bis ein Mensch zufällig selbst nachschaut.
+DEPLOYMENT_HEALTH_CHECK_TIMEOUT_SECONDS: float = float(os.getenv("DEPLOYMENT_HEALTH_CHECK_TIMEOUT_SECONDS", "10.0"))
+
+# ──────────────────────────────────────────
 # Externe Benachrichtigung bei Vorfällen, die menschliche Aufmerksamkeit brauchen (core/notifier.py)
 # ──────────────────────────────────────────
 # core/issue_watcher.py (Cron-Poll-Zyklus) und interface/web_dashboard.py (Hintergrund-Jobs)

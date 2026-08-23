@@ -192,6 +192,35 @@ class TestCLIUsesPRWorkflowOnProtectedBranch(unittest.TestCase):
         self.assertEqual(pr_kwargs["base"], "main")
         self.fake_github.checkout.assert_not_called()
 
+    @patch("interface.cli.Confirm.ask", return_value=True)
+    def test_unverified_run_opens_draft_pr_with_warning_in_title_and_body(self, _mock_confirm):
+        # Realer Fund (Pong-Projekt): ein PR, dessen echte Testsuite nie bestätigt bestanden
+        # hatte, sah auf GitHub optisch IDENTISCH zu einem echt verifizierten PR aus - kein
+        # Titel-Hinweis, kein Body-Hinweis, kein Draft-Status. Nur last_verification_ok=False
+        # zu setzen (ohne last_verification_summary) muss trotzdem funktionieren (getattr mit
+        # Default in _ask_for_git_push), analog zu den bestehenden last_verification_ok-only-
+        # Setups in dieser Datei.
+        self.fake_github.get_current_branch.return_value = "main"
+        self.fake_github.gh_ready.return_value = True
+        self.cli._orchestrator.last_verification_ok = False
+        asyncio.run(self.cli._ask_for_git_push("Testaufgabe"))
+
+        pr_kwargs = self.fake_github.create_pull_request.call_args.kwargs
+        self.assertTrue(pr_kwargs["draft"])
+        self.assertIn("UNVERIFIZIERT", pr_kwargs["title"])
+        self.assertIn("Nicht verifiziert", pr_kwargs["body"])
+
+    @patch("interface.cli.Confirm.ask", return_value=True)
+    def test_verified_run_opens_normal_non_draft_pr(self, _mock_confirm):
+        self.fake_github.get_current_branch.return_value = "main"
+        self.fake_github.gh_ready.return_value = True
+        self.cli._orchestrator.last_verification_ok = True
+        asyncio.run(self.cli._ask_for_git_push("Testaufgabe"))
+
+        pr_kwargs = self.fake_github.create_pull_request.call_args.kwargs
+        self.assertFalse(pr_kwargs["draft"])
+        self.assertNotIn("UNVERIFIZIERT", pr_kwargs["title"])
+
 
 class TestCLIFullPRWorkflowAgainstRealRepo(unittest.TestCase):
     """

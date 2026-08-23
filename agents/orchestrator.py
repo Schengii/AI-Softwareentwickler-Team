@@ -223,6 +223,14 @@ class Orchestrator:
         # bestanden ist (siehe _run_verification_loop) – von interface/cli.py genutzt, um vor
         # dem Git-Push-Gate zu warnen, statt unkommentiert "fertig" wirken zu lassen.
         self.last_verification_ok: bool = False
+        # Das vollständige Verifikations-Protokoll des letzten Laufs (dieselbe Markdown-Sektion,
+        # die auch final_output/den Chat-Verlauf ergänzt) - realer Fund am Pong-Projekt:
+        # last_verification_ok allein warnte zwar VOR dem Push im Terminal, aber der
+        # tatsächlich auf GitHub erstellte Pull Request trug KEINE dieser Information - ein
+        # Reviewer, der nur den PR sieht (nicht die Terminal-Session, in der er entstand),
+        # hatte keine Chance zu erkennen, dass die echte Testsuite nie bestätigt bestanden
+        # hatte. interface/cli.py._ask_for_git_push() bettet das jetzt direkt in den PR-Body ein.
+        self.last_verification_summary: str = ""
         # Pro-Projekt-Kostenbudget (core/project_constitution.py `max_project_tokens`,
         # /constitution) - unabhängig vom globalen MAX_RUN_TOKENS (das begrenzt nur EINEN
         # einzelnen Lauf). Bei jedem process()-Aufruf frisch aus der Konstitution des jeweils
@@ -518,6 +526,7 @@ class Orchestrator:
         # klare Warnung statt eines unbedingten "alles ok", wenn Code committet werden soll,
         # dessen Tests nie bestätigt bestanden haben.
         self.last_verification_ok = verification_ok
+        self.last_verification_summary = verification_summary
 
         # Projekt-Hygiene: automatisch regenerierbare Caches (__pycache__, .pytest_cache, …),
         # die die echte Testausführung gerade erzeugt hat, physisch entfernen. Bewusst OHNE
@@ -1595,18 +1604,40 @@ class Orchestrator:
                     summary_lines.append(f"- 🏋️ ❌ Lastentest ({perf_report.tool}) fehlgeschlagen: `{perf_report.script}` [{stats}].")
                     verification_ok = False
 
-        # Browser / Frontend UI-Check: Prüft statische Assets, Rendering und JS-Konsolenfehler
+        # Browser / Frontend UI-Check: Prüft statische Assets, Rendering und JS-Konsolenfehler.
+        # Realer Fund (Pong-Projekt): ein Fehlschlag hier war bisher rein informativ und
+        # beeinflusste verification_ok NICHT - ein Frontend, das im echten Browser mit einem
+        # JS-Fehler crasht oder ein <canvas> nie tatsächlich zeichnet (siehe blank_canvases,
+        # core/browser_verifier.py), bestand die Verifikation trotzdem. Das war eine bewusste
+        # Design-Entscheidung analog zu Lint/SAST - für ein Frontend-Projekt ist dieser Check
+        # aber oft die EINZIGE Instanz, die überhaupt echten Browser-Code ausführt (Unit-Tests
+        # wie im Pong-Fall mockten Canvas/DOM komplett weg), nicht nur ein Stil-Hinweis wie ein
+        # Lint-Fund. Ein echter Fehlschlag zählt deshalb jetzt wie beim Lastentest/Runtime-
+        # Smoke-Test oben als echte Anforderungsverletzung.
         if not (budget_aborted or manually_cancelled):
             browser_report = await asyncio.to_thread(verifier.check_browser_ui)
             if browser_report.attempted:
                 if browser_report.passed:
-                    engine_info = f" [{browser_report.engine}]"
-                    notify(f"  🌐 [bold green]Frontend/UI-Check erfolgreich:[/bold green] `{browser_report.tested_url}`{engine_info}.")
-                    summary_lines.append(f"- 🌐 Frontend/UI-Check: `{browser_report.tested_url}`{engine_info} fehlerfrei.")
+                    if browser_report.engine == "playwright":
+                        notify(f"  🌐 [bold green]Frontend/UI-Check erfolgreich:[/bold green] `{browser_report.tested_url}` [playwright, echter Browser-Lauf].")
+                        summary_lines.append(f"- 🌐 Frontend/UI-Check: `{browser_report.tested_url}` [playwright] fehlerfrei (JS wurde echt ausgeführt).")
+                    else:
+                        # static_dom-Fallback: prüft NUR, ob referenzierte Dateien existieren -
+                        # es läuft dabei KEIN JavaScript. Ein grüner static_dom-Pass sah bisher
+                        # optisch identisch zu einem echten Playwright-Pass aus (nur der kleine
+                        # "[engine]"-Zusatz unterschied sie) - genau der fehlende Kontrast, der
+                        # einen kaputten Bootstrap (fehlendes type="module", kein Game-Loop) als
+                        # "geprüft und ok" durchgehen ließ, obwohl nie echter Code lief.
+                        notify(f"  🌐 [bold yellow]Frontend/UI-Check eingeschränkt:[/bold yellow] `{browser_report.tested_url}` [static_dom] - kein echter Browser installiert, JavaScript wurde NICHT ausgeführt (nur Dateiexistenz geprüft).")
+                        summary_lines.append(f"- 🌐 ⚠️ Frontend/UI-Check nur eingeschränkt (`static_dom`, `{browser_report.tested_url}`): referenzierte Dateien existieren, aber JavaScript lief NICHT in einem echten Browser (Playwright fehlt/nicht nutzbar) - Laufzeitfehler bleiben so unentdeckt.")
                 else:
-                    err_details = "; ".join(browser_report.missing_assets + browser_report.console_errors)[:150]
-                    notify(f"  🌐 [bold red]Frontend/UI-Check Warnung:[/bold red] {err_details}.")
-                    summary_lines.append(f"- 🌐 ⚠️ Frontend/UI-Check: {err_details}.")
+                    details = browser_report.missing_assets + browser_report.console_errors + [
+                        f"Canvas nie gezeichnet: {c}" for c in browser_report.blank_canvases
+                    ]
+                    err_details = "; ".join(details)[:150]
+                    notify(f"  🌐 [bold red]Frontend/UI-Check fehlgeschlagen:[/bold red] {err_details}.")
+                    summary_lines.append(f"- 🌐 ❌ Frontend/UI-Check fehlgeschlagen: {err_details}.")
+                    verification_ok = False
 
         # Accessibility-Check: echter axe-core-Scan (WCAG 2.x) gegen die gerenderte Seite -
         # ersetzt die rein LLM-basierte Einschätzung des accessibility-Agenten durch geparste

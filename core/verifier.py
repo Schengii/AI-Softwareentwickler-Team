@@ -86,6 +86,20 @@ _IGNORED_DIRS = {VENV_DIRNAME, ".venv", "venv", "__pycache__", "node_modules", "
 _NODE_FAIL_FILE_PATTERN = re.compile(r"^(?:FAIL|✕|×)\s+(\S+\.(?:js|jsx|ts|tsx))", re.MULTILINE)
 _NODE_STACK_FILE_PATTERN = re.compile(r"\(([^():\n]+\.(?:js|jsx|ts|tsx)):\d+:\d+\)")
 
+# Realer Fund (Pong-Projekt): ein Jest-"Cannot use import statement outside a module"-Fehler
+# wurde bisher ausschließlich der TESTDATEI zugeschrieben (sie steht im "FAIL <datei>"-Header)
+# und landete deshalb beim tester-Agenten im Fix-Loop - die eigentliche Ursache liegt aber
+# fast immer in der Node-Projekt-KONFIGURATION (package.json ohne "type":"module", fehlende
+# Jest-Transform/Babel-Config), nicht in der Testlogik selbst. Erkennt die verbreitetsten
+# Signaturen genau dieser Fehlerklasse, siehe _parse_node_failures().
+_NODE_ENV_ERROR_PATTERN = re.compile(
+    r"Cannot use import statement outside a module"
+    r"|Jest encountered an unexpected token"
+    r"|Cannot find module '[^']+' from"
+    r"|is not defined by \"exports\"",
+    re.IGNORECASE,
+)
+
 # tsc hat kein natives JSON-Format – `--pretty false` liefert stattdessen dieses stabile,
 # grep-bare Zeilenformat: "pfad(zeile,spalte): error TSxxxx: nachricht".
 _TSC_ERROR_PATTERN = re.compile(r"^(.+?)\((\d+),(\d+)\): (error|warning) (TS\d+): (.+)$", re.MULTILINE)
@@ -1134,7 +1148,14 @@ class ProjectVerifier:
 
         for m in _NODE_FAIL_FILE_PATTERN.finditer(output):
             test_id = m.group(1)
-            failures.setdefault(test_id, TestFailure(test_id=test_id, message=""))
+            # Bugfix (realer Fund am Pong-Projekt): message blieb hier bisher IMMER die leere
+            # Zeichenkette ("") - der Fix-Agent im Governance-/Verifikations-Fix-Loop (siehe
+            # agents/orchestrator.py._run_verification_loop) bekam dadurch nie die tatsächliche
+            # Fehlermeldung zu sehen, nur test_id und Dateiname, und musste blind raten. Wie
+            # beim generischen <npm test>-Fallback direkt unten: die letzten 800 Zeichen der
+            # rohen Ausgabe sind zwar nicht chirurgisch präzise pro Suite, aber IMMER
+            # informativer als eine leere Zeichenkette.
+            failures.setdefault(test_id, TestFailure(test_id=test_id, message=output.strip()[-800:]))
 
         implicated_files: list[str] = []
         for fp in _NODE_STACK_FILE_PATTERN.findall(output):
@@ -1148,6 +1169,21 @@ class ProjectVerifier:
                 continue
             if rel not in implicated_files:
                 implicated_files.append(rel)
+
+        # Bei einer erkannten Umgebungs-/Konfigurations-Fehlerklasse (siehe
+        # _NODE_ENV_ERROR_PATTERN) zusätzlich package.json des betroffenen Node-Projekts als
+        # implizierte Datei ergänzen, damit auch dessen Owner (i.d.R. frontend/devops, nicht
+        # zwingend tester) im Fix-Loop adressiert wird - ZUSÄTZLICH zur Testdatei aus dem
+        # Stack-Trace oben, nicht statt ihr, da beide plausible Fix-Orte sind.
+        if _NODE_ENV_ERROR_PATTERN.search(output):
+            pkg_json = node_dir / "package.json"
+            if pkg_json.exists():
+                try:
+                    rel_pkg = str(pkg_json.resolve().relative_to(self.project_dir)).replace("\\", "/")
+                    if rel_pkg not in implicated_files:
+                        implicated_files.append(rel_pkg)
+                except ValueError:
+                    pass
 
         if not failures:
             failures["<npm test>"] = TestFailure(test_id="<npm test>", message=output.strip()[-800:])

@@ -7,6 +7,55 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🕳️ Fünf zusammenhängende Verifikations-Lücken am Pong-Projekt (Frontend "geprüft und ok", aber funktional tot)
+
+Realer Fund: das generierte Pong-Spiel (`workspace/pong-game`) hatte einen grünen PR (#20,
+CI grün, Backlog-Status "review") und trug trotzdem KEINEN einzigen funktionierenden
+Bootstrap-/Render-Code (`game.js` besaß keine `draw()`-Methode, keinen Game-Loop, `index.html`
+lud das ES-Modul ohne `type="module"` - die Seite crashte beim Öffnen sofort mit einem
+JS-Syntaxfehler). `npm test` schlug sogar komplett fehl (0 von 2 Tests liefen je), bevor
+dieser Fund überhaupt gemacht wurde. Fünf unabhängige, sich gegenseitig verstärkende Lücken
+im Verifikations-Pfad ließen das durchrutschen:
+
+- **`interface/cli.py._ask_for_git_push()`**: der PR-Body enthielt bisher NIE den
+  Verifikationsstatus - nur das Terminal warnte (`verification_note`), aber genau das sieht
+  ein GitHub-Reviewer nie. Ein PR, dessen echte Testsuite nicht bestätigt bestanden hat,
+  bekommt jetzt einen `⚠️ [UNVERIFIZIERT]`-Titel-Präfix, das vollständige
+  Verifikations-Protokoll im Body (`Orchestrator.last_verification_summary`, neu) und wird per
+  `github_agent.create_pull_request(draft=True)` als Draft angelegt statt als normaler,
+  mergebarer PR.
+- **`requirements.txt`**: Playwright war nur Dev-Abhängigkeit - ohne installiertes Playwright
+  fällt `core/browser_verifier.py` STILL auf eine rein statische Datei-Existenz-Prüfung
+  zurück, die kein JavaScript ausführt. Jetzt Laufzeit-Abhängigkeit; ein `static_dom`-Pass
+  wird im Verifikations-Protokoll außerdem explizit als "nur eingeschränkt geprüft" markiert
+  statt optisch identisch zu einem echten Playwright-Lauf zu erscheinen.
+- **`core/browser_verifier.py`**: neue Blank-Canvas-Heuristik (`blank_canvases`) - ein
+  `<canvas>`-Element, dessen Pixelinhalt nach dem Laden byte-identisch mit einem frisch
+  erzeugten LEEREN Canvas ist, wurde nachweislich nie gezeichnet (kein Fehler wird dabei
+  geworfen, es fehlt schlicht jeder Render-Aufruf) - genau das Pong-Muster.
+- **`agents/orchestrator.py._run_verification_loop()`**: ein Fehlschlag des Frontend/UI-Checks
+  (Konsolenfehler, fehlendes Asset, jetzt auch Blank-Canvas) war bisher rein informativ und
+  beeinflusste `verification_ok` NICHT - für ein Frontend-Projekt ist dieser Check aber oft die
+  einzige Instanz, die überhaupt echten Browser-Code ausführt. Zählt jetzt wie ein
+  fehlgeschlagener Lastentest/Runtime-Smoke-Test als echte Anforderungsverletzung.
+- **`core/verifier.py._parse_node_failures()`**: zwei Bugs zugleich. (1) `message` blieb für
+  per "FAIL <datei>"-Header erkannte Jest-Fehlschläge IMMER `""` - der Fix-Agent im
+  Verifikations-Fix-Loop bekam nie die tatsächliche Fehlermeldung zu sehen. (2) ein
+  Jest-Konfigurationsfehler ("Cannot use import statement outside a module" u.ä.) wurde
+  ausschließlich der Testdatei zugeschrieben und landete deshalb beim `tester`-Agenten, obwohl
+  die Ursache in der Node-Projekt-Konfiguration liegt - `package.json` wird bei erkannter
+  Fehlersignatur jetzt zusätzlich implizierter Owner.
+- **`.github/workflows/ci.yml`**: neuer Job `workspace-frontend-tests` führt echtes
+  `npm test` in jedem `workspace/*`-Projekt mit Test-Skript aus - CI testete bisher
+  AUSSCHLIESSLICH den Python-Code des Orchestrators selbst (`ruff.toml` schließt `workspace/`
+  bewusst aus), ein grüner PR-Check bedeutete nie "das generierte Frontend funktioniert".
+
+`workspace/pong-game` selbst wurde im selben Zug repariert (`draw()`/Game-Loop/Event-Handling
+ergänzt, `type="module"`, Jest-ESM-Konfiguration) - sonst hätte der neue CI-Job und der neue
+Blank-Canvas-Check sofort auf diesem PR angeschlagen.
+
+---
+
 ## 🔧 Datenbasierte Selbstoptimierungs-Vorschläge über mehrere Läufe hinweg
 
 Nutzerwunsch: "Loops einbauen, damit das Team eigenständiger arbeiten und sich weiter

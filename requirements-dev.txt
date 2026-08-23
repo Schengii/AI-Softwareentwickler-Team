@@ -14,8 +14,8 @@ pip-audit>=2.7.0
 # Echte Testabdeckungs-Messung für generierte Python-Projekte (core/verifier.py.check_coverage)
 pytest-cov>=4.1.0
 
-# Headless-Browser UI- & Frontend-Validierung (core/browser_verifier.py)
-playwright>=1.40.0
+# playwright selbst ist jetzt eine Laufzeit-Abhängigkeit (siehe requirements.txt) - hier
+# nur noch axe-core-python, das für Barrierefreiheits-Scans zusätzlich Playwright braucht.
 
 # core/verifier.py.check_sast() nutzt `bandit`, um generierten Python-Code echt statisch auf
 # bekannte Schwachstellenmuster zu scannen (hartcodierte Secrets, unsichere Deserialisierung,

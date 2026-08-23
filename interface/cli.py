@@ -500,10 +500,28 @@ class CLIInterface:
             if success_p:
                 if use_pr_workflow:
                     console.print(f"🚀 [bold green]Feature-Branch `{feature_branch}` gepusht.[/bold green]")
+                    # Realer Fund am Pong-Projekt: der PR-Titel/Body trug bisher UNTER KEINEN
+                    # UMSTÄNDEN einen Hinweis auf den Verifikationsstatus - nur das Terminal
+                    # (verification_note oben) warnte, aber genau das sieht ein Reviewer auf
+                    # GitHub nie. Ein PR, dessen echte Testsuite nie bestätigt bestanden hat,
+                    # bekommt jetzt einen unübersehbaren Titel-Präfix, das vollständige
+                    # Verifikations-Protokoll im Body UND wird als Draft angelegt (github_agent.
+                    # create_pull_request(draft=...)) - "noch nicht mergebereit" ist damit für
+                    # GitHub selbst sichtbar, nicht nur im Fließtext, den man überlesen kann.
+                    pr_title = commit_msg if verification_ok else f"⚠️ [UNVERIFIZIERT] {commit_msg}"
+                    verification_summary = getattr(self._orchestrator, "last_verification_summary", "") or ""
+                    pr_body = f"Automatisch erstellt vom KI-Softwareentwickler-Team.\n\nAufgabe: {task_summary}"
+                    if not verification_ok:
+                        pr_body += (
+                            "\n\n---\n\n⚠️ **Nicht verifiziert:** Die echte Testsuite hat diesen Code NICHT "
+                            "bestätigt bestanden - vor dem Merge manuell prüfen.\n\n"
+                            f"{verification_summary}"
+                        )
                     success_pr, pr_out = github_agent.create_pull_request(
-                        title=commit_msg,
-                        body=f"Automatisch erstellt vom KI-Softwareentwickler-Team.\n\nAufgabe: {task_summary}",
+                        title=pr_title,
+                        body=pr_body,
                         base=base_branch, head=feature_branch,
+                        draft=not verification_ok,
                     )
                     if success_pr:
                         pr_url = pr_out.splitlines()[-1] if pr_out else pr_out

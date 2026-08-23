@@ -404,8 +404,12 @@ Große Codebases (50+ Dateien) erfordern mehr als reine Vektorsuche: Der [Codeba
 Frontends (HTML/CSS/JS, React, Vue, FastAPI/Flask-Templates) werden durch [BrowserVerifier](core/browser_verifier.py) echten Funktionstests unterzogen:
 
 - **Dynamischer Headless-Browser-Check (Playwright):** Startet die Anwendung auf einem freien Port, fängt JavaScript-Konsolenfehler (`console.error`, Uncaught Exceptions) ab und prüft das Rendering.
+- **Blank-Canvas-Erkennung:** Ein `<canvas>`-Element, dessen Pixelinhalt nach dem Laden byte-identisch mit einem frisch erzeugten LEEREN Canvas ist, wurde nachweislich nie gezeichnet (z.B. fehlender Game-Loop) - wird als echter Fehlschlag gewertet, nicht nur informativ gemeldet.
 - **Asset- & 404-Integritätsprüfung:** Verifiziert, ob alle in HTML verlinkten CSS-, JS- und Bilddateien existieren.
-- **Graceful Fallback:** Ist kein Browser-Binary installiert, analysiert das System den DOM-Baum statisch und schlägt bei fehlenden Assets oder fehlerhaften Tags an.
+- **Graceful, aber SICHTBARER Fallback:** Ist kein Browser-Binary installiert, analysiert das System den DOM-Baum nur noch statisch (keine JS-Ausführung) - dieser eingeschränkte Modus wird im Verifikations-Protokoll jetzt explizit als "nur eingeschränkt geprüft" markiert, statt optisch identisch zu einem echten Browser-Lauf als "erfolgreich" zu erscheinen.
+- **Ein echter Fehlschlag hier (Konsolenfehler, fehlendes Asset, nie gezeichnetes Canvas) blockiert die Verifikation** genau wie ein fehlgeschlagener Unit-Test - für Frontend-Projekte ist dieser Check oft die einzige Instanz, die überhaupt echten Browser-Code ausführt.
+
+Playwright ist Laufzeit-Abhängigkeit (`requirements.txt`), nicht nur Dev-Tool - nach `pip install -r requirements.txt` einmalig zusätzlich `playwright install chromium` ausführen, um den echten Browser-Check nutzen zu können (sonst degradiert er automatisch, aber sichtbar, auf die eingeschränkte statische Prüfung).
 
 ---
 

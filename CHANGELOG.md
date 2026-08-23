@@ -7,6 +7,72 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔧 Datenbasierte Selbstoptimierungs-Vorschläge über mehrere Läufe hinweg
+
+Nutzerwunsch: "Loops einbauen, damit das Team eigenständiger arbeiten und sich weiter
+optimieren kann". Nach Rückfrage (drei mögliche Lesarten: eingebauter Daemon-Modus im
+Framework, Claude-Code-`/schedule` für wiederkehrende Läufe, oder eine tiefere
+Selbstoptimierungs-Schleife) fiel die Wahl bewusst auf Letzteres – als reiner VORSCHLAG, keine
+automatische Änderung, dieselbe Linie wie die bereits weiter unten dokumentierte Entscheidung,
+Phasenreihenfolge-Änderungen nicht automatisch, sondern nur nach Rücksprache umzusetzen.
+
+- **`memory/run_history.py.get_agent_model_performance()`**: `agent_results`-Einträge trugen
+  bisher `agent_id`/`success`/`total_tokens`, aber NICHT, welches Modell tatsächlich genutzt
+  wurde (`AgentResult.model_used` existierte bereits, wurde aber nie mit aufgezeichnet) – es
+  gab dadurch keine Möglichkeit zu sehen, ob die aktuell konfigurierte Modellzuweisung eines
+  Agenten (z. B. nach einem manuellen `.env`-Wechsel) empirisch tatsächlich die beste ist.
+  Gruppiert Erfolgsquote/Tokenverbrauch je (Agent, Modell)-Kombination; ältere Historien-
+  Einträge ohne `model_used` landen unter "unbekannt" statt zu crashen.
+- **`core/optimization_advisor.py`** (`analyze()`, `format_report_for_humans()`): rein
+  deterministische Auswertung (keine LLM-Interpretation nötig – Erfolgsquoten sind bereits
+  harte Zahlen) erkennt zwei Muster: (1) ein Agent lief bereits mit mehreren Modellen in der
+  Historie, eines davon deutlich besser (Mindest-Stichprobengröße `MIN_SAMPLE_SIZE=5` je
+  Modell UND Mindest-Lücke `MIN_SUCCESS_RATE_GAP=15` Prozentpunkte, sonst gilt es als
+  Rauschen); (2) ein Agent scheitert auffällig oft gegenüber dem Team-Durchschnitt. Beides
+  bewusst NUR als Empfehlung formatiert, ändert `config.py` nie automatisch.
+- Erscheint automatisch als eigener Abschnitt im Abschlussbericht JEDES Laufs (`agents/
+  orchestrator.py`), aber NUR wenn ein aussagekräftiger Befund vorliegt – kein unnötiger
+  Abschnitt für die Mehrheit der Läufe. Zusätzlich jederzeit ohne neuen Lauf über den neuen
+  CLI-Befehl `/optimize` abrufbar.
+
+23 neue Tests (`test_optimization_advisor.py`, `test_optimization_advisor_integration.py`,
+`test_cli_optimize_command.py`, Erweiterung von `test_run_history.py`). Volle Suite
+(752 Tests) grün, ruff sauber.
+
+---
+
+## ♿ Echter axe-core-Accessibility-Scan statt LLM-Freitext-Checkliste
+
+Letzter offener Punkt aus der Bestandsaufnahme gegen ein professionelles Team: Nach SAST
+(`bandit`) und Lizenz-Audit (`pip-licenses`) blieb der `accessibility`-Agent als dritter Agent
+übrig, dessen Report reine LLM-Einschätzung ohne echten Fundort war – ausgerechnet, obwohl
+`core/browser_verifier.py` bereits per Playwright echt gerenderte Seiten für den UI-Check
+zur Verfügung hatte.
+
+- **`core/browser_verifier.py.verify_accessibility()`** (`AccessibilityReport`,
+  `AccessibilityViolation`): führt `axe-core-python` (WCAG 2.x, dieselbe Engine, die auch
+  `@axe-core/playwright`, `cypress-axe`, `jest-axe` nutzen) gegen den ersten gefundenen
+  HTML-Einstiegspunkt aus – eigener, unabhängiger Playwright-Lauf statt Wiederverwendung des
+  bestehenden UI-Checks, damit ein Fehlschlag hier den Konsolen-/Asset-Check nicht beeinflusst
+  und umgekehrt. `core/verifier.py.check_accessibility()` delegiert dünn daran, exakt wie
+  `check_browser_ui()`. Braucht zwingend eine echt gerenderte Seite (Playwright UND
+  `axe-core-python`) – ohne beides `attempted=False`, NIEMALS fälschlich "keine Verstöße".
+  Rein informativ im Abschlussbericht wie der bestehende Frontend/UI-Check direkt darüber,
+  beeinflusst `verification_ok` nicht.
+- Parsing bewusst defensiv (`.get()`-Ketten statt direkter Zugriffe) gegen axe-core-Versions-
+  Drift, dasselbe Prinzip wie beim k6-Summary-Parser: fehlende/abweichende Felder degradieren
+  konservativ, statt mit `KeyError` zu crashen.
+
+14 neue Tests (`test_accessibility_verifier.py`, `test_accessibility_integration.py`). Neue
+optionale Dev-Abhängigkeit `axe-core-python` in `requirements-dev.txt`. Volle Suite
+(737 Tests) grün, ruff sauber.
+
+Damit sind jetzt alle drei Agenten mechanisiert, die zuvor reine LLM-Einschätzungen ohne
+echten Fundort abgaben: `security` (SAST), `compliance` (Lizenz-Audit) und `accessibility`
+(axe-core) – durchgängig dasselbe Muster wie beim ursprünglichen Dependency-Audit.
+
+---
+
 ## 📜 CHANGELOG.md für generierte Projekte & echtes Slack-Block-Kit-Format
 
 Letzte zwei kleinere Punkte aus derselben Bestandsaufnahme:

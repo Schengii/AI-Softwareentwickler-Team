@@ -49,6 +49,11 @@ Und: check_load_test() führt die vom performance-Agenten geschriebenen k6-/Locu
 Skripte tatsächlich AUS (bisher landeten sie ungeprüft im Projekt, niemand wusste, ob sie
 überhaupt liefen) – startet die generierte App auf einem freien Port und lässt einen kurzen,
 wenige Sekunden dauernden Smoke-Lasttest dagegen laufen, kein vollständiger Lasttest.
+
+Und: check_accessibility() (core/browser_verifier.py.verify_accessibility()) ersetzt die
+bisherige rein LLM-basierte Einschätzung des accessibility-Agenten (Freitext-Checkliste ohne
+konkreten Fundort) durch einen echten axe-core-Scan (WCAG 2.x) gegen eine echt gerenderte
+Playwright-Seite – dasselbe Prinzip wie check_sast() für Security, nur für Barrierefreiheit.
 """
 
 import csv
@@ -1272,6 +1277,17 @@ class ProjectVerifier:
         from core.browser_verifier import BrowserVerifier
         verifier = BrowserVerifier(self.project_dir)
         return verifier.verify_frontend(timeout_seconds=timeout_seconds)
+
+    def check_accessibility(self, timeout_seconds: float = 10.0):
+        """
+        Prüft Frontend-/Web-Projekte per echtem axe-core-Scan (WCAG 2.x) auf konkrete,
+        geparste Barrierefreiheits-Verstöße – ersetzt die bisherige rein LLM-basierte
+        Einschätzung des accessibility-Agenten. Dünne Delegation an BrowserVerifier, exakt wie
+        check_browser_ui().
+        """
+        from core.browser_verifier import BrowserVerifier
+        verifier = BrowserVerifier(self.project_dir)
+        return verifier.verify_accessibility(timeout_seconds=timeout_seconds)
 
     def check_load_test(self, load_seconds: float = 5.0, timeout_seconds: float = 60.0) -> PerfCheckReport:
         """

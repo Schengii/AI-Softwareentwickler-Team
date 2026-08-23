@@ -40,3 +40,9 @@ pip-licenses>=4.0.0
 # (https://k6.io/docs/get-started/installation/) - genau wie docker bei check_docker_build().
 locust>=2.20.0
 
+# core/browser_verifier.py.verify_accessibility() nutzt `axe-core-python`, um generierte
+# Web-Frontends echt per axe-core (WCAG 2.x) auf Barrierefreiheits-Verstöße zu scannen - statt
+# einer rein LLM-basierten Einschätzung des accessibility-Agenten. Braucht zusätzlich Playwright
+# (bereits oben) für eine echt gerenderte Seite. Ohne installiertes axe-core-python wird dieser
+# Scan übersprungen (attempted=False), kein Fehler - siehe AccessibilityReport.
+axe-core-python>=0.1.0

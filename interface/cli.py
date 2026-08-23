@@ -82,6 +82,7 @@ HELP_TEXT = """
 | `/delete-project <name>` | Löscht ein Projekt unwiderruflich aus dem Workspace (mit Bestätigung) |
 | `/audit-projekt [projekt]` | Lässt den Projekt-Hygiene-Agenten das Framework (oder ein Projekt) wirklich durchsehen; Löschungen nur nach Bestätigung |
 | `/learnings` | Zeigt alle von den Agenten gelernten Regeln (persistentes Gedächtnis) mit Nummer je Agent an |
+| `/optimize` | Zeigt datenbasierte Selbstoptimierungs-Vorschläge über alle bisherigen Läufe hinweg (Modellzuweisung, auffällig niedrige Erfolgsquoten) – rein informativ, keine automatische Änderung |
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
 | `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/design-system [projekt]` | Zeigt/bearbeitet feste visuelle Präferenzen (Farbpalette, Typografie, Spacing-Skala, Tonalität, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
@@ -649,6 +650,26 @@ class CLIInterface:
             "💡 [dim]Eine falsche/überholte Regel entfernen: `/delete-learning <agent> <nr>`[/dim]"
         )
 
+    def _show_optimization_report(self) -> None:
+        """
+        Zeigt core/optimization_advisor.py auf Abruf an - dieselbe datenbasierte Analyse, die
+        auch automatisch am Ende jedes Laufs angehängt wird (nur dort leer, wenn nichts
+        Auffälliges gefunden wurde), hier jederzeit ohne einen neuen Lauf abrufbar. Rein
+        informativ, ändert nichts an config.py.
+        """
+        from core.optimization_advisor import analyze, format_report_for_humans
+
+        report = analyze()
+        if report.is_empty():
+            console.print(
+                "📭 Aktuell keine auffälligen Optimierungspotenziale erkannt (zu wenig Historie "
+                "oder alle Agenten performen vergleichbar - siehe MIN_SAMPLE_SIZE/MIN_SUCCESS_RATE_GAP "
+                "in core/optimization_advisor.py).",
+                style="dim",
+            )
+            return
+        console.print(Panel(Markdown(format_report_for_humans(report)), title="🔧 Selbstoptimierungs-Vorschläge", border_style="cyan"))
+
     async def _show_backlog(self) -> None:
         """
         Zeigt memory/backlog.json (core/backlog_store.py) - alle Tickets über CLI, Dashboard
@@ -1022,6 +1043,9 @@ class CLIInterface:
 
         elif cmd in ("/learnings", "/gelernt", "/knowledge"):
             self._show_learnings()
+
+        elif cmd in ("/optimize", "/optimierung", "/self-optimize"):
+            self._show_optimization_report()
 
         elif cmd in ("/backlog", "/board", "/kanban", "/tickets"):
             await self._show_backlog()

@@ -93,6 +93,8 @@ from core.git_isolation import (
 )
 from core.message_bus import AgentResult, AgentTask
 from core.notifier import notify_external
+from core.optimization_advisor import analyze as analyze_optimization_potential
+from core.optimization_advisor import format_report_for_humans as format_optimization_report
 from core.project_constitution import format_constitution_for_agents, get_max_project_tokens
 from core.project_status import format_context_for_agents, record_run
 from core.result_aggregator import ResultAggregator
@@ -601,6 +603,14 @@ class Orchestrator:
         real_files_section = self._build_real_files_section(project_dir, file_owners)
         collision_section = self._build_file_collision_section(file_collisions)
 
+        # Datenbasierte Selbstoptimierungs-Vorschläge (core/optimization_advisor.py) - rein
+        # deterministische Auswertung der BEREITS BESTEHENDEN, projektübergreifenden
+        # Lauf-Historie (kein zusätzlicher LLM-Aufruf nötig, anders als retrospective/
+        # agent_trainer direkt darunter). Bewusst NUR ein Vorschlag, keine automatische
+        # Änderung an config.py (siehe Modul-Docstring) - leer für die Mehrheit der Läufe ohne
+        # statistisch aussagekräftigen Befund, kein unnötiger Abschnitt im Bericht.
+        optimization_section = format_optimization_report(analyze_optimization_potential())
+
         final_output = (
             f"{final_solution}\n\n"
             f"---\n\n"
@@ -613,7 +623,8 @@ class Orchestrator:
             f"---\n\n"
             f"{trainer_result.content if trainer_result else ''}\n\n"
             f"---\n\n"
-            f"{stats_table}"
+            + (f"{optimization_section}\n\n---\n\n" if optimization_section else "")
+            + f"{stats_table}"
         )
 
         self._history.add_assistant_message(final_output)
@@ -652,7 +663,10 @@ class Orchestrator:
             verification_ok=verification_ok,
             total_tokens=sum(r.total_tokens for r in results),
             duration_seconds=total_duration,
-            agent_results=[{"agent_id": r.agent_id, "success": r.success, "total_tokens": r.total_tokens} for r in results],
+            agent_results=[
+                {"agent_id": r.agent_id, "success": r.success, "total_tokens": r.total_tokens, "model_used": r.model_used}
+                for r in results
+            ],
         )
 
         # Realer Fund: bisher endete JEDER Lauf mit demselben uneingeschränkten "✅ Fertig!",
@@ -1593,6 +1607,24 @@ class Orchestrator:
                     err_details = "; ".join(browser_report.missing_assets + browser_report.console_errors)[:150]
                     notify(f"  🌐 [bold red]Frontend/UI-Check Warnung:[/bold red] {err_details}.")
                     summary_lines.append(f"- 🌐 ⚠️ Frontend/UI-Check: {err_details}.")
+
+        # Accessibility-Check: echter axe-core-Scan (WCAG 2.x) gegen die gerenderte Seite -
+        # ersetzt die rein LLM-basierte Einschätzung des accessibility-Agenten durch geparste
+        # Verstöße mit Regel/Schweregrad/Element. Rein informativ wie Lint/SAST/Lizenz-Scan
+        # (beeinflusst verification_ok nicht) - dieselbe Einstufung wie der bereits bestehende
+        # Frontend/UI-Check direkt darüber, der aus demselben Grund ebenfalls nicht blockiert.
+        if not (budget_aborted or manually_cancelled):
+            a11y_report = await asyncio.to_thread(verifier.check_accessibility)
+            if a11y_report.attempted:
+                if a11y_report.passed:
+                    notify(f"  ♿ [bold green]Accessibility-Check (axe-core) erfolgreich:[/bold green] `{a11y_report.tested_url}`.")
+                    summary_lines.append(f"- ♿ Accessibility-Check (axe-core): `{a11y_report.tested_url}` keine WCAG-Verstöße.")
+                else:
+                    top = "; ".join(f"{v.rule_id} [{v.impact}] {v.target}" for v in a11y_report.violations[:5])
+                    if len(a11y_report.violations) > 5:
+                        top += f" … und {len(a11y_report.violations) - 5} weitere"
+                    notify(f"  ♿ [bold red]Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße.[/bold red]")
+                    summary_lines.append(f"- ♿ ⚠️ Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße: {top}")
 
         verification_summary = "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n" + (
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."

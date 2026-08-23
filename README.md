@@ -436,6 +436,7 @@ Zwei unabhängige Prüfebenen, die sich ergänzen:
    - **SAST (Static Application Security Testing):** `bandit` scannt generierten Python-Code statisch auf bekannte Schwachstellenmuster (hartcodierte Secrets, unsichere Deserialisierung, SQL-Injection-Vektoren, unsichere Zufallszahlen, `eval`/`exec`, …) – ersetzt die bisher rein LLM-basierte Freitext-Einschätzung des `security`-Agenten (keine Datei/Zeile) durch einen echten, geparsten Fund mit exaktem Fundort. Node/Rust/Go folgen ggf. in einer späteren Runde.
    - **Lizenz-/SBOM-Audit:** `pip-licenses` liest die Lizenzen der tatsächlich installierten Python-Abhängigkeiten aus und markiert bekannte Copyleft-Lizenzen (GPL/AGPL/LGPL/MPL/CDDL/EUPL/SSPL) – ersetzt die bisher geratene Lizenz-Tabelle des `compliance`-Agenten durch echte Paket-Metadaten statt einer LLM-Vermutung.
    - **Lastentest (Smoke-Level):** Vom `performance`-Agenten geschriebene k6-/Locust-Skripte (`tests/load/`) werden jetzt tatsächlich AUSGEFÜHRT statt nur unausgeführt im Projekt zu liegen – die App wird auf einem freien Port gestartet, ein kurzer Lasttest (wenige Sekunden, wenige virtuelle Nutzer) läuft dagegen. Kein vollständiger Lasttest/Benchmark, nur eine Prüfung, ob die App unter minimaler gleichzeitiger Last fehlerfrei antwortet. Opt-out über `ENABLE_LOAD_TEST_CHECK=false`.
+   - **Accessibility-Scan (WCAG 2.x):** `axe-core-python` scannt generierte Web-Frontends echt per axe-core gegen eine per Playwright gerenderte Seite – ersetzt die bisher rein LLM-basierte Freitext-Checkliste des `accessibility`-Agenten durch geparste Verstöße mit Regel/Schweregrad/betroffenem Element.
    Schlägt ein Test fehl, wird der reale Traceback geparst und der betroffene Agent anhand der `file_owners`-Map gezielt zur Korrektur beauftragt (bis zu `MAX_VERIFICATION_ITERATIONS` Runden). SAST- und Lizenz-Funde sind (wie Lint) rein informativ im Abschlussbericht sichtbar – ein Fund braucht menschliche Einschätzung (False Positives, Lizenz-Nutzungskontext) statt eines automatischen Blockers. Ein fehlgeschlagener Lastentest zählt dagegen wie der Runtime-Smoke-Test als echte Anforderungsverletzung.
 
 Beide Ebenen laufen automatisch als Teil jedes Orchestrator-Laufs, ohne dass der Nutzer sie
@@ -531,6 +532,19 @@ der beiden gerade bindend war.
   `memory/backlog.json`. Bereits getroffene Entscheidungen werden bei JEDEM künftigen Lauf
   automatisch in den Kontext aller Teilaufgaben injiziert, damit spätere Läufe nicht
   unbemerkt gegen frühere, bewusste Entscheidungen arbeiten. Über `/adr [projekt]` einsehbar.
+- **Datenbasierte Selbstoptimierungs-Vorschläge** (`core/optimization_advisor.py`): `agent_trainer`
+  passt bisher einzelne Agenten-Prompts nach EINEM Lauf per LLM-Interpretation an – es fehlte
+  eine rein deterministische Auswertung über VIELE Läufe hinweg (`memory/run_history.py`), ob
+  die aktuell konfigurierte Modellzuweisung eines Agenten (z. B. nach einem manuellen
+  `.env`-Wechsel) tatsächlich die empirisch beste ist, und ob ein Agent auffällig oft
+  gegenüber dem Team-Durchschnitt scheitert. Kein zusätzlicher LLM-Aufruf nötig (Erfolgsquoten/
+  Tokenverbrauch sind bereits harte Zahlen) – erscheint automatisch am Ende jedes Laufs, wenn
+  ein statistisch aussagekräftiger Befund vorliegt (Mindest-Stichprobengröße + deutlicher
+  Unterschied, kein Rauschen bei knappen Abweichungen), sonst kein zusätzlicher Abschnitt.
+  Bewusst **nur ein Vorschlag, keine automatische Änderung an `config.py`** – eine
+  Modellzuweisung hat neben der reinen Erfolgsquote weitere Faktoren (Kosten, Rate-Limits,
+  bewusste Provider-Präferenzen), die das Modul nicht kennt. Jederzeit auch ohne neuen Lauf
+  über `/optimize` abrufbar.
 
 ---
 

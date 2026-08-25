@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Finanzportfolio Dashboard</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent: #38bdf8;
+            --spacing: 1rem;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            margin: 0;
+            padding: var(--spacing);
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+        }
+
+        .upload-btn {
+            background-color: var(--accent);
+            color: var(--bg-color);
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            transition: opacity 0.2s;
+        }
+
+        .upload-btn:hover { opacity: 0.9; }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: var(--spacing);
+        }
+
+        .card {
+            background-color: var(--card-bg);
+            padding: 1.5rem;
+            border-radius: 1rem;
+            min-height: 200px;
+            border: 1px solid #334155;
+        }
+
+        @media (max-width: 1024px) {
+            .grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        @media (max-width: 640px) {
+            .grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Portfolio Übersicht</h1>
+    <button class="upload-btn" onclick="document.getElementById('fileInput').click()">Portfolio importieren</button>
+    <input type="file" id="fileInput" style="display: none;" accept=".csv,.json">
+</header>
+
+<main class="grid">
+    <div class="card"><h3>Depotwert</h3></div>
+    <div class="card"><h3>Performance</h3></div>
+    <div class="card"><h3>Asset-Verteilung</h3></div>
+    <div class="card"><h3>Top Performer</h3></div>
+    <div class="card"><h3>Transaktionen</h3></div>
+    <div class="card"><h3>Dividenden</h3></div>
+    <div class="card"><h3>Risiko-Analyse</h3></div>
+    <div class="card"><h3>Markt-News</h3></div>
+    <div class="card"><h3>Einstellungen</h3></div>
+</main>
+
+</body>
+</html>

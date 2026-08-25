@@ -1,0 +1,2 @@
+- Schreibe minimale Antworten. Keine Begrüßungen, keine Floskeln.
+- Gib bei Code-Änderungen nur den geänderten Block aus.

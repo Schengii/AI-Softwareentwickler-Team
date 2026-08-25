@@ -1,0 +1,21 @@
+{
+  "theme": "Dark Slate FinTech",
+  "colors": {
+    "bg_main": "#0F172A",
+    "card_bg": "#1E293B",
+    "card_border": "#334155",
+    "primary": "#3B82F6",
+    "primary_hover": "#2563EB",
+    "success": "#10B981",
+    "warning": "#F59E0B",
+    "danger": "#EF4444",
+    "text_main": "#F8FAFC",
+    "text_muted": "#94A3B8"
+  },
+  "grid": {
+    "columns": 3,
+    "rows": 3,
+    "gap": "1.25rem",
+    "border_radius": "0.75rem"
+  }
+}

@@ -202,6 +202,35 @@ AGENT_MAX_TOOL_ITERATIONS: dict[str, int] = {
 }
 
 # ──────────────────────────────────────────
+# Design-Kontrakt-Weitergabe (agents/orchestrator.py._run_department_hierarchy)
+# ──────────────────────────────────────────
+# Realer Fund: der konsolidierte Bericht von design_lead (Tech-Stack/Framework-Wahl,
+# Komponentenstruktur, Kern-Copy) lief bisher nur über das ohnehin auf 3000 Zeichen gedeckelte
+# running_context - bei einem GUI-Projekt ohne /design-system baute frontend eine Komponente
+# laut Design-Entscheidung, tester (2 Phasen später) bekam diese Entscheidung nie zu Gesicht
+# und schrieb einen Test gegen eine andere, selbst angenommene Struktur (Framework, Copy-Texte
+# liefen auseinander) - verification_ok wurde False. ENABLE_DESIGN_CONTRACT_PROPAGATION=true
+# (Standard) hält den design_lead-Bericht als eigenen, unverkürzten Kontext-Block bereit und
+# gibt ihn an JEDEN nachfolgenden Fachbereich weiter, unabhängig davon, ob er noch im
+# rollierenden running_context-Fenster Platz hätte.
+ENABLE_DESIGN_CONTRACT_PROPAGATION: bool = os.getenv("ENABLE_DESIGN_CONTRACT_PROPAGATION", "true").lower() in ("true", "1", "yes")
+
+# ──────────────────────────────────────────
+# Import-Vertragsprüfung (core/verifier.py.check_import_contracts)
+# ──────────────────────────────────────────
+# Realer Fund: eine Testdatei importierte eine React-Komponente, die die Zieldatei nie
+# tatsächlich als Default-Export bereitstellte (nur eine gleichnamige Utility-Funktion) - der
+# echte Testlauf schlug zwar fehl, aber der Traceback zeigte nur die Testdatei selbst (dort
+# schlägt render() fehl), NIE die Datei mit dem fehlenden Export - der eigentlich zuständige
+# Agent (Autor der importierten Datei) wurde nie zur Korrektur aufgefordert, nur der Autor der
+# Testdatei. ENABLE_IMPORT_CONTRACT_CHECK=true (Standard) prüft VOR dem eigentlichen (Minuten
+# dauernden) Testlauf rein statisch (Regex, kein echter Compiler), ob lokal importierte
+# Default-/benannte Exports in der Zieldatei überhaupt vorhanden sind, und adressiert bei einem
+# Fund BEIDE Datei-Owner (Test- UND Zieldatei) gezielt - Sekunden statt einer vollen
+# Verifikations-Iteration.
+ENABLE_IMPORT_CONTRACT_CHECK: bool = os.getenv("ENABLE_IMPORT_CONTRACT_CHECK", "true").lower() in ("true", "1", "yes")
+
+# ──────────────────────────────────────────
 # Echte Verifikation (Dependency-Installation + tatsächliche Testausführung)
 # ──────────────────────────────────────────
 MAX_VERIFICATION_ITERATIONS: int = int(os.getenv("MAX_VERIFICATION_ITERATIONS", "2"))

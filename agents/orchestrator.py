@@ -71,7 +71,9 @@ from config import (
     AUTO_SAVE_WORKSPACE,
     BASE_DIR,
     ENABLE_DEPARTMENT_LEAD_EXECUTION,
+    ENABLE_DESIGN_CONTRACT_PROPAGATION,
     ENABLE_GOVERNANCE_FIX_LOOP,
+    ENABLE_IMPORT_CONTRACT_CHECK,
     ENABLE_LOAD_TEST_CHECK,
     ENABLE_TASK_COMPLEXITY_SCALING,
     LOAD_TEST_DURATION_SECONDS,
@@ -101,7 +103,7 @@ from core.result_aggregator import ResultAggregator
 from core.review_gate import find_critical_findings, route_findings_to_owners
 from core.task_manager import TaskManager, is_micro_task
 from core.token_guard import token_guard
-from core.verifier import ProjectVerifier, VerificationReport
+from core.verifier import ImportContractIssue, ProjectVerifier, VerificationReport
 from core.workspace import WorkspaceManager
 from memory.conversation_history import ConversationHistory
 from memory.cost_history import record_run_usage
@@ -807,6 +809,18 @@ class Orchestrator:
         file_owners: dict[str, str] = {}
         task_map = {t.agent_id: t for t in agent_tasks}
         running_context = ""  # Kompakter Kontext aus vorherigen Phasen (z.B. Planungsergebnisse)
+        # Konsolidierter Bericht von design_lead (Tech-Stack/Framework-Wahl, Komponenten-
+        # struktur, Kern-Copy) - bewusst SEPARAT von running_context oben. Realer Fund: bei
+        # einem GUI-Projekt ohne /design-system baute frontend eine React-Komponente laut
+        # design_lead-Entscheidung, während tester (2 Phasen später) einen Test gegen eine
+        # andere, selbst angenommene Struktur schrieb - der design_lead-Bericht war zu diesem
+        # Zeitpunkt bereits aus running_context herausgekürzt (running_context ist auf die
+        # letzten 3000 Zeichen gedeckelt, die typischerweise umfangreicheren dev_lead-Ergebnisse
+        # verdrängen ältere Phasen daraus). Ein einmal getroffener Design-Kontrakt darf aber
+        # nicht durch spätere, unabhängige Kürzung verschwinden - dieselbe Begründung wie bei
+        # constitution_context/design_system_context oben: verbindlicher Kontext bleibt
+        # vollständig erhalten, statt Teil des rollierenden Fensters zu sein.
+        design_contract_context = ""
         budget_aborted = False
         manually_cancelled = False
         # Realer Fund: eine triviale Ein-Endpunkt-Aufgabe verbrauchte 66.000 Tokens, weil
@@ -847,6 +861,13 @@ class Orchestrator:
             if running_context:
                 for task in member_tasks:
                     task.context += f"\n\n## Kontext aus vorherigen Fachbereichen:\n{running_context[:2500]}"
+
+            if design_contract_context and dept_id != "design_lead" and ENABLE_DESIGN_CONTRACT_PROPAGATION:
+                for task in member_tasks:
+                    task.context += (
+                        "\n\n## 🎨 Verbindlicher Design-Kontrakt (Fachbereich 2/6 - gilt unverkürzt für "
+                        f"JEDEN nachfolgenden Fachbereich):\n{design_contract_context}"
+                    )
 
             # Nur EIN Mitglied trägt hier die gesamte Fachbereichsarbeit - bei einer insgesamt
             # kleinen Aufgabe fehlt der Abstimmungsbedarf, den Delegation+Konsolidierung
@@ -930,10 +951,19 @@ class Orchestrator:
                 all_results.append(consolidation)
                 if consolidation.success and consolidation.content:
                     notify(f"  📥 [bold green]{lead.name} konsolidiert:[/bold green] {self._first_line(consolidation.content)}")
+                    if dept_id == "design_lead" and ENABLE_DESIGN_CONTRACT_PROPAGATION:
+                        design_contract_context = consolidation.content[:2500]
                 else:
                     notify(f"  ⚠️ [yellow]{lead.name} konnte den Bereich nicht konsolidieren ({consolidation.error}).[/yellow]")
             else:
                 notify(f"  📥 [dim]{phase_label} abgeschlossen ({len(member_results)} Ergebnisse).[/dim]")
+                # skip_lead_layer greift nur bei genau EINEM Mitglied und kleiner Gesamtaufgabe
+                # (siehe task_is_micro oben) - dessen einzelnes Ergebnis dient hier als
+                # Design-Kontrakt-Ersatz, da keine eigene Konsolidierung stattfand.
+                if dept_id == "design_lead" and ENABLE_DESIGN_CONTRACT_PROPAGATION and member_results:
+                    first = member_results[0]
+                    if first.success and first.content:
+                        design_contract_context = first.content[:2500]
 
         return all_results, file_owners, budget_aborted, manually_cancelled
 
@@ -1334,6 +1364,60 @@ class Orchestrator:
         if install_log:
             notify(f"  📦 {install_log.splitlines()[0]}")
             summary_lines.append(f"- 📦 {install_log.splitlines()[0]}")
+
+        # Statische Import-Vertragsprüfung VOR dem eigentlichen (oft minutenlangen) Testlauf:
+        # erkennt in Sekunden per Regex, ob eine Testdatei einen Export importiert, den die
+        # Zieldatei nachweislich nicht bereitstellt (realer Fund, siehe ImportContractIssue in
+        # core/verifier.py) - und adressiert dabei GEZIELT beide Datei-Owner (Test- UND
+        # Zieldatei), nicht nur den Autor der Testdatei wie es das reine Traceback-Parsing
+        # weiter unten tun würde (der Traceback zeigt bei einem fehlenden Export oft nur die
+        # Testdatei selbst, nie die Zieldatei).
+        if ENABLE_IMPORT_CONTRACT_CHECK and not (budget_aborted or manually_cancelled):
+            contract_report = await asyncio.to_thread(verifier.check_import_contracts)
+            if contract_report.attempted and not contract_report.ok:
+                notify(
+                    f"  ❌ [bold red]{len(contract_report.issues)} Import-Vertragsbruch/-brüche[/bold red] "
+                    "(Testdatei erwartet einen Export, den die Zieldatei nicht liefert) – behebe vor dem Testlauf..."
+                )
+                contract_agents_to_fix: dict[str, list[ImportContractIssue]] = {}
+                for issue in contract_report.issues:
+                    for rel in (issue.test_file, issue.imported_file):
+                        owner = file_owners.get(rel)
+                        if owner and owner in self._agents:
+                            contract_agents_to_fix.setdefault(owner, []).append(issue)
+                if contract_agents_to_fix:
+                    contract_fix_tasks = []
+                    for agent_id, issues in contract_agents_to_fix.items():
+                        issue_text = "\n".join(
+                            f"- Testdatei `{i.test_file}` importiert `{i.missing_export}` aus `{i.imported_file}`, "
+                            "aber diese Datei stellt diesen Export nicht bereit."
+                            for i in issues
+                        )
+                        contract_fix_tasks.append(AgentTask(
+                            task_id=f"import_contract_fix_{agent_id}",
+                            agent_id=agent_id,
+                            description=(
+                                "Statische Vor-Prüfung (vor dem eigentlichen Testlauf) hat einen Import-"
+                                "Vertragsbruch gefunden: eine Testdatei importiert etwas, das die importierte "
+                                "Datei nicht exportiert. Nutze read_file, um beide betroffenen Dateien zu prüfen, "
+                                "und edit_file/write_file, um den fehlenden Export bereitzustellen bzw. den "
+                                f"Import zu korrigieren.\n\n{issue_text}"
+                            ),
+                            context="", project_dir=project_dir,
+                        ))
+                    notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix:[/bold yellow] Beauftrage {', '.join(contract_agents_to_fix.keys())} (Import-Vertrag)...")
+                    contract_fix_results = await self._run_agents_parallel(contract_fix_tasks, notify=notify)
+                    self._update_file_owners(file_owners, contract_fix_results)
+                    all_results.extend(contract_fix_results)
+                    summary_lines.append(
+                        f"- 🛠️ Import-Vertragsprüfung: {len(contract_report.issues)} Bruch/Brüche vor dem "
+                        f"Testlauf erkannt → {', '.join(contract_agents_to_fix.keys())} korrigiert."
+                    )
+                else:
+                    summary_lines.append(
+                        f"- ⚠️ Import-Vertragsprüfung: {len(contract_report.issues)} Bruch/Brüche erkannt, "
+                        "aber keinem Agenten eindeutig zuordenbar."
+                    )
 
         for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
             if run_start_tokens is not None and (

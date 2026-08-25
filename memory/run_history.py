@@ -12,15 +12,43 @@ Kosten-Historie (`/tokens`).
 Dieselbe Lade-/Speicher-Konvention wie core/backlog_store.py/memory/cost_history.py: Modul-
 Konstante für den Dateipfad (in Tests per patch.object() austauschbar), gedeckelt auf
 MAX_RUNS_KEPT gegen unbegrenztes Wachstum über viele Sitzungen hinweg.
+
+Zweiter realer Fund: zahlreiche Integrationstests (u.a. test_governance_fix_loop.py,
+test_lint_integration.py, test_sast_integration.py) rufen den vollen Orchestrator.process()-Pfad
+auf, ohne selbst per patch.object() ein eigenes RUN_HISTORY_FILE zu setzen – ein zunächst
+versuchter zentraler Patch in tests/__init__.py griff dabei NICHT: `python -m unittest discover
+-s tests` (die von README/CI dokumentierte Art, die Suite auszuführen) importiert jede
+Testdatei als eigenständiges Top-Level-Modul, nicht als `tests.test_x` – tests/__init__.py wird
+dabei nachweislich nie ausgeführt (verifiziert: `"tests" in sys.modules` bleibt False). Jeder
+Testlauf schrieb dadurch Fake-Einträge direkt in die echte, produktive memory/run_history.json –
+genau die Datei, die core/optimization_advisor.py als empirische Grundlage für
+Modell-/Erfolgsquoten-Vorschläge auswertet.
+
+_default_run_history_file() greift deshalb an der Stelle, die JEDER Testlauf garantiert
+durchläuft (Modul-Import-Zeit dieser Datei, lange bevor eine einzelne Testdatei geladen wird):
+läuft der Prozess erkennbar unter unittest/pytest (beide Module bereits in sys.modules geladen,
+sobald `-m unittest`/`pytest` überhaupt startet), zeigt der Standardpfad auf eine Datei im
+System-Temp-Verzeichnis statt auf die echte memory/run_history.json. Ein Test, der die echte
+Datei gezielt prüfen will, patcht RUN_HISTORY_FILE weiterhin wie bisher explizit per
+patch.object() – das überschreibt diesen Wert einfach erneut, kein Konflikt.
 """
 
 import json
+import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
 from config import BASE_DIR
 
-RUN_HISTORY_FILE = Path(BASE_DIR) / "memory" / "run_history.json"
+
+def _default_run_history_file() -> Path:
+    if "unittest" in sys.modules or "pytest" in sys.modules:
+        return Path(tempfile.gettempdir()) / "ai_team_test_run_history.json"
+    return Path(BASE_DIR) / "memory" / "run_history.json"
+
+
+RUN_HISTORY_FILE = _default_run_history_file()
 MAX_RUNS_KEPT = 200
 
 

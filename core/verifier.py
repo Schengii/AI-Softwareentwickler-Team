@@ -98,6 +98,19 @@ _ESLINT_CONFIG_NAMES = (
     ".eslintrc", ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.json", ".eslintrc.yml", ".eslintrc.yaml",
 )
 
+# check_import_contracts(): erkennt einen ES-Module-Import mit lokalem (relativem) Pfad,
+# z.B. `import App from './App'` oder `import { validateUploadedFile } from './App'`.
+# Absichtlich NUR relative Pfade (beginnend mit ".") – Paket-Importe (z.B. "react") sind keine
+# vom Team selbst geschriebenen Dateien und daher hier nicht prüfbar/relevant.
+_JS_LOCAL_IMPORT_PATTERN = re.compile(
+    r'''import\s+(?P<clause>[^;'"]+?)\s+from\s+['"](?P<spec>\.[^'"]+)['"]'''
+)
+# Kandidaten-Suffixe zur Auflösung eines Import-Pfads auf eine tatsächlich existierende Datei
+# (JS/TS kennen anders als Python keine erzwungene Dateiendung im Import-Statement).
+_JS_RESOLVE_SUFFIXES = ("", ".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.tsx", "/index.js", "/index.jsx")
+_JS_DEFAULT_EXPORT_PATTERN = re.compile(r'\bexport\s+default\b|module\.exports\s*=')
+_JS_TEST_FILE_GLOBS = ("*.test.js", "*.test.jsx", "*.test.ts", "*.test.tsx", "*.spec.js", "*.spec.jsx", "*.spec.ts", "*.spec.tsx")
+
 
 @dataclass
 class TestFailure:
@@ -117,6 +130,40 @@ class VerificationReport:
     stderr: str
     duration_seconds: float
     failures: list[TestFailure] = field(default_factory=list)
+    reason_skipped: str = ""
+
+
+@dataclass
+class ImportContractIssue:
+    """
+    Ein statisch erkannter Bruch zwischen einer Testdatei und der von ihr lokal importierten
+    Datei: die Testdatei erwartet einen Export (Default- oder benannten Export), den die
+    Zieldatei nachweislich nicht bereitstellt.
+
+    Realer Fund: eine Testdatei importierte `import App from './App'` und rief `render(<App />)`
+    auf – `App.jsx` exportierte aber nur eine gleichnamige Utility-Funktion, keinen
+    React-Komponenten-Default-Export. Der echte Testlauf schlug zwar fehl, aber der Traceback
+    zeigte nur die Testdatei selbst (dort schlägt render() zur Laufzeit fehl) – die Zieldatei
+    mit dem fehlenden Export tauchte nie im Traceback auf, ihr Autor wurde nie zur Korrektur
+    aufgefordert. Rein statische Textanalyse (Regex, kein echter JS/TS-Compiler) – Ziel ist
+    nicht umfassende Vollständigkeit, sondern genau diese Fehlerklasse in Sekunden statt erst
+    nach einem vollen, oft minutenlangen Testlauf zu erkennen.
+    """
+    test_file: str
+    imported_file: str
+    missing_export: str  # "default" oder der Name des fehlenden benannten Exports
+
+
+@dataclass
+class ImportContractReport:
+    """
+    Ergebnis der statischen Import-Vertragsprüfung (check_import_contracts) – läuft VOR dem
+    eigentlichen Testlauf. Wie bei den anderen *Report-Klassen gilt: keine passenden
+    Testdateien/lokalen Importe zu prüfen ist KEIN Fehler, nur nicht anwendbar (attempted=False).
+    """
+    attempted: bool
+    ok: bool
+    issues: list[ImportContractIssue] = field(default_factory=list)
     reason_skipped: str = ""
 
 
@@ -224,6 +271,42 @@ def _csv_float(row: dict, key: str) -> float | None:
 
 
 _COPYLEFT_LICENSE_MARKERS = ("GPL", "MPL", "CDDL", "EUPL", "SSPL")
+
+
+def _parse_js_import_clause(clause: str) -> tuple[bool, list[str]]:
+    """
+    Zerlegt die Import-Klausel eines ES-Module-Imports (der Teil zwischen `import` und `from`)
+    in (erwartet_default_export, [erwartete_benannte_exports]). Best-effort wie der Rest dieser
+    Datei – ein Namespace-Import (`* as ns`) liefert bewusst (False, []), da dabei kein
+    einzelner Export geprüft werden kann/muss.
+    """
+    clause = clause.strip()
+    if clause.startswith("*"):
+        return False, []
+    # Default + optionale benannte Imports: "App" oder "App, { a, b as c }"
+    m = re.match(r'^([A-Za-z_$][\w$]*)\s*(?:,\s*\{([^}]*)\})?$', clause)
+    if m:
+        named = [n.strip().split(" as ")[0].strip() for n in (m.group(2) or "").split(",") if n.strip()]
+        return True, named
+    # Nur benannte Imports: "{ a, b as c }"
+    m2 = re.match(r'^\{([^}]*)\}$', clause)
+    if m2:
+        named = [n.strip().split(" as ")[0].strip() for n in m2.group(1).split(",") if n.strip()]
+        return False, named
+    return False, []
+
+
+def _js_named_export_pattern(name: str) -> re.Pattern:
+    """Regex, die prüft, ob eine Datei den benannten Export `name` irgendwo bereitstellt –
+    deckt die gängigsten Export-Formen ab (const/function/class-Deklaration, Re-Export über
+    `export { name }`, CommonJS `module.exports.name`/`exports.name`)."""
+    escaped = re.escape(name)
+    return re.compile(
+        rf'\bexport\s+(?:const|function|class|let|var)\s+{escaped}\b'
+        rf'|\bexport\s*\{{[^}}]*\b{escaped}\b[^}}]*\}}'
+        rf'|module\.exports\.{escaped}\s*='
+        rf'|\bexports\.{escaped}\s*='
+    )
 
 
 def _is_copyleft_license(license_str: str) -> bool:
@@ -497,6 +580,79 @@ class ProjectVerifier:
             f for f in list(self.project_dir.rglob("test_*.py")) + list(self.project_dir.rglob("*_test.py"))
             if not any(part in _IGNORED_DIRS for part in f.parts)
         ]
+
+    def _safe_relative(self, path: Path) -> str:
+        try:
+            return str(path.resolve().relative_to(self.project_dir)).replace("\\", "/")
+        except ValueError:
+            return str(path)
+
+    def _find_js_test_files(self) -> list[Path]:
+        files: list[Path] = []
+        for pattern in _JS_TEST_FILE_GLOBS:
+            for f in self.project_dir.rglob(pattern):
+                if not any(part in _IGNORED_DIRS for part in f.relative_to(self.project_dir).parts):
+                    files.append(f)
+        return files
+
+    def _resolve_js_import(self, spec: str, from_file: Path) -> str | None:
+        """Löst einen relativen JS/TS-Import-Pfad (z.B. "./App") auf eine tatsächlich im
+        Projekt existierende Datei auf – probiert dieselben Endungen/Index-Dateien, die
+        Bundler/Node auch selbst probieren würden. None, wenn keine Datei existiert (dann ist
+        das Ziel selbst das Problem – ein anderer Fehler als ein fehlender Export, hier bewusst
+        nicht behandelt)."""
+        base = (from_file.parent / spec).resolve()
+        for suffix in _JS_RESOLVE_SUFFIXES:
+            candidate = Path(f"{base}{suffix}") if not suffix.startswith("/") else base / suffix[1:]
+            if candidate.is_file():
+                try:
+                    return str(candidate.resolve().relative_to(self.project_dir)).replace("\\", "/")
+                except ValueError:
+                    return None
+        return None
+
+    def check_import_contracts(self) -> ImportContractReport:
+        """
+        Statische Vor-Prüfung (Regex, kein echter Compiler): findet JS/TS-Testdateien, die eine
+        lokale (relative) Datei importieren, deren erwarteter Default- bzw. benannter Export
+        dort nachweislich fehlt – bevor der eigentliche, oft minutenlange Testlauf überhaupt
+        startet. Siehe ImportContractIssue-Docstring für den realen Fund, der das motiviert hat.
+
+        Bewusst nur JS/TS (`import ... from './x'`): Python-Importfehler (z.B. `ImportError:
+        cannot import name X`) tauchen im echten Traceback bereits als Fehler IN der Testdatei
+        selbst auf und werden von der bestehenden Traceback-Auswertung in run_tests() schon
+        korrekt der Testdatei zugeordnet – das eigentliche Python-Ziel eines fehlenden Namens
+        landet dort nie in einem eigenen Stack-Frame, ein Analogon zur JS-Situation (render()
+        schlägt zur Laufzeit fehl, OHNE je in die Zieldatei zu "springen") gibt es für Python
+        strukturell nicht in derselben Form.
+        """
+        test_files = self._find_js_test_files()
+        if not test_files:
+            return ImportContractReport(attempted=False, ok=True, reason_skipped="Keine JS/TS-Testdateien gefunden.")
+
+        issues: list[ImportContractIssue] = []
+        for test_file in test_files:
+            try:
+                content = test_file.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            test_rel = self._safe_relative(test_file)
+            for m in _JS_LOCAL_IMPORT_PATTERN.finditer(content):
+                target_rel = self._resolve_js_import(m.group("spec"), test_file)
+                if target_rel is None:
+                    continue  # Ziel existiert nicht im Projekt - andere Fehlerklasse, hier nicht geprüft
+                try:
+                    target_content = (self.project_dir / target_rel).read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                wants_default, named = _parse_js_import_clause(m.group("clause"))
+                if wants_default and not _JS_DEFAULT_EXPORT_PATTERN.search(target_content):
+                    issues.append(ImportContractIssue(test_file=test_rel, imported_file=target_rel, missing_export="default"))
+                for name in named:
+                    if not _js_named_export_pattern(name).search(target_content):
+                        issues.append(ImportContractIssue(test_file=test_rel, imported_file=target_rel, missing_export=name))
+
+        return ImportContractReport(attempted=True, ok=not issues, issues=issues)
 
     def run_tests(self, timeout_seconds: float = 60.0) -> VerificationReport:
         """

@@ -1,0 +1,33 @@
+{
+  "colors": {
+    "primary": {
+      "base": "#2563EB",
+      "contrast": "#FFFFFF"
+    },
+    "background": {
+      "light": "#F8FAFC",
+      "dark": "#0F172A"
+    },
+    "text": {
+      "light": "#0F172A",
+      "dark": "#F8FAFC"
+    },
+    "surface": {
+      "light": "#FFFFFF",
+      "dark": "#1E293B"
+    }
+  },
+  "typography": {
+    "fontFamily": "'Inter', sans-serif",
+    "baseSize": "16px"
+  },
+  "animations": {
+    "transition": {
+      "duration": 0.3,
+      "ease": [0.4, 0, 0.2, 1]
+    },
+    "stagger": {
+      "delay": 0.05
+    }
+  }
+}

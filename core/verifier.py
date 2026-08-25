@@ -1360,6 +1360,7 @@ class ProjectVerifier:
                         proc = subprocess.Popen(
                             cmd, cwd=self.project_dir, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            encoding="utf-8", errors="replace",
                         )
                         start_time = time.monotonic()
                         status_code = None
@@ -1518,6 +1519,7 @@ class ProjectVerifier:
             proc = subprocess.Popen(
                 cmd, cwd=self.project_dir, env=env,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                encoding="utf-8", errors="replace",
             )
             start_time = time.monotonic()
             while time.monotonic() - start_time < timeout_seconds:

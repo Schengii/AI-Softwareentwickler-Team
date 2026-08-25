@@ -115,6 +115,19 @@ class CodeSandbox:
         ein no-op. Kein Treffer (Kommando existiert schlicht nicht) fällt auf den rohen Namen
         zurück, damit die Fehlermeldung weiterhin "Datei nicht gefunden" statt eines stillen
         Verhaltensunterschieds bleibt.
+
+        Zweiter realer Fund: `text=True` allein lässt Python auf Windows die System-Codepage
+        (z. B. cp1252 auf einem deutschen Windows) zum Dekodieren von stdout/stderr nutzen, NICHT
+        UTF-8. Ein echter `npm test`-Lauf (z. B. Jest mit ✓/✗-Symbolen oder generiertem Code mit
+        Umlauten/Emoji) lieferte dabei rohe UTF-8-Bytes, die cp1252 nicht dekodieren kann – das
+        crashte den internen Pipe-Reader-Thread von subprocess.run() SCHWEIGEND (nur eine
+        Exception-Meldung im Hintergrund-Thread, keine Exception im Aufrufer) und lieferte
+        `process.stdout`/`process.stderr` als `None` zurück statt eines Strings, was
+        `run_tests()` beim anschließenden `"\n".join(...)` mit einem TypeError abstürzen ließ –
+        ein kompletter Lauf brach dadurch hart ab, statt die Verifikation nur als fehlgeschlagen
+        zu melden. `encoding="utf-8", errors="replace"` erzwingt echtes UTF-8-Dekodieren
+        unabhängig von der System-Codepage; nicht darstellbare Einzelbytes werden durch
+        U+FFFD ersetzt statt die gesamte Ausgabe zu verlieren.
         """
         import time
         start_time = time.monotonic()
@@ -127,6 +140,8 @@ class CodeSandbox:
                 cwd=cwd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout_seconds,
                 shell=False,
                 env=env,

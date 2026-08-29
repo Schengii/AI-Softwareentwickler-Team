@@ -333,9 +333,16 @@ Ein echter, funktionsfähiger HTTP-Server (`interface/web_dashboard.py`, stdlib
 - **`POST /api/cancel/<job_id>`** + "⏹️ Lauf abbrechen"-Button im UI: bricht einen laufenden
   oder noch wartenden Job kooperativ ab (dieselben Prüfpunkte wie das bestehende
   `MAX_RUN_TOKENS`-Budget) – bereits erarbeitete Ergebnisse werden trotzdem ausgeliefert.
-- **`GET /api/status/<job_id>`:** Wird vom Frontend alle 2 Sekunden abgefragt und liefert
-  denselben Live-Fortschritt (Status-Zeilen je Fachbereich/Agent), den auch die CLI zeigt,
-  plus das fertige Ergebnis, sobald der Lauf abgeschlossen ist.
+- **`GET /api/stream/<job_id>` (Server-Sent Events / SSE):** Echtzeit-Streaming von Status-Updates,
+  Konsolen-Logs und Zwischenschritten direkt in den Browser ohne Polling-Latenz (mit automatischem
+  Fallback auf Polling bei Verbindungsunterbrechungen).
+- **`GET /api/status/<job_id>`:** Liefert den Status, Logzeilen und das Endergebnis eines Jobs.
+- **📂 Workspace-Dateien & Diff-Inspektor:** Erlaubt das direkte Durchsuchen generierter Projektdateien
+  (`GET /api/project-files`, `GET /api/project-file-content`) und das Einsehen von Git-Diffs (`GET /api/project-diff`)
+  mit Syntax-Vorschau direkt im Web-Dashboard.
+- **⚡ Prompt-Caching & Context-Caching:** Automatische Nutzung von Anthropic Prompt Caching
+  (`cache_control: ephemeral`) und Gemini Context Caching. Reduziert Latenz und senkt Kosten bei
+  wiederholten Multi-Turn-Tool-Loops (System-Prompts & Tool-Kataloge) um bis zu 90% bei Cache-Reads.
 - **`GET /api/status`:** Echte Team-Metadaten (Agentenanzahl, Fachbereiche, Mitglieder) aus
   einer festen `Orchestrator`-Instanz statt fest verdrahteter Werte.
 - **`GET /api/observability`** + Panel "📈 Observability & Trends": Erfolgsquote je Agent
@@ -381,18 +388,25 @@ Claude Desktop `claude_desktop_config.json`):
 
 | Tool | Beschreibung |
 |---|---|
-| `ai_team_develop` | Führt das komplette Team für eine beliebige Aufgabe aus (`prompt`) und liefert das fertige, geprüfte Ergebnis. |
+| `ai_team_develop` | Führt das komplette 33-köpfige Team für eine beliebige Aufgabe aus (`prompt`) und liefert das fertige, geprüfte Ergebnis. |
 | `ai_team_list_projects` | Listet alle vorhandenen Projekte im `workspace/`-Verzeichnis auf. |
 | `ai_team_rag_search` | Durchsucht ein konkretes Projekt (`project` + `query`) semantisch – dieselbe Gemini-Embedding-Suche wie `/rag` in der CLI. |
+| `ai_team_run_tests` | Führt die automatisierte Testsuite eines Workspace-Projekts isoliert aus und liefert das Testergebnis. |
+| `ai_team_explain_symbol` | Liefert per AST-Code-Graph Definition, Aufrufe und Impact-Analyse für ein Symbol (`project` + `symbol`). |
+| `ai_team_get_backlog` | Ruft alle aktuellen Kanban-Tickets aus dem zentralen Backlog-Store ab. |
+
+**Bereitgestellte MCP-Ressourcen:**
+- `ki-team://backlog`: Live-JSON-Stream aller aktuellen Kanban-Tickets über alle Trigger-Quellen hinweg.
+- `ki-team://projects`: JSON-Liste aller vorhandenen Workspace-Projekte.
 
 ---
 
 <a id="code-graph"></a>
-## 🕸️ AST-Codebase-Graph & Semantische Impact-Analyse
+## 🕸️ Polyglot AST-Codebase-Graph & Semantische Impact-Analyse
 
-Große Codebases (50+ Dateien) erfordern mehr als reine Vektorsuche: Der [CodebaseGraph](core/code_graph.py) parst den gesamten Quelltext (`.py`, `.js`, `.ts`, `.tsx`) in einen echten Abstract-Syntax-Tree (AST) und stellt Agenten präzise strukturelle Werkzeuge zur Verfügung:
+Große Codebases (50+ Dateien) erfordern mehr als reine Vektorsuche: Der [CodebaseGraph](core/code_graph.py) parst den gesamten Quelltext polyglott in einen echten Abstract-Syntax-Tree (AST) und Symbol-Index für **Python (`.py`)**, **TypeScript/JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`)**, **Go (`.go`)** und **Rust (`.rs`)**:
 
-- **`find_symbol_definition`:** Findet die exakte Definition (Klasse, Methode, Funktion) dateiübergreifend mit Signatur und Docstring.
+- **`find_symbol_definition`:** Findet die exakte Definition (Klassen, Interfaces, Structs, Traits, Methoden, Funktionen) dateiübergreifend mit Signatur und Docstring.
 - **`find_symbol_references`:** Listet alle Aufrufe, Ableitungen und Imports eines Symbols über das gesamte Projekt hinweg.
 - **`analyze_code_impact`:** Berechnet vor einem Refactoring die Auswirkung einer Änderung (welche Dateien, Module und Aufrufer brechen bei einer Signaturänderung?).
 

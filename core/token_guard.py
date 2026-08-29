@@ -20,6 +20,8 @@ class ModelUsageStats:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
 
 @dataclass
@@ -54,6 +56,8 @@ class TokenGuard:
         prompt_tokens: int,
         completion_tokens: int,
         agent_name: str = "Agent",
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> list[str]:
         """
         Registriert Tokenverbrauch und prüft auf Schwellenwerte.
@@ -69,6 +73,8 @@ class TokenGuard:
         stat.prompt_tokens += prompt_tokens
         stat.completion_tokens += completion_tokens
         stat.total_tokens += total
+        stat.cache_read_tokens += cache_read_tokens
+        stat.cache_write_tokens += cache_write_tokens
 
         # Wenn ein Modell erfolgreich antwortet, ist es definitiv wieder aktiv
         if model_name in self._exhausted_models:

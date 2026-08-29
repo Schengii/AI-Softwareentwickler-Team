@@ -112,9 +112,12 @@ class BrowserVerifier:
         # 2. Prüfe, ob Playwright installiert ist
         playwright_report = self._run_playwright_check(entry_html, timeout_seconds)
         if playwright_report and playwright_report.attempted:
-            playwright_report.missing_assets.extend(static_missing)
-            playwright_report.warnings.extend(static_warnings)
-            if static_missing:
+            for s in static_missing:
+                fname = s.split("'")[1] if "'" in s else s
+                if not any(fname in m for m in playwright_report.missing_assets):
+                    playwright_report.missing_assets.append(s)
+            playwright_report.warnings = list(dict.fromkeys(playwright_report.warnings + static_warnings))
+            if playwright_report.missing_assets:
                 playwright_report.passed = False
             return playwright_report
 

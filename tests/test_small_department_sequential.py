@@ -63,6 +63,10 @@ class TestSmallDepartmentRunsSequentially(unittest.TestCase):
         self.orchestrator = Orchestrator()
         from core.workspace import WorkspaceManager
         self.orchestrator._workspace = WorkspaceManager(self.temp_workspace)
+        for agent in self.orchestrator._agents.values():
+            agent._llm = _CapturingLLM()
+        for lead in self.orchestrator._dept_leads.values():
+            lead._llm = _CapturingLLM()
 
     def tearDown(self):
         shutil.rmtree(self.temp_workspace, ignore_errors=True)
@@ -76,8 +80,6 @@ class TestSmallDepartmentRunsSequentially(unittest.TestCase):
         observer_llm = _CapturingLLM()
         self.orchestrator._agents["frontend"]._llm = writer_llm
         self.orchestrator._agents["backend"]._llm = observer_llm
-        for lead in self.orchestrator._dept_leads.values():
-            lead._llm = _CapturingLLM()
 
         @patch("agents.orchestrator.ProjectVerifier")
         @patch("core.task_manager.TaskManager.decompose")

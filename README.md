@@ -197,6 +197,17 @@ Aufgabe, Pull Request, Merge erst nach grüner CI und Freigabe.
   automatisch auf den bisherigen Direct-Push zurück – der Nutzer wird informiert, aber nicht
   blockiert. `ENABLE_PR_WORKFLOW=false` schaltet den gesamten PR-Workflow ab und stellt das
   alte Verhalten wieder her.
+- **Commit-Granularität bei manuellem Zusammenführen mehrerer Läufe:** Läuft der PR-Workflow
+  aus einem der oben genannten Gründe nicht (z.B. mehrere Team-Läufe hintereinander auf
+  demselben manuell ausgecheckten Branch statt je einem eigenen `feat/`-Branch), NIEMALS
+  mehrere Läufe mit unterschiedlichem `verification_ok`/`budget_aborted`-Status
+  (`.ai_team_status.json` im jeweiligen Projektordner) in einen gemeinsamen Commit
+  zusammenfassen. Realer Fund: vier separate, alle mit `verification_ok=false` beendete
+  Läufe wurden in einem einzigen Commit mit einer erfolgsklingenden `feat:`-Nachricht
+  zusammengeführt – der Verifikationsstatus war dadurch nur noch aus den einzelnen
+  `.ai_team_status.json`-Dateien ablesbar, nicht mehr aus der Commit-Historie selbst. Pro
+  Lauf ein eigener Commit, mit einem seinem tatsächlichen Status entsprechenden Präfix
+  (`feat:`/`fix:` nur bei `verification_ok=true`, sonst `wip:` oder `draft:`).
 
 ---
 

@@ -7,6 +7,31 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🩹 CI-Lücke bei generiertem `workspace/`-Code + Verifikationsstatus in Duplikat-Warnung
+
+Retrospektive zu vier separaten, aufeinanderfolgenden Läufen an praktisch derselben
+Aufgabe (`fastapi-task-mgmt`, `fastapi_task_websocket`, `kanban_board`,
+`kanban_task_manager`), die alle vier mit `verification_ok=false` endeten und trotzdem
+in einem gemeinsamen Commit mit erfolgsklingender Nachricht zusammengeführt wurden.
+
+- **CI prüfte `workspace/`-Python-Code bisher gar nicht:** `ruff.toml` schließt
+  `workspace/` bewusst aus (eigener Stil generierter Projekte), der Syntax-Check im
+  `test`-Job filtert `workspace/` ebenfalls komplett heraus. Der interne Verifier
+  (`core/verifier.py._lint_python`, läuft während eines echten Agentenlaufs) hatte reale
+  Bugs korrekt erkannt (u.a. `json.loads()` ohne Import, `app`/`Depends` ohne Import) –
+  dieses Ergebnis wurde aber nie durch eine zweite, unabhängige CI-Prüfung nach dem Lauf
+  abgesichert. Neuer Job `workspace-python-check`: `py_compile` +
+  `ruff check --isolated --select F,E9` (umgeht den `ruff.toml`-Exclude bewusst) über
+  alle `workspace/*.py`-Dateien. Alle 25 dadurch aufgedeckten Altfunde in bereits
+  gemergtem Workspace-Code sind mitbehoben.
+- **Duplikat-Warnung ohne Verifikationsstatus:** Die Warnung vor dem Anlegen eines neuen
+  Projekts (siehe [PR-Workflow](README.md#pr-workflow)) zeigte bisher nur Namen bereits vorhandener Projekte, nicht deren zuletzt
+  protokollierten Verifikationsstatus – ein fehlgeschlagener Vorversuch wirkte dadurch
+  nicht dringlicher als ein sauber abgeschlossenes Projekt. Zeigt jetzt zusätzlich
+  ✅/⚠️/🚫/⏹️ je Projekt an, weiterhin ohne Ähnlichkeits-Matching/Heuristik/LLM-Aufruf.
+
+---
+
 ## 🧪 CI-Testrunner von `unittest discover` auf `pytest` umgestellt
 
 Realer Fund bei der Prüfung der `core/llm_factory.py`-Fallback-Ketten: der CI-„Tests"-Job

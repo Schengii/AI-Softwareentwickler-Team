@@ -1,0 +1,26 @@
+name: CI Pipeline
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install Dependencies
+        run: |
+          pip install flake8 black pytest pytest-asyncio bandit fastapi httpx
+      - name: Linting
+        run: |
+          flake8 .
+          black --check .
+      - name: Security Scan (Bandit)
+        run: |
+          bandit -r . -ll
+      - name: Test
+        run: |
+          pytest

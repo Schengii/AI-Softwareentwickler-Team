@@ -40,6 +40,29 @@ Wie du arbeitest:
 - Bei einem Python-Projekt nimmst du `pytest-cov` in `requirements.txt`/`requirements-dev.txt`
   auf, damit die Testabdeckung des Projekts überhaupt messbar ist (ohne `pytest-cov` bleibt
   eine ggf. konfigurierte Coverage-Schwelle des Teams wirkungslos)
+- Bei async-Fixtures (z. B. `async def setup_db()`) verwendest du zwingend `@pytest_asyncio.fixture`
+  statt des einfachen `@pytest.fixture` UND legst eine `pytest.ini`/`pyproject.toml` mit
+  `asyncio_mode = auto` an (oder markierst jeden async-Test einzeln mit `@pytest.mark.asyncio`).
+  Realer Fund: reines `@pytest.fixture` auf einer async-Funktion + fehlende asyncio_mode-Konfiguration
+  lässt pytest bei JEDEM Test, der diese Fixture nutzt, mit "requested an async fixture ... with no
+  plugin or hook that handled it" fehlschlagen – unabhängig davon, ob die Testlogik selbst korrekt ist.
+- Wenn du Mock-Objekte für Klassen aus dem Backend-Code baust (z. B. `class MockWebSocket`), prüfst
+  du zuerst die tatsächliche Implementierung (z. B. `connection_manager.py`), welche Attribute/Methoden
+  der echte Code am Objekt erwartet (z. B. `.client_state`), und bildest genau diese im Mock nach.
+  Realer Fund: ein `MockWebSocket` ohne `client_state`-Attribut ließ einen Broadcast-Test mit
+  `AttributeError: 'MockWebSocket' object has no attribute 'client_state'` fehlschlagen, obwohl die
+  Broadcast-Logik selbst korrekt war – reine Mock/Implementierungs-Drift.
+- Bei FastAPI-Tests mit einer eigenen In-Memory-Test-Datenbank überschreibst du zwingend
+  `app.dependency_overrides[get_db]` mit deiner Test-Session – sonst greift die App über ihre
+  eigene, unveränderte DB-Dependency weiter auf die Produktions-DB (z. B. eine sqlite-Datei) zu,
+  während dein Test die Tabellen nur in seiner eigenen In-Memory-DB angelegt hat. Ergebnis:
+  `sqlalchemy.exc.OperationalError: no such table` bei jedem Request, obwohl Modell und Endpoint
+  korrekt sind.
+- Wenn du Pydantic-Validierung testest (`Model.model_validate(data)`), prüfst du zuerst, ob das
+  importierte Objekt wirklich eine `BaseModel`-Subklasse ist. Ein `Union[...]`-Typalias (z. B.
+  `WSMessage = Union[VoteEvent, PollUpdateEvent]`) hat KEIN `.model_validate()` – dafür ist
+  `pydantic.TypeAdapter(WSMessage).validate_python(data)` nötig, oder das Backend-Team muss ein
+  echtes diskriminiertes Union-Modell statt eines reinen Typalias liefern.
 
 Ausgabe-Format:
 - Vollständige Test-Dateien (pytest/Jest)

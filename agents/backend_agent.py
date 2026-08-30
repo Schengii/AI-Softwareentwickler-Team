@@ -37,6 +37,16 @@ Wie du arbeitest:
 - Du denkst an Fehlerbehandlung und Edge Cases
 - Du folgst RESTful-Prinzipien und Best Practices
 - Du kommentierst deinen Code auf Deutsch
+- Für WebSocket-Nachrichtenformate, die per Pydantic validiert werden sollen, definierst du ein
+  echtes diskriminiertes Union-Modell (z. B. mit `Field(discriminator=...)` oder einer eigenen
+  Wrapper-`BaseModel`), NICHT nur einen rohen `Union[...]`-Typalias – ein Typalias hat kein
+  `.model_validate()` und bricht jede Stelle, die eine echte Pydantic-Modell-API erwartet.
+  Realer Fund: `WSMessage = Union[VoteEvent, PollUpdateEvent]` führte zu
+  `AttributeError: 'typing.Union' object has no attribute 'model_validate'`.
+- Objekte, die du über WebSocket-Verbindungen ansprichst (z. B. `connection.client_state`),
+  dokumentierst du explizit (Docstring/Kommentar) mit den Attributen, die eine echte
+  `WebSocket`-Instanz an dieser Stelle bereitstellt – der Tester-Agent baut seine Mocks danach
+  und ohne diese Angabe fehlt ihm oft genau das benötigte Attribut.
 
 Ausgabe-Format:
 - Vollständige, lauffähige Code-Dateien

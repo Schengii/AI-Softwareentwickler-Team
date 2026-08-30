@@ -133,6 +133,37 @@ class TestDuplicateProjectWarning(unittest.TestCase):
             f"'kanban_board' fehlt in: {logs}",
         )
 
+    def test_repeated_failure_triggers_stronger_warning_with_recommendation(self):
+        """
+        Realer Fund: der rein informative Duplikat-Hinweis wird beim WIEDERHOLTEN Scheitern
+        desselben Projekts leicht überlesen - "einfach nochmal versuchen" wirkt jedes Mal
+        aufs Neue günstiger, als es tatsächlich ist. Ab zwei aufeinanderfolgenden Läufen ohne
+        bestandene Verifikation muss eine deutlichere Warnung MIT konkreter
+        Handlungsempfehlung erscheinen, bevor ein dritter kompletter Lauf startet.
+        """
+        project_dir = self.orchestrator._workspace.base_dir / "wiederholt_gescheitert"
+        project_dir.mkdir()
+        record_run(str(project_dir), "Erster Versuch", verification_ok=False, budget_aborted=False, files_written_count=1)
+        record_run(str(project_dir), "Zweiter Versuch", verification_ok=False, budget_aborted=False, files_written_count=1)
+
+        logs = self._run("wiederholt_gescheitert")
+
+        self.assertTrue(
+            any("Wiederholtes Scheitern" in line and "zerlegen" in line for line in logs),
+            f"Erwartete verstärkte Warnung mit Handlungsempfehlung fehlt in: {logs}",
+        )
+
+    def test_no_repeated_failure_warning_after_a_single_failed_run(self):
+        """Ein einzelner Fehlschlag ist normal, keine Eskalation nötig - die bestehende, rein
+        informative Duplikat-Warnung reicht dafür bereits aus."""
+        project_dir = self.orchestrator._workspace.base_dir / "einmal_gescheitert"
+        project_dir.mkdir()
+        record_run(str(project_dir), "Einziger Versuch", verification_ok=False, budget_aborted=False, files_written_count=1)
+
+        logs = self._run("einmal_gescheitert")
+
+        self.assertFalse(any("Wiederholtes Scheitern" in line for line in logs))
+
     def test_no_same_session_hint_when_reusing_the_same_slug(self):
         """Wird im zweiten Lauf wieder derselbe Slug geraten (echte Fortsetzung), ist der
         Zusatzhinweis überflüssig - project_slug == last_project_slug, keine Verwirrung möglich."""

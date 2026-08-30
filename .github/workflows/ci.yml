@@ -127,6 +127,50 @@ jobs:
             echo "Keine workspace/-Projekte mit npm-Test-Skript gefunden - nichts zu tun."
           fi
 
+  workspace-typescript-check:
+    name: Workspace-TypeScript-Check (Syntaxfehler generierter .ts/.tsx-Dateien)
+    runs-on: ubuntu-latest
+    # Pendant zu workspace-python-check unten, für TypeScript/TSX: workspace-frontend-tests
+    # oben läuft NUR, wenn ein Projekt bereits ein "test"-Skript in package.json hat - ein
+    # generiertes .tsx/.ts-Fragment ganz ohne package.json/Testsuite (real beobachtet:
+    # workspace/fastapi-task-mgmt/frontend/src/components/TaskList.tsx und
+    # .../hooks/useTaskWebSocket.ts, beide ohne eigenes package.json) durchlief bisher KEINEN
+    # einzigen CI-Check. `tsc --noEmit` ohne installierte node_modules/@types schlägt für so gut
+    # wie jeden Import mit TS2307 ("Cannot find module") fehl - das ist reines Umgebungsrauschen
+    # (workspace/-Projekte werden bewusst ohne node_modules committet), keine echte
+    # Code-Aussage. TS2307 wird deshalb gezielt ausgefiltert, jeder ANDERE Diagnose-Code
+    # (Syntaxfehler, falsch referenzierte lokale Namen, kaputtes JSX, …) lässt den Job
+    # fehlschlagen - dieselbe Güteklasse wie `ruff --select F,E9` beim Python-Pendant.
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Node.js einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: tsc --noEmit über alle workspace/-.ts(x)-Dateien (TS2307 "Cannot find module" bewusst ignoriert)
+        shell: bash
+        run: |
+          files=$(git ls-files 'workspace/*.ts' 'workspace/*.tsx')
+          if [ -z "$files" ]; then
+            echo "Keine workspace/-TypeScript-Dateien gefunden - nichts zu tun."
+            exit 0
+          fi
+          set +e
+          output=$(npx --yes -p typescript@5.6.3 tsc --noEmit --pretty false \
+            --jsx react-jsx --esModuleInterop --skipLibCheck \
+            --moduleResolution node --target es2020 --module esnext $files 2>&1)
+          set -e
+          echo "$output"
+          real_errors=$(echo "$output" | grep -E "error TS" | grep -v "error TS2307:" || true)
+          if [ -n "$real_errors" ]; then
+            echo "::error::Echte TypeScript-Fehler gefunden (TS2307 'Cannot find module' bewusst ignoriert):"
+            echo "$real_errors"
+            exit 1
+          fi
+
   workspace-python-check:
     name: Workspace-Python-Check (Syntax + undefinierte Namen generierter Projekte)
     runs-on: ubuntu-latest

@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from core.project_status import format_context_for_agents, read_status, record_run
+from core.project_status import count_consecutive_failed_runs, format_context_for_agents, read_status, record_run
 
 
 class TestProjectStatus(unittest.TestCase):
@@ -95,6 +95,29 @@ class TestProjectStatus(unittest.TestCase):
         record_run(self.temp_dir, "Alter Aufrufer", verification_ok=True,
                    budget_aborted=False, files_written_count=1)
         self.assertFalse(read_status(self.temp_dir)[0]["cancelled"])
+
+    def test_count_consecutive_failed_runs_is_zero_for_fresh_project(self):
+        self.assertEqual(count_consecutive_failed_runs(self.temp_dir), 0)
+
+    def test_count_consecutive_failed_runs_counts_from_the_newest_backwards(self):
+        record_run(self.temp_dir, "Lauf 1", verification_ok=False, budget_aborted=False, files_written_count=1)
+        record_run(self.temp_dir, "Lauf 2", verification_ok=False, budget_aborted=True, files_written_count=1)
+        record_run(self.temp_dir, "Lauf 3", verification_ok=False, budget_aborted=False, files_written_count=1)
+        self.assertEqual(count_consecutive_failed_runs(self.temp_dir), 3)
+
+    def test_count_consecutive_failed_runs_stops_at_the_first_success(self):
+        record_run(self.temp_dir, "Alter Erfolg", verification_ok=True, budget_aborted=False, files_written_count=1)
+        record_run(self.temp_dir, "Fehlschlag 1", verification_ok=False, budget_aborted=False, files_written_count=1)
+        record_run(self.temp_dir, "Fehlschlag 2", verification_ok=False, budget_aborted=False, files_written_count=1)
+        self.assertEqual(count_consecutive_failed_runs(self.temp_dir), 2)
+
+    def test_count_consecutive_failed_runs_stops_at_a_manual_cancellation(self):
+        """Ein bewusster menschlicher Stopp ist kein Qualitätsurteil über die Aufgabe/das
+        Team und darf die Fehlschlags-Zählung nicht fortsetzen."""
+        record_run(self.temp_dir, "Manuell gestoppt", verification_ok=False,
+                   budget_aborted=False, cancelled=True, files_written_count=1)
+        record_run(self.temp_dir, "Fehlschlag danach", verification_ok=False, budget_aborted=False, files_written_count=1)
+        self.assertEqual(count_consecutive_failed_runs(self.temp_dir), 1)
 
 
 if __name__ == "__main__":

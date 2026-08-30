@@ -96,7 +96,7 @@ from core.notifier import notify_external
 from core.optimization_advisor import analyze as analyze_optimization_potential
 from core.optimization_advisor import format_report_for_humans as format_optimization_report
 from core.project_constitution import format_constitution_for_agents, get_max_project_tokens
-from core.project_status import format_context_for_agents, read_status, record_run
+from core.project_status import count_consecutive_failed_runs, format_context_for_agents, read_status, record_run
 from core.result_aggregator import ResultAggregator
 from core.review_gate import find_critical_findings, route_findings_to_owners
 from core.task_manager import TaskManager, is_micro_task
@@ -239,6 +239,13 @@ class Orchestrator:
         # Push-Gate (interface/cli.py) bzw. in autonomen Läufen (core/backlog_worker.py).
         self.last_needs_human_input: bool = False
         self.last_clarification_questions: list[str] = []
+        # True, wenn MAX_RUN_TOKENS oder das Pro-Projekt-Budget (/constitution) im letzten Lauf
+        # überschritten wurde und deshalb verbleibende Fachbereiche/Mitglieder übersprungen
+        # wurden (siehe process(), lokale budget_aborted-Variable) - von interface/cli.py
+        # genutzt, um einen so vorzeitig beendeten Lauf im PR (Titel/Label/Body) genauso
+        # unübersehbar zu machen wie eine fehlgeschlagene Verifikation, statt dass nur
+        # .ai_team_status.json davon weiß.
+        self.last_budget_aborted: bool = False
         # Pro-Projekt-Kostenbudget (core/project_constitution.py `max_project_tokens`,
         # /constitution) - unabhängig vom globalen MAX_RUN_TOKENS (das begrenzt nur EINEN
         # einzelnen Lauf). Bei jedem process()-Aufruf frisch aus der Konstitution des jeweils
@@ -427,6 +434,28 @@ class Orchestrator:
         # Der TATSÄCHLICH verwendete Ordnername (nicht der u.U. verworfene project_slug bei
         # forced_project_dir) – zuverlässiger Commit-Message-Fallback, siehe last_project_slug oben.
         self.last_project_slug = Path(project_dir).name
+
+        # Realer Fund (vier separate Läufe an praktisch derselben Aufgabe, alle mit
+        # verification_ok=false): der rein informative Duplikat-Hinweis oben wird beim
+        # WIEDERHOLTEN Scheitern DESSELBEN Projekts leicht überlesen - "einfach nochmal
+        # versuchen" wirkt jedes Mal aufs Neue günstiger, als es tatsächlich ist. Ab der
+        # dritten Runde OHNE bestandene Verifikation in Folge (2 bereits erfolgte + der gerade
+        # startende) wird die Warnung deshalb deutlich direkter, MIT einer konkreten
+        # Handlungsempfehlung (Aufgabe kleiner zerlegen / Budget prüfen) statt nur "informativ".
+        # Bewusst weiterhin KEIN automatisches Eingreifen (keine automatische Aufgaben-
+        # Zerlegung, keine automatische Budget-Erhöhung) - der Mensch entscheidet nach wie vor
+        # selbst, der Lauf wird dadurch nicht blockiert.
+        consecutive_failures = count_consecutive_failed_runs(project_dir)
+        if consecutive_failures >= 2:
+            notify(
+                f"🔁 [bold yellow]Wiederholtes Scheitern:[/bold yellow] Die letzten "
+                f"{consecutive_failures} Läufe an `{self.last_project_slug}` endeten OHNE "
+                f"bestandene Verifikation (siehe `.ai_team_status.json`). Bevor ein weiterer "
+                f"kompletter Lauf startet, lieber prüfen: (1) Aufgabe in kleinere Schritte "
+                f"zerlegen statt alles auf einmal zu verlangen, (2) `/constitution` – reicht "
+                f"das Projekt-Budget für die tatsächliche Komplexität, (3) den letzten "
+                f"Verifikations-Bericht lesen – wiederholt sich derselbe Fehler?"
+            )
 
         # Pro-Projekt-Kostenbudget (siehe __init__): MAX_RUN_TOKENS begrenzt nur DIESEN einen
         # Lauf - ein Projekt mit vielen aufeinanderfolgenden Läufen (z.B. für einen externen
@@ -624,6 +653,7 @@ class Orchestrator:
         total_duration = time.monotonic() - overall_start_time
         retro_result = None
         trainer_result = None
+        self.last_budget_aborted = budget_aborted
 
         if budget_aborted:
             notify(f"🚫 [bold red]{self._budget_exceeded_label(run_start_tokens)} erreicht:[/bold red] Retrospektive & Selbstoptimierung werden übersprungen ({self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf).")

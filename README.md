@@ -208,6 +208,18 @@ Aufgabe, Pull Request, Merge erst nach grüner CI und Freigabe.
   `.ai_team_status.json`-Dateien ablesbar, nicht mehr aus der Commit-Historie selbst. Pro
   Lauf ein eigener Commit, mit einem seinem tatsächlichen Status entsprechenden Präfix
   (`feat:`/`fix:` nur bei `verification_ok=true`, sonst `wip:` oder `draft:`).
+- **GitHub-Labels für den Verifikationsstatus:** Titel-Präfix und Body-Warnung (siehe oben)
+  sieht nur, wer den PR tatsächlich öffnet – in der PR-LISTE auf GitHub, wo ein Reviewer
+  mehrere offene PRs überfliegt, war der Verifikationsstatus bisher unsichtbar.
+  `agents/github_agent.py.label_pr()` legt bei Bedarf `verification-failed`,
+  `budget-aborted` und `needs-clarification` idempotent an (`gh label create --force`) und
+  wendet sie auf den PR an – erscheinen dort als eigene, farbige Chips.
+- **Verstärkte Warnung bei wiederholtem Scheitern:** Enden mindestens zwei aufeinanderfolgende
+  Läufe DESSELBEN Projekts ohne bestandene Verifikation (`core/project_status.
+  count_consecutive_failed_runs()`), zeigt der nächste Lauf statt der rein informativen
+  Duplikat-Warnung eine deutlichere Meldung mit konkreter Handlungsempfehlung (Aufgabe
+  zerlegen / Budget prüfen / letzten Bericht lesen) – weiterhin ohne automatisches
+  Eingreifen, der Mensch entscheidet nach wie vor selbst.
 
 ---
 

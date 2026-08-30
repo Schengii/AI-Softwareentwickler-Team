@@ -7,6 +7,32 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🏷️ TypeScript-CI-Check, GitHub-Labels für Verifikationsstatus & Eskalation bei Wiederholungsfehlern
+
+Direkte Fortsetzung der drei Vorschläge aus dem vorherigen Eintrag unten, alle vollständig
+umgesetzt:
+
+- **`workspace-typescript-check` (neuer CI-Job):** Pendant zu `workspace-python-check` für
+  `.ts`/`.tsx`-Dateien – `workspace-frontend-tests` läuft nur, wenn ein Projekt bereits ein
+  `test`-Skript in `package.json` hat; ein generiertes `.tsx`-Fragment ganz ohne
+  `package.json` (real beobachtet: `TaskList.tsx`/`useTaskWebSocket.ts`) durchlief bisher
+  keinen einzigen CI-Check. `tsc --noEmit` über alle per `git ls-files` gefundenen
+  `workspace/*.ts(x)`-Dateien, TS2307 ("Cannot find module" – workspace/-Projekte werden
+  bewusst ohne `node_modules` committet) wird gezielt ausgefiltert, jeder andere
+  Diagnose-Code (Syntaxfehler, kaputtes JSX, falsch referenzierte Namen) lässt den Job
+  fehlschlagen.
+- **GitHub-Labels statt nur Titel-Präfix:** `agents/github_agent.py.label_pr()` legt
+  `verification-failed`/`budget-aborted`/`needs-clarification` idempotent an und wendet sie
+  auf den PR an – sichtbar in der PR-LISTE, nicht erst beim Öffnen des einzelnen PRs. Neues
+  `Orchestrator.last_budget_aborted`, damit `interface/cli.py` diesen Grund unabhängig von
+  `last_verification_ok` erkennen kann.
+- **`core/project_status.count_consecutive_failed_runs()`:** Ab zwei aufeinanderfolgenden
+  Läufen ohne bestandene Verifikation ersetzt eine deutlichere Warnung MIT konkreter
+  Handlungsempfehlung die bisher rein informative Duplikat-Warnung – ein manueller
+  Abbruch (`cancelled=True`) zählt bewusst nicht als Fehlschlag und unterbricht die Zählung.
+
+---
+
 ## 🩹 CI-Lücke bei generiertem `workspace/`-Code + Verifikationsstatus in Duplikat-Warnung
 
 Retrospektive zu vier separaten, aufeinanderfolgenden Läufen an praktisch derselben

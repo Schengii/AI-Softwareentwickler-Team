@@ -301,6 +301,54 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
         output = (result.stdout + result.stderr).strip()
         return success, output
 
+    # Feste Palette statt vom Modell frei erfundener Label-Namen/Farben - `gh pr create
+    # --label` schlägt fehl, wenn das Label im Repo noch nicht existiert (kein Auto-Anlegen),
+    # deshalb müssen Name UND Farbe hier vorab bekannt sein, bevor label_pr() sie per
+    # `gh label create --force` sicherstellt.
+    _STATUS_LABELS: dict[str, tuple[str, str]] = {
+        "verification-failed": ("d73a4a", "Echte Testsuite hat diesen PR nicht bestätigt bestanden"),
+        "budget-aborted": ("e99695", "Lauf-Budget wurde erreicht, verbleibende Fachbereiche übersprungen"),
+        "needs-clarification": ("fbca04", "Mindestens eine Fachrolle hat eine offene Rückfrage"),
+    }
+
+    def label_pr(self, pr_url_or_number: str, labels: list[str]) -> tuple[bool, str]:
+        """
+        Realer Fund: der Verifikationsstatus eines Laufs steckte bisher nur im Titel-Präfix und
+        im PR-Body (siehe interface/cli.py._ask_for_git_push()) - in der PR-LISTE auf GitHub
+        (die häufigste Stelle, an der ein Reviewer mehrere offene PRs überfliegt) ist davon
+        nichts sichtbar, ein Titel-Präfix geht dort im Rauschen langer Aufgabenbeschreibungen
+        unter. Labels erscheinen dort als eigene, farbige Chips.
+
+        Legt jedes benötigte Label per `gh label create --force` an (idempotent - überschreibt
+        Farbe/Beschreibung eines bereits vorhandenen Labels desselben Namens, statt bei
+        Kollision zu scheitern), bevor es per `gh pr edit --add-label` auf den PR angewendet
+        wird. Wirft NIE eine Exception, aus demselben Grund wie create_pull_request() oben: ein
+        fehlgeschlagenes Label darf einen bereits erfolgreich erstellten PR nicht verwerfen.
+        Nur Namen aus _STATUS_LABELS werden akzeptiert (kein beliebiger String vom Aufrufer).
+        """
+        unknown = [name for name in labels if name not in self._STATUS_LABELS]
+        if unknown:
+            return False, f"Unbekannte Label(s), nicht in _STATUS_LABELS: {unknown}"
+        if not labels:
+            return True, ""
+        for name in labels:
+            color, description = self._STATUS_LABELS[name]
+            try:
+                subprocess.run(
+                    ["gh", "label", "create", name, "--color", color, "--description", description, "--force"],
+                    cwd=BASE_DIR, capture_output=True, text=True, timeout=15, encoding="utf-8",
+                )
+            except (OSError, subprocess.TimeoutExpired) as e:
+                return False, f"Label `{name}` konnte nicht angelegt werden: {e}"
+        try:
+            result = subprocess.run(
+                ["gh", "pr", "edit", pr_url_or_number, *[arg for name in labels for arg in ("--add-label", name)]],
+                cwd=BASE_DIR, capture_output=True, text=True, timeout=15, encoding="utf-8",
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        return result.returncode == 0, (result.stdout + result.stderr).strip()
+
     def get_repo_slug(self) -> str | None:
         """
         Gibt `owner/repo` des aktuellen GitHub-Remotes zurück (via `gh repo view`), oder None

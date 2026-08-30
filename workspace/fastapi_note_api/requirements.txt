@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+sqlmodel
+aiosqlite
+greenlet
+pytest
+anyio
+httpx

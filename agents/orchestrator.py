@@ -96,7 +96,7 @@ from core.notifier import notify_external
 from core.optimization_advisor import analyze as analyze_optimization_potential
 from core.optimization_advisor import format_report_for_humans as format_optimization_report
 from core.project_constitution import format_constitution_for_agents, get_max_project_tokens
-from core.project_status import format_context_for_agents, record_run
+from core.project_status import format_context_for_agents, save_project_checkpoint
 from core.result_aggregator import ResultAggregator
 from core.review_gate import find_critical_findings, route_findings_to_owners
 from core.task_manager import TaskManager, is_micro_task
@@ -704,18 +704,19 @@ class Orchestrator:
         # jetzt einzeln in ein eigenes try/except gekapselt (nicht ein gemeinsamer Block), damit
         # ein Fehler in EINEM Telemetrie-Aufruf die anderen beiden nicht auch noch verhindert.
         try:
-            # Projekt-Kontinuität über mehrere Sitzungen hinweg (core/project_status.py) - siehe
-            # Injektion weiter oben.
-            record_run(
+            # Projekt-Kontinuität über mehrere Sitzungen hinweg & automatischer State-Checkpoint (core/project_status.py)
+            all_written_files = sorted({f for r in results for f in r.files_written})
+            save_project_checkpoint(
                 project_dir=project_dir,
                 task_summary=task_summary,
                 verification_ok=verification_ok,
                 budget_aborted=budget_aborted,
                 cancelled=manually_cancelled,
-                files_written_count=len({f for r in results for f in r.files_written}),
+                files_written_count=len(all_written_files),
+                files_written=all_written_files,
             )
         except Exception as e:
-            notify(f"⚠️ [dim yellow]Projekt-Historie (record_run) konnte nicht aktualisiert werden: {e}[/dim yellow]")
+            notify(f"⚠️ [dim yellow]Projekt-Historie / State-Checkpoint (save_project_checkpoint) konnte nicht aktualisiert werden: {e}[/dim yellow]")
 
         try:
             # Kumulierte, sitzungsübergreifende Kosten-Historie (memory/cost_history.py) - anders

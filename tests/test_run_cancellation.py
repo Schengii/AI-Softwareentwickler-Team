@@ -124,10 +124,14 @@ class TestProcessReportsCancellation(unittest.TestCase):
         shutil.rmtree(self.temp_workspace, ignore_errors=True)
 
     def _run(self, cancel_requested):
-        @patch("agents.orchestrator.record_run")
+        # orchestrator.process() ruft inzwischen save_project_checkpoint() statt direkt
+        # record_run() auf (core/project_status.py) - save_project_checkpoint() reicht
+        # dieselben cancelled/budget_aborted-Kwargs an sein eigenes, internes record_run()
+        # weiter, ist also der richtige Patch-Punkt, um dieses Verhalten weiter zu prüfen.
+        @patch("agents.orchestrator.save_project_checkpoint")
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")
-        def _inner(mock_synthesize, mock_decompose, mock_record_run):
+        def _inner(mock_synthesize, mock_decompose, mock_save_checkpoint):
             task = AgentTask(task_id="t1", agent_id="backend", description="Etwas bauen")
             mock_decompose.return_value = ("Kurze Aufgabe", "cancel_test_proj", [task])
             mock_synthesize.return_value = ("### Fertig", 5)
@@ -135,28 +139,28 @@ class TestProcessReportsCancellation(unittest.TestCase):
             result = asyncio.run(self.orchestrator.process(
                 "Baue etwas", cancel_requested=cancel_requested,
             ))
-            return result, mock_record_run
+            return result, mock_save_checkpoint
 
         return _inner()
 
     def test_final_status_shows_manually_cancelled_not_generic_unverified(self):
-        result, mock_record_run = self._run(lambda: True)
+        result, mock_save_checkpoint = self._run(lambda: True)
 
         self.assertIn("Manuell abgebrochen", result)
         self.assertNotIn("NICHT verifiziert", result)
 
     def test_record_run_receives_cancelled_flag(self):
-        _, mock_record_run = self._run(lambda: True)
+        _, mock_save_checkpoint = self._run(lambda: True)
 
-        mock_record_run.assert_called_once()
-        self.assertTrue(mock_record_run.call_args.kwargs.get("cancelled"))
-        self.assertFalse(mock_record_run.call_args.kwargs.get("budget_aborted"))
+        mock_save_checkpoint.assert_called_once()
+        self.assertTrue(mock_save_checkpoint.call_args.kwargs.get("cancelled"))
+        self.assertFalse(mock_save_checkpoint.call_args.kwargs.get("budget_aborted"))
 
     def test_no_cancellation_reports_normal_completion(self):
-        result, mock_record_run = self._run(lambda: False)
+        result, mock_save_checkpoint = self._run(lambda: False)
 
         self.assertNotIn("Manuell abgebrochen", result)
-        self.assertFalse(mock_record_run.call_args.kwargs.get("cancelled"))
+        self.assertFalse(mock_save_checkpoint.call_args.kwargs.get("cancelled"))
 
 
 if __name__ == "__main__":

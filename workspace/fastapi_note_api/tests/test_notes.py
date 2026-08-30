@@ -3,7 +3,7 @@ from httpx import AsyncClient
 from fastapi import status
 
 from app.main import app
-from app.db import init_db, engine
+from app.db import engine
 
 
 @pytest.fixture(scope="session", autouse=True)

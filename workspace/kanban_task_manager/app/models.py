@@ -1,5 +1,5 @@
 from typing import Optional
-from sqlmodel import Field, SQLModel, create_engine, Session, select
+from sqlmodel import Field, SQLModel, create_engine
 
 # Datenbank-Konfiguration (wird später über Umgebungsvariablen geladen)
 DATABASE_URL = "postgresql://user:password@localhost/kanban"

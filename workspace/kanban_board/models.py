@@ -1,5 +1,5 @@
 from typing import List, Optional
-from sqlmodel import SQLModel, Field, Relationship, create_engine, Session
+from sqlmodel import SQLModel, Field, Relationship
 
 class Board(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)

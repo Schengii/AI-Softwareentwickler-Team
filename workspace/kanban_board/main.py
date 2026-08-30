@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends
-from sqlmodel import Session, select
-from models import Board, Column, Card
+from sqlmodel import Session
+from models import Board, Card
 from database import get_session
 
 app = FastAPI()

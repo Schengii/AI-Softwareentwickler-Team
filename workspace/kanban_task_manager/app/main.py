@@ -1,9 +1,8 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
+import json
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import List
 from app.models import init_db, engine, Task
-from app.schemas import TaskMovedPayload
 from sqlmodel import Session
-from pydantic import ValidationError
 
 app = FastAPI()
 

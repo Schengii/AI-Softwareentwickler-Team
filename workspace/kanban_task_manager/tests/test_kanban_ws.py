@@ -1,9 +1,8 @@
 import pytest
-import asyncio
 from fastapi.testclient import TestClient
 from app.main import app
 from app.models import Task, engine
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 # Test-Client für die API
 client = TestClient(app)

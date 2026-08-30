@@ -4,7 +4,6 @@ from main import app
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from models import Base
-import asyncio
 
 # Test-Datenbank Konfiguration
 DATABASE_URL = "sqlite+aiosqlite:///:memory:"

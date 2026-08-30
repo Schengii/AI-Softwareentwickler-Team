@@ -96,7 +96,7 @@ from core.notifier import notify_external
 from core.optimization_advisor import analyze as analyze_optimization_potential
 from core.optimization_advisor import format_report_for_humans as format_optimization_report
 from core.project_constitution import format_constitution_for_agents, get_max_project_tokens
-from core.project_status import format_context_for_agents, record_run
+from core.project_status import format_context_for_agents, read_status, record_run
 from core.result_aggregator import ResultAggregator
 from core.review_gate import find_critical_findings, route_findings_to_owners
 from core.task_manager import TaskManager, is_micro_task
@@ -352,7 +352,31 @@ class Orchestrator:
             # statt eines neuen Projekts die bessere Wahl gewesen wäre.
             existing_projects = self._workspace.list_projects()
             if project_slug not in existing_projects and existing_projects:
-                shown = ", ".join(existing_projects[:10])
+                # Realer Fund (Retrospektive zu vier separaten, aufeinanderfolgenden Läufen an
+                # praktisch derselben Aufgabe - "fastapi-task-mgmt", "fastapi_task_websocket",
+                # "kanban_board", "kanban_task_manager"): die reine Namensliste unten sagt nichts
+                # darüber aus, ob ein bereits vorhandenes Projekt beim letzten Lauf überhaupt
+                # verifiziert werden konnte. Ohne dieses Signal wirkt "einfach nochmal neu
+                # anfangen" wie der Weg des geringsten Widerstands, obwohl ein Blick auf einen
+                # bereits gescheiterten Versuch oft günstiger wäre als ein weiterer kompletter
+                # Lauf. Bewusst weiterhin rein informativ (kein Ähnlichkeits-Matching zur
+                # aktuellen Aufgabe, keine Heuristik, kein LLM-Aufruf) - nur der zuletzt
+                # protokollierte Status jedes vorhandenen Projekts wird angezeigt, der Mensch
+                # zieht die Verbindung zur aktuellen Aufgabe selbst.
+                def _last_status_icon(name: str) -> str:
+                    history = read_status(str(self._workspace.get_project_dir(name)))
+                    if not history:
+                        return ""
+                    last = history[0]
+                    if last.get("verification_ok"):
+                        return " ✅"
+                    if last.get("cancelled"):
+                        return " ⏹️"
+                    if last.get("budget_aborted"):
+                        return " 🚫"
+                    return " ⚠️"
+
+                shown = ", ".join(f"{name}{_last_status_icon(name)}" for name in existing_projects[:10])
                 more = f" (+{len(existing_projects) - 10} weitere)" if len(existing_projects) > 10 else ""
                 # Realer Fund: bei mehreren, kurz aufeinanderfolgenden Läufen INNERHALB
                 # derselben Sitzung (z.B. durch eine beim Einfügen zerrissene Nutzereingabe,
@@ -375,8 +399,10 @@ class Orchestrator:
                 notify(
                     f"{same_session_hint}"
                     f"🗂️ [dim]Neues Projekt '{project_slug}' wird angelegt. Bereits vorhanden: "
-                    f"{shown}{more} – falls du an einem davon weiterarbeiten wolltest, nutze "
-                    f"stattdessen `/load <name>`.[/dim]"
+                    f"{shown}{more} (letzter Lauf: ✅ verifiziert / ⚠️ nicht verifiziert / "
+                    f"🚫 Budget erreicht / ⏹️ abgebrochen, ohne Symbol = noch kein Lauf protokolliert) "
+                    f"– falls du an einem davon weiterarbeiten wolltest, nutze stattdessen "
+                    f"`/load <name>`.[/dim]"
                 )
 
             # get_project_dir() legt das Verzeichnis bei Bedarf leer an (mkdir) - die

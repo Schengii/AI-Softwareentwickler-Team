@@ -735,14 +735,21 @@ erzwingt den sofortigen Abbruch.
 ## 🧪 Tests ausführen
 
 ```bash
-python -m unittest discover -s tests -t . -p "test_*.py"
+python -m pytest tests/
 ```
 
-`-t .` (Top-Level-Dir = Repo-Root) ist wichtig, nicht nur `-s tests`: ohne `-t` importiert
-`unittest discover` jede Testdatei als loses Top-Level-Modul statt als `tests.*`-Paket und
-überspringt dabei `tests/__init__.py` - genau die Datei, die `memory/run_history.py` für die
-gesamte Testsuite strukturell auf ein Temp-Verzeichnis umbiegt, damit Testläufe nicht in die
-echte, projektübergreifende Lauf-Historie schreiben.
+Vorher `python -m unittest discover -s tests -t . -p "test_*.py"`: `unittest discover` sammelt
+nur `unittest.TestCase`-Subklassen ein - reine Pytest-Fixture-/`@pytest.mark.anyio`-Tests ohne
+`TestCase` (z.B. `test_dashboard_sse.py`, `test_mcp_server_extended.py`,
+`test_prompt_caching.py`) wurden dadurch zwar importiert, aber nie tatsächlich ausgeführt. `pytest`
+sammelt beide Testarten gleichwertig ein.
+
+`tests/` als Argument (nicht `.` fürs ganze Repo) bleibt wichtig: pytest erkennt
+`tests/__init__.py` und importiert jedes Modul als `tests.*`-Paket (Rootdir-Package-Erkennung)
+- genau die Datei, die `memory/run_history.py` für die gesamte Testsuite strukturell auf ein
+Temp-Verzeichnis umbiegt, damit Testläufe nicht in die echte, projektübergreifende
+Lauf-Historie schreiben. `--import-mode=importlib` würde diese Package-Erkennung umgehen und
+ist deshalb bewusst nicht gesetzt.
 
 Die komplette Testsuite ist vollständig gemockt und läuft **ohne jeden API-Key/echten
 LLM-Aufruf** durch (verifiziert). `.github/workflows/ci.yml` führt sie bei jedem Push/PR

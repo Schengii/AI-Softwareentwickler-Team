@@ -1,0 +1,48 @@
+openapi: 3.1.0
+info:
+  title: Kanban Board API
+  version: 1.0.0
+paths:
+  /boards:
+    get:
+      summary: List all boards
+      responses:
+        '200':
+          description: OK
+  /boards/{board_id}/columns:
+    get:
+      summary: Get columns for board
+      parameters:
+        - name: board_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: OK
+  /cards/{card_id}/move:
+    patch:
+      summary: Move card to another column
+      parameters:
+        - name: card_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                column_id:
+                  type: integer
+                position:
+                  type: integer
+      responses:
+        '200':
+          description: Card moved successfully
+        '400':
+          description: Invalid move

@@ -1,0 +1,63 @@
+openapi: 3.1.0
+info:
+  title: Task Management API
+  version: 1.0.0
+  description: API für Task-Management mit REST und WebSocket-Echtzeit-Updates.
+
+servers:
+  - url: http://localhost:8000
+    description: Lokale Entwicklungsumgebung
+
+paths:
+  /tasks:
+    get:
+      summary: Liste alle Tasks
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Task'
+    post:
+      summary: Erstelle einen Task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskCreate'
+      responses:
+        '201':
+          description: Erstellt
+
+  /ws/tasks:
+    get:
+      summary: WebSocket für Task-Updates
+      description: Verbinde dich hier, um Echtzeit-Updates bei Statusänderungen zu erhalten.
+      responses:
+        '101':
+          description: Switching Protocols
+
+components:
+  schemas:
+    Task:
+      type: object
+      properties:
+        id: {type: integer}
+        title: {type: string}
+        status: {type: string}
+        user_id: {type: integer}
+    TaskCreate:
+      type: object
+      required: [title]
+      properties:
+        title: {type: string}
+        status: {type: string}
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

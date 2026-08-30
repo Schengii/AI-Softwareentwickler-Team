@@ -136,19 +136,43 @@ class CLIInterface:
 
         console.print(BANNER, style="bold cyan")
         console.print(
-            "💡 Schreibe einfach deine Projektidee in den Chat! (Tippe /hilfe für Befehle)\n",
+            "💡 Schreibe einfach deine Projektidee in den Chat! (Tippe /hilfe für Befehle)\n"
+            "   Für mehrzeilige Eingaben: Zeile mit \\ beenden, um sie fortzusetzen.\n",
             style="dim"
         )
 
         asyncio.run(self._main_loop())
 
+    def _read_user_input(self) -> str:
+        """
+        Liest EINE Nutzereingabe, ggf. über mehrere Zeilen hinweg – realer Fund: `console.
+        input()` (dünner Wrapper um Pythons `input()`) liest immer nur bis zum ersten
+        Zeilenumbruch. Eine mehrzeilige Aufgabenbeschreibung wurde dadurch nicht als EINE
+        Eingabe erkannt, sondern jede Zeile einzeln als eigener, meist unsinniger Prompt an
+        `_main_loop()` weitergereicht (im schlimmsten Fall ein mehrzeiliger Paste, der als
+        mehrere separate Läufe endete statt als einer). Endet eine Zeile auf ein einzelnes
+        `\\` (dieselbe Fortsetzungs-Konvention wie in der Shell/in Python selbst), wird die
+        NÄCHSTE Zeile angehängt statt die Eingabe abzuschließen – ein einzelnes Enter am Ende
+        einer normalen, einzeiligen Aufgabe bleibt dadurch unverändert genauso schnell wie
+        bisher, kein zusätzlicher Aufwand für den Alltagsfall.
+        """
+        lines: list[str] = []
+        prompt_label = "[bold green]Du[/bold green] → "
+        while True:
+            line = console.input(prompt_label)
+            if line.endswith("\\"):
+                lines.append(line[:-1])
+                prompt_label = "[bold green]…[/bold green] → "
+                continue
+            lines.append(line)
+            break
+        return "\n".join(lines).strip()
+
     async def _main_loop(self) -> None:
         """Hauptschleife: Eingabe → Verarbeitung → Ausgabe."""
         while True:
             try:
-                user_input = console.input(
-                    "[bold green]Du[/bold green] → "
-                ).strip()
+                user_input = self._read_user_input()
             except (KeyboardInterrupt, EOFError):
                 self._print_goodbye()
                 break

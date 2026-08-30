@@ -7,6 +7,20 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## ⌨️ Mehrzeilige Eingabe im interaktiven CLI-Prompt
+
+Realer Fund (Nutzeranfrage): `interface/cli.py._main_loop()` las die Nutzereingabe über
+`console.input()` (dünner Wrapper um Pythons `input()`) - das liest immer nur bis zum ersten
+Zeilenumbruch. Eine mehrzeilige Aufgabenbeschreibung, oder ein ins Terminal eingefügter
+mehrzeiliger Text, wurde dadurch NICHT als eine Eingabe erkannt, sondern jede Zeile einzeln
+als eigener, meist unsinniger Prompt verarbeitet. Neue Methode
+`CLIInterface._read_user_input()`: endet eine Zeile auf ein einzelnes `\` (dieselbe
+Fortsetzungs-Konvention wie in der Shell/in Python selbst), wird die nächste Zeile
+angehängt statt die Eingabe abzuschließen. Eine normale, einzeilige Aufgabe bleibt dadurch
+unverändert genauso schnell wie bisher (ein `console.input()`-Aufruf, kein Overhead).
+
+---
+
 ## 🧪 CI-Testrunner von `unittest discover` auf `pytest` umgestellt
 
 Realer Fund bei der Prüfung der `core/llm_factory.py`-Fallback-Ketten: der CI-„Tests"-Job

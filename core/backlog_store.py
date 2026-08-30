@@ -15,6 +15,9 @@ core/issue_watcher.py) schreibt hier hinein statt eigene Parallel-Zustände zu p
 """
 
 import json
+import os
+import threading
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -76,6 +79,27 @@ def _load_raw() -> list[dict]:
 
 
 def _save_raw(tickets: list[dict]) -> None:
+    """
+    Realer Fund (Testflake unter `pytest tests/`, reproduzierbar über einen echten
+    Lese-/Schreib-Race): `write_text()` direkt auf BACKLOG_FILE ist NICHT atomar - ein
+    gleichzeitiger Leser (core/issue_watcher.py-Poll-Zyklus UND interface/web_dashboard.py
+    laufen mehrere Jobs bewusst PARALLEL, siehe DASHBOARD_MAX_CONCURRENT_JOBS) konnte die
+    Datei mitten im Schreibvorgang lesen, bekam ungültiges/abgeschnittenes JSON und landete
+    dadurch in `_load_raw()`s JSONDecodeError-Fallback, der das STILLSCHWEIGEND als "keine
+    Tickets" (leere Liste) behandelt - kein Fehler, keine Warnung. Traf dieser torn read
+    genau einen GLEICHZEITIGEN upsert_ticket()-Aufruf (liest zuerst per _load_raw(), hängt an,
+    schreibt zurück), überschrieb dessen nächster _save_raw() das GESAMTE Backlog mit nur dem
+    einen eigenen Ticket - ein echter Datenverlust für alle anderen Tickets, nicht nur ein
+    Test-Timing-Problem. Schreiben in eine temporäre Datei im SELBEN Verzeichnis (garantiert
+    dasselbe Dateisystem) + os.replace() (atomarer Rename auf POSIX UND Windows) macht jeden
+    Lesevorgang entweder den kompletten alten ODER den kompletten neuen Stand sehen, nie etwas
+    dazwischen. Zusätzlicher, Windows-spezifischer Fund beim Verifizieren dieses Fixes über
+    einen echten Nebenläufigkeits-Stresstest: os.replace() kann unter Windows (anders als
+    POSIX) transient mit PermissionError scheitern, wenn ein anderer Thread die Zieldatei
+    GENAU in diesem Moment zum Lesen offen hat (kurze Sharing-Violation, kein echter
+    Dauerzustand) - kurzer Retry mit minimaler Pause behebt das, ohne die Atomizität
+    aufzugeben (jeder einzelne os.replace()-Versuch bleibt für sich atomar).
+    """
     BACKLOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     # Listenreihenfolge IST bereits Aktualisierungsreihenfolge (upsert_ticket hängt jedes
     # aktualisierte Ticket ans Ende an, siehe dort) - beim Kürzen also einfach die ÄLTESTEN
@@ -83,7 +107,17 @@ def _save_raw(tickets: list[dict]) -> None:
     # Zeitstempel-Auflösung ist Sekunden, mehrere Aktualisierungen in derselben Sekunde
     # ließen sich damit nicht mehr eindeutig ordnen.
     tickets = tickets[-MAX_TICKETS_KEPT:]
-    BACKLOG_FILE.write_text(json.dumps(tickets, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp_path = BACKLOG_FILE.with_suffix(f"{BACKLOG_FILE.suffix}.tmp-{os.getpid()}-{threading.get_ident()}")
+    tmp_path.write_text(json.dumps(tickets, indent=2, ensure_ascii=False), encoding="utf-8")
+    max_attempts = 10
+    for attempt in range(max_attempts):
+        try:
+            os.replace(tmp_path, BACKLOG_FILE)
+            return
+        except PermissionError:
+            if attempt == max_attempts - 1:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 def list_tickets(status: str | None = None) -> list[Ticket]:

@@ -4,6 +4,8 @@ Zustand über CLI/Dashboard/Issue-Watcher hinweg)
 """
 
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -167,6 +169,53 @@ class TestTicketReadiness(unittest.TestCase):
         ticket = backlog_store.upsert_ticket("t1", "A", "cli", "todo", depends_on=["t0"])
         ready, blocking = backlog_store.is_ticket_ready(ticket)
         self.assertTrue(ready)
+
+    def test_concurrent_reads_during_writes_never_see_a_torn_file(self):
+        """
+        Realer Fund (Testflake in tests/test_web_dashboard.py unter `pytest tests/`):
+        _save_raw() schrieb bisher direkt per write_text() auf BACKLOG_FILE - ein
+        GLEICHZEITIGER list_tickets()-Aufruf konnte die Datei mitten im Schreibvorgang lesen,
+        bekam ungültiges/abgeschnittenes JSON und landete im JSONDecodeError-Fallback von
+        _load_raw() (STILLSCHWEIGEND "keine Tickets" statt eines Fehlers) - im echten Betrieb
+        sogar mit Datenverlustrisiko, falls genau dann auch ein upsert_ticket() draufschrieb
+        (siehe _save_raw()-Docstring). Große `detail`-Nutzlast, damit ein Schreibvorgang lange
+        genug dauert, um eine Kollision mit den parallelen Lesern realistisch zu machen.
+
+        BEWUSST nur EIN Writer-Thread: mehrere GLEICHZEITIGE Writer haben ein separates,
+        hier NICHT behobenes Problem (klassisches Lost-Update ohne Sperre - Writer B liest
+        denselben alten Stand wie Writer A, überschreibt dessen Ergebnis beim Zurückschreiben)
+        - das würde diesen Test fälschlich als "Torn-Read"-Regression melden, obwohl die
+        Ursache eine andere ist. Dieser Test prüft gezielt NUR die behobene Eigenschaft: jeder
+        Lesevorgang sieht während eines laufenden Schreibvorgangs entweder den vollständigen
+        alten oder den vollständigen neuen Stand, nie eine kaputte/leere Zwischenversion.
+        """
+        backlog_store.upsert_ticket("seed", "Initiales Ticket", "cli", "todo")
+        stop = threading.Event()
+        saw_empty = threading.Event()
+        big_detail = "x" * 200_000
+
+        def _writer():
+            i = 0
+            while not stop.is_set():
+                backlog_store.upsert_ticket(f"writer-{i % 5}", "Titel", "cli", "todo", detail=big_detail)
+                i += 1
+
+        def _reader():
+            while not stop.is_set():
+                if backlog_store.list_tickets() == []:
+                    saw_empty.set()
+                    return
+
+        writer_thread = threading.Thread(target=_writer)
+        reader_threads = [threading.Thread(target=_reader) for _ in range(5)]
+        for t in [writer_thread, *reader_threads]:
+            t.start()
+        time.sleep(1.0)
+        stop.set()
+        for t in [writer_thread, *reader_threads]:
+            t.join(timeout=5)
+
+        self.assertFalse(saw_empty.is_set(), "list_tickets() sah während gleichzeitiger Writes eine leere/kaputte Datei")
 
 
 if __name__ == "__main__":

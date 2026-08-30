@@ -354,7 +354,26 @@ class Orchestrator:
             if project_slug not in existing_projects and existing_projects:
                 shown = ", ".join(existing_projects[:10])
                 more = f" (+{len(existing_projects) - 10} weitere)" if len(existing_projects) > 10 else ""
+                # Realer Fund: bei mehreren, kurz aufeinanderfolgenden Läufen INNERHALB
+                # derselben Sitzung (z.B. durch eine beim Einfügen zerrissene Nutzereingabe,
+                # die als mehrere separate Prompts ankam) sprang project_slug zwischen völlig
+                # unterschiedlichen Ordnernamen für dieselbe eigentliche Aufgabe hin und her -
+                # die generische Liste "Bereits vorhanden: ..." ging dabei im Rauschen älterer
+                # Projekte unter, obwohl DIESE Sitzung erst Sekunden zuvor schon an einem
+                # Projekt gearbeitet hatte. self.last_project_slug (von genau DIESEM
+                # Orchestrator-Objekt, also nur innerhalb der aktuellen Sitzung gesetzt, siehe
+                # __init__) bekommt deshalb eine eigene, vorangestellte Zeile - weiterhin rein
+                # informativ, der Mensch entscheidet nach wie vor selbst über `/load <name>`.
+                same_session_hint = ""
+                if self.last_project_slug and self.last_project_slug != project_slug:
+                    same_session_hint = (
+                        f"🕒 [dim]Hinweis: In DIESER Sitzung wurde zuletzt an `{self.last_project_slug}` "
+                        f"gearbeitet – falls die aktuelle Anfrage eigentlich eine Fortsetzung davon ist "
+                        f"(z.B. weil eine längere Eingabe in mehrere Nachrichten zerrissen ankam), "
+                        f"lieber abbrechen und stattdessen `/load {self.last_project_slug}` nutzen.[/dim]\n"
+                    )
                 notify(
+                    f"{same_session_hint}"
                     f"🗂️ [dim]Neues Projekt '{project_slug}' wird angelegt. Bereits vorhanden: "
                     f"{shown}{more} – falls du an einem davon weiterarbeiten wolltest, nutze "
                     f"stattdessen `/load <name>`.[/dim]"
@@ -465,6 +484,19 @@ class Orchestrator:
         # Antworttext statt über write_file/edit_file geliefert hat, wird er zusätzlich
         # per Regex geparst – ohne bereits über Tools geschriebene Dateien zu überschreiben.
         saved_files_count = 0
+        # Realer Fund: bisher zählte der Abschlussbericht nur DIE ANZAHL der so gespeicherten
+        # Dateien, nicht WELCHE - eine per Regex aus freiem Antworttext geparste Datei ist
+        # fehleranfälliger als ein natives write_file-Tool-Argument (z.B. wenn der Agent nur
+        # einen Diff-/Integrations-Ausschnitt statt einer vollständigen Datei geliefert hat,
+        # real beobachtet: eine so gespeicherte main.py bestand nur aus einem Patch-Kommentar
+        # + drei Zeilen, ohne die dafür nötigen Imports). Python-Syntaxfehler fängt bereits
+        # core/workspace.py.parse_and_save_files() ab (CodeSandbox.validate_code), semantisch
+        # unvollständige, aber syntaktisch gültige Fragmente wie im realen Fund oben nicht -
+        # dafür bleibt core/verifier.py.check_lint() (läuft später) die zuständige Instanz.
+        # Diese Liste macht die betroffenen Pfade im Abschlussbericht NAMENTLICH sichtbar,
+        # damit ein Lint-/Testfehler an genau dieser Stelle sofort zuordenbar ist, statt in
+        # einer anonymen Zahl unterzugehen.
+        text_fallback_paths: list[str] = []
         if AUTO_SAVE_WORKSPACE:
             for res in results:
                 if res.success and res.content:
@@ -481,11 +513,17 @@ class Orchestrator:
                     )
                     new_files = [f for f in files if f.relative_path not in file_owners]
                     saved_files_count += len(new_files)
+                    text_fallback_paths.extend(f.relative_path for f in new_files)
                     for f in new_files:
                         file_owners[f.relative_path] = res.agent_id
 
             if saved_files_count > 0:
-                notify(f"💾 [green]Workspace:[/green] {saved_files_count} zusätzliche Projektdateien (Text-Fallback) in `{project_dir}` gespeichert.")
+                shown_paths = ", ".join(f"`{p}`" for p in text_fallback_paths[:10])
+                more_paths = f" (+{len(text_fallback_paths) - 10} weitere)" if len(text_fallback_paths) > 10 else ""
+                notify(
+                    f"💾 [green]Workspace:[/green] {saved_files_count} zusätzliche Projektdateien (Text-Fallback) "
+                    f"in `{project_dir}` gespeichert: {shown_paths}{more_paths}."
+                )
 
         # Governance-Fix-Schleife: kritische Befunde aus code_reviewer/security/compliance
         # (REVIEW_ONLY_AGENT_IDS) gezielt an den zuständigen Datei-Owner zur Korrektur
@@ -594,6 +632,7 @@ class Orchestrator:
             total_duration=total_duration,
             project_dir=project_dir,
             run_start_tokens=run_start_tokens,
+            text_fallback_paths=text_fallback_paths,
         )
         if budget_aborted:
             stats_table += (
@@ -650,45 +689,63 @@ class Orchestrator:
 
         self._history.add_assistant_message(final_output)
 
-        # Projekt-Kontinuität über mehrere Sitzungen hinweg (core/project_status.py) - siehe
-        # Injektion weiter oben. record_run() ist rein additiv (I/O-Fehler werden dort
-        # verschluckt), darf also niemals einen sonst erfolgreichen Lauf zum Scheitern bringen.
-        record_run(
-            project_dir=project_dir,
-            task_summary=task_summary,
-            verification_ok=verification_ok,
-            budget_aborted=budget_aborted,
-            cancelled=manually_cancelled,
-            files_written_count=len({f for r in results for f in r.files_written}),
-        )
+        # Realer Fund aus einem echten Lauf: alle drei Telemetrie-Aufrufe unten (record_run/
+        # record_run_usage/record_run_history) sind laut ihren eigenen Kommentaren/Docstrings
+        # als "rein additiv, darf einen sonst erfolgreichen Lauf niemals zum Scheitern bringen"
+        # gedacht - waren das bisher aber nur GEGEN I/O-Fehler (record_run() fängt die
+        # ausdrücklich ab). Ein KeyError('cache_read_tokens') aus core/llm_factory.py (vermutlich
+        # eine Versions-Eigenheit der google-genai/anthropic-SDK-Antwortobjekte bei aktivem
+        # Prompt-Caching, nicht aus eigenem Code - core/token_guard.py und memory/cost_history.py
+        # greifen bereits überall defensiv über .get()/getattr(..., default) zu) schlug hier
+        # unbehandelt durch bis zum CLI-Top-Level-Handler (interface/cli.py) - der bereits fertig
+        # SYNTHETISIERTE, in self._history bereits gespeicherte final_output ging dadurch für den
+        # Nutzer komplett verloren, der Lauf landete als "blocked" im Backlog, obwohl die
+        # eigentliche Team-Arbeit längst erfolgreich abgeschlossen war. Jeder der drei Aufrufe
+        # jetzt einzeln in ein eigenes try/except gekapselt (nicht ein gemeinsamer Block), damit
+        # ein Fehler in EINEM Telemetrie-Aufruf die anderen beiden nicht auch noch verhindert.
+        try:
+            # Projekt-Kontinuität über mehrere Sitzungen hinweg (core/project_status.py) - siehe
+            # Injektion weiter oben.
+            record_run(
+                project_dir=project_dir,
+                task_summary=task_summary,
+                verification_ok=verification_ok,
+                budget_aborted=budget_aborted,
+                cancelled=manually_cancelled,
+                files_written_count=len({f for r in results for f in r.files_written}),
+            )
+        except Exception as e:
+            notify(f"⚠️ [dim yellow]Projekt-Historie (record_run) konnte nicht aktualisiert werden: {e}[/dim yellow]")
 
-        # Kumulierte, sitzungsübergreifende Kosten-Historie (memory/cost_history.py) - anders
-        # als core/token_guard.py (reiner In-Memory-Zähler, bei jedem Neustart wieder bei
-        # Null) bleibt das über JEDEN künftigen Prozess-Neustart erhalten. Rein additiv wie
-        # record_run() oben, darf also niemals einen sonst erfolgreichen Lauf zum Scheitern
-        # bringen. Nutzt den Pro-Modell-DELTA seit Laufbeginn, nicht den Gesamtzähler des
-        # Prozesses - sonst würde ein zweiter Lauf in derselben Sitzung den ersten erneut
-        # mitzählen.
-        record_run_usage(self._model_usage_deltas(run_start_model_stats))
+        try:
+            # Kumulierte, sitzungsübergreifende Kosten-Historie (memory/cost_history.py) - anders
+            # als core/token_guard.py (reiner In-Memory-Zähler, bei jedem Neustart wieder bei
+            # Null) bleibt das über JEDEN künftigen Prozess-Neustart erhalten. Nutzt den
+            # Pro-Modell-DELTA seit Laufbeginn, nicht den Gesamtzähler des Prozesses - sonst
+            # würde ein zweiter Lauf in derselben Sitzung den ersten erneut mitzählen.
+            record_run_usage(self._model_usage_deltas(run_start_model_stats))
+        except Exception as e:
+            notify(f"⚠️ [dim yellow]Kosten-Historie (record_run_usage) konnte nicht aktualisiert werden: {e}[/dim yellow]")
 
-        # Realer Fund bei einer Bestandsaufnahme des eigenen Teams: core/project_status.py
-        # speichert Historie NUR pro Projekt, memory/cost_history.py NUR kumulierte Summen
-        # pro Modell - es gab keine Möglichkeit zu sehen, welche Agenten über die Zeit
-        # häufiger scheitern oder wie sich Tokenverbrauch/Dauer PROJEKTÜBERGREIFEND
-        # entwickeln (Grundlage für die Observability-Ansicht im Dashboard). Rein additiv
-        # wie record_run()/record_run_usage() oben, darf einen sonst erfolgreichen Lauf
-        # niemals zum Scheitern bringen.
-        record_run_history(
-            project_slug=self.last_project_slug,
-            task_summary=task_summary,
-            verification_ok=verification_ok,
-            total_tokens=sum(r.total_tokens for r in results),
-            duration_seconds=total_duration,
-            agent_results=[
-                {"agent_id": r.agent_id, "success": r.success, "total_tokens": r.total_tokens, "model_used": r.model_used}
-                for r in results
-            ],
-        )
+        try:
+            # Realer Fund bei einer Bestandsaufnahme des eigenen Teams: core/project_status.py
+            # speichert Historie NUR pro Projekt, memory/cost_history.py NUR kumulierte Summen
+            # pro Modell - es gab keine Möglichkeit zu sehen, welche Agenten über die Zeit
+            # häufiger scheitern oder wie sich Tokenverbrauch/Dauer PROJEKTÜBERGREIFEND
+            # entwickeln (Grundlage für die Observability-Ansicht im Dashboard).
+            record_run_history(
+                project_slug=self.last_project_slug,
+                task_summary=task_summary,
+                verification_ok=verification_ok,
+                total_tokens=sum(r.total_tokens for r in results),
+                duration_seconds=total_duration,
+                agent_results=[
+                    {"agent_id": r.agent_id, "success": r.success, "total_tokens": r.total_tokens, "model_used": r.model_used}
+                    for r in results
+                ],
+            )
+        except Exception as e:
+            notify(f"⚠️ [dim yellow]Lauf-Historie (record_run_history) konnte nicht aktualisiert werden: {e}[/dim yellow]")
 
         # Realer Fund: bisher endete JEDER Lauf mit demselben uneingeschränkten "✅ Fertig!",
         # auch wenn die Verifikation nie bestätigt werden konnte (keine Tests gefunden,
@@ -949,6 +1006,29 @@ class Orchestrator:
                     member_results.append(res)
                     notify(self._status_notify_line("✅ [green]Fertig[/green]", "❌ [red]Fehler[/red]", agent_name, dur, res.success, res.error))
 
+                    # Realer Fund: die Budget-Prüfung lief bisher NUR einmal am Anfang jeder
+                    # Fachbereichs-Phase (siehe Schleifenkopf oben) - bei mehreren SEQUENZIELL
+                    # laufenden Mitgliedern (z.B. Governance: Code-Reviewer -> Compliance ->
+                    # Projekt-Hygiene) konnte ein Lauf dadurch erst NACH der kompletten Phase
+                    # bemerkt werden, dass MAX_RUN_TOKENS bereits deutlich überschritten war
+                    # (beobachtet: 383.143 von 300.000 Tokens, +27%). Zusätzliche Prüfung NACH
+                    # jedem einzelnen sequenziellen Mitglied (nicht im parallelen Zweig oben -
+                    # dort läuft bereits alles gleichzeitig, ein Zwischenstopp mitten in
+                    # asyncio.gather ist nicht sinnvoll möglich) - bricht die Phase ggf. vorzeitig
+                    # ab, die äußere Schleife überspringt beim nächsten Phasenkopf dann wie gehabt
+                    # alle verbleibenden Fachbereiche.
+                    if run_start_tokens is not None and (
+                        self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                    ):
+                        budget_aborted = True
+                        notify(
+                            f"🚫 [bold red]{self._budget_exceeded_label(run_start_tokens)} erreicht:[/bold red] "
+                            f"{self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf verbraucht – "
+                            f"überspringe verbleibende Mitglieder in '{phase_label}' und liefere die bisherigen "
+                            "Ergebnisse aus."
+                        )
+                        break
+
             all_results.extend(member_results)
             self._update_file_owners(file_owners, member_results)
             # Auf die letzten ~3000 Zeichen begrenzen, damit der Kontext über 5 Phasen hinweg
@@ -956,7 +1036,12 @@ class Orchestrator:
             running_context = (running_context + self._format_results_for_review(member_results)[:2000])[-3000:]
 
             # ── Echte Konsolidierung durch den Teamleiter ──
-            if ENABLE_DEPARTMENT_LEAD_EXECUTION and not skip_lead_layer:
+            # "and not budget_aborted": wurde das Budget gerade eben MITTEN in der sequenziellen
+            # Mitglieder-Schleife oben überschritten, spart der zusätzliche Konsolidierungs-
+            # Aufruf hier den letzten möglichen Tokenverbrauch dieser Phase ein - konsistent
+            # mit dem äußeren Phasenkopf, der ab der NÄCHSTEN Iteration ohnehin komplett
+            # überspringt.
+            if ENABLE_DEPARTMENT_LEAD_EXECUTION and not skip_lead_layer and not budget_aborted:
                 consolidation = await self._run_department_consolidation(lead, member_results, project_dir)
                 all_results.append(consolidation)
                 if consolidation.success and consolidation.content:
@@ -1910,6 +1995,7 @@ class Orchestrator:
         total_duration: float,
         project_dir: str,
         run_start_tokens: int | None = None,
+        text_fallback_paths: list[str] | None = None,
     ) -> str:
         total_prompt_tokens = sum(r.prompt_tokens for r in results)
         total_completion_tokens = sum(r.completion_tokens for r in results) + synth_tokens
@@ -1989,6 +2075,28 @@ class Orchestrator:
                     f"{r.total_tokens:,} Tokens, aber 0 Dateien geschrieben. Prüfe `content` dieses "
                     "Agenten manuell – der Code steckt wahrscheinlich nur im Antworttext."
                 )
+
+        # Realer Fund: per Regex aus freiem Antworttext geparste Dateien (siehe process(),
+        # AUTO_SAVE_WORKSPACE-Block) sind fehleranfälliger als ein natives write_file-Tool-
+        # Argument - ein beobachteter Fall lieferte nur einen Patch-/Integrations-Ausschnitt
+        # statt einer vollständigen Datei (fehlende Imports, Bezug auf nicht definierte Namen).
+        # core/verifier.py.check_lint() findet solche Fälle zuverlässig (z.B. F821 undefined
+        # name), aber die Zuordnung "welche der vielen Lint-Fehler stammt von einer Text-
+        # Fallback-Datei" war bisher nicht möglich - diese Liste macht die betroffenen Pfade
+        # NAMENTLICH sichtbar, statt nur als anonyme Zahl im Live-Log.
+        if text_fallback_paths:
+            lines.append(
+                "\n### 📝 Per Text-Fallback gespeicherte Dateien (nicht über das reguläre "
+                "Werkzeug interface geschrieben)\n"
+            )
+            lines.append(
+                "Diese Dateien wurden aus dem freien Antworttext eines Agenten per Regex "
+                "extrahiert, nicht über einen echten `write_file`/`edit_file`-Aufruf – prüfe sie "
+                "bei einem Lint-/Testfehler zuerst, da sie öfter unvollständig sind (z.B. nur ein "
+                "Patch-Ausschnitt statt einer vollständigen Datei):\n"
+            )
+            for path in text_fallback_paths:
+                lines.append(f"- `{path}`")
 
         return "\n".join(lines)
 

@@ -119,6 +119,40 @@ class TestRunBudgetCap(unittest.TestCase):
             orch_module.token_guard.record_usage("fake-model", 10**9, 0)  # absurd hoher Verbrauch
             self.assertFalse(Orchestrator._run_budget_exceeded(0))
 
+    def test_budget_check_fires_mid_phase_between_sequential_members(self):
+        """
+        Realer Fund aus einem echten Lauf: die Budget-Prüfung lief bisher NUR einmal am Anfang
+        jeder Fachbereichs-Phase - bei mehreren SEQUENZIELL laufenden Mitgliedern derselben
+        Phase (Governance: Code-Reviewer -> Compliance, echt beobachtet mit Projekt-Hygiene als
+        drittem Mitglied) konnte das Budget dadurch erst NACH der kompletten Phase als
+        überschritten erkannt werden (beobachtet: 383.143 von 300.000 Tokens, +27%). Dieser Test
+        stellt sicher, dass das zweite Mitglied gar nicht mehr startet, wenn das Budget bereits
+        NACH dem ersten Mitglied derselben Phase überschritten ist - nicht erst in der
+        nächsten Phase.
+        """
+        agent_tasks = [
+            AgentTask(task_id="t1", agent_id="code_reviewer", description="Review"),
+            AgentTask(task_id="t2", agent_id="compliance", description="DSGVO-Check"),
+        ]
+        # Delegation (5000) + code_reviewer (5000) = 10.000 > 8000-Budget - muss NACH dem
+        # ersten Mitglied greifen, BEVOR compliance überhaupt startet (kein dritter Aufruf).
+        with patch.object(orch_module, "MAX_RUN_TOKENS", 8000):
+            results, _, budget_aborted, _cancelled = asyncio.run(self.orchestrator._run_department_hierarchy(
+                user_request="Baue eine Todo-App", task_summary="Todo-App", agent_tasks=agent_tasks,
+                project_dir=".", run_start_tokens=0, notify=lambda msg: None,
+            ))
+
+        self.assertTrue(budget_aborted)
+        result_agent_ids = [r.agent_id for r in results]
+        self.assertIn("code_reviewer", result_agent_ids)
+        self.assertNotIn("compliance", result_agent_ids, "compliance hätte nach der Budget-Überschreitung durch code_reviewer nicht mehr starten dürfen")
+        # Die Konsolidierung durch den Teamleiter (nochmal 5000 Tokens) darf ebenfalls nicht
+        # mehr laufen, sobald das Budget schon MITTEN in der Mitglieder-Schleife überschritten
+        # wurde - sonst würde der Fund oben nur halb behoben. Delegation UND Konsolidierung
+        # tragen beide agent_id="governance_lead" - genau EIN Treffer (nur die Delegation)
+        # erwartet, nicht zwei.
+        self.assertEqual(result_agent_ids.count("governance_lead"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

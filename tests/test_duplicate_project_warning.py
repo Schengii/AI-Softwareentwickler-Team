@@ -85,6 +85,33 @@ class TestDuplicateProjectWarning(unittest.TestCase):
         logs = self._run("already_here")
         self.assertFalse(any("Neues Projekt" in line for line in logs))
 
+    def test_second_run_in_same_session_names_the_previous_project_slug(self):
+        """
+        Realer Fund aus einem echten Lauf: eine beim Einfügen zerrissene Nutzereingabe kam als
+        mehrere separate Prompts an, jeder ließ das Modell einen NEUEN project_slug für
+        praktisch dieselbe Aufgabe erraten ("fastapi_task_websocket" dann "fastapi-task-mgmt")
+        - INNERHALB derselben Sitzung/desselben Orchestrator-Objekts. Die generische
+        "Bereits vorhanden: ..."-Liste allein macht das eigene Vorprojekt DIESER Sitzung nicht
+        besonders kenntlich. Ein zweiter process()-Aufruf auf demselben Orchestrator muss jetzt
+        explizit auf self.last_project_slug (vom ERSTEN Aufruf) hinweisen.
+        """
+        self._run("erstes_projekt")
+        self.assertEqual(self.orchestrator.last_project_slug, "erstes_projekt")
+
+        logs = self._run("zweites_projekt")
+        self.assertTrue(
+            any("erstes_projekt" in line and "DIESER Sitzung" in line for line in logs),
+            f"Erwarteter Hinweis auf 'erstes_projekt' aus derselben Sitzung fehlt in: {logs}",
+        )
+        self.assertTrue(any("/load erstes_projekt" in line for line in logs))
+
+    def test_no_same_session_hint_when_reusing_the_same_slug(self):
+        """Wird im zweiten Lauf wieder derselbe Slug geraten (echte Fortsetzung), ist der
+        Zusatzhinweis überflüssig - project_slug == last_project_slug, keine Verwirrung möglich."""
+        self._run("mein_projekt")
+        logs = self._run("mein_projekt")
+        self.assertFalse(any("DIESER Sitzung" in line for line in logs))
+
 
 if __name__ == "__main__":
     unittest.main()

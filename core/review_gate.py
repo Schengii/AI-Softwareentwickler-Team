@@ -20,7 +20,23 @@ tatsächlich in den System-Prompts vorgeschriebenen Formate als ein Versuch, jed
 Formulierung zu erfassen.
 """
 
+import json
 import re
+from dataclasses import dataclass
+
+
+@dataclass
+class ReviewFinding:
+    """Repräsentiert einen strukturierten Review-/Governance-Befund."""
+    severity: str  # "critical" | "warning" | "info"
+    source_role: str = "reviewer"
+    file_path: str = ""
+    line_number: int | None = None
+    title: str = ""
+    description: str = ""
+    suggested_fix: str = ""
+    raw_text: str = ""
+
 
 # 🔴 UND das Wort "kritisch" decken alle drei Formate ab: code_reviewer nutzt beides in seiner
 # Überschrift, compliance nutzt 🔴 in der Risikostufen-Spalte, security nutzt nur das Wort
@@ -70,6 +86,62 @@ def _is_real_finding(block: str) -> bool:
     if _NEGATIVE_RE.search(stripped):
         return False
     return True
+
+
+def parse_structured_findings(content: str, source_role: str = "") -> list[ReviewFinding]:
+    """
+    Parst Review-Befunde sowohl aus strukturierten JSON-Codeblöcken als auch
+    per Heuristik aus Freitext und formatiert sie als typisierte `ReviewFinding`-Objekte.
+    """
+    if not content:
+        return []
+
+    findings: list[ReviewFinding] = []
+
+    # 1. Versuche JSON-Codeblöcke zu parsen
+    json_block_match = re.search(r"```(?:json)?\s*(\[\s*\{.*?\}\s*\])\s*```", content, re.DOTALL)
+    if json_block_match:
+        try:
+            data = json.loads(json_block_match.group(1))
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        sev = (item.get("severity") or "warning").lower()
+                        findings.append(ReviewFinding(
+                            severity="critical" if "crit" in sev or "krit" in sev else sev,
+                            source_role=source_role or item.get("source_role", "reviewer"),
+                            file_path=item.get("file_path", "") or item.get("file", ""),
+                            line_number=item.get("line_number") or item.get("line"),
+                            title=item.get("title", ""),
+                            description=item.get("description", "") or item.get("detail", ""),
+                            suggested_fix=item.get("suggested_fix", "") or item.get("fix", ""),
+                            raw_text=json.dumps(item, ensure_ascii=False),
+                        ))
+                if findings:
+                    return findings
+        except Exception:
+            pass
+
+    # 2. Fallback auf Text-Heuristiken
+    raw_critical = find_critical_findings(content)
+    for block in raw_critical:
+        # Versuche Dateipfad zu extrahieren
+        extracted_path = ""
+        for cand in _BACKTICK_PATH_RE.findall(block):
+            if _PATH_LIKE_RE.match(cand.strip().replace("\\", "/")):
+                extracted_path = cand.strip()
+                break
+
+        findings.append(ReviewFinding(
+            severity="critical",
+            source_role=source_role or "reviewer",
+            file_path=extracted_path,
+            title=block.splitlines()[0][:80],
+            description=block,
+            raw_text=block,
+        ))
+
+    return findings
 
 
 def find_critical_findings(content: str) -> list[str]:
@@ -188,5 +260,47 @@ def route_findings_to_owners(
             agents_to_fix.setdefault(owner, []).append(entry)
         else:
             unrouted.append(entry)
+
+    return agents_to_fix, unrouted
+
+
+def route_structured_findings(
+    findings: list[ReviewFinding], file_owners: dict[str, str],
+) -> tuple[dict[str, list[ReviewFinding]], list[ReviewFinding]]:
+    """
+    Ordnet typisierte `ReviewFinding`-Objekte anhand von `file_path` oder Backticks
+    dem zuständigen Datei-Owner zu.
+    """
+    agents_to_fix: dict[str, list[ReviewFinding]] = {}
+    unrouted: list[ReviewFinding] = []
+
+    for finding in findings:
+        owner = None
+        target_path = finding.file_path.strip().replace("\\", "/")
+
+        if target_path:
+            for owned_path, owner_id in file_owners.items():
+                normalized = owned_path.replace("\\", "/")
+                if normalized == target_path or normalized.endswith(f"/{target_path}") or target_path.endswith(f"/{normalized}"):
+                    owner = owner_id
+                    break
+
+        if not owner and finding.raw_text:
+            for candidate in _BACKTICK_PATH_RE.findall(finding.raw_text):
+                candidate = candidate.strip().replace("\\", "/")
+                if not _PATH_LIKE_RE.match(candidate):
+                    continue
+                for owned_path, owner_id in file_owners.items():
+                    normalized = owned_path.replace("\\", "/")
+                    if normalized == candidate or normalized.endswith(f"/{candidate}") or candidate.endswith(f"/{normalized}"):
+                        owner = owner_id
+                        break
+                if owner:
+                    break
+
+        if owner:
+            agents_to_fix.setdefault(owner, []).append(finding)
+        else:
+            unrouted.append(finding)
 
     return agents_to_fix, unrouted

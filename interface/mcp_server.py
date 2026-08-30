@@ -24,7 +24,7 @@ class MCPServer:
         self.tools = [
             {
                 "name": "ai_team_develop",
-                "description": "Führt das 32-köpfige autonome KI-Entwicklerteam aus, um Software, Module oder Refactorings zu erstellen.",
+                "description": "Führt das 33-köpfige autonome KI-Entwicklerteam aus, um Software, Module oder Refactorings zu erstellen.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -61,6 +61,46 @@ class MCPServer:
                     },
                     "required": ["project", "query"]
                 }
+            },
+            {
+                "name": "ai_team_run_tests",
+                "description": "Führt die automatisierte Testsuite für ein Workspace-Projekt isoliert aus.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project": {
+                            "type": "string",
+                            "description": "Name des Projekts im Workspace."
+                        }
+                    },
+                    "required": ["project"]
+                }
+            },
+            {
+                "name": "ai_team_explain_symbol",
+                "description": "Nutzt den AST-Code-Graph, um Definition, Aufrufe und Auswirkungsanalyse eines Code-Symbols zu ermitteln.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project": {
+                            "type": "string",
+                            "description": "Name des Projekts im Workspace."
+                        },
+                        "symbol": {
+                            "type": "string",
+                            "description": "Name der Klasse, Funktion oder Methode."
+                        }
+                    },
+                    "required": ["project", "symbol"]
+                }
+            },
+            {
+                "name": "ai_team_get_backlog",
+                "description": "Liefert alle aktuellen Kanban-Tickets aus dem zentralen Backlog-Store.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
             }
         ]
 
@@ -73,6 +113,57 @@ class MCPServer:
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": {"tools": self.tools}
+            }
+
+        elif method == "resources/list":
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "resources": [
+                        {
+                            "uri": "ki-team://backlog",
+                            "name": "Zentraler Backlog-Store",
+                            "mimeType": "application/json",
+                        },
+                        {
+                            "uri": "ki-team://projects",
+                            "name": "Workspace-Projekte",
+                            "mimeType": "application/json",
+                        }
+                    ]
+                }
+            }
+
+        elif method == "resources/read":
+            params = request.get("params", {})
+            uri = params.get("uri", "")
+            if uri == "ki-team://backlog":
+                from dataclasses import asdict, is_dataclass
+
+                from core.backlog_store import list_tickets
+                tickets = [asdict(t) if is_dataclass(t) else dict(vars(t)) for t in list_tickets()]
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(tickets, indent=2, ensure_ascii=False)}]
+                    }
+                }
+            elif uri == "ki-team://projects":
+                from core.workspace import WorkspaceManager
+                projects = WorkspaceManager().list_projects()
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(projects, indent=2)}]
+                    }
+                }
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32602, "message": f"Resource '{uri}' nicht gefunden"}
             }
 
         elif method == "tools/call":
@@ -92,6 +183,19 @@ class MCPServer:
                     }
                 }
 
+            elif name == "ai_team_get_backlog":
+                from dataclasses import asdict, is_dataclass
+
+                from core.backlog_store import list_tickets
+                tickets = [asdict(t) if is_dataclass(t) else dict(vars(t)) for t in list_tickets()]
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [{"type": "text", "text": json.dumps(tickets, indent=2, ensure_ascii=False)}]
+                    }
+                }
+
             elif name == "ai_team_rag_search":
                 from core.embedding_index import semantic_search
                 from core.workspace import WorkspaceManager
@@ -105,6 +209,58 @@ class MCPServer:
                     "id": req_id,
                     "result": {
                         "content": [{"type": "text", "text": res_text}]
+                    }
+                }
+
+            elif name == "ai_team_explain_symbol":
+                from core.code_graph import CodebaseGraph
+                from core.workspace import WorkspaceManager
+                project = arguments.get("project", "")
+                symbol = arguments.get("symbol", "")
+                project_dir = WorkspaceManager().get_project_dir(project) if project else None
+                if not project_dir or not project_dir.exists():
+                    return {
+                        "jsonrpc": "2.0", "id": req_id,
+                        "result": {"content": [{"type": "text", "text": f"Projekt '{project}' nicht gefunden."}]}
+                    }
+                graph = CodebaseGraph(project_dir)
+                impact = graph.analyze_impact(symbol)
+                defs = graph.find_definition(symbol)
+                def_str = "\n".join([f"Definiert in `{d.file_path}` (Zeile {d.line_number}): {d.signature}" for d in defs]) or "Keine explizite Definition gefunden."
+                exp_text = (
+                    f"### Symbol-Analyse: `{symbol}`\n\n"
+                    f"**Definition:**\n{def_str}\n\n"
+                    f"**Referenzierende Dateien ({len(impact.referencing_files)}):**\n"
+                    f"{', '.join(impact.referencing_files) if impact.referencing_files else 'Keine'}\n\n"
+                    f"**Aufrufende Symbole ({len(impact.calling_symbols)}):**\n"
+                    f"{', '.join(impact.calling_symbols) if impact.calling_symbols else 'Keine'}"
+                )
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [{"type": "text", "text": exp_text}]
+                    }
+                }
+
+            elif name == "ai_team_run_tests":
+                from core.verifier import ProjectVerifier
+                from core.workspace import WorkspaceManager
+                project = arguments.get("project", "")
+                project_dir = WorkspaceManager().get_project_dir(project) if project else None
+                if not project_dir or not project_dir.exists():
+                    return {
+                        "jsonrpc": "2.0", "id": req_id,
+                        "result": {"content": [{"type": "text", "text": f"Projekt '{project}' nicht gefunden."}]}
+                    }
+                verifier = ProjectVerifier(project_dir)
+                res = await verifier.verify()
+                out_text = f"Status: {'✅ Bestanden' if res.tests_passed else '❌ Fehlgeschlagen'}\n\n{res.summary()}"
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [{"type": "text", "text": out_text}]
                     }
                 }
 

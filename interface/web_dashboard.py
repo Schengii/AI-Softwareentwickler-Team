@@ -40,24 +40,33 @@ import asyncio
 import contextlib
 import hmac
 import json
+import os
+import queue
 import re
+import subprocess
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from agents.orchestrator import Orchestrator
-from config import DASHBOARD_AUTH_TOKEN, DASHBOARD_HOST, DASHBOARD_MAX_CONCURRENT_JOBS
+from config import DASHBOARD_AUTH_TOKEN, DASHBOARD_HOST, DASHBOARD_MAX_CONCURRENT_JOBS, MAX_RUN_TOKENS
 from core.backlog_store import list_tickets, upsert_ticket
 from core.notifier import notify_external
+from core.token_guard import token_guard
 from memory.run_history import get_agent_success_rates, get_recent_runs
 
 MAX_LOG_LINES_KEPT = 500
-# Adressen, die als "nur von diesem Rechner erreichbar" gelten – hier darf das Dashboard
-# auch ohne Token starten, weil ein entfernter Angreifer den Server so nicht erreichen kann.
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+# Wie oft während eines laufenden Jobs ein "tokens"-SSE-Event mit dem aktuellen Verbrauch
+# gepusht wird. Reiner Dict-Lesezugriff auf core/token_guard.py (kein LLM-Aufruf, keine
+# nennenswerten Kosten) - 4s reicht, um MAX_RUN_TOKENS-Ausreißer früh sichtbar zu machen,
+# ohne den Event-Loop unnötig oft aufzuwecken.
+TOKEN_PROGRESS_INTERVAL_SECONDS = 4.0
 
 
 @dataclass
@@ -69,11 +78,8 @@ class Job:
     result: str = ""
     error: str = ""
     created_at: float = field(default_factory=time.monotonic)
-    # Von POST /api/cancel/<job_id> gesetzt - der Worker fragt das an DENSELBEN Prüfpunkten
-    # ab wie das bestehende MAX_RUN_TOKENS-Budget (siehe Orchestrator.process(
-    # cancel_requested=...)), kein hartes Kill mitten in einer laufenden Datei-/Subprozess-
-    # Operation.
     cancel_requested: bool = False
+    listeners: list[Any] = field(default_factory=list)
 
 
 class DashboardServer:
@@ -183,20 +189,62 @@ class DashboardServer:
         if not job or job.status == "cancelled":
             if job:
                 upsert_ticket(ticket_id=f"dashboard-{job_id}", title=job.prompt[:80], source="dashboard", status="cancelled")
+                for q in list(job.listeners):
+                    try:
+                        q.put_nowait({"type": "status", "status": "cancelled", "result": "", "error": ""})
+                    except Exception:
+                        pass
             return  # bereits vor dem Start abgebrochen (siehe cancel())
         job.status = "running"
         upsert_ticket(ticket_id=f"dashboard-{job_id}", title=job.prompt[:80], source="dashboard", status="in_progress")
-        # Frische, isolierte Orchestrator-Instanz PRO JOB - der eigentliche Grund für die
-        # frühere Serialisierung war eine GETEILTE ConversationHistory, die sich bei
-        # gleichzeitigen Jobs vermischt hätte. Jeder Job bekommt jetzt sein eigenes
-        # Gespräch, teilt sich aber weiterhin denselben workspace/-Ordner (Standardpfad).
+        for q in list(job.listeners):
+            try:
+                q.put_nowait({"type": "status", "status": "running", "result": "", "error": ""})
+            except Exception:
+                pass
+
         job_orchestrator = Orchestrator()
+
+        # Live-Token-/Kosten-Transparenz: bisher war der Tokenverbrauch nur am ENDE eines
+        # Laufs sichtbar (Abschlussbericht) oder erst NACH Erreichen von MAX_RUN_TOKENS (harter
+        # Abbruch) - ein ausufernder Lauf war im Dashboard unterwegs unsichtbar. Schnappschuss
+        # vor dem Start + periodisches SSE-"tokens"-Event mit der Differenz (dasselbe Delta-
+        # Prinzip wie Orchestrator._tokens_used_since()/MAX_RUN_TOKENS, siehe agents/
+        # orchestrator.py) macht den laufenden Verbrauch sichtbar, ohne selbst LLM-Kosten zu
+        # verursachen (reiner Dict-Lesezugriff auf core/token_guard.py).
+        #
+        # Bekannte Einschränkung (geerbt, nicht neu eingeführt): token_guard ist ein globaler,
+        # prozessweiter Zähler. Laufen mehrere Jobs gleichzeitig (DASHBOARD_MAX_CONCURRENT_JOBS),
+        # zählt das Delta jedes Jobs auch die Tokens ANDERER gleichzeitig laufender Jobs mit,
+        # dieselbe Ungenauigkeit, die MAX_RUN_TOKENS in agents/orchestrator.py bereits hat -
+        # bei genau einem aktiven Job (Standardfall) ist der Wert exakt.
+        token_start = token_guard.get_summary()["grand_total_tokens"]
+
+        async def _push_tokens(_job=job, _start=token_start):
+            try:
+                while True:
+                    await asyncio.sleep(TOKEN_PROGRESS_INTERVAL_SECONDS)
+                    used = token_guard.get_summary()["grand_total_tokens"] - _start
+                    for q in list(_job.listeners):
+                        try:
+                            q.put_nowait({"type": "tokens", "used": used, "budget": MAX_RUN_TOKENS})
+                        except Exception:
+                            pass
+            except asyncio.CancelledError:
+                pass
+
+        token_progress_task = asyncio.ensure_future(_push_tokens())
 
         def on_status(msg: str, _job=job):
             clean = re.sub(r"\[/?[a-zA-Z0-9 _]+\]", "", msg)  # rich-Markup entfernen
             _job.log.append(clean)
             if len(_job.log) > MAX_LOG_LINES_KEPT:
                 del _job.log[: len(_job.log) - MAX_LOG_LINES_KEPT]
+            for q in list(_job.listeners):
+                try:
+                    q.put_nowait({"type": "log", "line": clean})
+                except Exception:
+                    pass
 
         try:
             result = await job_orchestrator.process(
@@ -204,23 +252,34 @@ class DashboardServer:
                 cancel_requested=lambda _job=job: _job.cancel_requested,
             )
             job.result = result
-            # cancel_requested war gesetzt UND der Lauf hat sich tatsächlich vorzeitig
-            # beendet (statt zufällig kurz danach ganz normal fertig zu werden) - der
-            # Orchestrator-Status im Ergebnistext selbst ist die verlässliche Quelle.
             job.status = "cancelled" if job.cancel_requested and "Manuell abgebrochen" in result else "done"
         except Exception as e:
             job.error = str(e)
             job.status = "error"
+        finally:
+            token_progress_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await token_progress_task
 
-        # Terminal-Status im Backlog nachziehen - "error" heißt hier wie überall im Board
-        # "blocked" (braucht menschliche Aufmerksamkeit), siehe core/issue_watcher.py für
-        # dieselbe Konvention.
+        # Finaler Stand, bevor der Client die Verbindung nach dem "status"-Event schließt -
+        # sonst würde der letzte Zwischenstand (bis zu TOKEN_PROGRESS_INTERVAL_SECONDS alt)
+        # als Endwert im UI stehen bleiben.
+        final_used = token_guard.get_summary()["grand_total_tokens"] - token_start
+        for q in list(job.listeners):
+            try:
+                q.put_nowait({"type": "tokens", "used": final_used, "budget": MAX_RUN_TOKENS})
+            except Exception:
+                pass
+
+        for q in list(job.listeners):
+            try:
+                q.put_nowait({"type": "status", "status": job.status, "result": job.result, "error": job.error})
+            except Exception:
+                pass
+
         ticket_status = "blocked" if job.status == "error" else job.status
         upsert_ticket(ticket_id=f"dashboard-{job_id}", title=job.prompt[:80], source="dashboard", status=ticket_status)
         if ticket_status == "blocked":
-            # Dashboard-Jobs laufen als Hintergrund-Worker (siehe Docstring oben) - anders als
-            # bei der CLI sieht hier niemand zwangsläufig aktiv zu, dass ein Job fehlgeschlagen
-            # ist. core/notifier.py ist no-op ohne konfiguriertes NOTIFY_WEBHOOK_URL.
             await asyncio.to_thread(
                 notify_external, "Dashboard-Job fehlgeschlagen",
                 f"'{job.prompt[:80]}': {job.error or 'unbekannter Fehler'}",
@@ -306,6 +365,14 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     .ticket { background: #0d1117; border: 1px solid var(--card-border); border-radius: 8px; padding: 10px; margin-bottom: 8px; font-size: 12.5px; }
     .ticket .ticket-title { color: var(--text-white); margin-bottom: 4px; }
     .ticket .ticket-meta { color: var(--text-muted); font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+    .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); overflow: auto; }
+    .modal-content { background: var(--card-bg); margin: 5% auto; padding: 20px; border: 1px solid var(--card-border); border-radius: 12px; width: 80%; max-width: 900px; }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border-bottom: 1px solid var(--card-border); padding-bottom: 10px; }
+    .modal-close { color: var(--text-muted); font-size: 24px; font-weight: bold; cursor: pointer; }
+    .file-tree { max-height: 250px; overflow-y: auto; background: #010409; border: 1px solid var(--card-border); border-radius: 8px; padding: 10px; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+    .file-item { padding: 4px 8px; cursor: pointer; border-radius: 4px; color: var(--text-main); display: flex; justify-content: space-between; }
+    .file-item:hover { background: #21262d; color: var(--accent); }
+    .code-preview { background: #010409; border: 1px solid var(--card-border); border-radius: 8px; padding: 12px; font-family: 'JetBrains Mono', monospace; font-size: 12px; max-height: 400px; overflow: auto; white-space: pre-wrap; color: #f0f6fc; margin-top: 10px; }
   </style>
 </head>
 <body>
@@ -320,12 +387,26 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     <button id="startBtn" onclick="startTask()">Projekt-Entwicklung starten</button>
     <button id="cancelBtn" onclick="cancelTask()">⏹️ Lauf abbrechen</button>
     <span id="taskStatus" style="margin-left: 15px; font-size: 13px; color: var(--accent);"></span>
+    <span id="tokenProgress" style="margin-left: 15px; font-size: 13px; color: var(--text-white); opacity: 0.85;"></span>
   </div>
 
   <div id="logPanel">
-    <h3 style="color: var(--text-white); margin-bottom: 10px;">📡 Live-Fortschritt</h3>
+    <h3 style="color: var(--text-white); margin-bottom: 10px;">📡 Live-Fortschritt (SSE Streaming)</h3>
     <div id="logOutput"></div>
     <div id="resultOutput"></div>
+  </div>
+
+  <div class="prompt-box">
+    <h3>📂 Workspace-Dateien & Diff-Inspektor</h3>
+    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px;">
+      <select id="inspectProjectSelect" style="background: #0d1117; color: #f0f6fc; border: 1px solid var(--card-border); border-radius: 8px; padding: 8px;"><option>Lade Projekte…</option></select>
+      <button onclick="inspectProjectFiles()" style="background: #238636;">Dateien durchsuchen</button>
+      <button onclick="inspectProjectDiff()" style="background: #1f6feb;">Git-Diff anzeigen</button>
+    </div>
+    <div id="fileInspectorContainer" style="margin-top: 12px; display: none;">
+      <div class="file-tree" id="fileTreeList"></div>
+      <div class="code-preview" id="fileCodePreview" style="display: none;"></div>
+    </div>
   </div>
 
   <div class="prompt-box">
@@ -361,6 +442,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   <script>
     let pollTimer = null;
     let currentJobId = null;
+    window.eventSource = null;
 
     async function loadStatus() {
       const res = await fetch('/api/status');
@@ -386,6 +468,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       document.getElementById('logPanel').style.display = 'block';
       document.getElementById('logOutput').innerText = '';
       document.getElementById('resultOutput').innerText = '';
+      document.getElementById('tokenProgress').innerText = '';
 
       const res = await fetch('/api/run', {
         method: 'POST',
@@ -410,39 +493,145 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       await fetch(`/api/cancel/${currentJobId}`, { method: 'POST' });
     }
 
-    function pollJob(jobId) {
+    function startFallbackPolling(jobId, finish) {
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = setInterval(async () => {
         const res = await fetch(`/api/status/${jobId}`);
+        if (!res.ok) return;
         const data = await res.json();
         document.getElementById('logOutput').innerText = data.log.join('\\n');
         document.getElementById('logOutput').scrollTop = document.getElementById('logOutput').scrollHeight;
-
-        const finish = () => {
-          document.getElementById('startBtn').disabled = false;
-          document.getElementById('cancelBtn').style.display = 'none';
-          document.getElementById('cancelBtn').disabled = false;
-          currentJobId = null;
-          clearInterval(pollTimer);
-        };
-
         if (data.status === 'queued') {
           document.getElementById('taskStatus').innerText = '⏳ In Warteschlange…';
         } else if (data.status === 'running') {
-          document.getElementById('taskStatus').innerText = '🔄 Team arbeitet…';
-        } else if (data.status === 'done') {
-          document.getElementById('taskStatus').innerText = '✅ Fertig!';
-          document.getElementById('resultOutput').innerText = data.result;
-          finish();
-        } else if (data.status === 'cancelled') {
-          document.getElementById('taskStatus').innerText = '⏹️ Abgebrochen.';
-          document.getElementById('resultOutput').innerText = data.result;
-          finish();
-        } else if (data.status === 'error') {
-          document.getElementById('taskStatus').innerText = '❌ Fehler: ' + data.error;
-          finish();
+          document.getElementById('taskStatus').innerText = '🔄 Team arbeitet… (Polling)';
+        } else if (['done', 'cancelled', 'error'].includes(data.status)) {
+          finish(data.status, data.result, data.error);
         }
       }, 2000);
+    }
+
+    function pollJob(jobId) {
+      if (pollTimer) clearInterval(pollTimer);
+      if (window.eventSource) {
+        window.eventSource.close();
+        window.eventSource = null;
+      }
+
+      const finish = (status, result, error) => {
+        document.getElementById('startBtn').disabled = false;
+        document.getElementById('cancelBtn').style.display = 'none';
+        document.getElementById('cancelBtn').disabled = false;
+        if (status === 'done') {
+          document.getElementById('taskStatus').innerText = '✅ Fertig!';
+          document.getElementById('resultOutput').innerText = result || '';
+        } else if (status === 'cancelled') {
+          document.getElementById('taskStatus').innerText = '⏹️ Abgebrochen.';
+          document.getElementById('resultOutput').innerText = result || '';
+        } else if (status === 'error') {
+          document.getElementById('taskStatus').innerText = '❌ Fehler: ' + (error || '');
+        }
+        currentJobId = null;
+        if (window.eventSource) {
+          window.eventSource.close();
+          window.eventSource = null;
+        }
+        if (pollTimer) clearInterval(pollTimer);
+        loadBacklog();
+        loadObservability();
+        loadProjects();
+      };
+
+      try {
+        const es = new EventSource(`/api/stream/${jobId}`);
+        window.eventSource = es;
+        es.addEventListener('init', (e) => {
+          const d = JSON.parse(e.data);
+          if (d.log && d.log.length) {
+            document.getElementById('logOutput').innerText = d.log.join('\\n');
+            document.getElementById('logOutput').scrollTop = document.getElementById('logOutput').scrollHeight;
+          }
+          if (d.status === 'running') {
+            document.getElementById('taskStatus').innerText = '🔄 Team arbeitet… (Live Stream)';
+          } else if (['done', 'cancelled', 'error'].includes(d.status)) {
+            finish(d.status, d.result, d.error);
+          }
+        });
+        es.addEventListener('log', (e) => {
+          const d = JSON.parse(e.data);
+          const logEl = document.getElementById('logOutput');
+          logEl.innerText += (logEl.innerText ? '\\n' : '') + d.line;
+          logEl.scrollTop = logEl.scrollHeight;
+          document.getElementById('taskStatus').innerText = '🔄 Team arbeitet… (Live Stream)';
+        });
+        es.addEventListener('status', (e) => {
+          const d = JSON.parse(e.data);
+          if (['done', 'cancelled', 'error'].includes(d.status)) {
+            finish(d.status, d.result, d.error);
+          }
+        });
+        es.addEventListener('tokens', (e) => {
+          const d = JSON.parse(e.data);
+          const used = d.used.toLocaleString('de-DE');
+          if (d.budget > 0) {
+            const pct = Math.min(100, Math.round((d.used / d.budget) * 100));
+            const icon = d.used >= d.budget ? '🚨' : '🪙';
+            document.getElementById('tokenProgress').innerText = `${icon} ${used} / ${d.budget.toLocaleString('de-DE')} Tokens (${pct}%)`;
+          } else {
+            document.getElementById('tokenProgress').innerText = `🪙 ${used} Tokens`;
+          }
+        });
+        es.onerror = () => {
+          if (es.readyState === EventSource.CLOSED) {
+            startFallbackPolling(jobId, finish);
+          }
+        };
+      } catch (err) {
+        startFallbackPolling(jobId, finish);
+      }
+    }
+
+    async function inspectProjectFiles() {
+      const proj = document.getElementById('inspectProjectSelect').value;
+      if (!proj) return;
+      const res = await fetch(`/api/project-files?project=${encodeURIComponent(proj)}`);
+      const data = await res.json();
+      const container = document.getElementById('fileInspectorContainer');
+      const tree = document.getElementById('fileTreeList');
+      const preview = document.getElementById('fileCodePreview');
+      container.style.display = 'block';
+      preview.style.display = 'none';
+      if (!data.files || !data.files.length) {
+        tree.innerHTML = '<p style="color: var(--text-muted);">Keine Dateien im Projekt gefunden.</p>';
+        return;
+      }
+      tree.innerHTML = data.files.map(f => `
+        <div class="file-item" onclick="loadContent('${escapeHtml(proj)}', '${escapeHtml(f.path)}')">
+          <span>📄 ${escapeHtml(f.path)}</span>
+          <span style="color: var(--text-muted);">${f.size} B</span>
+        </div>`).join('');
+    }
+
+    async function loadContent(proj, path) {
+      const res = await fetch(`/api/project-file-content?project=${encodeURIComponent(proj)}&path=${encodeURIComponent(path)}`);
+      const data = await res.json();
+      const preview = document.getElementById('fileCodePreview');
+      preview.style.display = 'block';
+      preview.innerText = `// ${path}\n\n` + (data.content || '(Leere Datei)');
+    }
+
+    async function inspectProjectDiff() {
+      const proj = document.getElementById('inspectProjectSelect').value;
+      if (!proj) return;
+      const res = await fetch(`/api/project-diff?project=${encodeURIComponent(proj)}`);
+      const data = await res.json();
+      const container = document.getElementById('fileInspectorContainer');
+      const tree = document.getElementById('fileTreeList');
+      const preview = document.getElementById('fileCodePreview');
+      container.style.display = 'block';
+      tree.innerHTML = `<h4>Git Diff / Status (${escapeHtml(proj)})</h4>`;
+      preview.style.display = 'block';
+      preview.innerText = data.diff || 'Keine Änderungen.';
     }
 
     const KANBAN_COLUMNS = [
@@ -515,9 +704,12 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       const res = await fetch('/api/projects');
       const data = await res.json();
       const sel = document.getElementById('deployProjectSelect');
-      sel.innerHTML = data.projects.length
+      const inspectSel = document.getElementById('inspectProjectSelect');
+      const opts = data.projects.length
         ? data.projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('')
         : '<option value="">Keine Projekte im Workspace</option>';
+      if (sel) sel.innerHTML = opts;
+      if (inspectSel) inspectSel.innerHTML = opts;
     }
 
     let deployPollTimer = null;
@@ -570,7 +762,6 @@ HTML_DASHBOARD = """<!DOCTYPE html>
           clearInterval(deployPollTimer);
           document.getElementById('deployStatus').innerText = '❌ ' + (data.output || 'Fehler.');
         }
-        // "running"/"stopping" -> weiter pollen, Statustext steht schon
       }, 3000);
     }
 
@@ -606,7 +797,7 @@ def _build_status_payload(server: DashboardServer) -> dict:
 
 def make_handler(server: DashboardServer):
     class DashboardHandler(BaseHTTPRequestHandler):
-        def log_message(self, format, *args):  # weniger Konsolen-Rauschen
+        def log_message(self, format, *args):
             pass
 
         def _send_json(self, payload: dict, status: int = 200) -> None:
@@ -618,13 +809,6 @@ def make_handler(server: DashboardServer):
             self.wfile.write(body)
 
         def _check_auth(self) -> bool:
-            """
-            Ohne konfiguriertes DASHBOARD_AUTH_TOKEN bleibt das Verhalten unverändert (kein
-            Auth-Zwang – sicher, solange der Server wie standardmäßig nur auf 127.0.0.1 bindet).
-            Ist ein Token gesetzt, muss JEDER Request (auch GET /) ihn per Header oder
-            Query-Parameter mitliefern, sonst 401 – konstant in der Vergleichszeit
-            (hmac.compare_digest), um Timing-Angriffe auf den Token-Vergleich zu vermeiden.
-            """
             if not DASHBOARD_AUTH_TOKEN:
                 return True
 
@@ -645,10 +829,9 @@ def make_handler(server: DashboardServer):
         def do_GET(self):
             if not self._check_auth():
                 return
-            # Routing bewusst ohne Query-String: seit _check_auth() auch "?token=<token>" als
-            # Auth-Weg akzeptiert, würde ein exakter Vergleich von self.path (inkl. Query) hier
-            # sonst z.B. "/api/status?token=..." nicht mehr auf "/api/status" matchen.
-            path_only = urlparse(self.path).path
+            parsed_url = urlparse(self.path)
+            path_only = parsed_url.path
+
             if path_only in ("/", "/index.html"):
                 body = HTML_DASHBOARD.encode("utf-8")
                 self.send_response(200)
@@ -668,17 +851,110 @@ def make_handler(server: DashboardServer):
                     "job_id": job.job_id, "status": job.status,
                     "log": job.log, "result": job.result, "error": job.error,
                 })
+            elif path_only.startswith("/api/stream/"):
+                job_id = path_only.rsplit("/", 1)[-1]
+                job = server.jobs.get(job_id)
+                if not job:
+                    self._send_json({"error": "Unbekannte job_id"}, status=404)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+
+                q = queue.Queue()
+                job.listeners.append(q)
+                init_data = json.dumps({"status": job.status, "log": job.log, "result": job.result, "error": job.error}, ensure_ascii=False)
+                self.wfile.write(f"event: init\ndata: {init_data}\n\n".encode())
+                self.wfile.flush()
+
+                try:
+                    while True:
+                        try:
+                            msg = q.get(timeout=1.0)
+                            evt_type = msg.get("type", "message")
+                            data_str = json.dumps(msg, ensure_ascii=False)
+                            self.wfile.write(f"event: {evt_type}\ndata: {data_str}\n\n".encode())
+                            self.wfile.flush()
+                            if msg.get("type") == "status" and msg.get("status") in ("done", "error", "cancelled"):
+                                break
+                        except queue.Empty:
+                            if job.status in ("done", "error", "cancelled"):
+                                break
+                            self.wfile.write(b": keepalive\n\n")
+                            self.wfile.flush()
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    pass
+                finally:
+                    if q in job.listeners:
+                        job.listeners.remove(q)
             elif path_only == "/api/backlog":
-                # Alle Tickets über ALLE Trigger-Quellen (CLI/Dashboard/Issue-Watcher), siehe
-                # core/backlog_store.py - nicht nur die Jobs dieses Dashboard-Prozesses.
                 self._send_json({"tickets": [vars(t) for t in list_tickets()]})
             elif path_only == "/api/projects":
                 self._send_json({"projects": server.orchestrator._workspace.list_projects()})
+            elif path_only == "/api/project-files":
+                query = parse_qs(parsed_url.query)
+                project_name = (query.get("project") or [""])[0]
+                if not project_name:
+                    self._send_json({"error": "Kein Projekt angegeben"}, status=400)
+                    return
+                project_dir = server.orchestrator._workspace.get_project_dir(project_name)
+                if not project_dir.exists():
+                    self._send_json({"error": "Projektverzeichnis nicht gefunden"}, status=404)
+                    return
+                files_list = []
+                ignored = {".git", ".venv", "venv", ".ai_team_venv", "__pycache__", "node_modules"}
+                for root, dirs, files in os.walk(project_dir):
+                    dirs[:] = [d for d in dirs if d not in ignored and not d.startswith(".")]
+                    for f in files:
+                        p = Path(root) / f
+                        rel = str(p.relative_to(project_dir)).replace("\\", "/")
+                        files_list.append({"path": rel, "size": p.stat().st_size})
+                self._send_json({"project": project_name, "files": sorted(files_list, key=lambda x: x["path"])})
+            elif path_only == "/api/project-file-content":
+                query = parse_qs(parsed_url.query)
+                project_name = (query.get("project") or [""])[0]
+                rel_path = (query.get("path") or [""])[0]
+                if not project_name or not rel_path:
+                    self._send_json({"error": "Projekt oder Pfad fehlt"}, status=400)
+                    return
+                project_dir = server.orchestrator._workspace.get_project_dir(project_name)
+                clean_rel = rel_path.replace("\\", "/").lstrip("/")
+                target = (project_dir / clean_rel).resolve()
+                if target != project_dir and project_dir not in target.parents:
+                    self._send_json({"error": "Ungültiger Pfad"}, status=403)
+                    return
+                if not target.exists() or not target.is_file():
+                    self._send_json({"error": "Datei nicht gefunden"}, status=404)
+                    return
+                try:
+                    content = target.read_text(encoding="utf-8", errors="replace")
+                    self._send_json({"project": project_name, "path": clean_rel, "content": content, "size": len(content)})
+                except Exception as e:
+                    self._send_json({"error": str(e)}, status=500)
+            elif path_only == "/api/project-diff":
+                query = parse_qs(parsed_url.query)
+                project_name = (query.get("project") or [""])[0]
+                if not project_name:
+                    self._send_json({"error": "Kein Projekt angegeben"}, status=400)
+                    return
+                project_dir = server.orchestrator._workspace.get_project_dir(project_name)
+                if not project_dir.exists():
+                    self._send_json({"error": "Projekt nicht gefunden"}, status=404)
+                    return
+                diff_text = ""
+                try:
+                    res = subprocess.run(["git", "diff", "HEAD~1"], cwd=str(project_dir), capture_output=True, text=True, timeout=5)
+                    diff_text = res.stdout or ""
+                    if not diff_text:
+                        res_stat = subprocess.run(["git", "status", "--short"], cwd=str(project_dir), capture_output=True, text=True, timeout=5)
+                        diff_text = res_stat.stdout or "Keine uncommitted Diffs vorhanden."
+                except Exception:
+                    diff_text = "Git-Diff nicht verfügbar."
+                self._send_json({"project": project_name, "diff": diff_text})
             elif path_only == "/api/observability":
-                # Realer Fund bei einer Bestandsaufnahme des eigenen Teams: das Dashboard
-                # zeigte bisher nur den aktuellen/letzten Job, keine Trends über die Zeit
-                # (siehe memory/run_history.py) - über ALLE Trigger-Quellen hinweg, nicht nur
-                # Dashboard-Jobs, genau wie /api/backlog oben.
                 self._send_json({
                     "recent_runs": get_recent_runs(limit=20),
                     "agent_success_rates": get_agent_success_rates(limit_runs=50),

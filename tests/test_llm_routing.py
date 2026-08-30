@@ -160,6 +160,47 @@ class TestLLMRouting(unittest.TestCase):
         self.assertEqual(result.text, "von Groq gerettet")
         fake_groq_client.generate_with_tools.assert_called_once()
 
+    @patch("core.llm_factory.LLMFactory.create_for_model")
+    @patch("core.llm_factory._gemini_client")
+    def test_generate_with_usage_falls_back_to_groq_when_gemini_and_claude_both_fail(
+        self, mock_gemini_client, mock_create_for_model,
+    ):
+        """
+        Gegenstück zu test_falls_back_to_groq_when_gemini_and_claude_both_fail für den
+        Nicht-Tool-Calling-Pfad (_call_with_retry_and_usage): dieselbe Struktur (models_to_try-
+        Schleife, Nicht-Gemini-Kandidaten via LLMFactory.create_for_model delegieren) existiert
+        hier separat und war bisher ungetestet - eine Regression, die nur diesen Pfad betrifft
+        (z.B. ein reiner Text-Aufruf ohne Werkzeuge), wäre vom Tools-Test allein nicht erkannt
+        worden.
+        """
+        def fake_generate_content(model, contents, config):
+            raise RuntimeError("simulierter Gemini-Fehler (z.B. Function-Calling)")
+        mock_gemini_client.models.generate_content = fake_generate_content
+
+        fake_groq_client = AsyncMock()
+        fake_groq_client.generate_with_usage = AsyncMock(return_value=LLMResponse(
+            text="von Groq gerettet", model_name="groq:openai/gpt-oss-120b",
+            prompt_tokens=5, completion_tokens=3, total_tokens=8,
+        ))
+
+        def fake_create_for_model(model_name):
+            if model_name == "groq:openai/gpt-oss-120b":
+                return fake_groq_client
+            raise RuntimeError(f"kein API-Key für {model_name}")
+
+        mock_create_for_model.side_effect = fake_create_for_model
+
+        client = GeminiClient(model_name="gemini-3.1-flash-lite")
+
+        async def run():
+            return await client.generate_with_usage("Sag nur 'ok'.", None)
+
+        import asyncio
+        result = asyncio.run(run())
+
+        self.assertEqual(result.text, "von Groq gerettet")
+        fake_groq_client.generate_with_usage.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

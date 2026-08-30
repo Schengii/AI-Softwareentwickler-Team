@@ -72,8 +72,9 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
   - Implementiert Circuit Breakers, Exponential Backoff mit Jitter und Graceful Degradation bei Provider-Ausfällen.
 - **Multi-Tier LLM Fallback (`core/llm_factory.py`)**:
   - Primär- und Fallback-Modelle über Gemini, Anthropic Claude, DeepSeek und Groq.
-- **Token Guard & Quota-Management (`core/token_guard.py`, `core/quota_estimator.py`)**:
+- **Token Guard, Prompt Caching & Quota-Management (`core/token_guard.py`, `core/quota_estimator.py`, `core/llm_factory.py`)**:
   - Hartes Budget-Limit (`MAX_RUN_TOKENS`) mit kontrolliertem, sicherem Abbruch vor Budget-Überschreitung.
+  - Automatisches **Prompt-Caching** (Anthropic `cache_control: ephemeral`) und **Gemini Context Caching** für signifikante Kosten- und Latenzreduktion bei Multi-Turn-Tool-Loops.
 
 ---
 
@@ -101,7 +102,7 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
 | Schnittstelle | Modul / Datei | Zweck |
 | :--- | :--- | :--- |
 | **Interaktive CLI** | `interface/cli.py` | Rich-formatierte Terminal-Oberfläche mit Live-Status und Plan-Gate. |
-| **Web-Dashboard** | `interface/web_dashboard.py` | Dark-Mode Web-UI mit Live-Log, Kanban-Backlog, Observability und Docker-Deploy. |
+| **Web-Dashboard** | `interface/web_dashboard.py` | Dark-Mode Web-UI mit SSE-Live-Streaming, Datei-/Diff-Inspektor, Kanban-Backlog, Observability und Docker-Deploy. |
 | **MCP-Server** | `interface/mcp_server.py` | Standardisiertes Model Context Protocol für IDE-Integrationen (VS Code, Cursor, Antigravity). |
 | **GitHub-Issue-Watcher** | `core/issue_watcher.py` | Automatische Bearbeitung von GitHub-Issues mit Label-Trigger (`--check-issues`). |
 | **PR-Review-Watcher** | `core/pr_review_watcher.py` | Automatische Einarbeitung von menschlichem PR-Feedback (`--check-pr-reviews`). |

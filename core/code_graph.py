@@ -86,8 +86,14 @@ class CodebaseGraph:
                 if file.endswith(".py"):
                     self._index_python_file(full_path, rel_path)
                     self.indexed_files_count += 1
-                elif file.endswith((".js", ".jsx", ".ts", ".tsx")):
+                elif file.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")):
                     self._index_js_file(full_path, rel_path)
+                    self.indexed_files_count += 1
+                elif file.endswith(".go"):
+                    self._index_go_file(full_path, rel_path)
+                    self.indexed_files_count += 1
+                elif file.endswith(".rs"):
+                    self._index_rust_file(full_path, rel_path)
                     self.indexed_files_count += 1
 
     def _index_python_file(self, full_path: Path, rel_path: str) -> None:
@@ -192,7 +198,7 @@ class CodebaseGraph:
         self.file_symbols[rel_path] = file_nodes
 
     def _index_js_file(self, full_path: Path, rel_path: str) -> None:
-        """Extrahiert Symbole und Imports aus JavaScript/TypeScript-Dateien per Regex-Muster."""
+        """Extrahiert Symbole, Interfaces und Imports aus JavaScript/TypeScript-Dateien."""
         try:
             content = full_path.read_text(encoding="utf-8", errors="ignore")
         except Exception:
@@ -212,32 +218,34 @@ class CodebaseGraph:
                     file_path=rel_path, imported_module=mod, imported_name=names.strip(), line_number=idx,
                 ))
 
-        # Klassen: class Foo extends Bar
-        class_pat = re.compile(r"class\s+([A-Za-z0-9_]+)(?:\s+extends\s+([A-Za-z0-9_]+))?")
+        # Klassen & Interfaces: class Foo extends Bar, interface User
+        class_pat = re.compile(r"(?:export\s+)?(?:default\s+)?(class|interface|type)\s+([A-Za-z0-9_]+)(?:\s+(?:extends|implements)\s+([A-Za-z0-9_,\s]+))?")
         for idx, line in enumerate(lines, 1):
             m = class_pat.search(line)
             if m:
-                cname = m.group(1)
-                parent = m.group(2) or ""
+                kind_str = m.group(1)
+                cname = m.group(2)
+                parents_raw = m.group(3) or ""
+                parents = [p.strip() for p in parents_raw.split(",") if p.strip()]
                 sym = SymbolNode(
                     name=cname,
-                    kind="class",
+                    kind=kind_str,
                     file_path=rel_path,
                     line_number=idx,
                     end_line_number=idx,
-                    inherits=[parent] if parent else [],
+                    inherits=parents,
                     signature=line.strip()[:100],
                 )
                 file_nodes.append(sym)
                 self._add_symbol(sym)
 
-        # Funktionen: function foo(x, y) oder const foo = (x, y) =>
-        func_pat = re.compile(r"(?:function\s+([A-Za-z0-9_]+)\s*\(([^)]*)\)|(?:const|let|var)\s+([A-Za-z0-9_]+)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*=>)")
+        # Funktionen: function foo(x, y), export async function foo(x, y), const foo = (x, y) =>
+        func_pat = re.compile(r"(?:(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z0-9_]+)\s*\(([^)]*)\)|(?:const|let|var)\s+([A-Za-z0-9_]+)\s*=\s*(?:async\s*)?(?:\(([^)]*)\)|([A-Za-z0-9_]+))\s*=>)")
         for idx, line in enumerate(lines, 1):
             m = func_pat.search(line)
             if m:
                 fname = m.group(1) or m.group(3)
-                raw_args = m.group(2) or m.group(4) or ""
+                raw_args = m.group(2) or m.group(4) or m.group(5) or ""
                 args = [a.strip().split(":")[0] for a in raw_args.split(",") if a.strip()]
                 sym = SymbolNode(
                     name=fname,
@@ -247,6 +255,166 @@ class CodebaseGraph:
                     end_line_number=idx,
                     args=args,
                     signature=line.strip()[:100],
+                )
+                file_nodes.append(sym)
+                self._add_symbol(sym)
+
+        self.file_symbols[rel_path] = file_nodes
+
+    def _index_go_file(self, full_path: Path, rel_path: str) -> None:
+        """Extrahiert Structs, Interfaces, Funktionen, Methoden und Imports aus Go-Dateien."""
+        try:
+            content = full_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return
+
+        file_nodes: list[SymbolNode] = []
+        lines = content.splitlines()
+
+        # Imports: import "fmt" oder import ( "strings" )
+        in_import_block = False
+        import_single_pat = re.compile(r"""import\s+['"]([^'"]+)['"]""")
+        type_pat = re.compile(r"type\s+([A-Za-z0-9_]+)\s+(struct|interface)")
+        func_pat = re.compile(r"func\s+(?:\(([A-Za-z0-9_*\s]+)\)\s+)?([A-Za-z0-9_]+)\s*\(([^)]*)\)")
+
+        for idx, line in enumerate(lines, 1):
+            s_line = line.strip()
+            if s_line.startswith("import ("):
+                in_import_block = True
+                continue
+            elif in_import_block:
+                if s_line == ")":
+                    in_import_block = False
+                else:
+                    m_imp = re.search(r"""['"]([^'"]+)['"]""", s_line)
+                    if m_imp:
+                        self.imports.append(ImportNode(
+                            file_path=rel_path, imported_module=m_imp.group(1), imported_name="*", line_number=idx,
+                        ))
+                continue
+
+            m_single = import_single_pat.match(s_line)
+            if m_single:
+                self.imports.append(ImportNode(
+                    file_path=rel_path, imported_module=m_single.group(1), imported_name="*", line_number=idx,
+                ))
+
+            # Structs & Interfaces
+            m_type = type_pat.search(s_line)
+            if m_type:
+                tname = m_type.group(1)
+                kind = m_type.group(2)  # struct | interface
+                sym = SymbolNode(
+                    name=tname,
+                    kind=kind,
+                    file_path=rel_path,
+                    line_number=idx,
+                    end_line_number=idx,
+                    signature=s_line[:100],
+                )
+                file_nodes.append(sym)
+                self._add_symbol(sym)
+
+            # Functions & Methods
+            m_func = func_pat.search(s_line)
+            if m_func:
+                receiver = m_func.group(1)
+                fname = m_func.group(2)
+                raw_args = m_func.group(3) or ""
+                args = [a.strip().split(" ")[0] for a in raw_args.split(",") if a.strip()]
+
+                if receiver:
+                    clean_rec = receiver.replace("*", "").strip().split(" ")[-1]
+                    sym_name = f"{clean_rec}.{fname}"
+                    kind = "method"
+                else:
+                    sym_name = fname
+                    kind = "function"
+
+                sym = SymbolNode(
+                    name=sym_name,
+                    kind=kind,
+                    file_path=rel_path,
+                    line_number=idx,
+                    end_line_number=idx,
+                    args=args,
+                    signature=s_line[:100],
+                )
+                file_nodes.append(sym)
+                self._add_symbol(sym)
+
+        self.file_symbols[rel_path] = file_nodes
+
+    def _index_rust_file(self, full_path: Path, rel_path: str) -> None:
+        """Extrahiert Structs, Enums, Traits, Funktionen, Methoden und Uses aus Rust-Dateien."""
+        try:
+            content = full_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return
+
+        file_nodes: list[SymbolNode] = []
+        lines = content.splitlines()
+
+        use_pat = re.compile(r"use\s+([A-Za-z0-9_:]+(?:\{[^}]+\})?);")
+        type_pat = re.compile(r"(?:pub\s+)?(struct|enum|trait)\s+([A-Za-z0-9_]+)")
+        impl_pat = re.compile(r"impl(?:\s+[A-Za-z0-9_]+)?\s+for\s+([A-Za-z0-9_]+)|impl\s+([A-Za-z0-9_]+)")
+        fn_pat = re.compile(r"(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z0-9_]+)\s*\(([^)]*)\)")
+
+        current_impl: str | None = None
+
+        for idx, line in enumerate(lines, 1):
+            s_line = line.strip()
+
+            # Uses
+            m_use = use_pat.search(s_line)
+            if m_use:
+                mod_path = m_use.group(1)
+                self.imports.append(ImportNode(
+                    file_path=rel_path, imported_module=mod_path, imported_name="*", line_number=idx,
+                ))
+
+            # Structs, Enums, Traits
+            m_type = type_pat.search(s_line)
+            if m_type:
+                kind = m_type.group(1)
+                tname = m_type.group(2)
+                sym = SymbolNode(
+                    name=tname,
+                    kind=kind,
+                    file_path=rel_path,
+                    line_number=idx,
+                    end_line_number=idx,
+                    signature=s_line[:100],
+                )
+                file_nodes.append(sym)
+                self._add_symbol(sym)
+
+            # Impl Block
+            m_impl = impl_pat.search(s_line)
+            if m_impl:
+                current_impl = m_impl.group(1) or m_impl.group(2)
+
+            if s_line.startswith("}") and current_impl:
+                # Naive impl closing
+                pass
+
+            # Functions & Methods
+            m_fn = fn_pat.search(s_line)
+            if m_fn:
+                fname = m_fn.group(1)
+                raw_args = m_fn.group(2) or ""
+                args = [a.strip().split(":")[0] for a in raw_args.split(",") if a.strip()]
+                is_method = "&self" in raw_args or "self" in args or bool(current_impl)
+                sym_name = f"{current_impl}.{fname}" if (current_impl and is_method) else fname
+
+                sym = SymbolNode(
+                    name=sym_name,
+                    kind="method" if is_method else "function",
+                    file_path=rel_path,
+                    line_number=idx,
+                    end_line_number=idx,
+                    args=args,
+                    signature=s_line[:100],
                 )
                 file_nodes.append(sym)
                 self._add_symbol(sym)

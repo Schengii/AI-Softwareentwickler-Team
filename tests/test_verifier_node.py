@@ -218,6 +218,64 @@ class TestParseNodeFailures(unittest.TestCase):
         self.assertEqual(failures[0].test_id, "src/App.test.js")
         self.assertIn("src/App.test.js", failures[0].files)
 
+    def test_fail_entry_message_carries_real_output_not_empty_string(self):
+        # Regression: message wurde für per "FAIL <datei>"-Header erkannte Einträge bisher
+        # IMMER als "" gesetzt - der Fix-Agent im Verifikations-Fix-Loop bekam dadurch nie die
+        # tatsächliche Fehlermeldung zu sehen (siehe agents/orchestrator.py._run_verification_loop,
+        # das failure.message direkt in die Fix-Task-Beschreibung einbettet).
+        output = (
+            "FAIL src/App.test.js\n"
+            "  ● Test suite failed to run\n\n"
+            "    SyntaxError: Cannot use import statement outside a module\n"
+        )
+        exec_result = ExecutionResult(exit_code=1, stdout=output, stderr="", duration_seconds=1.0)
+        verifier = ProjectVerifier(self.project_dir)
+
+        failures = verifier._parse_node_failures(exec_result, self.project_dir)
+
+        self.assertEqual(len(failures), 1)
+        self.assertNotEqual(failures[0].message, "")
+        self.assertIn("Cannot use import statement outside a module", failures[0].message)
+
+    def test_module_syntax_error_additionally_implicates_package_json(self):
+        # Realer Fund (Pong-Projekt): ein Jest-ESM-Konfigurationsfehler ("Cannot use import
+        # statement outside a module") wurde bisher AUSSCHLIESSLICH der Testdatei
+        # zugeschrieben und landete deshalb beim tester-Agenten - die eigentliche Ursache
+        # liegt aber in der Node-Projekt-Konfiguration (package.json), nicht in der
+        # Testlogik. package.json muss deshalb zusätzlich in failure.files auftauchen, damit
+        # der Fix-Loop auch dessen Owner (i.d.R. frontend/devops) adressiert.
+        (self.project_dir / "package.json").write_text('{"name": "x"}', encoding="utf-8")
+        output = (
+            "FAIL ./game.test.js\n"
+            "  ● Test suite failed to run\n\n"
+            "    SyntaxError: Cannot use import statement outside a module\n"
+        )
+        exec_result = ExecutionResult(exit_code=1, stdout=output, stderr="", duration_seconds=1.0)
+        verifier = ProjectVerifier(self.project_dir)
+
+        failures = verifier._parse_node_failures(exec_result, self.project_dir)
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("package.json", failures[0].files)
+
+    def test_ordinary_assertion_failure_does_not_implicate_package_json(self):
+        # Gegenprobe: ein ganz normaler Assertion-Fehlschlag (keine Konfigurations-
+        # Fehlersignatur) darf package.json NICHT zusätzlich implizieren - sonst würde JEDER
+        # Node-Testfehler künftig (auch) an frontend/devops zurückgespielt.
+        (self.project_dir / "package.json").write_text('{"name": "x"}', encoding="utf-8")
+        output = (
+            "FAIL src/App.test.js\n"
+            "  ✕ renders correctly (5 ms)\n\n"
+            "    Expected 3, received 2\n"
+            "  at Object.<anonymous> (src/App.test.js:12:5)\n"
+        )
+        exec_result = ExecutionResult(exit_code=1, stdout=output, stderr="", duration_seconds=1.0)
+        verifier = ProjectVerifier(self.project_dir)
+
+        failures = verifier._parse_node_failures(exec_result, self.project_dir)
+
+        self.assertNotIn("package.json", failures[0].files)
+
 
 if __name__ == "__main__":
     unittest.main()

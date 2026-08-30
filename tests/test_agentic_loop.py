@@ -66,6 +66,45 @@ class TestAgenticToolLoop(unittest.TestCase):
         self.assertTrue(written_file.exists())
         self.assertEqual(written_file.read_text(), "print('hi')")
 
+    def test_ask_human_for_clarification_surfaces_on_agent_result(self):
+        # Realer Fund: Rückfragen passierten bisher nur VOR dem Start einer Aufgabe - sobald
+        # Agenten liefen, gab es kein Mittel, eine echte Blockade mitten in der Aufgabe an
+        # einen Menschen zu melden, statt zu raten. ask_human_for_clarification (core/
+        # agent_toolbox.py) schließt diese Lücke; hier wird geprüft, dass die Rückfrage
+        # tatsächlich bis in AgentResult durchgereicht wird (agents/base_agent.py).
+        agent = BackendAgent()
+        agent._llm = _SequencedFakeLLM([
+            LLMResponse(
+                text="", model_name="fake-model", prompt_tokens=50, completion_tokens=20, total_tokens=70,
+                tool_calls=[ToolCall(id="call_1", name="ask_human_for_clarification", arguments={
+                    "question": "Soll die API-Authentifizierung per JWT oder Session-Cookie laufen?",
+                    "context": "Auftrag nennt beide Begriffe, ohne sich festzulegen.",
+                })],
+            ),
+            LLMResponse(
+                text="Habe alles außer der Authentifizierung fertiggestellt; Rückfrage siehe oben.",
+                model_name="fake-model", prompt_tokens=60, completion_tokens=15, total_tokens=75, tool_calls=[],
+            ),
+        ])
+
+        task = AgentTask(task_id="t3", agent_id="backend", description="Baue Login-Endpunkt", project_dir=self.temp_dir)
+        result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.needs_human_input)
+        self.assertEqual(len(result.clarification_questions), 1)
+        self.assertIn("JWT oder Session-Cookie", result.clarification_questions[0])
+
+    def test_agent_without_clarification_request_has_needs_human_input_false(self):
+        agent = BackendAgent()
+        agent._llm = _SequencedFakeLLM([
+            LLMResponse(text="Fertig.", model_name="fake-model", prompt_tokens=10, completion_tokens=5, total_tokens=15, tool_calls=[]),
+        ])
+        task = AgentTask(task_id="t4", agent_id="backend", description="Triviale Aufgabe", project_dir=self.temp_dir)
+        result = asyncio.run(agent.execute(task))
+        self.assertFalse(result.needs_human_input)
+        self.assertEqual(result.clarification_questions, [])
+
     def test_max_iterations_reached_yields_honest_fallback_message(self):
         agent = BackendAgent()
         always_tool_call = LLMResponse(

@@ -37,6 +37,7 @@ damit dieses README als aktuelle Funktionsübersicht schlank bleibt.
 - [🛡️ Neuer Spezialist: Resilience-Guard (QA & Fault-Tolerance)](#resilience-guard)
 - [🔀 PR-Workflow & Kollaborativer Review-Loop](#pr-workflow)
 - [🎫 Autonome, getriggerte Arbeit: GitHub-Issues als Backlog](#issue-watcher)
+- [🤖 Vollständig eigenständige Arbeit: Backlog-Worker & Produktions-Monitoring](#selbstgesteuert)
 - [📋 Backlog/Kanban-Board über CLI, Dashboard & Issue-Watcher hinweg](#backlog-kanban)
 - [🌐 Modernes Web-Dashboard & Visualisierung](#web-dashboard)
 - [🔌 MCP-Server: Einbindung in Cursor, Windsurf & Antigravity](#mcp-server)
@@ -265,6 +266,58 @@ deshalb bewusst lokal gelöst.
 
 ---
 
+<a id="selbstgesteuert"></a>
+## 🤖 Vollständig eigenständige Arbeit: Backlog-Worker & Produktions-Monitoring
+
+`--check-issues` reagiert nur auf NEU gelabelte GitHub-Issues. Zwei weitere Poll-Zyklen
+schließen die Lücke zu einem Team, das auch ohne externen Trigger eigenständig weiterarbeitet:
+
+**`python main.py --work-backlog`** (`core/backlog_worker.py`) greift eigenständig das
+höchstpriorisierte, abhängigkeitsfreie `"todo"`-Ticket aus `/backlog-add` oder dem Dashboard
+auf – bisher wurde ein solches Ticket laut eigenem CLI-Hinweistext NIE automatisch angegangen,
+ein Mensch musste die Aufgabe irgendwann erneut manuell in den Chat schreiben. Respektiert
+Ticket-Abhängigkeiten (`core/backlog_store.py.is_ticket_ready()` – siehe Epics/`depends_on`
+unten) und ein konfigurierbares WIP-Limit (`BACKLOG_WORKER_WIP_LIMIT`), das hier – anders als
+die reine Anzeige-Warnung im Board – hart blockiert, da niemand da ist, der bewusst
+übersteuern könnte. Derselbe PR-Workflow, dasselbe Sicherheitsmodell wie `--check-issues`
+(harter Secret-Block, Draft-PR bei fehlgeschlagener Verifikation oder offener Rückfrage, siehe
+unten). Bewusst NUR `cli`-/`dashboard`-Tickets – `issue`-Tickets bleiben bei
+`core/issue_watcher.py`, `pr_review`-Tickets (beziehen sich auf einen bereits bestehenden
+Feature-Branch) bleiben aktuell ausgeklammert.
+
+**Epics & Abhängigkeiten:** Tickets tragen jetzt `epic` (freier Text, z.B. `"Checkout-Flow"`)
+und `depends_on` (IDs anderer Tickets) – ein größeres Vorhaben lässt sich damit als
+zusammenhängende, sinnvoll sortierte Kette planen statt jede Anfrage isoliert zu bearbeiten.
+Ein Ticket mit noch offenen Abhängigkeiten wird im `/backlog`-Board sichtbar markiert
+(`🔗 ... (wartet auf: ...)`) und vom Backlog-Worker übersprungen, bis sie erledigt sind.
+
+**Mid-Task-Eskalation statt Raten:** Rückfragen (`/backlog-add` o.ä.) passierten bisher nur
+VOR dem Start einer Aufgabe. Jeder Agent kann jetzt über das Werkzeug
+`ask_human_for_clarification` (`core/agent_toolbox.py`) mitten in der Aufgabe eine echte,
+entscheidende Unklarheit melden, statt zu raten – sichtbar im Ergebnis (Abschnitt "Offene
+Rückfragen"), im Git-Push-Gate der CLI und als eigener, als Draft markierter PR-Zustand in
+`--check-issues`/`--work-backlog`.
+
+**`python main.py --check-deployments`** (`core/production_monitor.py`) prüft periodisch
+jedes per `/deploy-cloud <provider> --real` echt deployte Projekt auf tatsächliche
+Erreichbarkeit (echter HTTP-Request, kein reiner Ping) und eröffnet bei einem Ausfall
+automatisch ein hochpriorisiertes Backlog-Ticket + externe Benachrichtigung – bisher schaute
+nach einem Cloud-Deployment niemand mehr hin (`core/cloud_deployment.py` war zuvor nicht
+einmal im CLI/Dashboard verdrahtet). Erholt sich das Deployment wieder, schließt der nächste
+grüne Check das Ticket automatisch. Bewusst NICHT vom Backlog-Worker aufgegriffen – ein
+Ausfall kann eine Infrastruktur-/DNS-/Billing-Ursache haben, die kein Code-Fix löst.
+
+**Einrichtung unter Windows** identisch zu `run_issue_watcher.ps1` oben, nur mit
+`scripts/run_backlog_worker.ps1`/`scripts/run_production_monitor.ps1` und eigenen
+Taskplaner-Einträgen (`AI-Team-BacklogWorker`/`AI-Team-ProductionMonitor`). **Wichtig:**
+anders als `--check-issues` (Zustand lebt auf GitHub selbst) liegt der Zustand dieser beiden
+Zyklen NUR lokal (`memory/backlog.json`, `.ai_team_deployment.json` – beide gitignored) –
+deshalb bewusst NICHT in `.github/workflows/ai-team-scheduler.yml` verdrahtet, ein Cloud-
+Runner mit frischem Checkout hätte hier immer leeren Zustand und würde scheinbar
+erfolgreich, aber wirkungslos durchlaufen.
+
+---
+
 <a id="backlog-kanban"></a>
 ## 📋 Backlog/Kanban-Board über CLI, Dashboard & Issue-Watcher hinweg
 
@@ -418,8 +471,12 @@ Große Codebases (50+ Dateien) erfordern mehr als reine Vektorsuche: Der [Codeba
 Frontends (HTML/CSS/JS, React, Vue, FastAPI/Flask-Templates) werden durch [BrowserVerifier](core/browser_verifier.py) echten Funktionstests unterzogen:
 
 - **Dynamischer Headless-Browser-Check (Playwright):** Startet die Anwendung auf einem freien Port, fängt JavaScript-Konsolenfehler (`console.error`, Uncaught Exceptions) ab und prüft das Rendering.
+- **Blank-Canvas-Erkennung:** Ein `<canvas>`-Element, dessen Pixelinhalt nach dem Laden byte-identisch mit einem frisch erzeugten LEEREN Canvas ist, wurde nachweislich nie gezeichnet (z.B. fehlender Game-Loop) - wird als echter Fehlschlag gewertet, nicht nur informativ gemeldet.
 - **Asset- & 404-Integritätsprüfung:** Verifiziert, ob alle in HTML verlinkten CSS-, JS- und Bilddateien existieren.
-- **Graceful Fallback:** Ist kein Browser-Binary installiert, analysiert das System den DOM-Baum statisch und schlägt bei fehlenden Assets oder fehlerhaften Tags an.
+- **Graceful, aber SICHTBARER Fallback:** Ist kein Browser-Binary installiert, analysiert das System den DOM-Baum nur noch statisch (keine JS-Ausführung) - dieser eingeschränkte Modus wird im Verifikations-Protokoll jetzt explizit als "nur eingeschränkt geprüft" markiert, statt optisch identisch zu einem echten Browser-Lauf als "erfolgreich" zu erscheinen.
+- **Ein echter Fehlschlag hier (Konsolenfehler, fehlendes Asset, nie gezeichnetes Canvas) blockiert die Verifikation** genau wie ein fehlgeschlagener Unit-Test - für Frontend-Projekte ist dieser Check oft die einzige Instanz, die überhaupt echten Browser-Code ausführt.
+
+Playwright ist Laufzeit-Abhängigkeit (`requirements.txt`), nicht nur Dev-Tool - nach `pip install -r requirements.txt` einmalig zusätzlich `playwright install chromium` ausführen, um den echten Browser-Check nutzen zu können (sonst degradiert er automatisch, aber sichtbar, auf die eingeschränkte statische Prüfung).
 
 ---
 
@@ -428,10 +485,10 @@ Frontends (HTML/CSS/JS, React, Vue, FastAPI/Flask-Templates) werden durch [Brows
 
 Über das lokale Docker-Deployment hinaus generiert [CloudDeploymentManager](core/cloud_deployment.py) produktionsreife Cloud-Manifeste:
 
-- **Fly.io:** Erstellt `fly.toml` und `Dockerfile` mit Region Frankfurt (`fra`) und Auto-Stop/Start.
-- **Vercel:** Erstellt `vercel.json` für Serverless Python-, Next.js- oder Static-Deployments.
-- **Render / Railway:** Erstellt Blueprints (`render.yaml`, `railway.json`).
-- **CLI & Dashboard:** Kann per Dry-Run oder echten Deploy-Befehl (`flyctl deploy`, `vercel deploy`) direkt eine globale HTTPS-Preview-URL bereitstellen.
+- **Fly.io:** Erstellt `fly.toml` und `Dockerfile` mit Region Frankfurt (`fra`) und Auto-Stop/Start, `--real` löst einen echten `flyctl deploy` aus.
+- **Vercel:** Erstellt `vercel.json` für Serverless Python-, Next.js- oder Static-Deployments, `--real` löst einen echten `vercel --prod` aus.
+- **Render / Railway:** Erstellt Blueprints (`render.yaml`, `railway.json`) – beide deployen über eine Git-Integration im jeweiligen Web-Dashboard (Repository dort verbinden), kein lokales CLI-Deploy-Kommando, `--real` meldet das ehrlich statt einen nie ausgeführten Deploy als erfolgreich zu behaupten.
+- **CLI:** `/deploy-cloud <fly|vercel|render|railway> [projekt] [--real]` – ohne `--real` ein sicherer Dry-Run (nur Manifeste), mit `--real` ein echter Deploy-Versuch mit echter, überwachter (siehe [🤖 Backlog-Worker & Produktions-Monitoring](#selbstgesteuert)) Preview-URL. Noch nicht im Web-Dashboard verdrahtet.
 
 ---
 
@@ -604,12 +661,15 @@ python main.py --dashboard [--port N]       # Web-Dashboard unter http://localho
 python main.py --check-issues               # EIN Poll-Zyklus über offene GitHub-Issues
 python main.py --check-pr-reviews           # EIN Poll-Zyklus über offene PR-Review-Kommentare
 python main.py --check-dependencies         # Workspace-weiter Schwachstellen-Scan + Auto-Update-PR
+python main.py --work-backlog                # EIN Poll-Zyklus über wartende "todo"-Backlog-Tickets
+python main.py --check-deployments           # EIN Poll-Zyklus: Erreichbarkeit aller Cloud-Deployments prüfen
 python main.py --eval [--tasks t1,t2]       # Reproduzierbare Benchmark-Suite ausführen
 python main.py --list-evals                 # Alle Benchmark-Aufgaben auflisten
 ```
 
 Details zum Web-Dashboard: [🌐 Modernes Web-Dashboard & Visualisierung](#web-dashboard).
 Details zu `--check-issues`: [🎫 Autonome, getriggerte Arbeit](#issue-watcher).
+Details zu `--work-backlog`/`--check-deployments`: [🤖 Vollständig eigenständige Arbeit](#selbstgesteuert).
 
 **`--check-dependencies` öffnet jetzt automatisch einen Update-PR statt nur zu warnen:**
 Findet der Scan eine bekannte Schwachstelle mit einer von `pip-audit` gelieferten
@@ -675,8 +735,14 @@ erzwingt den sofortigen Abbruch.
 ## 🧪 Tests ausführen
 
 ```bash
-python -m unittest discover -s tests -p "test_*.py"
+python -m unittest discover -s tests -t . -p "test_*.py"
 ```
+
+`-t .` (Top-Level-Dir = Repo-Root) ist wichtig, nicht nur `-s tests`: ohne `-t` importiert
+`unittest discover` jede Testdatei als loses Top-Level-Modul statt als `tests.*`-Paket und
+überspringt dabei `tests/__init__.py` - genau die Datei, die `memory/run_history.py` für die
+gesamte Testsuite strukturell auf ein Temp-Verzeichnis umbiegt, damit Testläufe nicht in die
+echte, projektübergreifende Lauf-Historie schreiben.
 
 Die komplette Testsuite ist vollständig gemockt und läuft **ohne jeden API-Key/echten
 LLM-Aufruf** durch (verifiziert). `.github/workflows/ci.yml` führt sie bei jedem Push/PR

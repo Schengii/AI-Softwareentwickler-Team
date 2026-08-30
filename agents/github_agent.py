@@ -272,7 +272,7 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
             return False
         return result.returncode == 0
 
-    def create_pull_request(self, title: str, body: str, base: str, head: str) -> tuple[bool, str]:
+    def create_pull_request(self, title: str, body: str, base: str, head: str, draft: bool = False) -> tuple[bool, str]:
         """
         Erstellt einen Pull Request per `gh pr create` – Voraussetzung: `head` wurde bereits
         gepusht (push()) und gh_ready() war True. Gibt bei Erfolg die von `gh` ausgegebene
@@ -280,10 +280,19 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
         Exception – ein fehlgeschlagener PR-Aufruf soll den bereits gepushten Branch nicht
         verwerfen, nur ohne automatisch erstellten PR liegen lassen (der Nutzer kann ihn dann
         manuell auf GitHub anlegen).
+
+        draft=True erstellt den PR als Draft (`gh pr create --draft`) - genutzt von
+        interface/cli.py._ask_for_git_push(), wenn die echte Testsuite den Code NICHT
+        bestätigt bestanden hat (realer Fund: ein normaler PR mit rein informativer Warnung im
+        Body wurde trotzdem anstandslos gemerged, siehe README/PR-Workflow-Abschnitt - ein
+        Draft-Status macht "noch nicht bereit" für GitHub selbst sichtbar, nicht nur im Text).
         """
+        command = ["gh", "pr", "create", "--title", title, "--body", body, "--base", base, "--head", head]
+        if draft:
+            command.append("--draft")
         try:
             result = subprocess.run(
-                ["gh", "pr", "create", "--title", title, "--body", body, "--base", base, "--head", head],
+                command,
                 cwd=BASE_DIR, capture_output=True, text=True, timeout=30, encoding="utf-8",
             )
         except (OSError, subprocess.TimeoutExpired) as e:

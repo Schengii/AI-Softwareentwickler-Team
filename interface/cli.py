@@ -35,7 +35,7 @@ from config import (
     GIT_PROTECTED_BRANCHES,
     validate_config,
 )
-from core.backlog_store import STATUSES, count_by_status, list_tickets, new_ticket_id, upsert_ticket
+from core.backlog_store import STATUSES, count_by_status, is_ticket_ready, list_tickets, new_ticket_id, upsert_ticket
 from core.code_sandbox import CodeSandbox
 from core.message_bus import AgentTask
 from core.notifier import notify_external
@@ -91,6 +91,7 @@ HELP_TEXT = """
 | `/adr [projekt]` | Zeigt die dokumentierten Architecture Decision Records (Begründungen echter Architektur-Entscheidungen) eines Projekts |
 | `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
 | `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |
+| `/deploy-cloud <fly/vercel/render/railway> [projekt] [--real]` | Deployt in die Cloud (echte Preview-URL) – ohne `--real` nur Dry-Run/Manifeste |
 | `/push` | Führt manuell einen Git-Commit & Push aus |
 | `/protect-branch [branch]` | Aktiviert echte GitHub-Branch-Protection (Pflicht-Reviews, kein Force-Push) für den Hauptbranch – mit Vorschau & Bestätigung |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
@@ -446,6 +447,18 @@ class CLIInterface:
             "Code NICHT bestätigt bestanden (siehe Verifikations-Protokoll im Ergebnis oben)."
             if not verification_ok else ""
         )
+        # Realer Fund: Rückfragen (core/agent_toolbox.py.ask_human_for_clarification) passierten
+        # bisher nur VOR dem Start - eine mitten in der Aufgabe aufgetretene Blockade blieb im
+        # Push-Gate unsichtbar, obwohl genau HIER die letzte Chance ist, sie vor einem Commit/PR
+        # zu bemerken. Getrennt von verification_note: ein fehlgeschlagener Test und eine offene
+        # fachliche Rückfrage sind unterschiedliche Gründe, nicht blind zu vertrauen.
+        needs_human_input = getattr(self._orchestrator, "last_needs_human_input", False)
+        clarification_questions = getattr(self._orchestrator, "last_clarification_questions", [])
+        clarification_note = (
+            "\n\n[bold cyan]❓ Offene Rückfrage(n):[/bold cyan]\n"
+            + "\n".join(f"  • {q}" for q in clarification_questions)
+            if needs_human_input else ""
+        )
 
         console.print(
             Panel(
@@ -458,15 +471,18 @@ class CLIInterface:
                     + f"\n\n[bold]Geplante Commit-Message:[/bold]\n  {commit_msg}"
                     + branch_note
                     + verification_note
+                    + clarification_note
                     + secret_note
                 ),
                 title="🔀 GitHub-Agent: Vorschau vor Commit & Push",
-                border_style="red" if secret_findings else ("cyan" if verification_ok else "yellow"),
+                border_style="red" if secret_findings else ("cyan" if (verification_ok and not needs_human_input) else "yellow"),
             )
         )
         try:
             if secret_findings:
                 prompt = "🔑 Trotz möglicher Secret-Funde (siehe oben) wirklich committen und pushen?"
+            elif needs_human_input:
+                prompt = "Trotz offener Rückfrage(n) (siehe oben) committen und pushen?"
             elif verification_ok:
                 prompt = "Möchtest du, dass ich GENAU DIESE Änderungen committe und auf GitHub pushe?"
             else:
@@ -500,10 +516,42 @@ class CLIInterface:
             if success_p:
                 if use_pr_workflow:
                     console.print(f"🚀 [bold green]Feature-Branch `{feature_branch}` gepusht.[/bold green]")
+                    # Realer Fund am Pong-Projekt: der PR-Titel/Body trug bisher UNTER KEINEN
+                    # UMSTÄNDEN einen Hinweis auf den Verifikationsstatus - nur das Terminal
+                    # (verification_note oben) warnte, aber genau das sieht ein Reviewer auf
+                    # GitHub nie. Ein PR, dessen echte Testsuite nie bestätigt bestanden hat,
+                    # bekommt jetzt einen unübersehbaren Titel-Präfix, das vollständige
+                    # Verifikations-Protokoll im Body UND wird als Draft angelegt (github_agent.
+                    # create_pull_request(draft=...)) - "noch nicht mergebereit" ist damit für
+                    # GitHub selbst sichtbar, nicht nur im Fließtext, den man überlesen kann.
+                    # needs_human_input reiht sich hier als ZWEITER, unabhängiger Grund für
+                    # denselben Titel-Präfix/Draft-Mechanismus ein - eine offene Rückfrage ist
+                    # kein Testfehler, verdient aber dieselbe Behandlung ("nicht blind mergen").
+                    title_prefixes = []
+                    if needs_human_input:
+                        title_prefixes.append("❓ [RÜCKFRAGE]")
+                    if not verification_ok:
+                        title_prefixes.append("⚠️ [UNVERIFIZIERT]")
+                    pr_title = f"{' '.join(title_prefixes)} {commit_msg}" if title_prefixes else commit_msg
+                    verification_summary = getattr(self._orchestrator, "last_verification_summary", "") or ""
+                    pr_body = f"Automatisch erstellt vom KI-Softwareentwickler-Team.\n\nAufgabe: {task_summary}"
+                    if needs_human_input:
+                        pr_body += (
+                            "\n\n---\n\n❓ **Offene Rückfrage(n):** Mindestens eine Fachrolle hat NICHT "
+                            "geraten, sondern gezielt nachgefragt - bitte beantworten:\n"
+                            + "\n".join(f"- {q}" for q in clarification_questions)
+                        )
+                    if not verification_ok:
+                        pr_body += (
+                            "\n\n---\n\n⚠️ **Nicht verifiziert:** Die echte Testsuite hat diesen Code NICHT "
+                            "bestätigt bestanden - vor dem Merge manuell prüfen.\n\n"
+                            f"{verification_summary}"
+                        )
                     success_pr, pr_out = github_agent.create_pull_request(
-                        title=commit_msg,
-                        body=f"Automatisch erstellt vom KI-Softwareentwickler-Team.\n\nAufgabe: {task_summary}",
+                        title=pr_title,
+                        body=pr_body,
                         base=base_branch, head=feature_branch,
+                        draft=not verification_ok or needs_human_input,
                     )
                     if success_pr:
                         pr_url = pr_out.splitlines()[-1] if pr_out else pr_out
@@ -704,6 +752,7 @@ class CLIInterface:
         table.add_column("Status", style="cyan")
         table.add_column("Prio.", justify="center")
         table.add_column("Schätzung", style="dim")
+        table.add_column("Epic", style="magenta")
         table.add_column("Quelle", style="dim")
         table.add_column("Titel")
         table.add_column("Details/Aktualisiert", style="dim")
@@ -713,9 +762,17 @@ class CLIInterface:
             # woran als Nächstes gearbeitet werden sollte, statt nur chronologisch.
             in_column = sorted((t for t in tickets if t.status == status), key=lambda t: t.priority)
             for ticket in in_column:
+                title = ticket.title
+                # Sichtbar machen, WARUM ein "todo"-Ticket noch nicht angefasst werden kann,
+                # bevor core/backlog_worker.py es eigenständig aufgreift - genau die "niemals
+                # stumm überspringen"-Linie wie is_ticket_ready() selbst schon verfolgt.
+                if status == "todo" and ticket.depends_on:
+                    ready, blocking = is_ticket_ready(ticket, tickets)
+                    if not ready:
+                        title = f"🔗 {title} [dim](wartet auf: {', '.join(blocking)})[/dim]"
                 table.add_row(
                     status, _PRIORITY_ICONS.get(ticket.priority, str(ticket.priority)), ticket.estimate,
-                    ticket.source, ticket.title, ticket.detail or ticket.updated_at,
+                    ticket.epic, ticket.source, title, ticket.detail or ticket.updated_at,
                 )
 
         console.print(table)
@@ -1095,6 +1152,9 @@ class CLIInterface:
         elif cmd in ("/deploy-stop", "/undeploy"):
             await self._stop_deployment(args[0] if args else None)
 
+        elif cmd in ("/deploy-cloud", "/cloud-deploy"):
+            await self._deploy_cloud_with_confirmation(args)
+
         elif cmd in ("/protect-branch", "/branch-protection"):
             await self._protect_branch_with_confirmation(args[0] if args else None)
 
@@ -1268,6 +1328,90 @@ class CLIInterface:
             console.print("💡 [dim]Stoppen mit `/deploy-stop`.[/dim]")
         else:
             console.print(f"❌ [bold red]Deployment fehlgeschlagen:[/bold red]\n{result.output}", style="red")
+
+    async def _deploy_cloud_with_confirmation(self, args: list[str]) -> None:
+        """
+        Deployt ein Projekt in die Cloud (core/cloud_deployment.py: Fly.io/Vercel echt per CLI,
+        Render/Railway als vorbereitete Manifeste - siehe dort für die Begründung) - mit
+        Vorschau + Bestätigung, analog zu /deploy (core/deployment.py, LOKALES Docker-
+        Deployment). Realer Fund: CloudDeploymentManager existierte bereits vollständig fertig
+        implementiert, war aber nirgends in CLI/Dashboard verdrahtet - README behauptete "CLI
+        & Dashboard können per echtem Deploy-Befehl eine Preview-URL bereitstellen", was schlicht
+        nicht stimmte.
+
+        Syntax: /deploy-cloud <fly|vercel|render|railway> [projekt] [--real]
+        Standard (ohne --real) ist ein Dry-Run (nur Manifeste generieren, kein echter Deploy) -
+        dieselbe "sicherer Default"-Linie wie an anderer Stelle im Projekt (z.B.
+        MAX_RUN_TOKENS=0), da ein echter Cloud-Deploy reale, öffentlich erreichbare Ressourcen
+        anlegt.
+        """
+        if not args:
+            console.print(
+                "⚠️ Bitte gib einen Provider an: `/deploy-cloud <fly|vercel|render|railway> [projekt] [--real]`",
+                style="yellow",
+            )
+            return
+        provider = args[0].lower()
+        if provider not in ("fly", "vercel", "render", "railway"):
+            console.print(f"⚠️ Unbekannter Provider `{provider}`. Erlaubt: fly, vercel, render, railway.", style="yellow")
+            return
+        real_deploy = "--real" in args
+        remaining = [a for a in args[1:] if a != "--real"]
+        project_name = remaining[0] if remaining else None
+
+        project_dir = self._resolve_project_dir(project_name)
+        if project_dir is None:
+            if project_name:
+                console.print(f"⚠️ Projekt `{project_name}` existiert nicht in `workspace/`.", style="yellow")
+            else:
+                console.print(
+                    "⚠️ Kein Projekt angegeben und keines geladen. Nutze `/deploy-cloud <provider> <projekt>` "
+                    "oder lade zuerst eines mit `/load <projekt>`.", style="yellow",
+                )
+            return
+
+        from core.cloud_deployment import CloudDeploymentManager
+
+        manager = CloudDeploymentManager(project_dir)
+        mode_note = "ECHTER Deploy-Versuch" if real_deploy else "Dry-Run (nur Manifeste generieren, kein echter Deploy)"
+        console.print(
+            Panel(
+                f"[bold]Projekt:[/bold] `{project_dir}`\n[bold]Provider:[/bold] {provider}\n[bold]Modus:[/bold] {mode_note}",
+                title="☁️ Cloud-Deployment: Vorschau",
+                border_style="cyan",
+            )
+        )
+        try:
+            should_deploy = Confirm.ask(
+                "Wirklich fortfahren?" + (" (echter Deploy-Befehl, kann mehrere Minuten dauern)" if real_deploy else ""),
+                default=False,
+            )
+        except Exception:
+            should_deploy = False
+        if not should_deploy:
+            console.print("↩️ Cloud-Deployment übersprungen.", style="dim")
+            return
+
+        console.print("☁️ [dim]Deploye...[/dim]")
+        # asyncio.to_thread: deploy() ist blockierend (echte Subprozesse bei fly/vercel) -
+        # direkt im Event-Loop aufgerufen würde es die Live-Anzeige/den Strg+C-Handler einfrieren.
+        result = await asyncio.to_thread(manager.deploy, provider, not real_deploy)
+
+        if not result.attempted:
+            console.print(f"⚠️ {result.reason_skipped}", style="yellow")
+        elif result.success:
+            console.print(f"✅ [bold green]Cloud-Deployment ({result.provider}) erfolgreich:[/bold green]\n  🌐 {result.preview_url}")
+            if result.generated_files:
+                console.print(f"📄 [dim]Generierte Manifeste: {', '.join(result.generated_files)}[/dim]")
+            if real_deploy:
+                # Nur ein ECHTER, erfolgreicher Deploy wird überwacht (core/production_monitor.py)
+                # - eine Dry-Run-URL wurde nie wirklich deployt, ein Health-Check dagegen würde
+                # nur falsche "nicht erreichbar"-Alarme für etwas erzeugen, das nie live war.
+                from core.deployment_status import record_deployment
+                record_deployment(project_dir, provider=result.provider, url=result.preview_url)
+                console.print("💡 [dim]`python main.py --check-deployments` überwacht diese URL künftig automatisch.[/dim]")
+        else:
+            console.print(f"❌ [bold red]Cloud-Deployment fehlgeschlagen:[/bold red]\n{result.output}", style="red")
 
     async def _stop_deployment(self, project_name: str | None) -> None:
         """Fährt ein per /deploy gestartetes Deployment wieder herunter."""

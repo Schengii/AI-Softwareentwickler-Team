@@ -66,4 +66,53 @@ jobs:
           python -m py_compile $(git ls-files '*.py' | grep -v '^workspace/' | grep -v '^test_proj/' | grep -v '^zip_proj/')
 
       - name: Testsuite ausführen
-        run: python -m unittest discover -s tests -p "test_*.py" -v
+        # -t . (Top-Level-Dir = Repo-Root) ist bewusst gesetzt, nicht nur -s tests: ohne -t
+        # importiert `unittest discover` jede test_*.py als loses Top-Level-Modul (z.B.
+        # "test_verification_status" statt "tests.test_verification_status") und überspringt
+        # dabei tests/__init__.py komplett - genau die Datei, die memory/run_history.py.
+        # RUN_HISTORY_FILE strukturell auf ein Temp-Verzeichnis umbiegt (siehe dort). Ohne -t
+        # hier schreibt JEDER Testlauf wieder live in die echte memory/run_history.json.
+        run: python -m unittest discover -s tests -t . -p "test_*.py" -v
+
+  workspace-frontend-tests:
+    name: Workspace-Frontend-Tests (echte npm-Testsuiten generierter Projekte)
+    runs-on: ubuntu-latest
+    # Realer Fund: diese CI-Datei testete bisher AUSSCHLIESSLICH den Python-Code des
+    # Orchestrator-Teams selbst - ruff.toml schließt workspace/ bewusst aus (siehe dort), und
+    # kein Schritt führte je `npm test` in einem generierten Node-Projekt aus. Ein grüner PR-
+    # Check bedeutete deshalb nur "der Orchestrator ist ok", nicht "das generierte Frontend
+    # funktioniert" - ein Node-Projekt mit kaputtem `npm test` (z.B. Jest-Konfigurationsfehler)
+    # konnte so unbemerkt gemergt werden. Dieser Job findet und testet JEDES workspace/*-
+    # Projekt mit einem "test"-Skript in package.json, genau wie core/verifier.py._find_node_
+    # projects() das für einen echten Agentenlauf tut - kein Keyword-Matching, echtes `npm test`.
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Node.js einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Alle workspace/-Projekte mit npm-Test-Skript real testen
+        shell: bash
+        run: |
+          set -e
+          found_any=0
+          for pkg in workspace/*/package.json workspace/*/*/package.json; do
+            [ -f "$pkg" ] || continue
+            dir=$(dirname "$pkg")
+            has_test=$(node -e "
+              const s = require('./$pkg').scripts || {};
+              process.stdout.write(s.test ? '1' : '0');
+            ")
+            if [ "$has_test" = "1" ]; then
+              found_any=1
+              echo "::group::npm test ($dir)"
+              (cd "$dir" && npm ci && npm test)
+              echo "::endgroup::"
+            fi
+          done
+          if [ "$found_any" -eq 0 ]; then
+            echo "Keine workspace/-Projekte mit npm-Test-Skript gefunden - nichts zu tun."
+          fi

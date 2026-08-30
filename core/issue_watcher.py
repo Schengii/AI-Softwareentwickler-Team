@@ -53,10 +53,16 @@ StatusCallback = Callable[[str], None]
 # Mapping von IssueRunResult.outcome auf eine core/backlog_store.py-Ticket-Spalte -
 # "pr_opened" ist die einzige echte Erfolgs-Terminalstellung (wartet auf menschlichen
 # Review/Merge, daher "review" statt "done"). "pr_opened_ci_failed" (PR wurde zwar eröffnet,
-# die echte CI-Pipeline ist danach aber rot geworden - siehe wait_for_ci_status() unten)
-# braucht ebenfalls menschliche Aufmerksamkeit -> "blocked", bevor jemand einen kaputten PR
+# die echte CI-Pipeline ist danach aber rot geworden - siehe wait_for_ci_status() unten) und
+# "pr_opened_needs_clarification" (mindestens eine Fachrolle hat mitten in der Aufgabe eine
+# echte Unklarheit gemeldet, siehe core/agent_toolbox.py.ask_human_for_clarification) brauchen
+# beide menschliche Aufmerksamkeit -> "blocked", bevor jemand einen unfertigen/unklaren PR
 # merged. Alles andere ist ohnehin schon "blocked".
-_OUTCOME_TO_TICKET_STATUS = {"pr_opened": "review", "pr_opened_ci_failed": "blocked"}
+_OUTCOME_TO_TICKET_STATUS = {
+    "pr_opened": "review",
+    "pr_opened_ci_failed": "blocked",
+    "pr_opened_needs_clarification": "blocked",
+}
 
 
 @dataclass
@@ -64,7 +70,7 @@ class IssueRunResult:
     """Ergebnis der Bearbeitung EINES Issues in einem Poll-Zyklus."""
     issue_number: int
     title: str
-    outcome: str  # "pr_opened" | "pr_opened_ci_failed" | "no_changes" | "blocked_secret" | "error"
+    outcome: str  # "pr_opened" | "pr_opened_ci_failed" | "pr_opened_needs_clarification" | "no_changes" | "blocked_secret" | "error"
     detail: str = ""
 
 
@@ -220,15 +226,26 @@ async def _process_single_issue(
         "" if verification_ok else
         "⚠️ **Verifikation nicht bestanden** – bitte vor dem Merge besonders genau prüfen.\n\n"
     )
+    # Realer Fund: eine mitten in der Aufgabe aufgetretene Rückfrage (core/agent_toolbox.py.
+    # ask_human_for_clarification) blieb bisher komplett unsichtbar - hier gibt es (anders als
+    # im interaktiven CLI-Pfad) KEINEN Menschen, der das im Chat mitliest, der PR/Issue-
+    # Kommentar ist die EINZIGE Chance, dass die Frage überhaupt jemand sieht.
+    needs_human_input = getattr(orchestrator, "last_needs_human_input", False)
+    clarification_questions = getattr(orchestrator, "last_clarification_questions", [])
+    clarification_flag = (
+        "❓ **Offene Rückfrage(n):**\n" + "\n".join(f"- {q}" for q in clarification_questions) + "\n\n"
+        if needs_human_input else ""
+    )
     # final_report gedeckelt, damit ein sehr großer Fachbereichs-Bericht den PR-Body nicht
     # unbegrenzt aufbläht (dieselbe Token-/Größen-Vorsicht wie bei den bestehenden
     # Ergebnis-Kürzungen in agents/orchestrator.py).
     pr_body = (
-        f"{verification_flag}Automatisch erstellt vom KI-Softwareentwickler-Team.\n\n"
+        f"{clarification_flag}{verification_flag}Automatisch erstellt vom KI-Softwareentwickler-Team.\n\n"
         f"Closes #{issue_number}\n\n---\n\n{final_report[:3000]}"
     )
     success_pr, pr_out = github_agent.create_pull_request(
         title=commit_msg, body=pr_body, base=base_branch, head=feature_branch,
+        draft=needs_human_input or not verification_ok,
     )
     # Bewusst KEIN Zurückwechseln zum Hauptbranch mehr (realer Fund: ein `git checkout` weg
     # vom Feature-Branch entfernt jede Datei, die NUR auf diesem Branch committet ist, aus
@@ -253,6 +270,17 @@ async def _process_single_issue(
     # hier niemand nach, ob der eröffnete PR tatsächlich grün wird.
     github_agent.add_issue_label(issue_number, ISSUE_DONE_LABEL)
     pr_url = pr_out.splitlines()[-1] if pr_out else pr_out
+    # Eine offene Rückfrage ist wichtiger als das CI-Ergebnis (das kann durchaus grün sein,
+    # obwohl eine fachliche Frage offen ist) - deshalb VOR der CI-Prüfung behandelt, nicht
+    # zusätzlich zu ihr.
+    if needs_human_input:
+        github_agent.comment_on_issue(
+            issue_number,
+            f"🤖 Pull Request erstellt (als Draft): {pr_url}\n\n"
+            "❓ Mindestens eine Fachrolle hat eine echte Unklarheit gemeldet, statt zu raten:\n"
+            + "\n".join(f"- {q}" for q in clarification_questions),
+        )
+        return IssueRunResult(issue_number, title, "pr_opened_needs_clarification", pr_url)
     ci_status, ci_detail = await github_agent.wait_for_ci_status(feature_branch)
     if ci_status == "failed":
         github_agent.comment_on_issue(

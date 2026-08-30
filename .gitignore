@@ -31,6 +31,11 @@ env/
 **/.ai-team-worktrees/
 **/.ai_team_rag/
 
+# Live-Deployment-Zustand (core/deployment_status.py) - sich ständig ändernder Laufzeit-
+# Zustand (jeder Health-Check überschreibt ihn), anders als .ai_team_status.json bewusst
+# NICHT mitversioniert (siehe Modul-Docstring dort).
+**/.ai_team_deployment.json
+
 # Node & Frontend
 node_modules/
 npm-debug.log*

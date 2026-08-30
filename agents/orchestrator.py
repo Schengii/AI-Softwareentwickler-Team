@@ -223,6 +223,22 @@ class Orchestrator:
         # bestanden ist (siehe _run_verification_loop) – von interface/cli.py genutzt, um vor
         # dem Git-Push-Gate zu warnen, statt unkommentiert "fertig" wirken zu lassen.
         self.last_verification_ok: bool = False
+        # Das vollständige Verifikations-Protokoll des letzten Laufs (dieselbe Markdown-Sektion,
+        # die auch final_output/den Chat-Verlauf ergänzt) - realer Fund am Pong-Projekt:
+        # last_verification_ok allein warnte zwar VOR dem Push im Terminal, aber der
+        # tatsächlich auf GitHub erstellte Pull Request trug KEINE dieser Information - ein
+        # Reviewer, der nur den PR sieht (nicht die Terminal-Session, in der er entstand),
+        # hatte keine Chance zu erkennen, dass die echte Testsuite nie bestätigt bestanden
+        # hatte. interface/cli.py._ask_for_git_push() bettet das jetzt direkt in den PR-Body ein.
+        self.last_verification_summary: str = ""
+        # True, wenn mindestens eine Fachrolle im letzten Lauf `ask_human_for_clarification`
+        # genutzt hat (core/agent_toolbox.py) - eine echte, für die Aufgabe entscheidende
+        # Unklarheit, die NICHT geraten wurde. Getrennt von last_verification_ok: eine
+        # fehlgeschlagene Testsuite und eine offene Rückfrage sind verschiedene Gründe, einem
+        # Ergebnis nicht blind zu vertrauen, und verdienen unterschiedlichen Klartext im
+        # Push-Gate (interface/cli.py) bzw. in autonomen Läufen (core/backlog_worker.py).
+        self.last_needs_human_input: bool = False
+        self.last_clarification_questions: list[str] = []
         # Pro-Projekt-Kostenbudget (core/project_constitution.py `max_project_tokens`,
         # /constitution) - unabhängig vom globalen MAX_RUN_TOKENS (das begrenzt nur EINEN
         # einzelnen Lauf). Bei jedem process()-Aufruf frisch aus der Konstitution des jeweils
@@ -518,6 +534,7 @@ class Orchestrator:
         # klare Warnung statt eines unbedingten "alles ok", wenn Code committet werden soll,
         # dessen Tests nie bestätigt bestanden haben.
         self.last_verification_ok = verification_ok
+        self.last_verification_summary = verification_summary
 
         # Projekt-Hygiene: automatisch regenerierbare Caches (__pycache__, .pytest_cache, …),
         # die die echte Testausführung gerade erzeugt hat, physisch entfernen. Bewusst OHNE
@@ -602,6 +619,9 @@ class Orchestrator:
         # Code mehr zu reproduzieren.
         real_files_section = self._build_real_files_section(project_dir, file_owners)
         collision_section = self._build_file_collision_section(file_collisions)
+        clarification_section = self._build_clarification_section(results)
+        self.last_needs_human_input = bool(clarification_section)
+        self.last_clarification_questions = [q for r in results for q in r.clarification_questions]
 
         # Datenbasierte Selbstoptimierungs-Vorschläge (core/optimization_advisor.py) - rein
         # deterministische Auswertung der BEREITS BESTEHENDEN, projektübergreifenden
@@ -615,6 +635,7 @@ class Orchestrator:
             f"{final_solution}\n\n"
             f"---\n\n"
             + (f"{real_files_section}\n\n---\n\n" if real_files_section else "")
+            + (f"{clarification_section}\n\n---\n\n" if clarification_section else "")
             + (f"{collision_section}\n\n---\n\n" if collision_section else "")
             + (f"{governance_fix_summary}\n\n---\n\n" if governance_fix_summary else "")
             + f"{verification_summary}\n\n"
@@ -681,6 +702,16 @@ class Orchestrator:
             notify(
                 "⏹️ [bold yellow]Manuell abgebrochen.[/bold yellow] Die bis dahin erarbeiteten Ergebnisse "
                 "wurden zusammengefasst – prüfe das Ergebnis, es ist mit hoher Wahrscheinlichkeit unvollständig."
+            )
+        elif self.last_needs_human_input:
+            # Eigener, vierter Status statt nur unter "NICHT verifiziert" mitzulaufen: eine
+            # offene Rückfrage ist kein Testfehler, sondern eine bewusste Entscheidung eines
+            # Agenten, NICHT zu raten - verdient eigene Sichtbarkeit (siehe
+            # _build_clarification_section oben).
+            notify(
+                f"❓ [bold cyan]Fertig, aber mit {len(self.last_clarification_questions)} offener "
+                f"Rückfrage(n)![/bold cyan] Siehe Abschnitt 'Offene Rückfragen' oben – bitte beantworten, "
+                "bevor das Ergebnis unverändert übernommen wird."
             )
         elif verification_ok:
             notify("✅ [bold green]Fertig![/bold green] Alle Fachbereiche haben ihre Aufgaben erfolgreich abgeschlossen.")
@@ -1110,6 +1141,27 @@ class Orchestrator:
                 if res.agent_id not in agents:
                     agents.append(res.agent_id)
         return {path: agents for path, agents in writers.items() if len(agents) > 1}
+
+    @staticmethod
+    def _build_clarification_section(results: list[AgentResult]) -> str:
+        """
+        Deterministischer Abschnitt (kein LLM-Aufruf) mit allen über `ask_human_for_clarification`
+        (core/agent_toolbox.py) aufgezeichneten Rückfragen dieses Laufs - siehe
+        self.last_needs_human_input/self.last_clarification_questions in process() weiter
+        unten. Leer, wenn keine Rolle eine echte Blockade gemeldet hat.
+        """
+        entries = [(r, q) for r in results for q in r.clarification_questions]
+        if not entries:
+            return ""
+        lines = [
+            "### ❓ Offene Rückfragen (mitten in der Aufgabe aufgetreten)",
+            "Mindestens eine Fachrolle ist auf eine echte, für die Aufgabe entscheidende "
+            "Unklarheit gestoßen und hat NICHT geraten – bitte beantworten, bevor das Ergebnis "
+            "unverändert übernommen wird:",
+        ]
+        for r, q in entries:
+            lines.append(f"- **{r.agent_name}**: {q}")
+        return "\n".join(lines)
 
     @staticmethod
     def _build_file_collision_section(collisions: list[dict]) -> str:
@@ -1595,18 +1647,40 @@ class Orchestrator:
                     summary_lines.append(f"- 🏋️ ❌ Lastentest ({perf_report.tool}) fehlgeschlagen: `{perf_report.script}` [{stats}].")
                     verification_ok = False
 
-        # Browser / Frontend UI-Check: Prüft statische Assets, Rendering und JS-Konsolenfehler
+        # Browser / Frontend UI-Check: Prüft statische Assets, Rendering und JS-Konsolenfehler.
+        # Realer Fund (Pong-Projekt): ein Fehlschlag hier war bisher rein informativ und
+        # beeinflusste verification_ok NICHT - ein Frontend, das im echten Browser mit einem
+        # JS-Fehler crasht oder ein <canvas> nie tatsächlich zeichnet (siehe blank_canvases,
+        # core/browser_verifier.py), bestand die Verifikation trotzdem. Das war eine bewusste
+        # Design-Entscheidung analog zu Lint/SAST - für ein Frontend-Projekt ist dieser Check
+        # aber oft die EINZIGE Instanz, die überhaupt echten Browser-Code ausführt (Unit-Tests
+        # wie im Pong-Fall mockten Canvas/DOM komplett weg), nicht nur ein Stil-Hinweis wie ein
+        # Lint-Fund. Ein echter Fehlschlag zählt deshalb jetzt wie beim Lastentest/Runtime-
+        # Smoke-Test oben als echte Anforderungsverletzung.
         if not (budget_aborted or manually_cancelled):
             browser_report = await asyncio.to_thread(verifier.check_browser_ui)
             if browser_report.attempted:
                 if browser_report.passed:
-                    engine_info = f" [{browser_report.engine}]"
-                    notify(f"  🌐 [bold green]Frontend/UI-Check erfolgreich:[/bold green] `{browser_report.tested_url}`{engine_info}.")
-                    summary_lines.append(f"- 🌐 Frontend/UI-Check: `{browser_report.tested_url}`{engine_info} fehlerfrei.")
+                    if browser_report.engine == "playwright":
+                        notify(f"  🌐 [bold green]Frontend/UI-Check erfolgreich:[/bold green] `{browser_report.tested_url}` [playwright, echter Browser-Lauf].")
+                        summary_lines.append(f"- 🌐 Frontend/UI-Check: `{browser_report.tested_url}` [playwright] fehlerfrei (JS wurde echt ausgeführt).")
+                    else:
+                        # static_dom-Fallback: prüft NUR, ob referenzierte Dateien existieren -
+                        # es läuft dabei KEIN JavaScript. Ein grüner static_dom-Pass sah bisher
+                        # optisch identisch zu einem echten Playwright-Pass aus (nur der kleine
+                        # "[engine]"-Zusatz unterschied sie) - genau der fehlende Kontrast, der
+                        # einen kaputten Bootstrap (fehlendes type="module", kein Game-Loop) als
+                        # "geprüft und ok" durchgehen ließ, obwohl nie echter Code lief.
+                        notify(f"  🌐 [bold yellow]Frontend/UI-Check eingeschränkt:[/bold yellow] `{browser_report.tested_url}` [static_dom] - kein echter Browser installiert, JavaScript wurde NICHT ausgeführt (nur Dateiexistenz geprüft).")
+                        summary_lines.append(f"- 🌐 ⚠️ Frontend/UI-Check nur eingeschränkt (`static_dom`, `{browser_report.tested_url}`): referenzierte Dateien existieren, aber JavaScript lief NICHT in einem echten Browser (Playwright fehlt/nicht nutzbar) - Laufzeitfehler bleiben so unentdeckt.")
                 else:
-                    err_details = "; ".join(browser_report.missing_assets + browser_report.console_errors)[:150]
-                    notify(f"  🌐 [bold red]Frontend/UI-Check Warnung:[/bold red] {err_details}.")
-                    summary_lines.append(f"- 🌐 ⚠️ Frontend/UI-Check: {err_details}.")
+                    details = browser_report.missing_assets + browser_report.console_errors + [
+                        f"Canvas nie gezeichnet: {c}" for c in browser_report.blank_canvases
+                    ]
+                    err_details = "; ".join(details)[:150]
+                    notify(f"  🌐 [bold red]Frontend/UI-Check fehlgeschlagen:[/bold red] {err_details}.")
+                    summary_lines.append(f"- 🌐 ❌ Frontend/UI-Check fehlgeschlagen: {err_details}.")
+                    verification_ok = False
 
         # Accessibility-Check: echter axe-core-Scan (WCAG 2.x) gegen die gerenderte Seite -
         # ersetzt die rein LLM-basierte Einschätzung des accessibility-Agenten durch geparste

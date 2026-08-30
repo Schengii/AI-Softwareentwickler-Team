@@ -66,13 +66,23 @@ jobs:
           python -m py_compile $(git ls-files '*.py' | grep -v '^workspace/' | grep -v '^test_proj/' | grep -v '^zip_proj/')
 
       - name: Testsuite ausführen
-        # -t . (Top-Level-Dir = Repo-Root) ist bewusst gesetzt, nicht nur -s tests: ohne -t
-        # importiert `unittest discover` jede test_*.py als loses Top-Level-Modul (z.B.
-        # "test_verification_status" statt "tests.test_verification_status") und überspringt
-        # dabei tests/__init__.py komplett - genau die Datei, die memory/run_history.py.
-        # RUN_HISTORY_FILE strukturell auf ein Temp-Verzeichnis umbiegt (siehe dort). Ohne -t
-        # hier schreibt JEDER Testlauf wieder live in die echte memory/run_history.json.
-        run: python -m unittest discover -s tests -t . -p "test_*.py" -v
+        # Vorher `python -m unittest discover -s tests -t . -p "test_*.py"`: sammelt nur
+        # unittest.TestCase-Subklassen ein - reine Pytest-Fixture-/@pytest.mark.anyio-Tests
+        # ohne TestCase (test_dashboard_sse.py, test_mcp_server_extended.py,
+        # test_prompt_caching.py) wurden zwar importiert, aber NIE tatsächlich ausgeführt
+        # (unittest.TestLoader kennt nur TestCase-Methoden, keine losen Testfunktionen) - ein
+        # grüner CI-Lauf bedeutete für diese drei Dateien nur "importierbar", nicht "getestet".
+        # `pytest` sammelt beide Testarten gleichwertig ein UND ersetzt unittest discover
+        # vollständig (unittest.TestCase-Tests laufen unverändert unter pytest mit).
+        #
+        # `tests/` bleibt trotzdem als Argument (nicht "." fürs ganze Repo) nötig: pytest
+        # erkennt tests/__init__.py und importiert jedes Modul als "tests.test_x" (Rootdir-
+        # Package-Erkennung) - exakt dasselbe Verhalten wie vorher `-t .` bei unittest discover,
+        # notwendig, damit tests/__init__.py (isoliert memory/run_history.py.RUN_HISTORY_FILE
+        # auf ein Temp-Verzeichnis, siehe dort) für JEDEN Testlauf tatsächlich einmal ausgeführt
+        # wird. --import-mode=importlib würde diese Package-Erkennung umgehen - bewusst NICHT
+        # gesetzt.
+        run: python -m pytest tests/ -v
 
   workspace-frontend-tests:
     name: Workspace-Frontend-Tests (echte npm-Testsuiten generierter Projekte)

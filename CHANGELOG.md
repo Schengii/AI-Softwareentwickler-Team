@@ -7,6 +7,27 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🧪 CI-Testrunner von `unittest discover` auf `pytest` umgestellt
+
+Realer Fund bei der Prüfung der `core/llm_factory.py`-Fallback-Ketten: der CI-„Tests"-Job
+(`.github/workflows/ci.yml`) lief bisher über `python -m unittest discover`. Dessen
+`TestLoader` sammelt ausschließlich `unittest.TestCase`-Subklassen ein - drei bereits
+existierende, reine Pytest-Fixture-/`@pytest.mark.anyio`-Testdateien
+(`test_dashboard_sse.py`, `test_mcp_server_extended.py`, `test_prompt_caching.py`, keine
+`TestCase`-Klassen) wurden dadurch zwar importiert, ihre Tests aber **nie tatsächlich
+ausgeführt** - ein grüner CI-Lauf bedeutete für diese drei Dateien seit ihrer Einführung nur
+"importierbar", nicht "getestet". `python -m pytest tests/` sammelt beide Testarten
+gleichwertig ein und läuft unittest.TestCase-basierte Tests unverändert mit; `tests/` bleibt
+bewusst als Argument (nicht `.`) nötig, damit pytest über die vorhandene
+`tests/__init__.py`-Package-Erkennung dieselbe `RUN_HISTORY_FILE`-Umleitung wie zuvor
+`unittest discover -t .` sicherstellt.
+
+`pytest>=8.0.0,<9.0.0` zu `requirements.txt` ergänzt (vorher nur transitiv über
+`pytest-cov` in `requirements-dev.txt` vorhanden) - der CI-„Tests"-Job installiert bewusst nur
+`requirements.txt`, nicht `requirements-dev.txt`.
+
+---
+
 ## 🤖 Vier Schritte Richtung "echtes Team": Selbstgesteuertes Backlog, Mid-Task-Eskalation, Epics & Produktions-Monitoring
 
 Nutzerwunsch: das Team soll "noch eigenständiger, autonomer, voll funktionsfähiger und

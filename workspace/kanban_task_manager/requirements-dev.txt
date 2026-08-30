@@ -1,6 +1,0 @@
-pytest-cov
-httpx
-websockets
-pytest
-sqlmodel
-psycopg2-binary

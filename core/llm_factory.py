@@ -53,6 +53,19 @@ if GROQ_API_KEY:
 # funktionierte. Groq/openai/gpt-oss-120b jetzt als letzte Stufe auch in den STANDARD/LITE-
 # Ketten ergänzt – kein Endlosloop möglich, da _allow_self_fallback=False verhindert, dass
 # Groq bei eigenem Scheitern zurück zu Gemini zurückspringt (siehe generate_with_tools()).
+#
+# WICHTIG (Reichweite dieses Dicts): `MODEL_FALLBACKS.get()` wird AUSSCHLIESSLICH von
+# GeminiClient gelesen (siehe generate_with_tools()/_call_with_retry_and_usage() weiter
+# unten), keyed auf `self.model_name` eines GeminiClient - und ein GeminiClient wird im
+# echten Betrieb nie mit einem Nicht-Gemini-Modellnamen instanziiert (LLMFactory.create_
+# for_model() routet Claude/Groq/DeepSeek/OpenRouter/HuggingFace-Namen immer an den
+# jeweils passenden eigenen Client-Wrapper). Frühere Versionen enthielten hier zusätzlich
+# Einträge mit Nicht-Gemini-Keys ("groq:...", "deepseek:...", ...) in der Annahme, damit
+# ließe sich die Fallback-Kette DIESER Provider steuern - das war totes Konfigurations-
+# wissen: DeepSeekClient/GroqClient/OpenRouterClient/HuggingFaceClient haben stattdessen
+# jeweils fest einprogrammiert genau EINEN Hop direkt zu gemini-3.6-flash (siehe deren
+# generate_with_usage()/generate_with_tools() oben), unabhängig vom Inhalt dieses Dicts.
+# Nur Gemini-Modellnamen gehören hier als Key rein.
 MODEL_FALLBACKS = {
     # Gemini erschöpft/fehlerhaft -> auf das jeweils gleichwertige Claude-Modell ausweichen,
     # dann eine kleinere Gemini-Stufe, zuletzt Groq als kostenloser Backstop.
@@ -61,12 +74,6 @@ MODEL_FALLBACKS = {
     "gemini-3.1-flash-lite": ["claude-haiku-4-5-20251001", "gemini-3.6-flash", "groq:openai/gpt-oss-120b"],
     # Ältere/abweichende Konfigurationswerte (falls per .env manuell gesetzt) ebenfalls abdecken.
     "gemini-3.5-flash":     ["claude-sonnet-5", "gemini-3.6-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
-    # Legacy-Provider-Fallbacks (nur relevant, falls ein Agent per .env explizit auf sie gesetzt wird).
-    "huggingface:auto": ["gemini-3.6-flash", "gemini-3.1-flash-lite"],
-    "openrouter:auto": ["gemini-3.6-flash", "gemini-3.1-flash-lite"],
-    "deepseek:deepseek-chat": ["gemini-3.6-flash", "gemini-3.1-flash-lite"],
-    "deepseek:deepseek-reasoner": ["deepseek:deepseek-chat", "gemini-3.6-flash"],
-    "groq:openai/gpt-oss-120b": ["gemini-3.6-flash", "gemini-3.1-flash-lite"],
 }
 
 MAX_RETRIES = 3
@@ -240,7 +247,9 @@ class HuggingFaceClient:
         # Fallback auf Gemini für Text-/SVG-Generierung. _allow_self_fallback=False wird von
         # GeminiClient gesetzt, wenn dieser Client bereits ALS Fallback-Ziel innerhalb einer
         # Provider-Kette aufgerufen wird – verhindert eine Endlosschleife (Gemini -> HF -> Gemini
-        # -> ...), falls HuggingFace irgendwann als MODEL_FALLBACKS-Ziel eingetragen wird.
+        # -> ...), falls HuggingFace irgendwann direkt in MODEL_FALLBACKS als Fallback-ZIEL
+        # (Wert, nicht Key) eingetragen wird - MODEL_FALLBACKS.get() wird aber nur mit
+        # Gemini-Modellnamen als Key aufgerufen, siehe Kommentar an MODEL_FALLBACKS oben.
         if not _allow_self_fallback:
             raise RuntimeError("HuggingFace-Provider innerhalb einer Fallback-Kette nicht verfügbar.")
         fallback = GeminiClient(model_name="gemini-3.6-flash")

@@ -54,13 +54,19 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from agents.orchestrator import Orchestrator
-from config import DASHBOARD_AUTH_TOKEN, DASHBOARD_HOST, DASHBOARD_MAX_CONCURRENT_JOBS
+from config import DASHBOARD_AUTH_TOKEN, DASHBOARD_HOST, DASHBOARD_MAX_CONCURRENT_JOBS, MAX_RUN_TOKENS
 from core.backlog_store import list_tickets, upsert_ticket
 from core.notifier import notify_external
+from core.token_guard import token_guard
 from memory.run_history import get_agent_success_rates, get_recent_runs
 
 MAX_LOG_LINES_KEPT = 500
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+# Wie oft während eines laufenden Jobs ein "tokens"-SSE-Event mit dem aktuellen Verbrauch
+# gepusht wird. Reiner Dict-Lesezugriff auf core/token_guard.py (kein LLM-Aufruf, keine
+# nennenswerten Kosten) - 4s reicht, um MAX_RUN_TOKENS-Ausreißer früh sichtbar zu machen,
+# ohne den Event-Loop unnötig oft aufzuwecken.
+TOKEN_PROGRESS_INTERVAL_SECONDS = 4.0
 
 
 @dataclass
@@ -199,6 +205,36 @@ class DashboardServer:
 
         job_orchestrator = Orchestrator()
 
+        # Live-Token-/Kosten-Transparenz: bisher war der Tokenverbrauch nur am ENDE eines
+        # Laufs sichtbar (Abschlussbericht) oder erst NACH Erreichen von MAX_RUN_TOKENS (harter
+        # Abbruch) - ein ausufernder Lauf war im Dashboard unterwegs unsichtbar. Schnappschuss
+        # vor dem Start + periodisches SSE-"tokens"-Event mit der Differenz (dasselbe Delta-
+        # Prinzip wie Orchestrator._tokens_used_since()/MAX_RUN_TOKENS, siehe agents/
+        # orchestrator.py) macht den laufenden Verbrauch sichtbar, ohne selbst LLM-Kosten zu
+        # verursachen (reiner Dict-Lesezugriff auf core/token_guard.py).
+        #
+        # Bekannte Einschränkung (geerbt, nicht neu eingeführt): token_guard ist ein globaler,
+        # prozessweiter Zähler. Laufen mehrere Jobs gleichzeitig (DASHBOARD_MAX_CONCURRENT_JOBS),
+        # zählt das Delta jedes Jobs auch die Tokens ANDERER gleichzeitig laufender Jobs mit,
+        # dieselbe Ungenauigkeit, die MAX_RUN_TOKENS in agents/orchestrator.py bereits hat -
+        # bei genau einem aktiven Job (Standardfall) ist der Wert exakt.
+        token_start = token_guard.get_summary()["grand_total_tokens"]
+
+        async def _push_tokens(_job=job, _start=token_start):
+            try:
+                while True:
+                    await asyncio.sleep(TOKEN_PROGRESS_INTERVAL_SECONDS)
+                    used = token_guard.get_summary()["grand_total_tokens"] - _start
+                    for q in list(_job.listeners):
+                        try:
+                            q.put_nowait({"type": "tokens", "used": used, "budget": MAX_RUN_TOKENS})
+                        except Exception:
+                            pass
+            except asyncio.CancelledError:
+                pass
+
+        token_progress_task = asyncio.ensure_future(_push_tokens())
+
         def on_status(msg: str, _job=job):
             clean = re.sub(r"\[/?[a-zA-Z0-9 _]+\]", "", msg)  # rich-Markup entfernen
             _job.log.append(clean)
@@ -220,6 +256,20 @@ class DashboardServer:
         except Exception as e:
             job.error = str(e)
             job.status = "error"
+        finally:
+            token_progress_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await token_progress_task
+
+        # Finaler Stand, bevor der Client die Verbindung nach dem "status"-Event schließt -
+        # sonst würde der letzte Zwischenstand (bis zu TOKEN_PROGRESS_INTERVAL_SECONDS alt)
+        # als Endwert im UI stehen bleiben.
+        final_used = token_guard.get_summary()["grand_total_tokens"] - token_start
+        for q in list(job.listeners):
+            try:
+                q.put_nowait({"type": "tokens", "used": final_used, "budget": MAX_RUN_TOKENS})
+            except Exception:
+                pass
 
         for q in list(job.listeners):
             try:
@@ -337,6 +387,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     <button id="startBtn" onclick="startTask()">Projekt-Entwicklung starten</button>
     <button id="cancelBtn" onclick="cancelTask()">⏹️ Lauf abbrechen</button>
     <span id="taskStatus" style="margin-left: 15px; font-size: 13px; color: var(--accent);"></span>
+    <span id="tokenProgress" style="margin-left: 15px; font-size: 13px; color: var(--text-white); opacity: 0.85;"></span>
   </div>
 
   <div id="logPanel">
@@ -417,6 +468,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       document.getElementById('logPanel').style.display = 'block';
       document.getElementById('logOutput').innerText = '';
       document.getElementById('resultOutput').innerText = '';
+      document.getElementById('tokenProgress').innerText = '';
 
       const res = await fetch('/api/run', {
         method: 'POST',
@@ -516,6 +568,17 @@ HTML_DASHBOARD = """<!DOCTYPE html>
           const d = JSON.parse(e.data);
           if (['done', 'cancelled', 'error'].includes(d.status)) {
             finish(d.status, d.result, d.error);
+          }
+        });
+        es.addEventListener('tokens', (e) => {
+          const d = JSON.parse(e.data);
+          const used = d.used.toLocaleString('de-DE');
+          if (d.budget > 0) {
+            const pct = Math.min(100, Math.round((d.used / d.budget) * 100));
+            const icon = d.used >= d.budget ? '🚨' : '🪙';
+            document.getElementById('tokenProgress').innerText = `${icon} ${used} / ${d.budget.toLocaleString('de-DE')} Tokens (${pct}%)`;
+          } else {
+            document.getElementById('tokenProgress').innerText = `🪙 ${used} Tokens`;
           }
         });
         es.onerror = () => {

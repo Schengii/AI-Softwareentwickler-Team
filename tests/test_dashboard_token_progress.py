@@ -65,18 +65,26 @@ class TestDashboardTokenProgress(unittest.TestCase):
             job_id = json.loads(resp.read())["job_id"]
 
         events: list[dict] = []
+        read_error: list[BaseException] = []
 
         def _read_stream():
-            with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/stream/{job_id}", timeout=5) as stream:
-                evt_type = None
-                for raw_line in stream:
-                    line = raw_line.decode("utf-8").strip()
-                    if line.startswith("event:"):
-                        evt_type = line.split(":", 1)[1].strip()
-                    elif line.startswith("data:") and evt_type:
-                        events.append({"type": evt_type, **json.loads(line.split(":", 1)[1].strip())})
-                        if evt_type == "status" and events[-1]["status"] in ("done", "error", "cancelled"):
-                            break
+            # Realer Fund (CI-Flake): frühere Version brach still ab, ohne den Fehler dem
+            # Haupt-Thread mitzuteilen - ein Timeout/Verbindungsfehler hier hätte NUR einen
+            # unvollständigen events-Stand hinterlassen, statt den Test sichtbar fehlschlagen
+            # zu lassen (reader.is_alive() wird nach einer Exception ebenfalls False).
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/stream/{job_id}", timeout=5) as stream:
+                    evt_type = None
+                    for raw_line in stream:
+                        line = raw_line.decode("utf-8").strip()
+                        if line.startswith("event:"):
+                            evt_type = line.split(":", 1)[1].strip()
+                        elif line.startswith("data:") and evt_type:
+                            events.append({"type": evt_type, **json.loads(line.split(":", 1)[1].strip())})
+                            if evt_type == "status" and events[-1]["status"] in ("done", "error", "cancelled"):
+                                break
+            except BaseException as exc:  # noqa: BLE001 - bewusst breit, siehe Kommentar oben
+                read_error.append(exc)
 
         reader = threading.Thread(target=_read_stream, daemon=True)
         reader.start()
@@ -87,15 +95,28 @@ class TestDashboardTokenProgress(unittest.TestCase):
         self.release.set()
         reader.join(timeout=5)
         self.assertFalse(reader.is_alive(), "SSE-Stream wurde nicht innerhalb des Timeouts abgeschlossen")
+        if read_error:
+            raise read_error[0]
 
         token_events = [e for e in events if e["type"] == "tokens"]
         self.assertTrue(token_events, f"kein 'tokens'-Event empfangen: {events}")
         # 100 Prompt- + 50 Completion-Tokens aus dem simulierten Aufruf oben.
         self.assertEqual(token_events[-1]["used"], 150)
 
-        status_index = next(i for i, e in enumerate(events) if e["type"] == "status")
+        # NUR der finale/terminale status-Event zählt als Referenzpunkt - vorher kann bereits
+        # ein status="running"-Event durchgekommen sein (job.status wird direkt bei Jobstart
+        # gebroadcastet, siehe DashboardServer._execute_job), das wäre kein gültiger Vergleich.
+        terminal_status_indices = [
+            i for i, e in enumerate(events)
+            if e["type"] == "status" and e.get("status") in ("done", "error", "cancelled")
+        ]
+        self.assertTrue(terminal_status_indices, f"kein finaler status-Event empfangen: {events}")
+        terminal_status_index = terminal_status_indices[-1]
         last_tokens_index = max(i for i, e in enumerate(events) if e["type"] == "tokens")
-        self.assertLess(last_tokens_index, status_index, "tokens-Event muss vor dem finalen status-Event ankommen")
+        self.assertLess(
+            last_tokens_index, terminal_status_index,
+            "tokens-Event muss vor dem finalen status-Event ankommen",
+        )
 
 
 if __name__ == "__main__":

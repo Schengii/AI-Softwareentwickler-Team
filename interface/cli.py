@@ -14,6 +14,7 @@ import os
 import signal
 import sys
 import threading
+import traceback
 from pathlib import Path
 
 from rich import box
@@ -302,9 +303,18 @@ class CLIInterface:
                         f"\n❌ Fehler bei der Verarbeitung: {e}",
                         style="bold red"
                     )
+                    # Realer Fund (Backlog-Bestandsaufnahme): mehrere "blocked"-Tickets trugen nur
+                    # str(e)[:200] als detail - z.B. bloß "sequence item 0: expected str instance,
+                    # NoneType found", OHNE Traceback. Ohne den ist nachträglich nicht mehr
+                    # rekonstruierbar, WELCHE Zeile den Fehler auslöste - der Fund war praktisch
+                    # unbehebbar, sobald die Sitzung vorbei war. Jetzt wird der volle Traceback
+                    # (gedeckelt, wie MAX_FAILURE_DETAIL_CHARS in core/project_status.py) mit
+                    # gespeichert, damit ein künftiger Wiederholungsfall tatsächlich diagnostizierbar
+                    # bleibt statt erneut nur die nackte Exception-Nachricht zu hinterlassen.
+                    tb = traceback.format_exc()[-1000:]
                     upsert_ticket(
                         ticket_id=ticket_id, title=user_input[:80], source="cli",
-                        status="blocked", detail=str(e)[:200],
+                        status="blocked", detail=f"{e}\n\n{tb}"[:1200],
                     )
                     return
             finally:

@@ -19,7 +19,27 @@ import re
 import subprocess
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+# Branch-Präfix, an dem isolierte Selbstverbesserungs-Worktrees erkannt werden (siehe
+# create_isolated_worktree). Zentral definiert, damit prune_stale_worktrees() garantiert
+# dasselbe Muster nutzt wie die Erstellung – keine zwei Stellen, die auseinanderlaufen können.
+WORKTREE_BRANCH_PREFIX = "ai-team/"
+
+# Standard-"Alter" (Tage seit letztem Commit auf dem Worktree-Branch), ab dem ein NICHT
+# gemergter Worktree als "stale" gilt und zur Entfernung vorgeschlagen wird. Gemergte
+# Worktrees gelten unabhängig vom Alter sofort als stale (der Branch ist bereits in main).
+DEFAULT_STALE_DAYS = 7
+
+
+@dataclass
+class WorktreePruneAction:
+    """Eine einzelne Aktion/Entscheidung von prune_stale_worktrees – zur Anzeige durch den Aufrufer."""
+    path: str
+    branch: str
+    action: str  # "removed" | "skipped"
+    reason: str
 
 
 class GitIsolationError(Exception):
@@ -146,3 +166,195 @@ def remove_worktree(worktree: IsolatedWorktree, force: bool = False) -> tuple[bo
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, str(e)
     return result.returncode == 0, (result.stderr or result.stdout).strip()
+
+
+def _list_worktrees_porcelain(base_dir: str) -> list[dict[str, str]]:
+    """
+    Parst `git worktree list --porcelain` in eine Liste von {"path", "branch", "head"}-Dicts.
+    Der porcelain-Output besteht aus durch Leerzeilen getrennten Blöcken je Worktree, z.B.:
+
+        worktree /pfad/zum/repo
+        HEAD abcdef...
+        branch refs/heads/main
+
+        worktree /pfad/zum/anderen
+        HEAD 123456...
+        branch refs/heads/ai-team/foo-bar-a1b2c3
+    """
+    try:
+        result = _run_git(["worktree", "list", "--porcelain"], cwd=base_dir, timeout=30.0)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+
+    entries: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            if current:
+                entries.append(current)
+                current = {}
+            continue
+        if line.startswith("worktree "):
+            current["path"] = line[len("worktree "):].strip()
+        elif line.startswith("HEAD "):
+            current["head"] = line[len("HEAD "):].strip()
+        elif line.startswith("branch "):
+            ref = line[len("branch "):].strip()
+            current["branch"] = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+    if current:
+        entries.append(current)
+    return entries
+
+
+def _is_branch_merged(base_dir: str, branch: str, target: str = "main") -> bool:
+    """Prüft, ob `branch` bereits vollständig in `target` gemerged ist (git branch --merged)."""
+    try:
+        result = _run_git(["branch", "--merged", target], cwd=base_dir, timeout=30.0)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    # Führende "* " (aktueller Branch) oder "+ " (in einem ANDEREN Worktree ausgecheckt -
+    # genau der Fall hier, da branch im Ziel-Worktree checked out ist) entfernen.
+    merged = {line.strip().lstrip("*+ ").strip() for line in result.stdout.splitlines()}
+    return branch in merged
+
+
+def _last_commit_age_days(base_dir: str, branch: str) -> float | None:
+    """Alter (in Tagen) des letzten Commits auf `branch`, oder None wenn nicht ermittelbar."""
+    try:
+        result = _run_git(
+            ["log", "-1", "--format=%ct", branch], cwd=base_dir, timeout=30.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        commit_ts = int(result.stdout.strip())
+    except ValueError:
+        return None
+    commit_time = datetime.fromtimestamp(commit_ts, tz=UTC)
+    age = datetime.now(tz=UTC) - commit_time
+    return age / timedelta(days=1)
+
+
+def prune_stale_worktrees(
+    base_dir: str,
+    target_branch: str = "main",
+    stale_days: float = DEFAULT_STALE_DAYS,
+) -> list[WorktreePruneAction]:
+    """
+    Räumt verwaiste, vom KI-Team angelegte Git-Worktrees (Branch-Präfix `ai-team/`, siehe
+    create_isolated_worktree) auf, die entweder bereits nach `target_branch` gemergt sind
+    ODER seit mindestens `stale_days` Tagen keinen neuen Commit mehr hatten.
+
+    Rührt NIEMALS den aktuell aktiven/eingecheckten Worktree an (den `git worktree list`
+    als erstes / mit `bare`-losem Haupteintrag führt – hier zusätzlich über den Vergleich
+    mit `base_dir` abgesichert) und NIEMALS einen Worktree mit unkommittierten/ungemergten
+    Änderungen, außer der Branch ist bereits vollständig gemergt (dann ist `--force` sicher,
+    weil kein Datenverlust droht – der Inhalt steckt vollständig in `target_branch`).
+
+    Gibt eine Liste von WorktreePruneAction zurück (nie nur ins Log geschrieben) – der
+    Aufrufer (z.B. die CLI) MUSS das Ergebnis dem Nutzer anzeigen.
+    """
+    actions: list[WorktreePruneAction] = []
+
+    if not is_git_repo(base_dir):
+        return actions
+
+    resolved_base = str(Path(base_dir).resolve())
+    entries = _list_worktrees_porcelain(base_dir)
+
+    for entry in entries:
+        path = entry.get("path", "")
+        branch = entry.get("branch", "")
+        if not path or not branch:
+            continue
+
+        resolved_path = str(Path(path).resolve())
+
+        # Der aktuell aktive Worktree (der, in dem dieser Befehl selbst läuft) wird NIE
+        # angefasst - unabhängig vom Branch-Namen.
+        if resolved_path == resolved_base:
+            continue
+
+        # Nur vom KI-Team angelegte Worktrees anfassen - alles andere (z.B. manuell vom
+        # Nutzer angelegte Worktrees) bleibt komplett unberührt.
+        if not branch.startswith(WORKTREE_BRANCH_PREFIX):
+            continue
+
+        merged = _is_branch_merged(base_dir, branch, target_branch)
+        # WICHTIG: dirty wird direkt IM Worktree-Verzeichnis geprüft, nicht über
+        # has_uncommitted_changes(base_dir, ...) - diese Funktion ist auf einen Unterpfad
+        # DESSELBEN Arbeitsverzeichnisses ausgelegt. Ein Worktree ist aber ein komplett
+        # eigenständiges Arbeitsverzeichnis außerhalb von base_dir; `git status` müsste dort
+        # laufen, sonst würde faktisch der Status von base_dir selbst geprüft.
+        dirty = has_uncommitted_changes(resolved_path, resolved_path)
+
+        if not merged:
+            age_days = _last_commit_age_days(base_dir, branch)
+            if age_days is None or age_days < stale_days:
+                actions.append(WorktreePruneAction(
+                    path=resolved_path, branch=branch, action="skipped",
+                    reason=(
+                        f"nicht gemergt nach '{target_branch}' und jünger als {stale_days} Tage - "
+                        "könnte ungesicherte Arbeit enthalten"
+                    ),
+                ))
+                continue
+            if dirty:
+                actions.append(WorktreePruneAction(
+                    path=resolved_path, branch=branch, action="skipped",
+                    reason="nicht gemergt UND unkommittierte Änderungen - niemals force-entfernt",
+                ))
+                continue
+            # Alt, nicht gemergt, aber sauber (keine unkommittierten Änderungen) - der
+            # Branch selbst bleibt bestehen (nur der Worktree wird entfernt), damit die
+            # Commits nicht verloren gehen; der Nutzer kann den Branch bei Bedarf selbst
+            # aufräumen.
+            ok, msg = remove_worktree(IsolatedWorktree(path=resolved_path, branch=branch, base_dir=base_dir))
+            if ok:
+                actions.append(WorktreePruneAction(
+                    path=resolved_path, branch=branch, action="removed",
+                    reason=f"seit {stale_days}+ Tagen inaktiv, sauber (Branch '{branch}' bleibt erhalten)",
+                ))
+            else:
+                actions.append(WorktreePruneAction(
+                    path=resolved_path, branch=branch, action="skipped",
+                    reason=f"Entfernen fehlgeschlagen: {msg}",
+                ))
+            continue
+
+        # Branch ist bereits vollständig in target_branch gemerged - der Worktree-Inhalt ist
+        # damit garantiert nicht verloren, auch bei unkommittierten Änderungen (die wären
+        # ohnehin nur lokale Artefakte, keine committeten, ungemergten Daten). --force nur
+        # hier, weil die Sicherheitsbedingung ("bereits gemergt") erfüllt ist.
+        ok, msg = remove_worktree(
+            IsolatedWorktree(path=resolved_path, branch=branch, base_dir=base_dir), force=dirty,
+        )
+        if not ok:
+            actions.append(WorktreePruneAction(
+                path=resolved_path, branch=branch, action="skipped",
+                reason=f"Entfernen fehlgeschlagen: {msg}",
+            ))
+            continue
+
+        actions.append(WorktreePruneAction(
+            path=resolved_path, branch=branch, action="removed",
+            reason=f"bereits nach '{target_branch}' gemergt",
+        ))
+
+        branch_result = _run_git(["branch", "-d", branch], cwd=base_dir, timeout=30.0)
+        if branch_result.returncode != 0:
+            actions.append(WorktreePruneAction(
+                path=resolved_path, branch=branch, action="skipped",
+                reason=(
+                    f"Worktree entfernt, aber Branch-Löschung fehlgeschlagen: "
+                    f"{(branch_result.stderr or branch_result.stdout).strip()}"
+                ),
+            ))
+
+    return actions

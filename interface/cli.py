@@ -82,6 +82,7 @@ HELP_TEXT = """
 | `/run-tests [projekt]` | Führt automatische Unit-Tests im Projekt aus |
 | `/delete-project <name>` | Löscht ein Projekt unwiderruflich aus dem Workspace (mit Bestätigung) |
 | `/audit-projekt [projekt]` | Lässt den Projekt-Hygiene-Agenten das Framework (oder ein Projekt) wirklich durchsehen; Löschungen nur nach Bestätigung |
+| `/prune-worktrees` | Räumt verwaiste, vom KI-Team angelegte Git-Isolations-Worktrees auf (gemergt oder seit 7+ Tagen inaktiv) |
 | `/learnings` | Zeigt alle von den Agenten gelernten Regeln (persistentes Gedächtnis) mit Nummer je Agent an |
 | `/optimize` | Zeigt datenbasierte Selbstoptimierungs-Vorschläge über alle bisherigen Läufe hinweg (Modellzuweisung, auffällig niedrige Erfolgsquoten) – rein informativ, keine automatische Änderung |
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
@@ -1132,6 +1133,42 @@ class CLIInterface:
         if failed:
             console.print(f"⚠️ {len(failed)} Pfad(e) übersprungen: {', '.join(failed)}", style="yellow")
 
+    def _prune_worktrees(self) -> None:
+        """
+        Räumt verwaiste, vom KI-Team angelegte Git-Isolations-Worktrees (siehe
+        core/git_isolation.py) auf: bereits gemergte oder seit 7+ Tagen inaktive Worktrees
+        werden entfernt (der aktuell aktive Worktree und alles mit ungemergten Änderungen
+        bleibt garantiert unangetastet).
+        """
+        from config import BASE_DIR
+        from core.git_isolation import find_git_root, prune_stale_worktrees
+
+        git_root = find_git_root(BASE_DIR)
+        if not git_root:
+            console.print("⚠️ Kein Git-Repository gefunden - nichts zum Aufräumen.", style="yellow")
+            return
+
+        console.print("🧹 [bold cyan]Prüfe auf verwaiste KI-Team-Worktrees...[/bold cyan]")
+        actions = prune_stale_worktrees(git_root)
+
+        if not actions:
+            console.print("✅ Keine verwaisten Worktrees gefunden.", style="green")
+            return
+
+        removed = [a for a in actions if a.action == "removed"]
+        skipped = [a for a in actions if a.action == "skipped"]
+
+        if removed:
+            lines = [f"  🗑️ {a.branch} ({a.path})\n     Grund: {a.reason}" for a in removed]
+            console.print(
+                Panel("\n".join(lines), title=f"Entfernt ({len(removed)})", border_style="green")
+            )
+        if skipped:
+            lines = [f"  ⏭️ {a.branch} ({a.path})\n     Grund: {a.reason}" for a in skipped]
+            console.print(
+                Panel("\n".join(lines), title=f"Übersprungen ({len(skipped)})", border_style="yellow")
+            )
+
     async def _handle_command(self, command: str) -> bool:
         """Verarbeitet CLI-Befehle."""
         parts = command.strip().split()
@@ -1165,6 +1202,9 @@ class CLIInterface:
 
         elif cmd in ("/audit-projekt", "/audit", "/hygiene"):
             await self._audit_project(args[0] if args else None)
+
+        elif cmd in ("/prune-worktrees", "/worktrees-aufraeumen", "/cleanup-worktrees"):
+            self._prune_worktrees()
 
         elif cmd in ("/learnings", "/gelernt", "/knowledge"):
             self._show_learnings()

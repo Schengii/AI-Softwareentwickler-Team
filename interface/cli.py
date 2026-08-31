@@ -94,6 +94,7 @@ HELP_TEXT = """
 | `/deploy-cloud <fly/vercel/render/railway> [projekt] [--real]` | Deployt in die Cloud (echte Preview-URL) – ohne `--real` nur Dry-Run/Manifeste |
 | `/push` | Führt manuell einen Git-Commit & Push aus |
 | `/protect-branch [branch]` | Aktiviert echte GitHub-Branch-Protection (Pflicht-Reviews, kein Force-Push) für den Hauptbranch – mit Vorschau & Bestätigung |
+| `/state [projekt]` | Zeigt den aktuellen State-Checkpoint (PROJECT_STATE.md) und nächste Schritte für ein Projekt an |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
 | `/hilfe` | Zeigt diese Hilfe an |
@@ -136,19 +137,43 @@ class CLIInterface:
 
         console.print(BANNER, style="bold cyan")
         console.print(
-            "💡 Schreibe einfach deine Projektidee in den Chat! (Tippe /hilfe für Befehle)\n",
+            "💡 Schreibe einfach deine Projektidee in den Chat! (Tippe /hilfe für Befehle)\n"
+            "   Für mehrzeilige Eingaben: Zeile mit \\ beenden, um sie fortzusetzen.\n",
             style="dim"
         )
 
         asyncio.run(self._main_loop())
 
+    def _read_user_input(self) -> str:
+        """
+        Liest EINE Nutzereingabe, ggf. über mehrere Zeilen hinweg – realer Fund: `console.
+        input()` (dünner Wrapper um Pythons `input()`) liest immer nur bis zum ersten
+        Zeilenumbruch. Eine mehrzeilige Aufgabenbeschreibung wurde dadurch nicht als EINE
+        Eingabe erkannt, sondern jede Zeile einzeln als eigener, meist unsinniger Prompt an
+        `_main_loop()` weitergereicht (im schlimmsten Fall ein mehrzeiliger Paste, der als
+        mehrere separate Läufe endete statt als einer). Endet eine Zeile auf ein einzelnes
+        `\\` (dieselbe Fortsetzungs-Konvention wie in der Shell/in Python selbst), wird die
+        NÄCHSTE Zeile angehängt statt die Eingabe abzuschließen – ein einzelnes Enter am Ende
+        einer normalen, einzeiligen Aufgabe bleibt dadurch unverändert genauso schnell wie
+        bisher, kein zusätzlicher Aufwand für den Alltagsfall.
+        """
+        lines: list[str] = []
+        prompt_label = "[bold green]Du[/bold green] → "
+        while True:
+            line = console.input(prompt_label)
+            if line.endswith("\\"):
+                lines.append(line[:-1])
+                prompt_label = "[bold green]…[/bold green] → "
+                continue
+            lines.append(line)
+            break
+        return "\n".join(lines).strip()
+
     async def _main_loop(self) -> None:
         """Hauptschleife: Eingabe → Verarbeitung → Ausgabe."""
         while True:
             try:
-                user_input = console.input(
-                    "[bold green]Du[/bold green] → "
-                ).strip()
+                user_input = self._read_user_input()
             except (KeyboardInterrupt, EOFError):
                 self._print_goodbye()
                 break
@@ -826,6 +851,39 @@ class CLIInterface:
             table.add_row(f"{r.number:04d}", r.status, r.title, str(r.path.relative_to(project_dir)))
         console.print(table)
 
+    def _show_project_state(self, project_name: str | None) -> None:
+        """
+        Zeigt den aktuellen State-Checkpoint (PROJECT_STATE.md) eines Projekts an –
+        kompakt, inklusive aller Kernkomponenten, letztem Verifikations-Status und nächsten Schritten.
+        """
+        from core.project_status import generate_project_state_md, read_project_state_md
+
+        project_dir = self._resolve_project_dir(project_name)
+        if project_dir is None:
+            if project_name:
+                console.print(f"⚠️ Projekt `{project_name}` existiert nicht in `workspace/`.", style="yellow")
+            else:
+                console.print(
+                    "⚠️ Kein Projekt angegeben und keines geladen. Nutze `/state <projekt>` "
+                    "oder lade zuerst eines mit `/load <projekt>`.",
+                    style="yellow",
+                )
+            return
+
+        state_md = read_project_state_md(str(project_dir))
+        if not state_md:
+            # Fallback: Live generieren
+            state_md = generate_project_state_md(str(project_dir))
+
+        console.print(
+            Panel(
+                Markdown(state_md),
+                title=f"📌 Projekt-Checkpoint: {project_dir.name}",
+                border_style="cyan",
+                padding=(1, 2),
+            )
+        )
+
     async def _delete_learning_with_confirmation(self, agent_id: str, index_str: str) -> None:
         """Entfernt eine einzelne gelernte Regel - IRREVERSIBEL, mit Bestätigung analog zu
         /delete-project und dem Git-Push-Gate. Kein Crash bei ungültiger Eingabe (z.B. Buchstaben
@@ -1158,6 +1216,9 @@ class CLIInterface:
         elif cmd in ("/protect-branch", "/branch-protection"):
             await self._protect_branch_with_confirmation(args[0] if args else None)
 
+        elif cmd in ("/state", "/checkpoint", "/status-projekt", "/status"):
+            self._show_project_state(args[0] if args else None)
+
         elif cmd in ("/load", "/laden", "/open", "/oeffnen", "/import"):
             if not args:
                 console.print("⚠️ Bitte gib den Pfad oder Namen des Projekts an:\n👉 `/load <pfad_oder_name>`", style="yellow")
@@ -1168,6 +1229,16 @@ class CLIInterface:
                 self._loaded_project_dir = str(self._workspace.get_project_dir(target_path))
                 self._orchestrator._history.add_user_message(f"Hier ist der bestehende Projektcode, den wir analysieren/erweitern:\n\n{ctx}")
                 console.print(f"✅ [bold green]Projekt erfolgreich geladen:[/bold green] `{target_path}` ({len(ctx)} Zeichen analysiert).")
+                
+                # Checkpoint-Vorschau anzeigen, falls vorhanden (spart Tokens und gibt sofort Überblick)
+                from core.project_status import read_project_state_md
+                state_preview = read_project_state_md(self._loaded_project_dir)
+                if state_preview:
+                    console.print("📌 [dim]Aktueller Projekt-Checkpoint gefunden (Details mit `/state`):[/dim]")
+                    # Zeige erste 5 Zeilen des Checkpoints als Vorschau
+                    preview_lines = [line for line in state_preview.splitlines() if line.strip()][:5]
+                    console.print(Panel("\n".join(preview_lines), title="📌 Checkpoint-Zusammenfassung", border_style="dim cyan"))
+                
                 console.print("💡 Du kannst deinem Team jetzt Aufgaben zu diesem Projekt stellen (z. B. *'Refaktoriere die App und füge Tests hinzu'*).", style="dim")
             else:
                 console.print(f"⚠️ Konnte keine relevanten Quellcodedateien unter `{target_path}` finden.", style="yellow")

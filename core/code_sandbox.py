@@ -117,9 +117,19 @@ class CodeSandbox:
         Verhaltensunterschieds bleibt.
         """
         import time
-        start_time = time.monotonic()
-        env = CodeSandbox._restricted_env() if restrict_env else None
+        # Bugfix (Ultrareview-Fund): vorher ein Nested-Ternary mit unerreichbarem "else None"-Zweig
+        # (im äußeren else ist restrict_env bereits False, also war "if not restrict_env" dort
+        # immer True) - das täuschte einen nie eintretenden env=None-Fallback vor. Vor diesem PR
+        # wurde bei restrict_env=False bewusst env=None übergeben (natürliche Vererbung der
+        # Elternumgebung); jetzt wird IMMER ein echtes dict gebaut, damit der PYTHONPATH-Prefix
+        # unten in beiden Modi greift.
+        env = CodeSandbox._restricted_env() if restrict_env else os.environ.copy()
+        if cwd:
+            cwd_str = str(Path(cwd).resolve())
+            existing_pp = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = f"{cwd_str}{os.pathsep}{existing_pp}" if existing_pp else cwd_str
         resolved_command = [shutil.which(command[0]) or command[0], *command[1:]] if command else command
+        start_time = time.monotonic()
 
         try:
             process = subprocess.run(

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="de" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>API Health & Uptime Monitor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: { extend: { colors: { brand: { 500: '#6366f1', 600: '#4f46e5' } } } }
+    }
+  </script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans">
+
+  <header class="border-b border-slate-800 bg-slate-900/70 backdrop-blur sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <h1 class="text-lg font-bold">API Health Monitor</h1>
+      <div id="wsStatus" class="text-xs font-medium text-slate-400">Verbinde...</div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full space-y-8">
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+      <div class="lg:col-span-2 space-y-4">
+        <h2 class="text-base font-semibold text-white">Aktive Endpunkte</h2>
+        <div id="checkList" class="space-y-3"></div>
+      </div>
+      <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-6">
+        <h2 class="text-base font-semibold text-white mb-4">Latenz-Historie</h2>
+        <canvas id="latencyChart" class="w-full h-64"></canvas>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    let latencyChart = null;
+
+    async function loadChecks() {
+      const res = await fetch('/checks');
+      const data = await res.json();
+      const list = document.getElementById('checkList');
+      list.innerHTML = data.map(c => `
+        <div class="bg-slate-900 p-4 rounded-xl border border-slate-800 cursor-pointer hover:border-indigo-500 transition" onclick="showHistory('${c.id}')">
+          <p class="font-medium">${c.url}</p>
+          <p class="text-xs text-slate-400">ID: ${c.id}</p>
+        </div>
+      `).join('');
+    }
+
+    async function showHistory(checkId) {
+      const res = await fetch(`/checks/${checkId}/history`);
+      const data = await res.json();
+      
+      const ctx = document.getElementById('latencyChart').getContext('2d');
+      if (latencyChart) latencyChart.destroy();
+      
+      latencyChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: data.map(d => new Date(d.timestamp).toLocaleTimeString()),
+          datasets: [{
+            label: 'Latenz (ms)',
+            data: data.map(d => d.latency),
+            borderColor: '#6366f1',
+            tension: 0.3
+          }]
+        },
+        options: { responsive: true, scales: { y: { beginAtZero: true } } }
+      });
+    }
+
+    loadChecks();
+  </script>
+</body>
+</html>

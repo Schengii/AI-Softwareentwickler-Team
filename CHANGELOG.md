@@ -7,6 +7,55 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔍 Workspace-Audit: unvollständige Projekte & Nahezu-Duplikate erkennen
+
+Realer Fund bei einer manuellen Bestandsaufnahme aller `workspace/`-Projekte: mehrere Läufe
+wurden vom Orchestrator als abgeschlossen protokolliert, obwohl das Ergebnis erkennbar
+unvollständig war. `workspace/api_health_monitor` importierte in `main.py` ein Objekt, das in
+`checker.py` nur durch einen Platzhalterkommentar ("... beibehalten") ersetzt worden war –
+der allererste Testlauf brach schon beim Import ab (jetzt gefixt). `workspace/api-health-monitor`
+(Nahezu-Duplikat desselben Namens, nur mit Bindestrich statt Unterstrich) hatte gar keinen
+Einstiegspunkt, `workspace/realtime_polling_platform` bestand nur aus zwei Modulen ohne
+Tests/Manifest – beide liefen bisher unter dem harmlosen "keine Tests gefunden" durch.
+
+- `core/verifier.py`: neue `ProjectVerifier._find_incomplete_project_reason()` erkennt zwei
+  konkret beobachtete Muster als echten Fehlschlag statt als Skip: ein mehrteiliges
+  Backend-Projekt mit `requirements.txt`/`pyproject.toml`, aber ohne jeden Einstiegspunkt
+  (`main.py`/`app.py`/`manage.py`/…), sowie ein `tests/`-Ordner mit `conftest.py`, aber ohne
+  eine einzige echte Testdatei. Ein einzelnes Skript ohne Manifest (der bereits bestehende
+  legitime Fall) bleibt unverändert ein harmloser Skip.
+- `agents/orchestrator.py`: zeigt diesen neuen Fall im Verifikations-Protokoll als ❌ statt als
+  ⚠️ an. Zusätzlich neue `_find_near_duplicate_slug()`-Prüfung: warnt gezielt, wenn ein neuer
+  `project_slug` sich von einem bereits vorhandenen Workspace-Projekt nur durch Schreibweise
+  (`_`/`-`/Groß-Kleinschreibung) unterscheidet, statt nur generisch "bereits vorhanden: ..."
+  aufzulisten.
+- `agents/frontend_agent.py`, `mobile_agent.py`, `database_agent.py`: dieselbe Regel gegen
+  "... (X beibehalten)"-Platzhalterkommentare in frisch generiertem Code wie beim
+  `backend`-Agenten ergänzt – ein generisches LLM-Fehlerbild, nicht backend-spezifisch.
+- `core/workspace_audit.py` (neu) + `python main.py --audit-workspace`: periodischer
+  Poll-Zyklus (analog `core/dependency_watch.py`), der `ProjectVerifier.run_tests()` erneut
+  gegen JEDES Workspace-Projekt ausführt – unabhängig von aktiver Entwicklung – und bei einem
+  echten Fehlschlag ein Backlog-Ticket öffnet. Schließt die Lücke, dass ein Projekt, das seit
+  seinem letzten Lauf nie wieder angefasst wurde, sonst nie von selbst erneut geprüft würde.
+- 15 neue Tests (`core/verifier.py`, `agents/orchestrator.py`, `core/workspace_audit.py`);
+  volle Suite (855 Tests) grün, ruff sauber.
+
+---
+
+## ⌨️ Mehrzeilige Eingabe im interaktiven CLI-Prompt
+
+Realer Fund (Nutzeranfrage): `interface/cli.py._main_loop()` las die Nutzereingabe über
+`console.input()` (dünner Wrapper um Pythons `input()`) - das liest immer nur bis zum ersten
+Zeilenumbruch. Eine mehrzeilige Aufgabenbeschreibung, oder ein ins Terminal eingefügter
+mehrzeiliger Text, wurde dadurch NICHT als eine Eingabe erkannt, sondern jede Zeile einzeln
+als eigener, meist unsinniger Prompt verarbeitet. Neue Methode
+`CLIInterface._read_user_input()`: endet eine Zeile auf ein einzelnes `\` (dieselbe
+Fortsetzungs-Konvention wie in der Shell/in Python selbst), wird die nächste Zeile
+angehängt statt die Eingabe abzuschließen. Eine normale, einzeilige Aufgabe bleibt dadurch
+unverändert genauso schnell wie bisher (ein `console.input()`-Aufruf, kein Overhead).
+
+---
+
 ## 🧪 CI-Testrunner von `unittest discover` auf `pytest` umgestellt
 
 Realer Fund bei der Prüfung der `core/llm_factory.py`-Fallback-Ketten: der CI-„Tests"-Job

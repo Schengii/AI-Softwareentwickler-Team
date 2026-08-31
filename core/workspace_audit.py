@@ -68,6 +68,14 @@ async def run_workspace_audit_cycle(status_callback: StatusCallback | None = Non
             status_callback(f"🔍 Prüfe Verifikation erneut: {project_name}...")
 
         verifier = ProjectVerifier(workspace.get_project_dir(project_name))
+        # Bugfix (Ultrareview-Fund): run_tests() installiert KEINE Abhängigkeiten selbst - ohne
+        # vorheriges ensure_environment() (wie agents/orchestrator.py es vor jedem Verifikations-
+        # Lauf tut) fällt _resolve_python() auf die System-Python zurück, sobald .ai_team_venv
+        # fehlt (frischer Checkout, manuell aufgeräumtes venv, neue requirements.txt) - jeder
+        # Python-Test schlägt dann mit ModuleNotFoundError fehl und der Audit eröffnet ein
+        # falsch-positives "Verifikation fehlgeschlagen"-Ticket für ein eigentlich gesundes
+        # Projekt.
+        await asyncio.to_thread(verifier.ensure_environment)
         result = await asyncio.to_thread(verifier.run_tests)
         report.scanned_projects += 1
 

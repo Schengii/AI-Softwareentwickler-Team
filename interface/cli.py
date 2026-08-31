@@ -91,6 +91,7 @@ HELP_TEXT = """
 | `/adr [projekt]` | Zeigt die dokumentierten Architecture Decision Records (Begründungen echter Architektur-Entscheidungen) eines Projekts |
 | `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
 | `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |
+| `/deploy-cloud <fly/vercel/render/railway> [projekt] [--real]` | Deployt in die Cloud (echte Preview-URL) – ohne `--real` nur Dry-Run/Manifeste |
 | `/push` | Führt manuell einen Git-Commit & Push aus |
 | `/protect-branch [branch]` | Aktiviert echte GitHub-Branch-Protection (Pflicht-Reviews, kein Force-Push) für den Hauptbranch – mit Vorschau & Bestätigung |
 | `/state [projekt]` | Zeigt den aktuellen State-Checkpoint (PROJECT_STATE.md) und nächste Schritte für ein Projekt an |
@@ -1234,7 +1235,7 @@ class CLIInterface:
                 state_preview = read_project_state_md(self._loaded_project_dir)
                 if state_preview:
                     console.print("📌 [dim]Aktueller Projekt-Checkpoint gefunden (Details mit `/state`):[/dim]")
-                    # Zeige erste 6 Zeilen des Checkpoints als Vorschau
+                    # Zeige erste 5 Zeilen des Checkpoints als Vorschau
                     preview_lines = [line for line in state_preview.splitlines() if line.strip()][:5]
                     console.print(Panel("\n".join(preview_lines), title="📌 Checkpoint-Zusammenfassung", border_style="dim cyan"))
                 

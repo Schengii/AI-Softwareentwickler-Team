@@ -98,7 +98,13 @@ from core.notifier import notify_external
 from core.optimization_advisor import analyze as analyze_optimization_potential
 from core.optimization_advisor import format_report_for_humans as format_optimization_report
 from core.project_constitution import format_constitution_for_agents, get_max_project_tokens
-from core.project_status import format_context_for_agents, has_repeated_failure, read_status, save_project_checkpoint
+from core.project_status import (
+    MAX_FAILURE_DETAIL_CHARS,
+    format_context_for_agents,
+    has_repeated_failure,
+    read_status,
+    save_project_checkpoint,
+)
 from core.result_aggregator import ResultAggregator
 from core.review_gate import find_critical_findings, route_findings_to_owners
 from core.task_manager import TaskManager, is_micro_task
@@ -606,7 +612,17 @@ class Orchestrator:
         if not verification_ok and has_repeated_failure(project_dir):
             previous_history = read_status(project_dir)
             previous_failure_detail = next((e.get("failure_detail") for e in previous_history if e.get("failure_detail")), "")
-            similarity = SequenceMatcher(None, previous_failure_detail, verification_summary).ratio() if previous_failure_detail else 0.0
+            # Bugfix (Ultrareview-Fund): previous_failure_detail ist beim Speichern bereits auf
+            # MAX_FAILURE_DETAIL_CHARS gekürzt (core/project_status.py.record_run) - wurde hier
+            # aber gegen die UNGEKÜRZTE aktuelle verification_summary verglichen. SequenceMatcher.
+            # ratio() ist durch 2·min(len(a),len(b))/(len(a)+len(b)) gedeckelt - bei langen,
+            # mehrzeiligen Fehlerberichten (mehrere Testfehler + Installationslog) fiel die Quote
+            # dadurch systematisch unter die 0.55-Schwelle, selbst bei identischem Fehler. Beide
+            # Seiten jetzt symmetrisch auf dieselbe Länge gekürzt.
+            similarity = (
+                SequenceMatcher(None, previous_failure_detail, verification_summary.strip()[:MAX_FAILURE_DETAIL_CHARS]).ratio()
+                if previous_failure_detail else 0.0
+            )
             if similarity >= 0.55:
                 notify(
                     "🛑 [bold red]Wiederkehrender Fehler erkannt:[/bold red] Dieser Lauf ist erneut mit einem "

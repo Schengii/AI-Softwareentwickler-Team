@@ -18,7 +18,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 STATUS_FILENAME = ".ai_team_status.json"
-CHECKPOINT_FILENAME = ".ai_team_checkpoint.json"
 STATE_MD_FILENAME = "PROJECT_STATE.md"
 MAX_HISTORY_ENTRIES = 10
 
@@ -36,10 +35,6 @@ MAX_FAILURE_DETAIL_CHARS = 500
 
 def _status_path(project_dir: str) -> Path:
     return Path(project_dir) / STATUS_FILENAME
-
-
-def _checkpoint_path(project_dir: str) -> Path:
-    return Path(project_dir) / CHECKPOINT_FILENAME
 
 
 def _state_md_path(project_dir: str) -> Path:
@@ -99,7 +94,7 @@ def generate_project_state_md(
         for f in p_path.rglob("*"):
             if f.is_file() and not any(part.startswith((".", "__pycache__", "node_modules", "venv")) for part in f.parts):
                 rel = f.relative_to(p_path).as_posix()
-                if rel != STATE_MD_FILENAME and rel != STATUS_FILENAME and rel != CHECKPOINT_FILENAME:
+                if rel != STATE_MD_FILENAME and rel != STATUS_FILENAME:
                     existing_files.append(rel)
     except OSError:
         pass
@@ -304,8 +299,18 @@ def has_repeated_failure(project_dir: str, streak: int = 2) -> bool:
     dasselbe Kriterium, das format_context_for_agents() für die Eskalations-Warnung nutzt,
     hier auch für agents/orchestrator.py nutzbar, um vor einem weiteren vollen Lauf ein
     härteres Gate zu ziehen (siehe _run_governance_fix_loop dort), statt sich allein auf den
-    Prompt-Text zu verlassen."""
+    Prompt-Text zu verlassen.
+
+    Bugfix (Ultrareview-Fund): ein manuell abgebrochener (Strg+C) oder per Budget gestoppter
+    Lauf setzt ebenfalls verification_ok=False, ist aber KEIN echter, gescheiterter
+    Lösungsversuch - der Mensch hat den Lauf bewusst beendet, nicht das Team versagt. Ohne
+    diesen Ausschluss hätten z.B. zwei aufeinanderfolgende Strg+C-Abbrüche fälschlich als
+    "wiederholtes Scheitern" gegolten und ein Backlog-Ticket für einen erfundenen Fehler
+    eröffnet (siehe die entsprechende Prüfung in agents/orchestrator.py)."""
     recent = read_status(project_dir)[:streak]
-    return len(recent) == streak and all(not e.get("verification_ok") for e in recent)
+    return len(recent) == streak and all(
+        not e.get("verification_ok") and not e.get("budget_aborted") and not e.get("cancelled")
+        for e in recent
+    )
 
 

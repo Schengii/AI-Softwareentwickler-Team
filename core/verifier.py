@@ -512,6 +512,53 @@ class ProjectVerifier:
             if not any(part in _IGNORED_DIRS for part in f.parts)
         ]
 
+    # Erkennbare Einstiegspunkte für ein deployable Python-Backend/-Skript. Eine einzelne
+    # `app.py` OHNE jedes dieser Signale ist trotzdem ein legitimes Mini-Skript (siehe
+    # test_skips_when_no_test_files_present) - die Heuristik unten greift deshalb bewusst nur,
+    # wenn ZUSÄTZLICH ein starkes "das hier sollte eine echte Anwendung sein"-Signal vorliegt.
+    _PYTHON_ENTRYPOINT_NAMES = {"main.py", "app.py", "manage.py", "run.py", "wsgi.py", "asgi.py", "__main__.py"}
+
+    def _find_incomplete_project_reason(self) -> str:
+        """
+        Realer Fund (Workspace-Audit): `verification_ok` galt bisher schon als "bestanden",
+        sobald schlicht keine Testdateien gefunden wurden - das ist für ein triviales Skript
+        richtig, hat aber zwei echte, mehrteilige Backend-Läufe unbemerkt durchgewunken, die
+        mitten in der Generierung abgebrochen wirken: ein Projekt mit `requirements.txt` und
+        mehreren Python-Modulen, aber OHNE jeden Einstiegspunkt (kein main.py/app.py/...), und
+        ein Projekt mit einem tests/-Ordner, der nur eine conftest.py aber keine einzige echte
+        Testdatei enthält. Beides sind starke Signale für einen unvollständig abgebrochenen Lauf,
+        keine legitime "hier gibt es nichts zu testen"-Situation - anders als das schon bestehende
+        Beispiel eines einzelnen Skripts ohne requirements.txt.
+        """
+        python_files = [
+            f for f in self.project_dir.rglob("*.py")
+            if not any(part in _IGNORED_DIRS for part in f.parts)
+        ]
+        if not python_files:
+            return ""
+
+        has_manifest = any(
+            (self.project_dir / name).exists() for name in ("requirements.txt", "pyproject.toml")
+        )
+        has_entrypoint = any(f.name in self._PYTHON_ENTRYPOINT_NAMES for f in python_files)
+
+        if has_manifest and len(python_files) >= 2 and not has_entrypoint:
+            return (
+                f"{len(python_files)} Python-Quelldateien und eine Abhängigkeitsliste "
+                "(requirements.txt/pyproject.toml) gefunden, aber kein erkennbarer Einstiegspunkt "
+                f"({'/'.join(sorted(self._PYTHON_ENTRYPOINT_NAMES))}) - sieht nach einem mitten in "
+                "der Generierung abgebrochenen Backend-Projekt aus, nicht nach einem fertigen Skript."
+            )
+
+        conftest_files = [f for f in python_files if f.name == "conftest.py"]
+        if conftest_files and not self._find_python_test_files():
+            return (
+                "Ein tests/-Verzeichnis mit conftest.py existiert, aber keine einzige echte "
+                "Testdatei (test_*.py/*_test.py) - sieht nach einer abgebrochenen Testsuite aus, "
+                "nicht nach einem Projekt, das bewusst auf Tests verzichtet."
+            )
+        return ""
+
     def run_tests(self, timeout_seconds: float = 60.0) -> VerificationReport:
         """
         Führt die echte Testsuite JEDES im Projekt gefundenen Stacks aus. Kein Keyword-
@@ -539,6 +586,13 @@ class ProjectVerifier:
             elif has_go and not go_available:
                 reason = "go.mod gefunden, aber `go` ist auf diesem System nicht installiert/verfügbar – Verifikation übersprungen."
             else:
+                incomplete_reason = self._find_incomplete_project_reason()
+                if incomplete_reason:
+                    return VerificationReport(
+                        ran=False, passed=False, exit_code=1, stdout="", stderr="",
+                        duration_seconds=time.monotonic() - start,
+                        reason_skipped=f"Unvollständiges Projekt erkannt: {incomplete_reason}",
+                    )
                 reason = 'Keine Testdateien (test_*.py), kein npm-Test-Skript und kein Rust/Go-Projekt gefunden – Verifikation übersprungen.'
             return VerificationReport(
                 ran=False, passed=True, exit_code=0, stdout="", stderr="",

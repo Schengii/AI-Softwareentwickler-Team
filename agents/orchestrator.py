@@ -372,8 +372,25 @@ class Orchestrator:
                         f"(z.B. weil eine längere Eingabe in mehrere Nachrichten zerrissen ankam), "
                         f"lieber abbrechen und stattdessen `/load {self.last_project_slug}` nutzen.[/dim]\n"
                     )
+                # Realer Fund (Workspace-Audit): "calculator_service" und "modular_calculator_gui"
+                # blieben nicht die einzigen Fälle - auch "api_health_monitor" vs. "api-health-monitor"
+                # entstand als zwei komplette, separat bezahlte Läufe für dieselbe Aufgabe, obwohl
+                # sich der Slug nur durch "_" statt "-" unterschied. Die generische "Bereits
+                # vorhanden: ..."-Liste allein hebt so einen fast identischen Namen nicht gezielt
+                # hervor - ein eigener, direkter Hinweis bei einem naheliegenden Nahezu-Duplikat
+                # (Unterstrich/Bindestrich/Groß-Kleinschreibung ignoriert) macht das jetzt sichtbar.
+                near_duplicate = self._find_near_duplicate_slug(project_slug, existing_projects)
+                near_duplicate_hint = ""
+                if near_duplicate:
+                    near_duplicate_hint = (
+                        f"❗ [yellow]Achtung: `{near_duplicate}` existiert bereits im Workspace und "
+                        f"unterscheidet sich vom neuen Slug `{project_slug}` nur durch Schreibweise "
+                        f"(Unterstrich/Bindestrich/Groß-Kleinschreibung) – vermutlich dieselbe Aufgabe. "
+                        f"Falls ja, lieber abbrechen und `/load {near_duplicate}` nutzen.[/yellow]\n"
+                    )
                 notify(
                     f"{same_session_hint}"
+                    f"{near_duplicate_hint}"
                     f"🗂️ [dim]Neues Projekt '{project_slug}' wird angelegt. Bereits vorhanden: "
                     f"{shown}{more} – falls du an einem davon weiterarbeiten wolltest, nutze "
                     f"stattdessen `/load <name>`.[/dim]"
@@ -779,6 +796,24 @@ class Orchestrator:
                 "Code nicht bestätigt (siehe Verifikations-Protokoll oben) – prüfe das Ergebnis, bevor du es übernimmst."
             )
         return final_output
+
+    @staticmethod
+    def _normalize_slug(slug: str) -> str:
+        """Ignoriert Schreibvarianten, die für einen Menschen praktisch identisch aussehen:
+        Groß-/Kleinschreibung sowie "_" vs. "-" (real beobachtete Ursache doppelter Läufe)."""
+        return slug.lower().replace("-", "_")
+
+    @classmethod
+    def _find_near_duplicate_slug(cls, project_slug: str, existing_projects: list[str]) -> str | None:
+        """Findet ein bereits vorhandenes Projekt, dessen normalisierter Name mit dem neuen
+        project_slug übereinstimmt, obwohl die Roh-Slugs sich unterscheiden (z.B.
+        "api_health_monitor" vs. "api-health-monitor"). Gibt None zurück, wenn keines passt oder
+        der Slug ohnehin exakt existiert (dann greift bereits die reguläre Fortsetzungs-Logik)."""
+        normalized_new = cls._normalize_slug(project_slug)
+        for existing in existing_projects:
+            if existing != project_slug and cls._normalize_slug(existing) == normalized_new:
+                return existing
+        return None
 
     async def _resolve_project_isolation(
         self, candidate_dir: str, task_summary: str, notify: Callable[[str], None],
@@ -1491,6 +1526,15 @@ class Orchestrator:
             report = await asyncio.to_thread(verifier.run_tests)
 
             if not report.ran:
+                if not report.passed:
+                    # Realer Fund (Workspace-Audit): ein mehrteiliges Backend-Projekt ohne jeden
+                    # Einstiegspunkt bzw. eine Testsuite mit conftest.py, aber ohne echte Testdatei,
+                    # sah bisher genauso aus wie "keine Tests gefunden" und lief als vermeintlich
+                    # bestandene Verifikation durch – core/verifier.py.ProjectVerifier erkennt das
+                    # jetzt als eigenständigen Fehlschlag statt als bloßes "nicht geprüft".
+                    notify(f"  ❌ [bold red]{report.reason_skipped}[/bold red]")
+                    summary_lines.append(f"- ❌ {report.reason_skipped}")
+                    break
                 # Bewusst ⚠️ statt ℹ️: "keine Tests gefunden" bedeutet, dass generierter Code
                 # UNGEPRÜFT ausgeliefert wird – real beobachtet an einem Taschenrechner-Projekt
                 # ohne jeden Test, dessen "+"-Button sofort mit TypeError abstürzte (Add.execute()

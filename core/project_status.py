@@ -159,6 +159,7 @@ def save_project_checkpoint(
     files_written: list[str] | None = None,
     next_steps: list[str] | None = None,
     verification_summary: str = "",
+    clarification_questions: list[str] | None = None,
 ) -> None:
     """Speichert sowohl .ai_team_status.json als auch die lesbare PROJECT_STATE.md im Projektordner."""
     # 1. Update .ai_team_status.json
@@ -170,6 +171,7 @@ def save_project_checkpoint(
         files_written_count=files_written_count,
         cancelled=cancelled,
         verification_summary=verification_summary,
+        clarification_questions=clarification_questions,
     )
 
     # 2. Update PROJECT_STATE.md
@@ -197,6 +199,7 @@ def record_run(
     files_written_count: int,
     cancelled: bool = False,
     verification_summary: str = "",
+    clarification_questions: list[str] | None = None,
 ) -> None:
     """Fügt diesen Lauf vorne in die Historie ein (neueste zuerst), gedeckelt auf
     MAX_HISTORY_ENTRIES."""
@@ -209,10 +212,21 @@ def record_run(
         "cancelled": cancelled,
         "files_written_count": files_written_count,
     }
-    # Nur bei tatsächlich fehlgeschlagener Verifikation gespeichert - bei Erfolg gibt es keinen
-    # Fehler zu berichten, und "" hält den JSON-Eintrag im Erfolgsfall kompakt.
-    if not verification_ok and verification_summary.strip():
-        entry["failure_detail"] = verification_summary.strip()[:MAX_FAILURE_DETAIL_CHARS]
+    if verification_summary.strip():
+        # Bei Fehlschlag als failure_detail (siehe format_context_for_agents-Eskalation unten),
+        # bei Erfolg als success_detail - Punkt 5 einer Team-Retrospektive: bisher wurde ein
+        # verification_summary NUR bei Fehlschlag gespeichert. Für spätere Regressionsanalyse
+        # ("lief der letzte grüne Lauf wirklich durch Lint/SAST/Coverage/Smoke, oder nur durch
+        # nackte Tests?") fehlte dieselbe Information beim Erfolgsfall komplett.
+        key = "failure_detail" if not verification_ok else "success_detail"
+        entry[key] = verification_summary.strip()[:MAX_FAILURE_DETAIL_CHARS]
+    # Realer Fund: ask_human_for_clarification-Rückfragen (core/agent_toolbox.py) wurden bisher
+    # NUR im Chat-Verlauf der jeweiligen Sitzung sichtbar, nie in der projektübergreifenden
+    # Historie - ein späterer Lauf (ggf. andere Sitzung) wusste nichts von einer offenen Frage
+    # und wiederholte denselben Rateversuch, statt sie erneut zu stellen oder gezielt
+    # aufzugreifen. Wie failure_detail gedeckelt (max. 3 Fragen, je auf MAX_FAILURE_DETAIL_CHARS).
+    if clarification_questions:
+        entry["open_questions"] = [q.strip()[:MAX_FAILURE_DETAIL_CHARS] for q in clarification_questions if q.strip()][:3]
     history.insert(0, entry)
     history = history[:MAX_HISTORY_ENTRIES]
     try:
@@ -256,8 +270,7 @@ def format_context_for_agents(project_dir: str, max_entries: int = 3) -> str:
         # nicht verifiziert, wird die konkrete Fehlermeldung des jüngsten fehlgeschlagenen
         # Laufs explizit vorangestellt statt nur der Status-Icon-Liste - macht "wiederhole
         # nicht denselben Fehler" konkret statt generisch.
-        recent_two = history[:2]
-        if len(recent_two) == 2 and all(not e.get("verification_ok") for e in recent_two):
+        if has_repeated_failure(project_dir):
             last_detail = next((e.get("failure_detail") for e in history if e.get("failure_detail")), "")
             escalation = (
                 "⚠️ **Wiederholtes Scheitern:** Die letzten 2 Läufe an diesem Projekt waren BEIDE nicht "
@@ -269,6 +282,30 @@ def format_context_for_agents(project_dir: str, max_entries: int = 3) -> str:
                 escalation += f"\n\nLetzter konkreter Fehler:\n```\n{last_detail}\n```"
             sections.append(escalation)
 
+        # Anders als die "wiederholtes Scheitern"-Eskalation oben (erst nach 2 Fehlschlägen in
+        # Folge) wird eine offene Rückfrage schon nach dem EINEN Lauf angezeigt, der sie
+        # aufgeworfen hat - eine ungeklärte, für die Aufgabe entscheidende Unklarheit blockiert
+        # sofort sinnvolle Weiterarbeit, nicht erst nach einer Wiederholung.
+        last_open_questions = history[0].get("open_questions") if history else None
+        if last_open_questions:
+            questions_text = "\n".join(f"- {q}" for q in last_open_questions)
+            sections.append(
+                "❓ **Offene Rückfrage(n) aus dem letzten Lauf:** Ein vorheriger Agent hat diese Fragen "
+                f"als entscheidend markiert, aber noch keine Antwort erhalten:\n{questions_text}\n\n"
+                "Kläre sie (per erneutem `ask_human_for_clarification` oder, falls inzwischen eindeutig "
+                "beantwortbar, direkt in deiner Umsetzung), statt sie stillschweigend zu ignorieren."
+            )
+
     return "\n\n".join(sections)
+
+
+def has_repeated_failure(project_dir: str, streak: int = 2) -> bool:
+    """True, wenn die letzten `streak` Läufe an diesem Projekt ALLE nicht verifiziert waren -
+    dasselbe Kriterium, das format_context_for_agents() für die Eskalations-Warnung nutzt,
+    hier auch für agents/orchestrator.py nutzbar, um vor einem weiteren vollen Lauf ein
+    härteres Gate zu ziehen (siehe _run_governance_fix_loop dort), statt sich allein auf den
+    Prompt-Text zu verlassen."""
+    recent = read_status(project_dir)[:streak]
+    return len(recent) == streak and all(not e.get("verification_ok") for e in recent)
 
 

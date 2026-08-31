@@ -29,6 +29,7 @@ import json
 import re
 import time
 from collections.abc import Awaitable, Callable
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from agents.accessibility_agent import AccessibilityAgent
@@ -84,6 +85,7 @@ from config import (
     PLAN_CONFIRMATION_MIN_TASKS,
 )
 from core.adr import format_adr_summary_for_context
+from core.backlog_store import upsert_ticket
 from core.design_system import format_design_system_for_agents
 from core.git_isolation import (
     GitIsolationError,
@@ -96,7 +98,7 @@ from core.notifier import notify_external
 from core.optimization_advisor import analyze as analyze_optimization_potential
 from core.optimization_advisor import format_report_for_humans as format_optimization_report
 from core.project_constitution import format_constitution_for_agents, get_max_project_tokens
-from core.project_status import format_context_for_agents, save_project_checkpoint
+from core.project_status import format_context_for_agents, has_repeated_failure, read_status, save_project_checkpoint
 from core.result_aggregator import ResultAggregator
 from core.review_gate import find_critical_findings, route_findings_to_owners
 from core.task_manager import TaskManager, is_micro_task
@@ -591,6 +593,36 @@ class Orchestrator:
         self.last_verification_ok = verification_ok
         self.last_verification_summary = verification_summary
 
+        # Härteres Gate gegen wiederholtes, blindes Scheitern (Punkt 4 einer Team-Retrospektive):
+        # die reine Prompt-Warnung in format_context_for_agents() (project_history_context oben)
+        # verlässt sich darauf, dass ein Agent sie liest UND befolgt - kein hartes Garant. Hier
+        # wird deterministisch (kein LLM-Aufruf) geprüft, ob DIESER Lauf erneut nicht verifiziert
+        # ist UND der vorherige Fehlertext dem NEUEN stark ähnelt (SequenceMatcher) - d.h. der
+        # Agent hat tatsächlich denselben Fehler wiederholt, nicht nur zufällig wieder gescheitert.
+        # In diesem Fall wird ein Backlog-Ticket für menschliche Prüfung eröffnet (dieselbe
+        # upsert_ticket-Mechanik wie core/workspace_audit.py) statt sich weiter auf einen
+        # automatischen Retry zu verlassen - ein sichtbares, system-erzeugtes Signal statt nur
+        # eines Prompt-Hinweises, den der nächste Lauf erneut ignorieren könnte.
+        if not verification_ok and has_repeated_failure(project_dir):
+            previous_history = read_status(project_dir)
+            previous_failure_detail = next((e.get("failure_detail") for e in previous_history if e.get("failure_detail")), "")
+            similarity = SequenceMatcher(None, previous_failure_detail, verification_summary).ratio() if previous_failure_detail else 0.0
+            if similarity >= 0.55:
+                notify(
+                    "🛑 [bold red]Wiederkehrender Fehler erkannt:[/bold red] Dieser Lauf ist erneut mit einem "
+                    "sehr ähnlichen Fehler wie die vorherigen Läufe gescheitert. Ein Backlog-Ticket für "
+                    "menschliche Prüfung wurde eröffnet, statt automatisch weiterzuversuchen."
+                )
+                try:
+                    upsert_ticket(
+                        ticket_id=f"recurring-failure-{self.last_project_slug}",
+                        title=f"Wiederkehrender Verifikations-Fehler: {self.last_project_slug}",
+                        source="orchestrator", status="blocked", project_slug=self.last_project_slug,
+                        detail=verification_summary.strip()[:300],
+                    )
+                except Exception as e:
+                    notify(f"⚠️ [dim yellow]Ticket für wiederkehrenden Fehler konnte nicht angelegt werden: {e}[/dim yellow]")
+
         # Projekt-Hygiene: automatisch regenerierbare Caches (__pycache__, .pytest_cache, …),
         # die die echte Testausführung gerade erzeugt hat, physisch entfernen. Bewusst OHNE
         # Bestätigungs-Gate, da ausschließlich sicher regenerierbare Verzeichnisse betroffen
@@ -732,6 +764,7 @@ class Orchestrator:
                 files_written_count=len(all_written_files),
                 files_written=all_written_files,
                 verification_summary=verification_summary,
+                clarification_questions=self.last_clarification_questions,
             )
         except Exception as e:
             notify(f"⚠️ [dim yellow]Projekt-Historie / State-Checkpoint (save_project_checkpoint) konnte nicht aktualisiert werden: {e}[/dim yellow]")

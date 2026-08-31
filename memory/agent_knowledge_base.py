@@ -15,11 +15,21 @@ from config import BASE_DIR
 KNOWLEDGE_FILE = Path(BASE_DIR) / "memory" / "agent_learnings.json"
 
 # Jede gespeicherte Regel wird bei JEDEM künftigen Aufruf des betroffenen Agenten in dessen
-# System-Prompt eingefügt (siehe get_augmented_prompt) - für immer, bis sie nach 5 neueren
-# Regeln verdrängt wird. Eine einzelne, unbegrenzt lange "Regel" (der Trainer-Agent liefert
-# Freitext, kein garantiert kurzes Format) würde diesen Tokenverbrauch bei jedem künftigen
-# Lauf unbemerkt wiederholen - deshalb hart gedeckelt statt nur auf die Anzahl der Regeln.
+# System-Prompt eingefügt (siehe get_augmented_prompt) - für immer, bis sie verdrängt wird.
+# Eine einzelne, unbegrenzt lange "Regel" (der Trainer-Agent liefert Freitext, kein garantiert
+# kurzes Format) würde diesen Tokenverbrauch bei jedem künftigen Lauf unbemerkt wiederholen -
+# deshalb hart gedeckelt statt nur auf die Anzahl der Regeln.
 MAX_RULE_LENGTH = 300
+
+# Realer Fund: ein reiner Zähler-Cap (früher: fix 5 Regeln pro Agent, älteste zuerst verdrängt)
+# wirft eine wertvolle, spezifische Lektion (z.B. "StaticPool bei In-Memory-SQLite") genauso
+# schnell raus wie eine generische Stil-Regel, sobald der 6. Eintrag hinzukommt - unabhängig
+# davon, wie kurz/lang die einzelnen Regeln sind. Ein kombiniertes Budget aus Anzahl UND
+# Gesamtzeichenlänge lässt mehr KURZE, spezifische Lektionen gleichzeitig bestehen, ohne den
+# Tokenverbrauch im System-Prompt unbegrenzt wachsen zu lassen - dieselbe Deckelungs-Idee wie
+# MAX_RULE_LENGTH, nur über alle Regeln eines Agenten hinweg statt pro einzelner Regel.
+MAX_RULES_PER_AGENT = 10
+MAX_TOTAL_LEARNING_CHARS_PER_AGENT = 1500
 
 
 class AgentKnowledgeBase:
@@ -66,9 +76,15 @@ class AgentKnowledgeBase:
 
         if clean_rule not in self._learnings[agent_id]:
             self._learnings[agent_id].append(clean_rule)
-            # Begrenze auf maximal 5 der wichtigsten gelernten Regeln pro Agent
-            if len(self._learnings[agent_id]) > 5:
-                self._learnings[agent_id] = self._learnings[agent_id][-5:]
+            # Verdränge älteste Regeln zuerst, bis BEIDE Budgets eingehalten sind (Anzahl UND
+            # Gesamtzeichenlänge, siehe MAX_RULES_PER_AGENT/MAX_TOTAL_LEARNING_CHARS_PER_AGENT) -
+            # kurze, spezifische Lektionen kommen so seltener zu früh raus als beim alten reinen
+            # Zähler-Cap.
+            rules = self._learnings[agent_id]
+            while len(rules) > MAX_RULES_PER_AGENT or sum(len(r) for r in rules) > MAX_TOTAL_LEARNING_CHARS_PER_AGENT:
+                if len(rules) <= 1:
+                    break
+                rules.pop(0)
             self._save()
 
     def get_learnings(self, agent_id: str) -> list[str]:

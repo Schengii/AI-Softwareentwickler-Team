@@ -22,6 +22,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from core.adr import find_existing_near_duplicate_adr_pairs
 from core.backlog_store import list_tickets, upsert_ticket
 from core.notifier import notify_external
 from core.verifier import ProjectVerifier
@@ -95,5 +96,28 @@ async def run_workspace_audit_cycle(status_callback: StatusCallback | None = Non
                     status="done", project_slug=project_name,
                 )
             report.results.append(ProjectAuditResult(project_name=project_name, healthy=True))
+
+        # Nahezu-Duplikat-ADRs (core/adr.py.find_existing_near_duplicate_adr_pairs) - unabhängig
+        # vom Test-Ergebnis oben, da ein Projekt mit grünen Tests trotzdem eine doppelt
+        # dokumentierte Architektur-Entscheidung enthalten kann. Eigene Ticket-ID, damit ein
+        # bereits offenes "Verifikation fehlgeschlagen"-Ticket für dasselbe Projekt nicht
+        # überschrieben wird.
+        adr_ticket_id = f"{_ticket_id(project_name)}-adr-duplicate"
+        duplicate_pairs = find_existing_near_duplicate_adr_pairs(workspace.get_project_dir(project_name))
+        if duplicate_pairs:
+            detail = "; ".join(
+                f"ADR-{a.number:04d} ~ ADR-{b.number:04d} ('{a.title}')" for a, b in duplicate_pairs
+            )[:300]
+            upsert_ticket(
+                ticket_id=adr_ticket_id, title=f"Nahezu-Duplikat-ADRs gefunden: {project_name}",
+                source="workspace_audit", status="blocked", detail=detail, project_slug=project_name,
+            )
+        else:
+            existing_adr_ticket = next((t for t in list_tickets() if t.id == adr_ticket_id), None)
+            if existing_adr_ticket and existing_adr_ticket.status == "blocked":
+                upsert_ticket(
+                    ticket_id=adr_ticket_id, title=existing_adr_ticket.title, source="workspace_audit",
+                    status="done", project_slug=project_name,
+                )
 
     return report

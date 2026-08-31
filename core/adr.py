@@ -150,6 +150,27 @@ def write_adr(
     return path
 
 
+def find_existing_near_duplicate_adr_pairs(project_dir: str | Path) -> list[tuple[AdrRecord, AdrRecord]]:
+    """
+    Rückwirkende Variante von find_near_duplicate_adr(): durchsucht ALLE bereits vorhandenen
+    ADRs eines Projekts paarweise auf Titel-Ähnlichkeit, statt nur einen neuen Titel gegen
+    bestehende zu prüfen. find_near_duplicate_adr() verhindert nur KÜNFTIGE Duplikate beim
+    Schreiben (core/agent_toolbox.py) - ADRs, die schon vor Einführung dieser Prüfung entstanden
+    sind (realer Fund: api_health_monitor/docs/adr/0001 und 0002, fast identischer Inhalt),
+    bleiben davon unentdeckt. core/workspace_audit.py ruft dies bei jedem `--audit-workspace`-
+    Zyklus auf, damit solche Altlasten wie unvollständige/nahezu-doppelte Projekte sichtbar
+    werden. Gibt jedes Paar nur einmal zurück (niedrigere vor höherer Nummer).
+    """
+    records = list_adrs(project_dir)
+    pairs: list[tuple[AdrRecord, AdrRecord]] = []
+    for i, a in enumerate(records):
+        for b in records[i + 1:]:
+            ratio = SequenceMatcher(None, a.title.strip().lower(), b.title.strip().lower()).ratio()
+            if ratio >= DUPLICATE_TITLE_SIMILARITY_THRESHOLD:
+                pairs.append((a, b))
+    return pairs
+
+
 def format_adr_summary_for_context(project_dir: str | Path) -> str:
     """
     Kurzer, gedeckelter Digest bestehender Entscheidungen für den Agenten-Kontext

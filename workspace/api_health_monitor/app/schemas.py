@@ -1,9 +1,20 @@
 from pydantic import BaseModel, Field
 from typing import Annotated, Union, List, Optional
+from datetime import datetime
 
 class CheckCreate(BaseModel):
     url: str
     interval: int = 60
+
+class CheckHistoryRead(BaseModel):
+    id: int
+    check_id: str
+    latency: float
+    status_code: int
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True
 
 from typing import Literal
 

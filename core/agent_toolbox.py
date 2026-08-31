@@ -452,10 +452,21 @@ class AgentToolbox:
     async def _tool_record_architecture_decision(
         self, title: str, context: str, decision: str, consequences: str,
     ) -> dict:
-        from core.adr import write_adr
+        from core.adr import find_near_duplicate_adr, write_adr
 
         if not (title or "").strip():
             return {"error": "'title' darf nicht leer sein."}
+
+        duplicate = find_near_duplicate_adr(self.project_dir, title)
+        if duplicate is not None:
+            return {
+                "error": (
+                    f"ADR-{duplicate.number:04d} ('{duplicate.title}') dokumentiert bereits eine sehr "
+                    f"ähnliche Entscheidung - lies sie per read_file('{duplicate.path.relative_to(self.project_dir)}') "
+                    "und ergänze/aktualisiere diese ADR statt eine neue, fast identische anzulegen. Falls es "
+                    "wirklich eine andere Entscheidung ist, wähle einen klar unterscheidbaren Titel."
+                ),
+            }
 
         path = write_adr(self.project_dir, title=title, context=context, decision=decision, consequences=consequences)
         clean_rel = str(path.relative_to(self.project_dir)).replace("\\", "/")

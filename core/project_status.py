@@ -22,6 +22,17 @@ CHECKPOINT_FILENAME = ".ai_team_checkpoint.json"
 STATE_MD_FILENAME = "PROJECT_STATE.md"
 MAX_HISTORY_ENTRIES = 10
 
+# Wie viele Zeichen des rohen Verifikations-Reports (verification_summary aus
+# agents/orchestrator.py) in der Lauf-Historie gespeichert werden. Realer Fund: bisher wurde
+# nur der Boolean verification_ok persistiert - bei wiederholt fehlschlagenden Läufen an
+# demselben Projekt (z.B. api_health_monitor: 4 Läufe in Folge, davon einer per Budget
+# abgebrochen) hatte kein künftiger Agent Zugriff auf die KONKRETE Fehlermeldung des letzten
+# Versuchs und wiederholte denselben vollen (kostenpflichtigen) Lauf, statt gezielt den
+# bekannten Fehler zu beheben. Gedeckelt wie MAX_RULE_LENGTH in
+# memory/agent_knowledge_base.py, aus demselben Grund (Tokenverbrauch bei jeder künftigen
+# Injektion in format_context_for_agents).
+MAX_FAILURE_DETAIL_CHARS = 500
+
 
 def _status_path(project_dir: str) -> Path:
     return Path(project_dir) / STATUS_FILENAME
@@ -147,6 +158,7 @@ def save_project_checkpoint(
     files_written_count: int = 0,
     files_written: list[str] | None = None,
     next_steps: list[str] | None = None,
+    verification_summary: str = "",
 ) -> None:
     """Speichert sowohl .ai_team_status.json als auch die lesbare PROJECT_STATE.md im Projektordner."""
     # 1. Update .ai_team_status.json
@@ -157,6 +169,7 @@ def save_project_checkpoint(
         budget_aborted=budget_aborted,
         files_written_count=files_written_count,
         cancelled=cancelled,
+        verification_summary=verification_summary,
     )
 
     # 2. Update PROJECT_STATE.md
@@ -183,6 +196,7 @@ def record_run(
     budget_aborted: bool,
     files_written_count: int,
     cancelled: bool = False,
+    verification_summary: str = "",
 ) -> None:
     """Fügt diesen Lauf vorne in die Historie ein (neueste zuerst), gedeckelt auf
     MAX_HISTORY_ENTRIES."""
@@ -195,6 +209,10 @@ def record_run(
         "cancelled": cancelled,
         "files_written_count": files_written_count,
     }
+    # Nur bei tatsächlich fehlgeschlagener Verifikation gespeichert - bei Erfolg gibt es keinen
+    # Fehler zu berichten, und "" hält den JSON-Eintrag im Erfolgsfall kompakt.
+    if not verification_ok and verification_summary.strip():
+        entry["failure_detail"] = verification_summary.strip()[:MAX_FAILURE_DETAIL_CHARS]
     history.insert(0, entry)
     history = history[:MAX_HISTORY_ENTRIES]
     try:
@@ -229,6 +247,27 @@ def format_context_for_agents(project_dir: str, max_entries: int = 3) -> str:
                 status_icon = "⚠️"
             lines.append(f"- {status_icon} [{entry.get('timestamp', '?')}] {entry.get('task_summary', '?')}")
         sections.append("\n".join(lines))
+
+        # Realer Fund: ein Projekt (api_health_monitor) scheiterte 4 Läufe in Folge an
+        # verwandten Ursachen, u.a. weil jeder neue Lauf blind erneut das komplette Feature
+        # anging statt gezielt den zuvor protokollierten Fehler zu beheben - das verbrauchte
+        # wiederholt Budget, ohne die eigentliche Ursache zu schließen (siehe
+        # memory/diagnosing-verification-failures.md). Sind die letzten beiden Läufe BEIDE
+        # nicht verifiziert, wird die konkrete Fehlermeldung des jüngsten fehlgeschlagenen
+        # Laufs explizit vorangestellt statt nur der Status-Icon-Liste - macht "wiederhole
+        # nicht denselben Fehler" konkret statt generisch.
+        recent_two = history[:2]
+        if len(recent_two) == 2 and all(not e.get("verification_ok") for e in recent_two):
+            last_detail = next((e.get("failure_detail") for e in history if e.get("failure_detail")), "")
+            escalation = (
+                "⚠️ **Wiederholtes Scheitern:** Die letzten 2 Läufe an diesem Projekt waren BEIDE nicht "
+                "verifiziert. Starte NICHT einfach einen weiteren vollständigen Versuch - lies zuerst den "
+                "konkreten Fehler des letzten Laufs unten und behebe GEZIELT diese Ursache, bevor du "
+                "irgendetwas anderes am Projekt änderst."
+            )
+            if last_detail:
+                escalation += f"\n\nLetzter konkreter Fehler:\n```\n{last_detail}\n```"
+            sections.append(escalation)
 
     return "\n\n".join(sections)
 

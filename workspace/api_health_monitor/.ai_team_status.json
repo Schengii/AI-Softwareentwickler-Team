@@ -1,5 +1,21 @@
 [
   {
+    "timestamp": "2026-08-31T11:27:19+00:00",
+    "task_summary": "API-Health-Monitor um Datenbankpersistenz und Chart-Visualisierung erweitert.",
+    "verification_ok": false,
+    "budget_aborted": true,
+    "cancelled": false,
+    "files_written_count": 4
+  },
+  {
+    "timestamp": "2026-08-31T11:13:26+00:00",
+    "task_summary": "SQLite-Persistenz, Historien-Endpunkt und Chart.js-Visualisierung implementiert",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 4
+  },
+  {
     "timestamp": "2026-08-31T10:17:01+00:00",
     "task_summary": "API-Health-Monitor implementiert und Testsuite erfolgreich repariert",
     "verification_ok": false,

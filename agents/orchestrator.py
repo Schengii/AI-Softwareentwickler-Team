@@ -731,6 +731,7 @@ class Orchestrator:
                 cancelled=manually_cancelled,
                 files_written_count=len(all_written_files),
                 files_written=all_written_files,
+                verification_summary=verification_summary,
             )
         except Exception as e:
             notify(f"⚠️ [dim yellow]Projekt-Historie / State-Checkpoint (save_project_checkpoint) konnte nicht aktualisiert werden: {e}[/dim yellow]")

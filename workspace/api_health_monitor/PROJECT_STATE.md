@@ -1,16 +1,19 @@
 # 📌 api_health_monitor – Projekt-Status & Checkpoint
 
-- **Letzte Aktualisierung:** `2026-08-31 10:17:01 UTC`
-- **Aktueller Status:** ⚠️ In Entwicklung / Verifikation ausstehend
-- **Zuletzt bearbeitete Aufgabe:** API-Health-Monitor implementiert und Testsuite erfolgreich repariert
+- **Letzte Aktualisierung:** `2026-08-31 11:27:19 UTC`
+- **Aktueller Status:** 🚫 Lauf-Budget erreicht (Teilstand gesichert)
+- **Zuletzt bearbeitete Aufgabe:** API-Health-Monitor um Datenbankpersistenz und Chart-Visualisierung erweitert.
 
 ## 📁 Wichtige Projektkomponenten & Dateien
+- `app/database.py`
 - `app/main.py`
 - `app/monitor/checker.py`
 - `app/schemas.py`
 - `app/static/index.html`
+- `docs/adr/0001-sqlite-f-r-check-historie-persistenz.md`
 - `pytest.ini`
 - `tests/test_api.py`
+- `tests/test_api_history.py`
 
 ## 🧪 Verifikations- & Test-Status
 - **Tests bestanden:** Ausstehend / Fehlgeschlagen ⚠️

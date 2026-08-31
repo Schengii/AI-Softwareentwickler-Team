@@ -19,11 +19,21 @@ Philosophie wie die bestehende Projekt-Konstitution.
 
 import re
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from core.git_isolation import slugify
 
 ADR_DIR_NAME = "docs/adr"
+
+# Ab welcher Titel-Ähnlichkeit (0..1, SequenceMatcher.ratio()) eine neue ADR als
+# Nahezu-Duplikat einer bestehenden gilt. Realer Fund (api_health_monitor): zwei ADRs mit
+# fast identischem Titel/Inhalt ("SQLite für Check-Historie Persistenz") wurden in
+# unterschiedlichen Läufen desselben Projekts angelegt, weil der Agent nicht auf bereits
+# dokumentierte Entscheidungen desselben Themas geprüft hat, bevor er eine neue Datei anlegte
+# (im Unterschied zur projektübergreifenden Nahezu-Duplikat-Erkennung in
+# agents/orchestrator.py._find_near_duplicate_slug, die neue Projekte statt neue ADRs prüft).
+DUPLICATE_TITLE_SIMILARITY_THRESHOLD = 0.7
 
 # Wie viele ADRs maximal in den Agenten-Kontext injiziert werden (format_adr_summary_for_context)
 # - der agentische Tool-Loop sendet den kompletten bisherigen Kontext bei JEDER weiteren
@@ -93,6 +103,24 @@ def list_adrs(project_dir: str | Path) -> list[AdrRecord]:
 def next_adr_number(project_dir: str | Path) -> int:
     existing = list_adrs(project_dir)
     return (existing[-1].number + 1) if existing else 1
+
+
+def find_near_duplicate_adr(project_dir: str | Path, title: str) -> AdrRecord | None:
+    """Findet eine bereits im Projekt existierende ADR mit einem stark ähnlichen Titel (z.B.
+    "SQLite für Check-Historie Persistenz" vs. "SQLite für Check-Historie-Persistenz") -
+    gedacht, um zu verhindern, dass derselbe Trade-off zweimal separat dokumentiert wird, statt
+    die bestehende ADR zu erweitern oder darauf zu verweisen. Vergleicht case-insensitive per
+    difflib.SequenceMatcher; gibt None zurück, wenn keine ADR über
+    DUPLICATE_TITLE_SIMILARITY_THRESHOLD liegt oder das Projekt noch keine ADRs hat."""
+    needle = (title or "").strip().lower()
+    if not needle:
+        return None
+    best_match, best_ratio = None, 0.0
+    for record in list_adrs(project_dir):
+        ratio = SequenceMatcher(None, needle, record.title.strip().lower()).ratio()
+        if ratio > best_ratio:
+            best_match, best_ratio = record, ratio
+    return best_match if best_ratio >= DUPLICATE_TITLE_SIMILARITY_THRESHOLD else None
 
 
 def write_adr(

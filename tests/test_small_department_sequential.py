@@ -81,7 +81,7 @@ class TestSmallDepartmentRunsSequentially(unittest.TestCase):
         self.orchestrator._agents["frontend"]._llm = writer_llm
         self.orchestrator._agents["backend"]._llm = observer_llm
 
-        @patch("agents.orchestrator.ProjectVerifier")
+        @patch("agents.orchestrator.verification.ProjectVerifier")
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")
         def _run(mock_synthesize, mock_decompose, mock_verifier_cls):
@@ -116,7 +116,7 @@ class TestSmallDepartmentRunsSequentially(unittest.TestCase):
             lead._llm = _CapturingLLM()
 
         with patch("agents.orchestrator.Orchestrator._run_agents_parallel", wraps=self.orchestrator._run_agents_parallel) as spy:
-            @patch("agents.orchestrator.ProjectVerifier")
+            @patch("agents.orchestrator.verification.ProjectVerifier")
             @patch("core.task_manager.TaskManager.decompose")
             @patch("core.result_aggregator.ResultAggregator.synthesize")
             def _run(mock_synthesize, mock_decompose, mock_verifier_cls):

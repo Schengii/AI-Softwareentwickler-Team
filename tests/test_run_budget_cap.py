@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import patch
 
 import agents.orchestrator as orch_module
+import agents.orchestrator.budget as orch_budget_module
 from agents.orchestrator import Orchestrator
 from core.llm_factory import LLMResponse
 from core.message_bus import AgentTask
@@ -57,6 +58,13 @@ class TestRunBudgetCap(unittest.TestCase):
         guard_patch = patch.object(orch_module, "token_guard", self._fresh_guard)
         guard_patch.start()
         self.addCleanup(guard_patch.stop)
+        # BudgetMixin (agents/orchestrator/budget.py) hält eine EIGENE token_guard-Referenz
+        # (eigener "from core.token_guard import token_guard"-Import) - muss separat auf
+        # denselben frischen Zähler gepatcht werden, sonst liest die Budget-Prüfung weiter
+        # den echten, über die Testsuite hinweg aufsummierten globalen Singleton.
+        guard_patch_budget = patch.object(orch_budget_module, "token_guard", self._fresh_guard)
+        guard_patch_budget.start()
+        self.addCleanup(guard_patch_budget.stop)
 
         self.orchestrator = Orchestrator()
         for agent in list(self.orchestrator._agents.values()) + list(self.orchestrator._dept_leads.values()):
@@ -68,7 +76,7 @@ class TestRunBudgetCap(unittest.TestCase):
             AgentTask(task_id="t1", agent_id="product_owner", description="Scope"),
             AgentTask(task_id="t2", agent_id="compliance", description="DSGVO-Check"),
         ]
-        with patch.object(orch_module, "MAX_RUN_TOKENS", 0):
+        with patch.object(orch_budget_module, "MAX_RUN_TOKENS", 0):
             results, _, budget_aborted, _cancelled = asyncio.run(self.orchestrator._run_department_hierarchy(
                 user_request="Baue eine App", task_summary="App", agent_tasks=agent_tasks,
                 project_dir=".", run_start_tokens=0, notify=lambda msg: None,
@@ -91,7 +99,7 @@ class TestRunBudgetCap(unittest.TestCase):
         # Phase 1 (planning_lead) verbraucht bereits 3 Aufrufe x 5.000 = 15.000 Tokens
         # (Delegation + product_owner + Konsolidierung) -> übersteigt das 8.000-Budget deutlich,
         # sodass ALLE nachfolgenden Phasen übersprungen werden müssen.
-        with patch.object(orch_module, "MAX_RUN_TOKENS", 8000):
+        with patch.object(orch_budget_module, "MAX_RUN_TOKENS", 8000):
             results, file_owners, budget_aborted, _cancelled = asyncio.run(self.orchestrator._run_department_hierarchy(
                 user_request="Baue eine Todo-App", task_summary="Todo-App", agent_tasks=agent_tasks,
                 project_dir=".", run_start_tokens=0, notify=lambda msg: None,
@@ -115,7 +123,7 @@ class TestRunBudgetCap(unittest.TestCase):
         self.assertEqual(Orchestrator._tokens_used_since(start), 2000)
 
     def test_budget_check_disabled_when_max_run_tokens_zero(self):
-        with patch.object(orch_module, "MAX_RUN_TOKENS", 0):
+        with patch.object(orch_budget_module, "MAX_RUN_TOKENS", 0):
             orch_module.token_guard.record_usage("fake-model", 10**9, 0)  # absurd hoher Verbrauch
             self.assertFalse(Orchestrator._run_budget_exceeded(0))
 
@@ -136,7 +144,7 @@ class TestRunBudgetCap(unittest.TestCase):
         ]
         # Delegation (5000) + code_reviewer (5000) = 10.000 > 8000-Budget - muss NACH dem
         # ersten Mitglied greifen, BEVOR compliance überhaupt startet (kein dritter Aufruf).
-        with patch.object(orch_module, "MAX_RUN_TOKENS", 8000):
+        with patch.object(orch_budget_module, "MAX_RUN_TOKENS", 8000):
             results, _, budget_aborted, _cancelled = asyncio.run(self.orchestrator._run_department_hierarchy(
                 user_request="Baue eine Todo-App", task_summary="Todo-App", agent_tasks=agent_tasks,
                 project_dir=".", run_start_tokens=0, notify=lambda msg: None,

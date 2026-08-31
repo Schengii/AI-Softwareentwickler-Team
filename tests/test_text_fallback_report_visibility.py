@@ -53,7 +53,7 @@ class TestTextFallbackReportVisibility(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.temp_workspace, ignore_errors=True)
 
-    @patch("agents.orchestrator.ProjectVerifier")
+    @patch("agents.orchestrator.verification.ProjectVerifier")
     @patch("core.task_manager.TaskManager.decompose")
     @patch("core.result_aggregator.ResultAggregator.synthesize")
     def _run(self, mock_synthesize, mock_decompose, mock_verifier_cls):

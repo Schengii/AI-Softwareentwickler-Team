@@ -663,6 +663,7 @@ python main.py --check-pr-reviews           # EIN Poll-Zyklus über offene PR-Re
 python main.py --check-dependencies         # Workspace-weiter Schwachstellen-Scan + Auto-Update-PR
 python main.py --work-backlog                # EIN Poll-Zyklus über wartende "todo"-Backlog-Tickets
 python main.py --check-deployments           # EIN Poll-Zyklus: Erreichbarkeit aller Cloud-Deployments prüfen
+python main.py --audit-workspace             # EIN Poll-Zyklus: Verifikation aller Workspace-Projekte erneut prüfen
 python main.py --eval [--tasks t1,t2]       # Reproduzierbare Benchmark-Suite ausführen
 python main.py --list-evals                 # Alle Benchmark-Aufgaben auflisten
 ```
@@ -679,6 +680,19 @@ betroffene Paket automatisch an und öffnet dafür – über denselben PR-Mechan
 Issue-Watcher, ohne menschliche Bestätigung (unbeaufsichtigter Poll-Zyklus) – einen echten
 Pull Request. Das Backlog-Ticket landet dann auf `review` statt `blocked`. Abschaltbar über
 `ENABLE_DEPENDENCY_AUTO_UPDATE=false`.
+
+**`--audit-workspace` deckt unbemerkt liegen gebliebene Projekte auf:** Realer Fund bei einer
+Bestandsaufnahme des eigenen Teams – mehrere Workspace-Projekte trugen `verification_ok: false`
+in ihrer `.ai_team_status.json`, wurden aber seit dem letzten Lauf nie erneut geprüft, ob der
+Zustand noch aktuell ist. `core/workspace_audit.py` führt `ProjectVerifier.run_tests()` erneut
+gegen JEDES Workspace-Projekt aus (unabhängig von aktiver Entwicklung) und öffnet bei einem
+echten Fehlschlag ein Backlog-Ticket – dasselbe On-Call-Prinzip wie `--check-dependencies`, nur
+für Verifikations-Drift statt neuer CVEs. `core/verifier.py` erkennt dabei zusätzlich zwei
+konkret beobachtete Muster als echten Fehlschlag statt als harmloses "keine Tests gefunden":
+ein mehrteiliges Backend-Projekt mit `requirements.txt`/`pyproject.toml`, aber ohne jeden
+Einstiegspunkt (`main.py`/`app.py`/…), sowie ein `tests/`-Ordner mit `conftest.py`, aber ohne
+eine einzige echte Testdatei – beides sieht nach einem mitten in der Generierung abgebrochenen
+Lauf aus, nicht nach einem Projekt, das bewusst auf Tests verzichtet.
 
 **`/protect-branch [branch]` sichert den Hauptbranch zusätzlich auf GitHub-Seite selbst ab:**
 Der PR-Workflow oben verhindert nur, dass dieses Tool direkt auf `main` pusht – ein Mensch

@@ -65,7 +65,7 @@ class TestGeneralWorktreeIsolation(unittest.TestCase):
         shutil.rmtree(self.temp_root, ignore_errors=True)
 
     def _run(self, forced_project_dir: str | None, project_slug: str):
-        @patch("agents.orchestrator.ProjectVerifier")
+        @patch("agents.orchestrator.verification.ProjectVerifier")
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")
         def _inner(mock_synthesize, mock_decompose, mock_verifier_cls):
@@ -142,7 +142,7 @@ class TestSelfTargetingStillWorksAfterGeneralization(unittest.TestCase):
         shutil.rmtree(self.temp_root, ignore_errors=True)
 
     def test_self_targeting_still_aborts_without_git_repo(self):
-        @patch("agents.orchestrator.ProjectVerifier")
+        @patch("agents.orchestrator.verification.ProjectVerifier")
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")
         def _inner(mock_synthesize, mock_decompose, mock_verifier_cls):

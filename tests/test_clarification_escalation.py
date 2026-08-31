@@ -61,7 +61,7 @@ class TestClarificationEscalation(unittest.TestCase):
         for agent in list(self.orchestrator._agents.values()) + list(self.orchestrator._dept_leads.values()):
             agent._llm = _FakeToolCapableLLM(ask_clarification=ask_clarification)
 
-        @patch("agents.orchestrator.ProjectVerifier")
+        @patch("agents.orchestrator.verification.ProjectVerifier")
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")
         def _inner(mock_synthesize, mock_decompose, mock_verifier_cls):

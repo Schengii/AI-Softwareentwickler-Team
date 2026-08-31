@@ -97,6 +97,9 @@ class DashboardServer:
         # Projekt reicht (kein History-Log wie bei Jobs), da /deploy manuell pro Projekt
         # ausgelöst wird, nicht als Warteschlange vieler Anfragen.
         self.deployments: dict[str, dict] = {}
+        # Cloud-Deployment-Status pro Projektname (core/cloud_deployment.py) - dasselbe
+        # Prinzip wie self.deployments für das lokale Docker-Deployment, siehe deploy().
+        self.cloud_deployments: dict[str, dict] = {}
         self._max_concurrent_jobs = max_concurrent_jobs
         self._loop = asyncio.new_event_loop()
         self._async_queue: asyncio.Queue[str] | None = None  # im Loop-Thread erzeugt, siehe _run_event_loop
@@ -327,6 +330,34 @@ class DashboardServer:
             "success": result.success, "method": result.method, "output": result.output,
         }
 
+    def deploy_cloud(self, project_name: str, provider: str, real: bool) -> None:
+        """Startet ein Cloud-Deployment (core/cloud_deployment.py: Fly.io/Vercel/Render/
+        Railway) - läuft im Hintergrund-Event-Loop, Status via
+        GET /api/deploy-cloud-status/<projekt> pollbar (dasselbe Prinzip wie deploy())."""
+        self.cloud_deployments[project_name] = {"status": "running"}
+        self._loop.call_soon_threadsafe(
+            self._loop.create_task, self._execute_cloud_deploy(project_name, provider, real)
+        )
+
+    async def _execute_cloud_deploy(self, project_name: str, provider: str, real: bool) -> None:
+        from core.cloud_deployment import CloudDeploymentManager
+        project_dir = self.orchestrator._workspace.get_project_dir(project_name)
+        try:
+            manager = CloudDeploymentManager(project_dir)
+            # asyncio.to_thread: deploy() ist blockierend (echte Subprozesse bei fly/vercel im
+            # --real-Modus) - direkt im Event-Loop aufgerufen würde es ALLE anderen Jobs/Deploys
+            # in diesem Prozess für die Dauer des Cloud-Deploys blockieren.
+            result = await asyncio.to_thread(manager.deploy, provider, not real)
+        except Exception as e:
+            self.cloud_deployments[project_name] = {"status": "error", "output": str(e)}
+            return
+        self.cloud_deployments[project_name] = {
+            "status": "done" if result.attempted else "skipped",
+            "success": result.success, "provider": result.provider,
+            "preview_url": result.preview_url, "generated_files": result.generated_files,
+            "output": result.output, "reason_skipped": result.reason_skipped,
+        }
+
 
 HTML_DASHBOARD = """<!DOCTYPE html>
 <html lang="de">
@@ -417,6 +448,25 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       <button id="deployStopBtn" onclick="stopDeployProject()" style="background: #da3633;">Stoppen</button>
     </div>
     <div id="deployStatus" style="margin-top: 10px; font-size: 13px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; white-space: pre-wrap;"></div>
+  </div>
+
+  <div class="prompt-box">
+    <h3>☁️ Cloud-Deployment (Fly.io / Vercel / Render / Railway)</h3>
+    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px;">
+      <select id="cloudDeployProjectSelect" style="background: #0d1117; color: #f0f6fc; border: 1px solid var(--card-border); border-radius: 8px; padding: 8px;"><option>Lade Projekte…</option></select>
+      <select id="cloudDeployProviderSelect" style="background: #0d1117; color: #f0f6fc; border: 1px solid var(--card-border); border-radius: 8px; padding: 8px;">
+        <option value="fly">Fly.io</option>
+        <option value="vercel">Vercel</option>
+        <option value="render">Render</option>
+        <option value="railway">Railway</option>
+      </select>
+      <label style="font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 6px;">
+        <input type="checkbox" id="cloudDeployRealCheckbox"> Echter Deploy (<code>--real</code>)
+      </label>
+      <button id="cloudDeployBtn" onclick="deployCloudProject()">Cloud-Deploy</button>
+    </div>
+    <p style="color: var(--text-muted); font-size: 12px; margin-top: 8px;">Standard ist ein Dry-Run (nur Manifeste generieren, kein echter Deploy). "Echter Deploy" legt reale, öffentlich erreichbare Ressourcen an und fragt vor dem Start nochmal nach Bestätigung.</p>
+    <div id="cloudDeployStatus" style="margin-top: 10px; font-size: 13px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; white-space: pre-wrap;"></div>
   </div>
 
   <h2 style="color: var(--text-white); font-size: 18px; margin-bottom: 16px;">🎫 Backlog / Kanban-Board</h2>
@@ -705,11 +755,13 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       const data = await res.json();
       const sel = document.getElementById('deployProjectSelect');
       const inspectSel = document.getElementById('inspectProjectSelect');
+      const cloudSel = document.getElementById('cloudDeployProjectSelect');
       const opts = data.projects.length
         ? data.projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('')
         : '<option value="">Keine Projekte im Workspace</option>';
       if (sel) sel.innerHTML = opts;
       if (inspectSel) inspectSel.innerHTML = opts;
+      if (cloudSel) cloudSel.innerHTML = opts;
     }
 
     let deployPollTimer = null;
@@ -761,6 +813,55 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         } else if (data.status === 'error') {
           clearInterval(deployPollTimer);
           document.getElementById('deployStatus').innerText = '❌ ' + (data.output || 'Fehler.');
+        }
+      }, 3000);
+    }
+
+    let cloudDeployPollTimer = null;
+
+    async function deployCloudProject() {
+      const project = document.getElementById('cloudDeployProjectSelect').value;
+      const provider = document.getElementById('cloudDeployProviderSelect').value;
+      const real = document.getElementById('cloudDeployRealCheckbox').checked;
+      if (!project) return;
+      if (real) {
+        const ok = confirm(
+          `Wirklich einen ECHTEN Cloud-Deploy von "${project}" nach ${provider} starten? ` +
+          'Das legt reale, öffentlich erreichbare Ressourcen an und kann mehrere Minuten dauern.'
+        );
+        if (!ok) return;
+      }
+      document.getElementById('cloudDeployStatus').innerText = real
+        ? '☁️ Echter Cloud-Deploy läuft… (kann mehrere Minuten dauern)'
+        : '☁️ Dry-Run läuft… (nur Manifeste generieren)';
+      const res = await fetch('/api/deploy-cloud', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project, provider, real, confirm: real }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        document.getElementById('cloudDeployStatus').innerText = '❌ ' + (data.error || 'Fehler beim Start.');
+        return;
+      }
+      pollCloudDeployStatus(project);
+    }
+
+    function pollCloudDeployStatus(project) {
+      if (cloudDeployPollTimer) clearInterval(cloudDeployPollTimer);
+      cloudDeployPollTimer = setInterval(async () => {
+        const res = await fetch(`/api/deploy-cloud-status/${encodeURIComponent(project)}`);
+        const data = await res.json();
+        if (data.status === 'done') {
+          clearInterval(cloudDeployPollTimer);
+          document.getElementById('cloudDeployStatus').innerText = data.success
+            ? `✅ Cloud-Deployment erfolgreich (${data.provider}): ${data.preview_url || ''}`
+            : `❌ Cloud-Deployment fehlgeschlagen:\n${data.output || ''}`;
+        } else if (data.status === 'skipped') {
+          clearInterval(cloudDeployPollTimer);
+          document.getElementById('cloudDeployStatus').innerText = 'ℹ️ ' + (data.reason_skipped || 'Nicht möglich.');
+        } else if (data.status === 'error') {
+          clearInterval(cloudDeployPollTimer);
+          document.getElementById('cloudDeployStatus').innerText = '❌ ' + (data.output || 'Fehler.');
         }
       }, 3000);
     }
@@ -962,6 +1063,9 @@ def make_handler(server: DashboardServer):
             elif path_only.startswith("/api/deploy-status/"):
                 project_name = unquote(path_only.rsplit("/", 1)[-1])
                 self._send_json({"project": project_name, **server.deployments.get(project_name, {"status": "none"})})
+            elif path_only.startswith("/api/deploy-cloud-status/"):
+                project_name = unquote(path_only.rsplit("/", 1)[-1])
+                self._send_json({"project": project_name, **server.cloud_deployments.get(project_name, {"status": "none"})})
             else:
                 self._send_json({"error": "Not found"}, status=404)
 
@@ -1003,6 +1107,36 @@ def make_handler(server: DashboardServer):
                 else:
                     server.stop_deploy(project_name)
                 self._send_json({"project": project_name, "status": "running"}, status=202)
+            elif urlparse(self.path).path == "/api/deploy-cloud":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length) or b"{}")
+                    project_name = (payload.get("project") or "").strip()
+                    provider = (payload.get("provider") or "").strip().lower()
+                    real = bool(payload.get("real", False))
+                    confirm = bool(payload.get("confirm", False))
+                except Exception:
+                    self._send_json({"error": "Ungültiger Request-Body"}, status=400)
+                    return
+                if provider not in ("fly", "vercel", "render", "railway"):
+                    self._send_json({"error": "Unbekannter Provider. Erlaubt: fly, vercel, render, railway."}, status=400)
+                    return
+                if not project_name or project_name not in server.orchestrator._workspace.list_projects():
+                    self._send_json({"error": "Unbekanntes Projekt."}, status=404)
+                    return
+                # Sicherheitsleitplanke: ein echter Deploy (real=true) legt reale, öffentlich
+                # erreichbare Cloud-Ressourcen an - erfordert daher zusätzlich zu "real" ein
+                # explizites "confirm" im Body (das Frontend erzwingt dafür ein window.confirm()).
+                # Ohne diese zweite Bestätigung wird real IMMER stillschweigend auf Dry-Run
+                # zurückgestuft statt den echten Deploy auszuführen.
+                if real and not confirm:
+                    self._send_json(
+                        {"error": "Echter Deploy (--real) erfordert zusätzliche Bestätigung ('confirm': true)."},
+                        status=400,
+                    )
+                    return
+                server.deploy_cloud(project_name, provider, real)
+                self._send_json({"project": project_name, "provider": provider, "real": real, "status": "running"}, status=202)
             else:
                 self._send_json({"error": "Not found"}, status=404)
 

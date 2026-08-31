@@ -488,7 +488,8 @@ Playwright ist Laufzeit-Abhängigkeit (`requirements.txt`), nicht nur Dev-Tool -
 - **Fly.io:** Erstellt `fly.toml` und `Dockerfile` mit Region Frankfurt (`fra`) und Auto-Stop/Start, `--real` löst einen echten `flyctl deploy` aus.
 - **Vercel:** Erstellt `vercel.json` für Serverless Python-, Next.js- oder Static-Deployments, `--real` löst einen echten `vercel --prod` aus.
 - **Render / Railway:** Erstellt Blueprints (`render.yaml`, `railway.json`) – beide deployen über eine Git-Integration im jeweiligen Web-Dashboard (Repository dort verbinden), kein lokales CLI-Deploy-Kommando, `--real` meldet das ehrlich statt einen nie ausgeführten Deploy als erfolgreich zu behaupten.
-- **CLI:** `/deploy-cloud <fly|vercel|render|railway> [projekt] [--real]` – ohne `--real` ein sicherer Dry-Run (nur Manifeste), mit `--real` ein echter Deploy-Versuch mit echter, überwachter (siehe [🤖 Backlog-Worker & Produktions-Monitoring](#selbstgesteuert)) Preview-URL. Noch nicht im Web-Dashboard verdrahtet.
+- **CLI:** `/deploy-cloud <fly|vercel|render|railway> [projekt] [--real]` – ohne `--real` ein sicherer Dry-Run (nur Manifeste), mit `--real` ein echter Deploy-Versuch mit echter, überwachter (siehe [🤖 Backlog-Worker & Produktions-Monitoring](#selbstgesteuert)) Preview-URL.
+- **Web-Dashboard:** eigene Karte „☁️ Cloud-Deployment" (Provider- und Projekt-Auswahl, Checkbox für `--real` mit zusätzlicher Bestätigung) – ruft `POST /api/deploy-cloud` auf, Fortschritt über `GET /api/deploy-cloud-status/<projekt>` pollbar (gleiches Prinzip wie das lokale Docker-Deployment).
 
 ---
 

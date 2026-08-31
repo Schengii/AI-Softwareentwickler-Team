@@ -42,15 +42,19 @@
         });
 
         async function loadTags() {
+            const container = document.getElementById('tag-filter');
             try {
                 const response = await fetch('/tags');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
                 const tags = await response.json();
-                const container = document.getElementById('tag-filter');
-                container.innerHTML = tags.map(tag => 
+                container.innerHTML = tags.map(tag =>
                     `<span class="bg-blue-900 text-blue-200 px-2 py-1 rounded text-sm cursor-pointer">${tag}</span>`
                 ).join('');
             } catch (err) {
-                console.error('Fehler beim Laden der Tags:', err);
+                console.warn('Tags nicht verfügbar (evtl. kein Backend aktiv):', err);
+                container.innerHTML = '';
             }
         }
 

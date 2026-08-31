@@ -19,6 +19,14 @@ from pathlib import Path
 
 STATUS_FILENAME = ".ai_team_status.json"
 STATE_MD_FILENAME = "PROJECT_STATE.md"
+# Ungekürztes Verifikationsprotokoll jedes Laufs, ausschließlich für manuelle Diagnose (siehe
+# MAX_FAILURE_DETAIL_CHARS unten) - wird NIE in einen Agenten-Prompt geladen, deshalb ohne
+# Zeichenbudget. Bisher musste dafür core.verifier.ProjectVerifier live gegen das Projekt
+# erneut ausgeführt werden, weil .ai_team_status.json nur die gekappte Version persistiert -
+# gerade der entscheidende Teil einer langen Fehlermeldung fiel dabei regelmäßig der Kappung
+# zum Opfer (z.B. der Frontend-404-Befund im snippet_vault-Projekt, der erst nach manuellem
+# Nachstellen sichtbar wurde).
+FULL_LOG_FILENAME = ".ai_team_status_full.log"
 MAX_HISTORY_ENTRIES = 10
 
 # Wie viele Zeichen des rohen Verifikations-Reports (verification_summary aus
@@ -35,6 +43,10 @@ MAX_FAILURE_DETAIL_CHARS = 500
 
 def _status_path(project_dir: str) -> Path:
     return Path(project_dir) / STATUS_FILENAME
+
+
+def _full_log_path(project_dir: str) -> Path:
+    return Path(project_dir) / FULL_LOG_FILENAME
 
 
 def _state_md_path(project_dir: str) -> Path:
@@ -186,6 +198,19 @@ def save_project_checkpoint(
         pass
 
 
+def _append_full_log(project_dir: str, timestamp: str, task_summary: str, verification_ok: bool, full_summary: str) -> None:
+    """Hängt das UNGEKÜRZTE Verifikationsprotokoll dieses Laufs an FULL_LOG_FILENAME an (siehe
+    Erklärung dort) - reine Textdatei statt JSON, damit sie sich einfach anwachsen lässt und
+    per Editor/`tail` lesbar bleibt, ohne komplette Historie neu zu serialisieren."""
+    status = "OK" if verification_ok else "FEHLGESCHLAGEN"
+    block = f"\n{'=' * 80}\n[{timestamp}] {status} – {task_summary}\n{'-' * 80}\n{full_summary}\n"
+    try:
+        with _full_log_path(project_dir).open("a", encoding="utf-8") as f:
+            f.write(block)
+    except OSError:
+        pass
+
+
 def record_run(
     project_dir: str,
     task_summary: str,
@@ -215,6 +240,7 @@ def record_run(
         # nackte Tests?") fehlte dieselbe Information beim Erfolgsfall komplett.
         key = "failure_detail" if not verification_ok else "success_detail"
         entry[key] = verification_summary.strip()[:MAX_FAILURE_DETAIL_CHARS]
+        _append_full_log(project_dir, entry["timestamp"], task_summary, verification_ok, verification_summary.strip())
     # Realer Fund: ask_human_for_clarification-Rückfragen (core/agent_toolbox.py) wurden bisher
     # NUR im Chat-Verlauf der jeweiligen Sitzung sichtbar, nie in der projektübergreifenden
     # Historie - ein späterer Lauf (ggf. andere Sitzung) wusste nichts von einer offenen Frage

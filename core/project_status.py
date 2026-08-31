@@ -29,6 +29,14 @@ STATE_MD_FILENAME = "PROJECT_STATE.md"
 FULL_LOG_FILENAME = ".ai_team_status_full.log"
 MAX_HISTORY_ENTRIES = 10
 
+# Deckelt .ai_team_status_full.log (siehe _append_full_log unten) auf eine sinnvolle Größe.
+# Anders als .ai_team_status.json (auf MAX_HISTORY_ENTRIES Einträge UND MAX_FAILURE_DETAIL_CHARS
+# je Eintrag gedeckelt) protokolliert das Full-Log JEDEN Lauf mit dem ungekürzten
+# verification_summary - wertvoll für eine spätere tiefe Fehleranalyse, aber ohne Deckel würde
+# die Datei bei einem langlebigen Projekt mit vielen Läufen unbegrenzt wachsen. 5 MB ist
+# großzügig genug für hunderte Läufe, aber klein genug, um kein Repo-Gewicht-Problem zu werden.
+MAX_FULL_LOG_BYTES = 5 * 1024 * 1024
+
 # Wie viele Zeichen des rohen Verifikations-Reports (verification_summary aus
 # agents/orchestrator.py) in der Lauf-Historie gespeichert werden. Realer Fund: bisher wurde
 # nur der Boolean verification_ok persistiert - bei wiederholt fehlschlagenden Läufen an
@@ -51,6 +59,66 @@ def _full_log_path(project_dir: str) -> Path:
 
 def _state_md_path(project_dir: str) -> Path:
     return Path(project_dir) / STATE_MD_FILENAME
+
+
+def _append_full_log(project_dir: str, entry: dict) -> None:
+    """Hängt diesen Lauf UNGEKÜRZT (kein MAX_FAILURE_DETAIL_CHARS-Deckel wie in record_run) an
+    .ai_team_status_full.log an - eine reine Nachschlage-Historie für tiefe Fehleranalyse über
+    viele Läufe hinweg, getrennt von der kompakten, gedeckelten .ai_team_status.json.
+
+    Rotiert die Datei, sobald sie MAX_FULL_LOG_BYTES überschreitet: die ÄLTESTEN Blöcke (am
+    Dateianfang, da neue Einträge angehängt werden) werden verworfen, bis die Datei wieder
+    unter der Schwelle liegt - nie die ganze Datei gelöscht, nur so viel wie nötig."""
+    separator = "=" * 80
+    block_lines = [separator, f"Zeitstempel: {entry.get('timestamp', '?')}"]
+    block_lines.append(f"Aufgabe: {entry.get('task_summary', '?')}")
+    status_bits = []
+    if entry.get("verification_ok"):
+        status_bits.append("verifiziert")
+    if entry.get("budget_aborted"):
+        status_bits.append("budget_aborted")
+    if entry.get("cancelled"):
+        status_bits.append("cancelled")
+    block_lines.append(f"Status: {', '.join(status_bits) if status_bits else 'nicht verifiziert'}")
+    detail = entry.get("failure_detail") or entry.get("success_detail")
+    if detail:
+        block_lines.append(detail)
+    block = "\n".join(block_lines) + "\n"
+
+    path = _full_log_path(project_dir)
+    try:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(block)
+    except OSError:
+        return
+
+    try:
+        _rotate_full_log(path)
+    except OSError:
+        pass
+
+
+def _rotate_full_log(path: Path) -> None:
+    """Kappt eine zu groß gewordene Full-Log-Datei, indem die ältesten Blöcke (jeder beginnt
+    mit der 80-Zeichen "="-Trennzeile) verworfen werden, bis die Datei wieder unter
+    MAX_FULL_LOG_BYTES liegt - die neuesten Einträge bleiben dabei vollständig erhalten."""
+    if not path.exists() or path.stat().st_size <= MAX_FULL_LOG_BYTES:
+        return
+
+    separator = "=" * 80
+    content = path.read_text(encoding="utf-8")
+    # Jeder Block beginnt mit der Trennzeile - split() liefert daher ein leeres erstes Element,
+    # gefolgt von den eigentlichen Blöcken (jeweils ohne die führende Trennzeile).
+    raw_blocks = content.split(separator + "\n")
+    blocks = [separator + "\n" + b for b in raw_blocks if b.strip()]
+
+    # Älteste zuerst verwerfen, bis die verbleibenden Blöcke unter die Schwelle passen -
+    # mindestens der jüngste Block bleibt immer erhalten, selbst wenn er allein schon größer
+    # als die Schwelle ist (kein Datenverlust des aktuellsten Laufs).
+    while len(blocks) > 1 and sum(len(b.encode("utf-8")) for b in blocks) > MAX_FULL_LOG_BYTES:
+        blocks.pop(0)
+
+    path.write_text("".join(blocks), encoding="utf-8")
 
 
 def read_status(project_dir: str) -> list[dict]:
@@ -198,19 +266,6 @@ def save_project_checkpoint(
         pass
 
 
-def _append_full_log(project_dir: str, timestamp: str, task_summary: str, verification_ok: bool, full_summary: str) -> None:
-    """Hängt das UNGEKÜRZTE Verifikationsprotokoll dieses Laufs an FULL_LOG_FILENAME an (siehe
-    Erklärung dort) - reine Textdatei statt JSON, damit sie sich einfach anwachsen lässt und
-    per Editor/`tail` lesbar bleibt, ohne komplette Historie neu zu serialisieren."""
-    status = "OK" if verification_ok else "FEHLGESCHLAGEN"
-    block = f"\n{'=' * 80}\n[{timestamp}] {status} – {task_summary}\n{'-' * 80}\n{full_summary}\n"
-    try:
-        with _full_log_path(project_dir).open("a", encoding="utf-8") as f:
-            f.write(block)
-    except OSError:
-        pass
-
-
 def record_run(
     project_dir: str,
     task_summary: str,
@@ -240,7 +295,6 @@ def record_run(
         # nackte Tests?") fehlte dieselbe Information beim Erfolgsfall komplett.
         key = "failure_detail" if not verification_ok else "success_detail"
         entry[key] = verification_summary.strip()[:MAX_FAILURE_DETAIL_CHARS]
-        _append_full_log(project_dir, entry["timestamp"], task_summary, verification_ok, verification_summary.strip())
     # Realer Fund: ask_human_for_clarification-Rückfragen (core/agent_toolbox.py) wurden bisher
     # NUR im Chat-Verlauf der jeweiligen Sitzung sichtbar, nie in der projektübergreifenden
     # Historie - ein späterer Lauf (ggf. andere Sitzung) wusste nichts von einer offenen Frage
@@ -248,6 +302,15 @@ def record_run(
     # aufzugreifen. Wie failure_detail gedeckelt (max. 3 Fragen, je auf MAX_FAILURE_DETAIL_CHARS).
     if clarification_questions:
         entry["open_questions"] = [q.strip()[:MAX_FAILURE_DETAIL_CHARS] for q in clarification_questions if q.strip()][:3]
+
+    # Full-Log ERST mit dem ungekürzten verification_summary befüllen (bevor entry unten
+    # gekappt in .ai_team_status.json landet) - so bleibt für tiefe Fehleranalyse auch der
+    # Teil erhalten, der über MAX_FAILURE_DETAIL_CHARS hinausgeht.
+    full_entry = dict(entry)
+    if verification_summary.strip():
+        full_entry["failure_detail" if not verification_ok else "success_detail"] = verification_summary.strip()
+    _append_full_log(project_dir, full_entry)
+
     history.insert(0, entry)
     history = history[:MAX_HISTORY_ENTRIES]
     try:

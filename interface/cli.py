@@ -89,6 +89,7 @@ HELP_TEXT = """
 | `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/design-system [projekt]` | Zeigt/bearbeitet feste visuelle Präferenzen (Farbpalette, Typografie, Spacing-Skala, Tonalität, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/backlog` | Zeigt das Kanban-Board (Todo/In Bearbeitung/Review/Blockiert/Fertig) über CLI, Dashboard UND autonome Issue-Läufe hinweg |
+| `/team-health` | Projektübergreifender Health-Rollup über alle Projekte in `workspace/`: Status, seit wann rot, erkannte gemeinsame Fehlermuster |
 | `/backlog-add [priorität] <titel>` | Legt manuell ein priorisiertes, noch nicht begonnenes Ticket im Status "todo" an (Priorität: 1/hoch, 2/mittel, 3/niedrig) |
 | `/adr [projekt]` | Zeigt die dokumentierten Architecture Decision Records (Begründungen echter Architektur-Entscheidungen) eines Projekts |
 | `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
@@ -895,6 +896,56 @@ class CLIInterface:
             )
         )
 
+    def _show_team_health(self) -> None:
+        """
+        Zeigt einen projektübergreifenden Health-Rollup (core/team_health.py) über ALLE
+        Projekte in workspace/ - macht sichtbar, welche Projekte gerade "rot" sind, seit wann,
+        und ob mehrere Projekte an DERSELBEN Fehlerkategorie scheitern (z.B. ein gemeinsam
+        kaputter Frontend-Baustein). Bisher musste dafür jedes .ai_team_status.json einzeln
+        von Hand gelesen werden.
+        """
+        from config import WORKSPACE_DIR
+        from core.team_health import build_team_health_rollup
+
+        rollup = build_team_health_rollup(WORKSPACE_DIR)
+        if not rollup.projects:
+            console.print(
+                "📭 Noch keine Projekte mit protokollierter Lauf-Historie in `workspace/` gefunden.",
+                style="dim",
+            )
+            return
+
+        status_icons = {
+            "ok": "✅", "failed": "⚠️", "budget_aborted": "🚫", "cancelled": "⏹️", "unknown": "❔",
+        }
+
+        table = Table(title="🩺 Team-Health-Rollup (alle Projekte)", box=box.ROUNDED)
+        table.add_column("Status")
+        table.add_column("Projekt", style="cyan")
+        table.add_column("Seit wann rot", justify="center")
+        table.add_column("Kategorie", style="magenta")
+        table.add_column("Letzter Lauf", style="dim")
+        table.add_column("Kurzfehler", style="dim")
+
+        for p in rollup.projects:
+            icon = status_icons.get(p.status, "❔")
+            streak = f"{p.red_streak} Lauf/Läufe in Folge" if p.red_streak else "-"
+            short_error = (p.failure_detail or "").splitlines()[0][:80] if p.failure_detail else ""
+            table.add_row(
+                icon, p.name, streak, p.failure_category or "-",
+                f"{p.timestamp}\n{p.task_summary}", short_error,
+            )
+
+        console.print(table)
+
+        if rollup.shared_patterns:
+            lines = ["🔗 [bold]Erkannte gemeinsame Fehlermuster:[/bold]"]
+            for category, names in rollup.shared_patterns.items():
+                lines.append(f"  • [bold]{category}[/bold]: {len(names)} Projekte betroffen ({', '.join(names)})")
+            console.print(Panel("\n".join(lines), border_style="yellow"))
+        else:
+            console.print("ℹ️ Kein gemeinsames Fehlermuster über mehrere Projekte hinweg erkannt.", style="dim")
+
     async def _delete_learning_with_confirmation(self, agent_id: str, index_str: str) -> None:
         """Entfernt eine einzelne gelernte Regel - IRREVERSIBEL, mit Bestätigung analog zu
         /delete-project und dem Git-Push-Gate. Kein Crash bei ungültiger Eingabe (z.B. Buchstaben
@@ -1268,6 +1319,9 @@ class CLIInterface:
 
         elif cmd in ("/state", "/checkpoint", "/status-projekt", "/status"):
             self._show_project_state(args[0] if args else None)
+
+        elif cmd in ("/team-health", "/teamgesundheit", "/rollup"):
+            self._show_team_health()
 
         elif cmd in ("/load", "/laden", "/open", "/oeffnen", "/import"):
             if not args:

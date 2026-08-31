@@ -38,6 +38,23 @@
   <script>
     let latencyChart = null;
 
+    function initChart() {
+      const ctx = document.getElementById('latencyChart').getContext('2d');
+      latencyChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [{
+            label: 'Latenz (ms)',
+            data: [],
+            borderColor: '#6366f1',
+            tension: 0.3
+          }]
+        },
+        options: { responsive: true, scales: { y: { beginAtZero: true } } }
+      });
+    }
+
     async function loadChecks() {
       const res = await fetch('/checks');
       const data = await res.json();
@@ -53,26 +70,15 @@
     async function showHistory(checkId) {
       const res = await fetch(`/checks/${checkId}/history`);
       const data = await res.json();
-      
-      const ctx = document.getElementById('latencyChart').getContext('2d');
-      if (latencyChart) latencyChart.destroy();
-      
-      latencyChart = new Chart(ctx, {
-        type: 'line',
-        data: {
-          labels: data.map(d => new Date(d.timestamp).toLocaleTimeString()),
-          datasets: [{
-            label: 'Latenz (ms)',
-            data: data.map(d => d.latency),
-            borderColor: '#6366f1',
-            tension: 0.3
-          }]
-        },
-        options: { responsive: true, scales: { y: { beginAtZero: true } } }
-      });
+
+      if (!latencyChart) initChart();
+      latencyChart.data.labels = data.map(d => new Date(d.timestamp).toLocaleTimeString());
+      latencyChart.data.datasets[0].data = data.map(d => d.latency);
+      latencyChart.update();
     }
 
-    loadChecks();
+    initChart();
+    loadChecks().catch(() => {});
   </script>
 </body>
 </html>

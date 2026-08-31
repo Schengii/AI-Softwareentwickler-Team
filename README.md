@@ -729,6 +729,7 @@ nicht, ein Mensch prüft die betroffene(n) Datei(en) gezielt nach.
 | `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/adr [projekt]` | Zeigt die dokumentierten Architecture Decision Records (Begründungen echter Architektur-Entscheidungen) eines Projekts |
 | `/backlog` | Zeigt das Kanban-Board (Todo/In Bearbeitung/Review/Blockiert/Fertig) über CLI, Dashboard UND autonome Issue-Läufe hinweg, inkl. Priorität und WIP-Limit-Warnung |
+| `/team-health` (Aliase `/teamgesundheit`, `/rollup`) | Projektübergreifender Health-Rollup über alle Projekte in `workspace/` (aus `core/team_health.py`): pro Projekt Status, seit wann in Folge rot, sowie erkannte gemeinsame Fehlermuster (z.B. mehrere Projekte scheitern gleichzeitig am selben Frontend-Check) |
 | `/backlog-add [priorität] <titel>` | Legt manuell ein priorisiertes, noch nicht begonnenes Ticket im Status "todo" an (Priorität: 1/hoch, 2/mittel, 3/niedrig) |
 | `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
 | `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |

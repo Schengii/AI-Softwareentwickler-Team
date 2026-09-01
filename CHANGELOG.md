@@ -7,6 +7,48 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🎯 Autonomer Ziel-Loop (`core/goal_loop.py`): Kill-Switches gegen Endlosschleifen & echter Provider-Fallback
+
+Neuer Baustein: der autonome Ziel-Loop (`/goal`, `python main.py --goal`) lässt das Team nicht
+mehr nur einen einzelnen `Orchestrator.process()`-Durchlauf abarbeiten, sondern iteriert
+selbstständig weiter – nach jeder Runde bewertet ein LLM-Judge (`GOAL_LOOP_EVAL_MODEL`) anhand
+von Zwischenstand, Dateiliste und Verifikations-Status, ob das Ziel erreicht ist, und erzeugt
+andernfalls automatisch den präzisen Folge-Prompt für die nächste Runde. Bei der Analyse des
+Erstentwurfs (noch vor dem ersten Commit) fielen drei konkrete Lücken auf, die jetzt behoben
+sind:
+
+- **Echter Bug: `LLMFactory.create_llm` existiert gar nicht.** Der Bewertungsschritt rief eine
+  nicht existierende Factory-Methode auf, die JEDES Mal eine `AttributeError` warf – durch das
+  breite `except Exception` fiel die Bewertung dadurch bei jedem einzelnen Lauf sofort auf die
+  simple Heuristik zurück, ohne dass das je sichtbar wurde (alle Tests mockten
+  `_evaluate_and_synthesize_next_step` direkt und liefen daher am Bug vorbei). Zusätzlich wurde
+  die bereits asynchrone `generate()`-Coroutine fälschlich über `asyncio.to_thread()`
+  aufgerufen, was ein unawaited Coroutine-Objekt statt eines Strings zurückgegeben hätte.
+  Ersetzt durch `LLMFactory.create_for_model(...)` + `await llm.generate(...)` – dieselbe
+  zentrale Provider-Erkennung, die auch jeder Agent nutzt, inklusive der in
+  `GeminiClient._call_with_retry_and_usage()` eingebauten `MODEL_FALLBACKS`-Kette (echter
+  Cross-Provider-Fallback bei Erschöpfung/Fehler des primären Eval-Modells statt eines starren
+  Single-Shot-Aufrufs).
+- **Kein kumulatives Token-Budget über Iterationen hinweg:** `MAX_RUN_TOKENS` begrenzt nur
+  EINEN einzelnen `orchestrator.process()`-Aufruf – ein Ziel-Loop mit mehreren Iterationen
+  konnte dieses Budget bis zu `max_iterations`-mal hintereinander ausschöpfen, ohne dass der
+  Loop selbst je abgebrochen wäre. Neues `GOAL_LOOP_MAX_TOTAL_TOKENS` (Standard `0` = aus)
+  summiert den Tokenverbrauch aller Iterationen dieses Loops über `token_guard.get_summary()`
+  und bricht den Loop ab, sobald das Budget erreicht ist – die bis dahin erarbeiteten
+  Ergebnisse bleiben erhalten (Graceful Degradation statt Abbruch ohne Ergebnis).
+- **Kein Stagnations-Abbruch:** Liefert die Verifikation zwei Iterationen in Folge exakt
+  denselben Fehler, dreht sich der Loop erkennbar im Kreis (ein Bug, den das Team offenbar
+  nicht selbst löst) – bisher liefen trotzdem alle `max_iterations` Runden durch und
+  verbrannten dabei unnötig Tokens. Der Loop erkennt identische `failure_detail`-Werte
+  aufeinanderfolgender Iterationen jetzt und bricht sofort mit klarer Begründung ab.
+
+6 neue/erweiterte Tests (`tests/test_goal_loop.py`): Stagnations-Abbruch, kumulatives
+Token-Budget (per gemocktem `token_guard.get_summary()`), plus die bestehenden 4 Tests für
+Erfolg-bei-erster-Iteration, Mehrrunden-Recovery, Abschlussbericht-Formatierung und
+kooperativen Abbruch – alle grün, ruff sauber.
+
+---
+
 ## 🔍 Workspace-Audit: unvollständige Projekte & Nahezu-Duplikate erkennen
 
 Realer Fund bei einer manuellen Bestandsaufnahme aller `workspace/`-Projekte: mehrere Läufe

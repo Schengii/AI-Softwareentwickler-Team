@@ -98,6 +98,7 @@ HELP_TEXT = """
 | `/push` | Führt manuell einen Git-Commit & Push aus |
 | `/protect-branch [branch]` | Aktiviert echte GitHub-Branch-Protection (Pflicht-Reviews, kein Force-Push) für den Hauptbranch – mit Vorschau & Bestätigung |
 | `/state [projekt]` | Zeigt den aktuellen State-Checkpoint (PROJECT_STATE.md) und nächste Schritte für ein Projekt an |
+| `/goal [max] <ziel>` | Startet den autonomen Ziel-Loop: arbeitet selbstständig in Feedback-Schleifen weiter, bis das Projektziel erreicht und verifiziert ist |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
 | `/hilfe` | Zeigt diese Hilfe an |
@@ -755,6 +756,61 @@ class CLIInterface:
             return
         console.print(Panel(Markdown(format_report_for_humans(report)), title="🔧 Selbstoptimierungs-Vorschläge", border_style="cyan"))
 
+    async def _run_goal_loop_command(self, args: list[str]) -> None:
+        """
+        Startet den autonomen Ziel- und Feedback-Loop (/goal, /autoloop).
+        Arbeitet in aufeinanderfolgenden Iterationen weiter, bis das Ziel erreicht
+        und die Verifikation (Tests) grün ist.
+        """
+        from core.goal_loop import GoalLoopRunner
+
+        max_iterations = 5
+        goal_parts = []
+        if args and args[0].isdigit():
+            max_iterations = int(args[0])
+            goal_parts = args[1:]
+        else:
+            goal_parts = args
+
+        goal_text = " ".join(goal_parts).strip()
+        if not goal_text:
+            if self._loaded_project_dir:
+                proj_name = Path(self._loaded_project_dir).name
+                goal_text = f"Vervollständige die Entwicklung von {proj_name}, behebe alle offenen Test- und Schnittstellenfehler und stelle sicher, dass alle Tests grün sind."
+                console.print(f"🎯 [cyan]Kein separates Ziel angegeben – nutze geladenes Projekt `{proj_name}`:[/cyan]\n  '{goal_text}'\n")
+            else:
+                console.print(
+                    "⚠️ Bitte gib ein Ziel für den autonomen Loop an:\n"
+                    "👉 `/goal [max_runden] <Zielbeschreibung>` (z. B. `/goal Baue ein vollständiges Dashboard mit Tests`)",
+                    style="yellow"
+                )
+                return
+
+        runner = GoalLoopRunner(orchestrator=self._orchestrator)
+        original_sigint = self._install_cancel_handler()
+        try:
+            res = await runner.run(
+                goal=goal_text,
+                project_dir=self._loaded_project_dir,
+                max_iterations=max_iterations,
+                status_callback=lambda msg: console.print(msg),
+                cancel_requested=self._cancel_event.is_set,
+            )
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+
+        console.print()
+        console.print(
+            Panel(
+                Markdown(res.format_summary()),
+                title="[bold green]🎯 Autonomer Ziel-Loop: Abschlussbericht[/bold green]",
+                border_style="green" if res.success else "yellow",
+                padding=(1, 2),
+            )
+        )
+        if res.success:
+            await self._ask_for_git_push(f"feat: {goal_text[:60]}")
+
     async def _show_backlog(self) -> None:
         """
         Zeigt memory/backlog.json (core/backlog_store.py) - alle Tickets über CLI, Dashboard
@@ -1319,6 +1375,9 @@ class CLIInterface:
 
         elif cmd in ("/state", "/checkpoint", "/status-projekt", "/status"):
             self._show_project_state(args[0] if args else None)
+
+        elif cmd in ("/goal", "/autoloop", "/ziel", "/loop"):
+            await self._run_goal_loop_command(args)
 
         elif cmd in ("/team-health", "/teamgesundheit", "/rollup"):
             self._show_team_health()

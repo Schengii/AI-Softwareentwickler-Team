@@ -163,6 +163,47 @@ def main():
                 print(f"{'✅' if r.healthy else '❌'} {r.project_slug} ({r.url}): {r.detail}")
         return
 
+    if "--goal" in sys.argv:
+        import asyncio
+        from pathlib import Path
+
+        from config import WORKSPACE_DIR
+        from core.goal_loop import run_goal_loop
+
+        try:
+            goal_idx = sys.argv.index("--goal") + 1
+            goal_text = sys.argv[goal_idx]
+        except IndexError:
+            print("❌ Fehler: Bitte gib ein Ziel nach `--goal` an (z. B. `python main.py --goal \"Baue eine Notiz-API\"`).")
+            return
+
+        max_iterations = 5
+        if "--max-iterations" in sys.argv:
+            try:
+                max_iterations = int(sys.argv[sys.argv.index("--max-iterations") + 1])
+            except (IndexError, ValueError):
+                pass
+
+        project_dir = None
+        if "--project" in sys.argv:
+            try:
+                proj_name = sys.argv[sys.argv.index("--project") + 1]
+                project_dir = str(Path(WORKSPACE_DIR) / proj_name)
+            except IndexError:
+                pass
+
+        print(f"🎯 Starte autonomen Ziel-Loop: '{goal_text}' (max. {max_iterations} Iterationen)...")
+        res = asyncio.run(
+            run_goal_loop(
+                goal=goal_text,
+                project_dir=project_dir,
+                max_iterations=max_iterations,
+                status_callback=print,
+            )
+        )
+        print("\n" + res.format_summary())
+        return
+
     if "--dashboard" in sys.argv:
         from interface.web_dashboard import run_dashboard
         port = 8080

@@ -10,7 +10,9 @@ _run_verification_loop() installiert Abhängigkeiten in einer isolierten Umgebun
 echte Testsuite aus und schickt bei Fehlschlägen einen GEZIELTEN Korrekturauftrag an genau
 die Agenten, deren Dateien laut echtem Traceback betroffen sind. Führt anschließend alle
 weiteren Verifikations-Checks aus (Docker-Build, Dependency-/SAST-/Lizenz-Audit, Lint,
-Coverage, Runtime-Smoke, Lastentest, Browser/A11y).
+Coverage, Runtime-Smoke, Lastentest, Browser/A11y) - Runtime-Smoke, Lastentest und Browser/UI
+laufen dabei über _run_runtime_check_with_fix() (siehe unten), das bei Fehlschlag ebenfalls
+einen gezielten Korrekturauftrag auslöst statt nur verification_ok zurückzusetzen.
 """
 
 import asyncio
@@ -33,6 +35,70 @@ from core.verifier import ProjectVerifier, VerificationReport
 
 class VerificationMixin:
     """Governance-Fix-Schleife und echte Test-/Deployment-Verifikations-Schleife."""
+
+    async def _run_runtime_check_with_fix(
+        self,
+        *,
+        check_fn: Callable,
+        build_fix_task: Callable,
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        notify: Callable[[str], None],
+        run_start_tokens: int | None,
+        cancel_requested: Callable[[], bool] | None,
+        is_attempted: Callable,
+        is_passed: Callable,
+    ):
+        """
+        Realer Fund bei einer Bestandsaufnahme des eigenen Teams: anders als ein echter
+        Testfehler (siehe _run_verification_loop oben) lösten ein fehlgeschlagener Runtime-
+        Smoke-Test, Lastentest oder Browser/UI-Check bisher NIE einen Korrekturauftrag aus -
+        sie setzten nur verification_ok=False und der Lauf endete. Ein Projekt mit einem
+        kaputten Frontend blieb dadurch über beliebig viele Läufe hinweg rot, weil derselbe
+        Fehler nie behoben wurde (real beobachtet: snippet_vault scheiterte 3 Läufe in Folge
+        am selben Frontend-Check). Dieselbe gezielte Fix-Schleife wie beim Testfehler, nur
+        mit vom Aufrufer übergebener Owner-Ermittlung statt Traceback-Dateizuordnung (diese
+        Checks liefern keinen Python-Traceback mit betroffenen Dateien).
+
+        Gibt (report, all_results, budget_aborted, manually_cancelled) zurück. `report` ist
+        das Ergebnis des letzten Check-Laufs (erster Lauf, falls nie gefixt wurde).
+        """
+        report = await asyncio.to_thread(check_fn)
+        budget_aborted = False
+        manually_cancelled = False
+        if not is_attempted(report) or is_passed(report):
+            return report, all_results, budget_aborted, manually_cancelled
+
+        for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
+            if run_start_tokens is not None and (
+                self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+            ):
+                budget_aborted = True
+                notify("  🚫 [bold red]Budget erreicht[/bold red] – weitere Fixversuche werden übersprungen.")
+                break
+            if cancel_requested and cancel_requested():
+                manually_cancelled = True
+                notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – weitere Fixversuche werden übersprungen.")
+                break
+
+            fix_task = build_fix_task(report, attempt)
+            if fix_task is None:
+                # Kein zuständiger Agent ermittelbar (z.B. kein frontend-Agent Teil des Plans) -
+                # Fix-Schleife kann hier nichts beitragen, letzter Check-Stand bleibt maßgeblich.
+                break
+
+            notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix (Versuch {attempt}):[/bold yellow] Beauftrage {fix_task.agent_id}...")
+            fix_results = await self._run_agents_parallel([fix_task], notify=notify)
+            self._update_file_owners(file_owners, fix_results)
+            all_results.extend(fix_results)
+
+            report = await asyncio.to_thread(check_fn)
+            if is_passed(report):
+                break
+            if attempt == MAX_VERIFICATION_ITERATIONS:
+                notify("  ⚠️ [yellow]Maximale Fixversuche erreicht – letzter Check-Stand wird übernommen.[/yellow]")
+
+        return report, all_results, budget_aborted, manually_cancelled
 
     async def _run_governance_fix_loop(
         self,
@@ -445,7 +511,38 @@ class VerificationMixin:
 
         # Runtime Smoke-Check: Prüft, ob die generierte App tatsächlich hochfährt / antwortet (Tests grün != App startet)
         if not (budget_aborted or manually_cancelled) and report is not None and report.ran and report.passed:
-            smoke_report = await asyncio.to_thread(verifier.check_runtime_smoke)
+            def _build_smoke_fix_task(smoke_report, attempt):
+                owner = file_owners.get(smoke_report.entrypoint) if smoke_report.entrypoint else None
+                agent_id = owner if owner in self._agents else ("backend" if "backend" in self._agents else None)
+                if agent_id is None:
+                    return None
+                return AgentTask(
+                    task_id=f"verify_fix_smoke_{agent_id}_{attempt}",
+                    agent_id=agent_id,
+                    description=(
+                        f"Der ECHTE Runtime-Smoke-Test ist fehlgeschlagen: die App startet nicht bzw. "
+                        f"antwortet nicht (Entrypoint `{smoke_report.entrypoint}`, Typ {smoke_report.app_type}). "
+                        f"Tests waren grün, aber 'Tests grün' heißt nicht 'App startet'. Nutze read_file, "
+                        f"um die betroffene(n) Datei(en) zu prüfen, und edit_file/write_file, um den Start-"
+                        f"fehler zu beheben.\n\nFehlerausgabe:\n{smoke_report.output[:1000]}"
+                    ),
+                    context="",
+                    project_dir=project_dir,
+                )
+
+            smoke_report, all_results, sb_aborted, sb_cancelled = await self._run_runtime_check_with_fix(
+                check_fn=verifier.check_runtime_smoke,
+                build_fix_task=_build_smoke_fix_task,
+                all_results=all_results,
+                file_owners=file_owners,
+                notify=notify,
+                run_start_tokens=run_start_tokens,
+                cancel_requested=cancel_requested,
+                is_attempted=lambda r: r.attempted,
+                is_passed=lambda r: r.passed,
+            )
+            budget_aborted = budget_aborted or sb_aborted
+            manually_cancelled = manually_cancelled or sb_cancelled
             if smoke_report.attempted:
                 if smoke_report.passed:
                     code_info = f" (HTTP {smoke_report.status_code})" if smoke_report.status_code else ""
@@ -474,9 +571,38 @@ class VerificationMixin:
         # Last), kein reiner Stil-Hinweis. In der Praxis für die meisten Projekte ein No-Op
         # (braucht ein Skript unter tests/load/ UND das jeweilige Tool lokal installiert).
         if ENABLE_LOAD_TEST_CHECK and not (budget_aborted or manually_cancelled) and report is not None and report.ran and report.passed:
-            perf_report = await asyncio.to_thread(
-                verifier.check_load_test, LOAD_TEST_DURATION_SECONDS, LOAD_TEST_TIMEOUT_SECONDS,
+            def _build_load_fix_task(perf_report, attempt):
+                owner = file_owners.get(perf_report.script) if perf_report.script else None
+                agent_id = owner if owner in self._agents else ("backend" if "backend" in self._agents else None)
+                if agent_id is None:
+                    return None
+                return AgentTask(
+                    task_id=f"verify_fix_load_{agent_id}_{attempt}",
+                    agent_id=agent_id,
+                    description=(
+                        f"Der ECHTE Lastentest (`{perf_report.script}`, {perf_report.tool}) ist fehlgeschlagen: "
+                        f"{perf_report.failed_requests} von {perf_report.total_requests} Requests scheiterten "
+                        f"unter simultaner Last. Nutze read_file, um die betroffene(n) Datei(en) zu prüfen, "
+                        f"und edit_file/write_file, um die Ursache (z.B. fehlende Nebenläufigkeitssicherung, "
+                        f"blockierende I/O) zu beheben."
+                    ),
+                    context="",
+                    project_dir=project_dir,
+                )
+
+            perf_report, all_results, lb_aborted, lb_cancelled = await self._run_runtime_check_with_fix(
+                check_fn=lambda: verifier.check_load_test(LOAD_TEST_DURATION_SECONDS, LOAD_TEST_TIMEOUT_SECONDS),
+                build_fix_task=_build_load_fix_task,
+                all_results=all_results,
+                file_owners=file_owners,
+                notify=notify,
+                run_start_tokens=run_start_tokens,
+                cancel_requested=cancel_requested,
+                is_attempted=lambda r: r.attempted,
+                is_passed=lambda r: r.passed,
             )
+            budget_aborted = budget_aborted or lb_aborted
+            manually_cancelled = manually_cancelled or lb_cancelled
             if perf_report.attempted:
                 stats = f"{perf_report.total_requests} Requests, {perf_report.failed_requests} fehlgeschlagen"
                 # isinstance() statt "is not None": ein Test, der ProjectVerifier komplett mockt,
@@ -507,7 +633,41 @@ class VerificationMixin:
         # Lint-Fund. Ein echter Fehlschlag zählt deshalb jetzt wie beim Lastentest/Runtime-
         # Smoke-Test oben als echte Anforderungsverletzung.
         if not (budget_aborted or manually_cancelled):
-            browser_report = await asyncio.to_thread(verifier.check_browser_ui)
+            def _build_browser_fix_task(browser_report, attempt):
+                agent_id = "frontend" if "frontend" in self._agents else next(
+                    (a for a in ("backend",) if a in self._agents), None,
+                )
+                if agent_id is None:
+                    return None
+                details = browser_report.missing_assets + browser_report.console_errors + [
+                    f"Canvas nie gezeichnet: {c}" for c in browser_report.blank_canvases
+                ]
+                return AgentTask(
+                    task_id=f"verify_fix_browser_{agent_id}_{attempt}",
+                    agent_id=agent_id,
+                    description=(
+                        f"Der ECHTE Browser/UI-Check (Playwright) gegen `{browser_report.tested_url}` ist "
+                        f"fehlgeschlagen: {'; '.join(details)[:800]}. Nutze read_file, um die betroffene(n) "
+                        f"Datei(en) zu prüfen, und edit_file/write_file, um den Fehler zu beheben (z.B. "
+                        f"fehlendes Asset, JS-Konsolenfehler, nie gezeichnetes Canvas-Element)."
+                    ),
+                    context="",
+                    project_dir=project_dir,
+                )
+
+            browser_report, all_results, br_aborted, br_cancelled = await self._run_runtime_check_with_fix(
+                check_fn=verifier.check_browser_ui,
+                build_fix_task=_build_browser_fix_task,
+                all_results=all_results,
+                file_owners=file_owners,
+                notify=notify,
+                run_start_tokens=run_start_tokens,
+                cancel_requested=cancel_requested,
+                is_attempted=lambda r: r.attempted,
+                is_passed=lambda r: r.passed,
+            )
+            budget_aborted = budget_aborted or br_aborted
+            manually_cancelled = manually_cancelled or br_cancelled
             if browser_report.attempted:
                 if browser_report.passed:
                     if browser_report.engine == "playwright":

@@ -1,10 +1,8 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Header
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
 from models import AsyncSessionLocal, Poll, Option, Vote
 from connection_manager import manager
-from pydantic import BaseModel, ValidationError
-from typing import List
+from pydantic import ValidationError
 from schemas import WSMessage, VoteEvent, PollCreate, PollUpdateEvent
 
 app = FastAPI()

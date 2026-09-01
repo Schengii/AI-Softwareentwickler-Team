@@ -3,7 +3,7 @@ from httpx import ASGITransport, AsyncClient
 from fastapi import status
 
 from app.main import app
-from app.db import init_db, engine
+from app.db import engine
 from app.db import SQLModel
 
 

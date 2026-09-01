@@ -44,5 +44,33 @@ class TestCodeWritingAgentsGetAdrReminder(unittest.TestCase):
         self.assertNotIn("record_architecture_decision", augmented)
 
 
+class TestWriteAccessNoteReflectsReadOnlyFlag(unittest.TestCase):
+    """
+    Realer Fund (omnichat-Projekt): der security-Agent identifizierte ein echtes kritisches
+    Problem, hatte aber keine Schreibrechte und fragte per `ask_human_for_clarification` nach
+    ihnen - eine Frage, die nie beantwortet wurde, obwohl core/review_gate.py bereits eine
+    automatische Fix-Schleife für genau diesen Fall bereitstellt. `_augment_with_tool_instructions`
+    macht den tatsächlichen Schreibzugriffs-Status jetzt explizit im Prompt sichtbar.
+    """
+
+    def test_read_only_task_tells_agent_to_report_not_ask(self):
+        agent = BackendAgent()
+        augmented = agent._augment_with_tool_instructions("Basis-Prompt.", read_only=True)
+        self.assertIn("KEINEN Schreibzugriff", augmented)
+        self.assertIn("AUCH NICHT über `ask_human_for_clarification` nach Schreibrechten", augmented)
+
+    def test_write_enabled_task_tells_agent_to_fix_directly(self):
+        agent = BackendAgent()
+        augmented = agent._augment_with_tool_instructions("Basis-Prompt.", read_only=False)
+        self.assertIn("vollen Schreibzugriff", augmented)
+
+    def test_default_matches_write_enabled_behavior(self):
+        # Kein `read_only`-Argument (Standardfall) darf sich nicht wie ein Nur-Lese-Aufruf
+        # verhalten - bestehende Aufrufer (z.B. der ADR-Reminder-Test oben) übergeben es nicht.
+        agent = BackendAgent()
+        augmented = agent._augment_with_tool_instructions("Basis-Prompt.")
+        self.assertIn("vollen Schreibzugriff", augmented)
+
+
 if __name__ == "__main__":
     unittest.main()

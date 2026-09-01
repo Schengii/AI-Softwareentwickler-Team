@@ -7,6 +7,57 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🏷️ TypeScript-CI-Check, GitHub-Labels für Verifikationsstatus & Eskalation bei Wiederholungsfehlern
+
+Direkte Fortsetzung der drei Vorschläge aus dem vorherigen Eintrag unten, alle vollständig
+umgesetzt:
+
+- **`workspace-typescript-check` (neuer CI-Job):** Pendant zu `workspace-python-check` für
+  `.ts`/`.tsx`-Dateien – `workspace-frontend-tests` läuft nur, wenn ein Projekt bereits ein
+  `test`-Skript in `package.json` hat; ein generiertes `.tsx`-Fragment ganz ohne
+  `package.json` (real beobachtet: `TaskList.tsx`/`useTaskWebSocket.ts`) durchlief bisher
+  keinen einzigen CI-Check. `tsc --noEmit` über alle per `git ls-files` gefundenen
+  `workspace/*.ts(x)`-Dateien, TS2307 ("Cannot find module" – workspace/-Projekte werden
+  bewusst ohne `node_modules` committet) wird gezielt ausgefiltert, jeder andere
+  Diagnose-Code (Syntaxfehler, kaputtes JSX, falsch referenzierte Namen) lässt den Job
+  fehlschlagen.
+- **GitHub-Labels statt nur Titel-Präfix:** `agents/github_agent.py.label_pr()` legt
+  `verification-failed`/`budget-aborted`/`needs-clarification` idempotent an und wendet sie
+  auf den PR an – sichtbar in der PR-LISTE, nicht erst beim Öffnen des einzelnen PRs. Neues
+  `Orchestrator.last_budget_aborted`, damit `interface/cli.py` diesen Grund unabhängig von
+  `last_verification_ok` erkennen kann.
+- **`core/project_status.count_consecutive_failed_runs()`:** Ab zwei aufeinanderfolgenden
+  Läufen ohne bestandene Verifikation ersetzt eine deutlichere Warnung MIT konkreter
+  Handlungsempfehlung die bisher rein informative Duplikat-Warnung – ein manueller
+  Abbruch (`cancelled=True`) zählt bewusst nicht als Fehlschlag und unterbricht die Zählung.
+
+---
+
+## 🩹 CI-Lücke bei generiertem `workspace/`-Code + Verifikationsstatus in Duplikat-Warnung
+
+Retrospektive zu vier separaten, aufeinanderfolgenden Läufen an praktisch derselben
+Aufgabe (`fastapi-task-mgmt`, `fastapi_task_websocket`, `kanban_board`,
+`kanban_task_manager`), die alle vier mit `verification_ok=false` endeten und trotzdem
+in einem gemeinsamen Commit mit erfolgsklingender Nachricht zusammengeführt wurden.
+
+- **CI prüfte `workspace/`-Python-Code bisher gar nicht:** `ruff.toml` schließt
+  `workspace/` bewusst aus (eigener Stil generierter Projekte), der Syntax-Check im
+  `test`-Job filtert `workspace/` ebenfalls komplett heraus. Der interne Verifier
+  (`core/verifier.py._lint_python`, läuft während eines echten Agentenlaufs) hatte reale
+  Bugs korrekt erkannt (u.a. `json.loads()` ohne Import, `app`/`Depends` ohne Import) –
+  dieses Ergebnis wurde aber nie durch eine zweite, unabhängige CI-Prüfung nach dem Lauf
+  abgesichert. Neuer Job `workspace-python-check`: `py_compile` +
+  `ruff check --isolated --select F,E9` (umgeht den `ruff.toml`-Exclude bewusst) über
+  alle `workspace/*.py`-Dateien. Alle 25 dadurch aufgedeckten Altfunde in bereits
+  gemergtem Workspace-Code sind mitbehoben.
+- **Duplikat-Warnung ohne Verifikationsstatus:** Die Warnung vor dem Anlegen eines neuen
+  Projekts (siehe [PR-Workflow](README.md#pr-workflow)) zeigte bisher nur Namen bereits vorhandener Projekte, nicht deren zuletzt
+  protokollierten Verifikationsstatus – ein fehlgeschlagener Vorversuch wirkte dadurch
+  nicht dringlicher als ein sauber abgeschlossenes Projekt. Zeigt jetzt zusätzlich
+  ✅/⚠️/🚫/⏹️ je Projekt an, weiterhin ohne Ähnlichkeits-Matching/Heuristik/LLM-Aufruf.
+
+---
+
 ## ↩️ Echter Rollback-Workflow: `/rollback <PR-Nummer>`
 
 Realer Fund bei einer Bestandsaufnahme des eigenen Teams: bricht ein gemergter PR `main`

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Annotated, Union, List, Optional
+from typing import Annotated, Union
 from datetime import datetime
 
 class CheckCreate(BaseModel):

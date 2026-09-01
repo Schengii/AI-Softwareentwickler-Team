@@ -112,6 +112,7 @@ from core.optimization_advisor import format_report_for_humans as format_optimiz
 from core.project_constitution import format_constitution_for_agents, get_max_project_tokens
 from core.project_status import (
     MAX_FAILURE_DETAIL_CHARS,
+    count_consecutive_failed_runs,
     format_context_for_agents,
     has_repeated_failure,
     read_status,
@@ -239,6 +240,13 @@ class Orchestrator(
         # Push-Gate (interface/cli.py) bzw. in autonomen Läufen (core/backlog_worker.py).
         self.last_needs_human_input: bool = False
         self.last_clarification_questions: list[str] = []
+        # True, wenn MAX_RUN_TOKENS oder das Pro-Projekt-Budget (/constitution) im letzten Lauf
+        # überschritten wurde und deshalb verbleibende Fachbereiche/Mitglieder übersprungen
+        # wurden (siehe process(), lokale budget_aborted-Variable) - von interface/cli.py
+        # genutzt, um einen so vorzeitig beendeten Lauf im PR (Titel/Label/Body) genauso
+        # unübersehbar zu machen wie eine fehlgeschlagene Verifikation, statt dass nur
+        # .ai_team_status.json davon weiß.
+        self.last_budget_aborted: bool = False
         # Pro-Projekt-Kostenbudget (core/project_constitution.py `max_project_tokens`,
         # /constitution) - unabhängig vom globalen MAX_RUN_TOKENS (das begrenzt nur EINEN
         # einzelnen Lauf). Bei jedem process()-Aufruf frisch aus der Konstitution des jeweils
@@ -352,7 +360,27 @@ class Orchestrator(
             # statt eines neuen Projekts die bessere Wahl gewesen wäre.
             existing_projects = self._workspace.list_projects()
             if project_slug not in existing_projects and existing_projects:
-                shown = ", ".join(existing_projects[:10])
+                # Realer Fund (Retrospektive zu vier separaten Läufen an praktisch derselben
+                # Aufgabe - "fastapi-task-mgmt", "fastapi_task_websocket", "kanban_board",
+                # "kanban_task_manager"): die reine Namensliste allein macht nicht sichtbar,
+                # dass ein bereits vorhandenes Projekt beim letzten Lauf gar nicht verifiziert
+                # werden konnte - ein weiterer, komplett neuer Versuch wirkt dadurch günstiger,
+                # als er ist. Zeigt zusätzlich den zuletzt protokollierten Status jedes
+                # vorhandenen Projekts an, weiterhin rein informativ (kein LLM-Aufruf).
+                def _last_status_icon(name: str) -> str:
+                    history = read_status(str(self._workspace.get_project_dir(name)))
+                    if not history:
+                        return ""
+                    last = history[0]
+                    if last.get("verification_ok"):
+                        return " ✅"
+                    if last.get("cancelled"):
+                        return " ⏹️"
+                    if last.get("budget_aborted"):
+                        return " 🚫"
+                    return " ⚠️"
+
+                shown = ", ".join(f"{name}{_last_status_icon(name)}" for name in existing_projects[:10])
                 more = f" (+{len(existing_projects) - 10} weitere)" if len(existing_projects) > 10 else ""
                 # Realer Fund: bei mehreren, kurz aufeinanderfolgenden Läufen INNERHALB
                 # derselben Sitzung (z.B. durch eine beim Einfügen zerrissene Nutzereingabe,
@@ -392,8 +420,10 @@ class Orchestrator(
                     f"{same_session_hint}"
                     f"{near_duplicate_hint}"
                     f"🗂️ [dim]Neues Projekt '{project_slug}' wird angelegt. Bereits vorhanden: "
-                    f"{shown}{more} – falls du an einem davon weiterarbeiten wolltest, nutze "
-                    f"stattdessen `/load <name>`.[/dim]"
+                    f"{shown}{more} (letzter Lauf: ✅ verifiziert / ⚠️ nicht verifiziert / "
+                    f"🚫 Budget erreicht / ⏹️ abgebrochen, ohne Symbol = noch kein Lauf protokolliert) "
+                    f"– falls du an einem davon weiterarbeiten wolltest, nutze stattdessen "
+                    f"`/load <name>`.[/dim]"
                 )
 
             # get_project_dir() legt das Verzeichnis bei Bedarf leer an (mkdir) - die
@@ -418,6 +448,28 @@ class Orchestrator(
         # Der TATSÄCHLICH verwendete Ordnername (nicht der u.U. verworfene project_slug bei
         # forced_project_dir) – zuverlässiger Commit-Message-Fallback, siehe last_project_slug oben.
         self.last_project_slug = Path(project_dir).name
+
+        # Realer Fund (vier separate Läufe an praktisch derselben Aufgabe, alle mit
+        # verification_ok=false): der rein informative Duplikat-Hinweis oben wird beim
+        # WIEDERHOLTEN Scheitern DESSELBEN Projekts leicht überlesen - "einfach nochmal
+        # versuchen" wirkt jedes Mal aufs Neue günstiger, als es tatsächlich ist. Ab der
+        # dritten Runde OHNE bestandene Verifikation in Folge (2 bereits erfolgte + der gerade
+        # startende) wird die Warnung deshalb deutlich direkter, MIT einer konkreten
+        # Handlungsempfehlung (Aufgabe kleiner zerlegen / Budget prüfen) statt nur "informativ".
+        # Bewusst weiterhin KEIN automatisches Eingreifen (keine automatische Aufgaben-
+        # Zerlegung, keine automatische Budget-Erhöhung) - der Mensch entscheidet nach wie vor
+        # selbst, der Lauf wird dadurch nicht blockiert.
+        consecutive_failures = count_consecutive_failed_runs(project_dir)
+        if consecutive_failures >= 2:
+            notify(
+                f"🔁 [bold yellow]Wiederholtes Scheitern:[/bold yellow] Die letzten "
+                f"{consecutive_failures} Läufe an `{self.last_project_slug}` endeten OHNE "
+                f"bestandene Verifikation (siehe `.ai_team_status.json`). Bevor ein weiterer "
+                f"kompletter Lauf startet, lieber prüfen: (1) Aufgabe in kleinere Schritte "
+                f"zerlegen statt alles auf einmal zu verlangen, (2) `/constitution` – reicht "
+                f"das Projekt-Budget für die tatsächliche Komplexität, (3) den letzten "
+                f"Verifikations-Bericht lesen – wiederholt sich derselbe Fehler?"
+            )
 
         # Pro-Projekt-Kostenbudget (siehe __init__): MAX_RUN_TOKENS begrenzt nur DIESEN einen
         # Lauf - ein Projekt mit vielen aufeinanderfolgenden Läufen (z.B. für einen externen
@@ -655,6 +707,7 @@ class Orchestrator(
         total_duration = time.monotonic() - overall_start_time
         retro_result = None
         trainer_result = None
+        self.last_budget_aborted = budget_aborted
 
         if budget_aborted:
             notify(f"🚫 [bold red]{self._budget_exceeded_label(run_start_tokens)} erreicht:[/bold red] Retrospektive & Selbstoptimierung werden übersprungen ({self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf).")

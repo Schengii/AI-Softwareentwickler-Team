@@ -19,6 +19,7 @@ from unittest.mock import patch
 from agents.orchestrator import Orchestrator
 from core.llm_factory import LLMResponse
 from core.message_bus import AgentTask
+from core.project_status import record_run
 from core.verifier import VerificationReport
 from core.workspace import WorkspaceManager
 
@@ -104,6 +105,64 @@ class TestDuplicateProjectWarning(unittest.TestCase):
             f"Erwarteter Hinweis auf 'erstes_projekt' aus derselben Sitzung fehlt in: {logs}",
         )
         self.assertTrue(any("/load erstes_projekt" in line for line in logs))
+
+    def test_warning_shows_failed_verification_status_of_existing_project(self):
+        """
+        Realer Fund (Retrospektive zu vier separaten Läufen an praktisch derselben Aufgabe -
+        "fastapi-task-mgmt", "fastapi_task_websocket", "kanban_board", "kanban_task_manager"):
+        die reine Namensliste allein macht nicht sichtbar, dass ein bereits vorhandenes Projekt
+        beim letzten Lauf gar nicht verifiziert werden konnte - ein weiterer, komplett neuer
+        Versuch wirkt dadurch günstiger, als er ist. Der Hinweis muss jetzt zusätzlich den
+        zuletzt protokollierten Status (core/project_status.record_run()) jedes vorhandenen
+        Projekts anzeigen.
+        """
+        existing_dir = self.orchestrator._workspace.base_dir / "kanban_board"
+        existing_dir.mkdir()
+        record_run(
+            project_dir=str(existing_dir),
+            task_summary="Kanban-Board implementiert",
+            verification_ok=False,
+            budget_aborted=False,
+            files_written_count=12,
+        )
+
+        logs = self._run("kanban_task_manager")
+        self.assertTrue(
+            any("kanban_board ⚠️" in line for line in logs),
+            f"Erwartetes Status-Symbol für den fehlgeschlagenen letzten Lauf von "
+            f"'kanban_board' fehlt in: {logs}",
+        )
+
+    def test_repeated_failure_triggers_stronger_warning_with_recommendation(self):
+        """
+        Realer Fund: der rein informative Duplikat-Hinweis wird beim WIEDERHOLTEN Scheitern
+        desselben Projekts leicht überlesen - "einfach nochmal versuchen" wirkt jedes Mal
+        aufs Neue günstiger, als es tatsächlich ist. Ab zwei aufeinanderfolgenden Läufen ohne
+        bestandene Verifikation muss eine deutlichere Warnung MIT konkreter
+        Handlungsempfehlung erscheinen, bevor ein dritter kompletter Lauf startet.
+        """
+        project_dir = self.orchestrator._workspace.base_dir / "wiederholt_gescheitert"
+        project_dir.mkdir()
+        record_run(str(project_dir), "Erster Versuch", verification_ok=False, budget_aborted=False, files_written_count=1)
+        record_run(str(project_dir), "Zweiter Versuch", verification_ok=False, budget_aborted=False, files_written_count=1)
+
+        logs = self._run("wiederholt_gescheitert")
+
+        self.assertTrue(
+            any("Wiederholtes Scheitern" in line and "zerlegen" in line for line in logs),
+            f"Erwartete verstärkte Warnung mit Handlungsempfehlung fehlt in: {logs}",
+        )
+
+    def test_no_repeated_failure_warning_after_a_single_failed_run(self):
+        """Ein einzelner Fehlschlag ist normal, keine Eskalation nötig - die bestehende, rein
+        informative Duplikat-Warnung reicht dafür bereits aus."""
+        project_dir = self.orchestrator._workspace.base_dir / "einmal_gescheitert"
+        project_dir.mkdir()
+        record_run(str(project_dir), "Einziger Versuch", verification_ok=False, budget_aborted=False, files_written_count=1)
+
+        logs = self._run("einmal_gescheitert")
+
+        self.assertFalse(any("Wiederholtes Scheitern" in line for line in logs))
 
     def test_warns_on_near_duplicate_slug_differing_only_by_separator(self):
         """

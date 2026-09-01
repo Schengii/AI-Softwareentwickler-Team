@@ -1,0 +1,7 @@
+# Python / Test Artefakte
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+.DS_Store
+*.log

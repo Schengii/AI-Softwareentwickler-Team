@@ -7,6 +7,46 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🎯 Autonomer Ziel-Loop, Runde 2: Rand- & Fehlerfälle, Ticket-Status, `pytest` ohne Pfadangabe
+
+Zweite Prüfrunde am Ziel-Loop (`core/goal_loop.py`) nach der ersten Kill-Switch-Runde
+darunter – diesmal auf Rand- und Fehlerfälle statt der Kernlogik, plus ein reales
+Test-Tooling-Problem, das beim vollständigen Verifizieren der Suite auffiel:
+
+- **Nutzerabbruch/Absturz landeten irreführend als "review" im Backlog:** `upsert_ticket()`
+  setzte bei JEDEM nicht-erfolgreichen Ausgang denselben Status `"review"` – ein per Strg+C
+  abgebrochener Loop sah damit im Board wie ein fertig zur Prüfung anstehender PR aus, obwohl
+  nichts zu prüfen ist. Jetzt: `"cancelled"` bei Nutzerabbruch, `"blocked"` bei einer echten
+  Exception, `"review"` nur noch beim tatsächlichen "Ziel nach max. Iterationen offen"-Fall.
+- **Exceptions verschwanden in einer irreführenden Standardmeldung:** Warf
+  `orchestrator.process()` mitten in einer Iteration eine Exception (z.B. komplett erschöpfte
+  Provider-Kette), landete das zwar korrekt als Fehlschlag in `iterations_history`, der
+  `final_message` des Abschlussberichts sagte aber trotzdem nur "Ziel nach maximalen
+  Iterationen noch nicht vollständig abgeschlossen" – als wäre einfach das Budget an
+  Iterationen ausgegangen. `final_message` nennt jetzt explizit Iteration und Fehlertext der
+  Exception.
+- **Kein Schutz vor leerem Ziel oder `max_iterations < 1`:** Ein leeres/nur-Whitespace-`goal`
+  hätte einen sinnlosen Orchestrator-Lauf mit leerer Aufgabe gestartet (Tokenverbrauch ohne
+  jeden Nutzen); `max_iterations=0` (oder negativ, z.B. durch einen Tippfehler in
+  `/goal -1 ...`) ließ den Loop bisher still und ohne jede Rückmeldung zu einem kompletten
+  No-Op werden. Beide Fälle werden jetzt VOR dem ersten Orchestrator-Aufruf abgefangen – ein
+  leeres Ziel bricht sofort mit klarer Meldung ab, ein zu kleines `max_iterations` wird sichtbar
+  auf 1 angehoben statt schweigend zu nichts zu führen.
+- **`pytest`/`python -m pytest` ohne Pfadangabe crashte mit einem internen Capture-Fehler:**
+  Realer Fund beim vollständigen Verifizieren dieser Änderungsrunde – ohne `testpaths` sammelte
+  ein blankes `pytest` im Projekt-Root auch jeden Test aus generierten
+  `workspace/<projekt>/tests/`-Verzeichnissen ein, deren Abhängigkeiten hier nicht installiert
+  sind (`ModuleNotFoundError: No module named 'app'` etc.) – genug betroffene Module ließen
+  pytest sogar mit `ValueError: I/O operation on closed file` beim Teardown abstürzen, statt nur
+  die eigene, tatsächlich grüne Framework-Suite zu melden. Neues `pytest.ini` (`testpaths =
+  tests`) behebt das: `pytest` ohne jede Pfadangabe läuft jetzt zuverlässig nur gegen die 888
+  Tests der eigenen Suite.
+
+5 neue Tests (leeres Ziel, `max_iterations`-Clamping, Exception-Reporting im Abschlussbericht);
+volle Suite (888 Tests) grün, ruff sauber.
+
+---
+
 ## 🎯 Autonomer Ziel-Loop (`core/goal_loop.py`): Kill-Switches gegen Endlosschleifen & echter Provider-Fallback
 
 Neuer Baustein: der autonome Ziel-Loop (`/goal`, `python main.py --goal`) lässt das Team nicht

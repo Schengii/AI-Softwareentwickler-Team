@@ -119,6 +119,23 @@ class GoalLoopRunner:
             if status_callback:
                 status_callback(msg)
 
+        if not goal or not goal.strip():
+            emit("⚠️ [yellow]Kein Ziel angegeben – Ziel-Loop wird nicht gestartet.[/yellow]")
+            return GoalLoopResult(
+                goal=goal,
+                project_slug=Path(project_dir).name if project_dir else "",
+                success=False,
+                total_iterations=0,
+                final_message="Abbruch: leeres Ziel übergeben.",
+            )
+
+        if max_iterations < 1:
+            emit(
+                f"⚠️ [yellow]max_iterations={max_iterations} ist ungültig – erzwinge mindestens 1 "
+                "Iteration.[/yellow]"
+            )
+            max_iterations = 1
+
         emit(f"🎯 [bold cyan]Starte autonomen Ziel-Loop[/bold cyan] (max. {max_iterations} Iterationen)...")
 
         # Initialen Project-Slug bestimmen
@@ -137,6 +154,7 @@ class GoalLoopRunner:
         was_cancelled = False
         budget_exceeded = False
         stagnated = False
+        crashed = False
         loop_start_tokens = token_guard.get_summary()["grand_total_tokens"]
         previous_failure_detail: str | None = None
 
@@ -180,6 +198,7 @@ class GoalLoopRunner:
                         evaluation_reason="Lauf abgebrochen wegen Exception.",
                     )
                 )
+                crashed = True
                 break
 
             # 2. Projekt-Status & Verifikation auslesen
@@ -264,18 +283,28 @@ class GoalLoopRunner:
         final_success = is_goal_reached and (iterations_history[-1].verification_ok if iterations_history else False)
         final_msg = "Ziel erfolgreich fertiggestellt und verifiziert." if final_success else (
             "Abbruch durch Nutzer." if was_cancelled else (
-                "Abbruch: Verifikation stagnierte über zwei Iterationen mit identischem Fehler." if stagnated else (
-                    "Abbruch: kumulatives Ziel-Loop-Token-Budget erreicht." if budget_exceeded else
-                    "Ziel nach maximalen Iterationen noch nicht vollständig abgeschlossen."
+                f"Abbruch: unerwarteter Fehler in Iteration {iterations_history[-1].iteration if iterations_history else '?'} "
+                f"({iterations_history[-1].failure_detail[:150] if iterations_history else 'unbekannt'})." if crashed else (
+                    "Abbruch: Verifikation stagnierte über zwei Iterationen mit identischem Fehler." if stagnated else (
+                        "Abbruch: kumulatives Ziel-Loop-Token-Budget erreicht." if budget_exceeded else
+                        "Ziel nach maximalen Iterationen noch nicht vollständig abgeschlossen."
+                    )
                 )
             )
         )
 
+        # "cancelled" statt "review" bei Nutzerabbruch, "blocked" bei einer echten Exception:
+        # ein per Strg+C beendeter oder abgestürzter Loop hat nichts, das ein Mensch noch
+        # "review"en müsste - das Board soll das nicht wie einen fertig zur Prüfung
+        # anstehenden PR-Zustand anzeigen.
+        final_status = "done" if final_success else (
+            "cancelled" if was_cancelled else ("blocked" if crashed else "review")
+        )
         upsert_ticket(
             ticket_id=ticket_id,
             title=f"Goal: {goal[:60]}",
             source="cli",
-            status="done" if final_success else "review",
+            status=final_status,
             project_slug=project_slug,
             detail=f"{len(iterations_history)} Iteration(en) absolviert.",
         )

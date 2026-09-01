@@ -217,3 +217,69 @@ async def test_goal_loop_cumulative_token_budget_aborts(tmp_path, monkeypatch):
         assert res.success is False
         assert res.total_iterations == 2
         assert "budget" in res.final_message.lower()
+
+
+@pytest.mark.asyncio
+async def test_goal_loop_empty_goal_returns_immediately_without_orchestrator_call():
+    """Ein leeres/nur-Whitespace-Ziel darf den Orchestrator nie starten (kein Tokenverbrauch)."""
+    mock_orchestrator = MagicMock()
+    mock_orchestrator.process = AsyncMock(return_value="sollte nie aufgerufen werden")
+    mock_orchestrator.get_workspace_manager = MagicMock()
+
+    runner = GoalLoopRunner(orchestrator=mock_orchestrator)
+
+    res = await runner.run(goal="   ", max_iterations=3)
+
+    assert res.success is False
+    assert res.total_iterations == 0
+    assert mock_orchestrator.process.call_count == 0
+    assert "leeres ziel" in res.final_message.lower()
+
+
+@pytest.mark.asyncio
+async def test_goal_loop_max_iterations_below_one_is_clamped(tmp_path):
+    """max_iterations=0 (oder negativ) darf den Loop nicht stillschweigend zu einem No-Op machen."""
+    mock_orchestrator = MagicMock()
+    mock_orchestrator.process = AsyncMock(return_value="Iteration 1 erledigt.")
+    mock_orchestrator.last_task_summary = "Erledigt"
+    mock_orchestrator.get_workspace_manager = MagicMock()
+
+    runner = GoalLoopRunner(orchestrator=mock_orchestrator)
+
+    with patch("core.goal_loop.read_status", return_value=[{"verification_ok": True, "failure_detail": ""}]), \
+         patch.object(runner, "_evaluate_and_synthesize_next_step", new_callable=AsyncMock) as mock_eval:
+        mock_eval.return_value = {"goal_reached": True, "reason": "grün", "next_prompt": ""}
+
+        res = await runner.run(
+            goal="Erstelle eine Notizen-API",
+            project_dir=str(tmp_path / "notizen_api"),
+            max_iterations=0,
+        )
+
+        assert mock_orchestrator.process.call_count == 1
+        assert res.total_iterations == 1
+        assert res.success is True
+
+
+@pytest.mark.asyncio
+async def test_goal_loop_exception_reports_crash_not_generic_max_iterations_message(tmp_path):
+    """
+    Eine Exception mitten im Orchestrator-Lauf muss als echter Fehler im Abschlussbericht
+    sichtbar sein - nicht als die irreführende Standardmeldung "max. Iterationen erreicht".
+    """
+    mock_orchestrator = MagicMock()
+    mock_orchestrator.process = AsyncMock(side_effect=RuntimeError("Provider-Kette komplett erschöpft"))
+    mock_orchestrator.get_workspace_manager = MagicMock()
+
+    runner = GoalLoopRunner(orchestrator=mock_orchestrator)
+
+    res = await runner.run(
+        goal="Erstelle eine Notizen-API",
+        project_dir=str(tmp_path / "notizen_api"),
+        max_iterations=5,
+    )
+
+    assert res.success is False
+    assert res.total_iterations == 1
+    assert "unerwarteter fehler" in res.final_message.lower()
+    assert "Provider-Kette komplett erschöpft" in res.final_message

@@ -13,6 +13,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from config import ENABLE_AUTO_LINT_FIX
 from core.code_sandbox import CodeSandbox, ExecutionResult
 from core.verifier.models import _ESLINT_CONFIG_NAMES, _IGNORED_DIRS, _TSC_ERROR_PATTERN, LintIssue, LintReport
 
@@ -59,13 +60,28 @@ class LintMixin:
                 attempted=False, passed=True, tool="ruff",
                 reason_skipped="`ruff` ist auf diesem System nicht installiert/verfügbar (`pip install ruff`).",
             )
+        exclude_flags = [f"--extend-exclude={d}" for d in sorted(_IGNORED_DIRS)]
+
+        # Realer Fund (Bestandsaufnahme cloudvault-Projekt): 13 ruff-Funde standen im
+        # Verifikations-Protokoll, wurden aber nie behoben - Lint ist rein informativ (siehe
+        # LintReport-Docstring), niemand war je beauftragt, sie zu fixen. `--fix` behebt NUR
+        # SICHERE Autofixes (unsortierte Imports, ungenutzte Importe, veraltete Typannotationen,
+        # …) - bewusst OHNE `--unsafe-fixes`, das kann Verhalten ändern und ist der Grund,
+        # warum ruff diese beiden Kategorien überhaupt trennt. Ein automatischer, syntaktisch
+        # zweifelsfreier Aufräumschritt VOR dem eigentlichen Check-Lauf, kein Agenten-Auftrag
+        # nötig - dieselbe Idee wie `black`/`prettier` im Pre-Commit-Hook eines echten Teams.
+        # Fehlschlag (z.B. Syntaxfehler im Projekt) ist hier kein Fehler des Checks selbst -
+        # der nachfolgende reine Check-Lauf liest ohnehin den tatsächlichen Stand danach.
+        if ENABLE_AUTO_LINT_FIX:
+            fix_command = ["ruff", "check", str(self.project_dir), "--isolated", "--fix", "--quiet"] + exclude_flags
+            CodeSandbox.run_command(fix_command, cwd=self.project_dir, timeout_seconds=timeout_seconds)
+
         # --isolated: ignoriert JEDE gefundene Konfigurationsdatei (auch die eigene
         # ruff.toml des Frameworks, falls das Projekt innerhalb des Repos liegt) und nutzt
         # ruffs neutrale Standardregeln – die eigenen, für den Framework-Code kuratierten
         # Regeln (z. B. E501-Ausnahme für deutschsprachige Docstrings) sollen einem
         # beliebigen generierten Projekt nicht aufgezwungen werden.
-        command = ["ruff", "check", str(self.project_dir), "--isolated", "--output-format=json"]
-        command += [f"--extend-exclude={d}" for d in sorted(_IGNORED_DIRS)]
+        command = ["ruff", "check", str(self.project_dir), "--isolated", "--output-format=json"] + exclude_flags
         result = CodeSandbox.run_command(command, cwd=self.project_dir, timeout_seconds=timeout_seconds)
         return self._parse_ruff_result(result)
 

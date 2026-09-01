@@ -97,6 +97,36 @@ class TestPythonLintViaRuff(unittest.TestCase):
 
     @patch("core.verifier.CodeSandbox.run_command")
     @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
+    def test_runs_safe_autofix_before_the_actual_check(self, mock_which, mock_run):
+        # Realer Fund (Bestandsaufnahme cloudvault-Projekt): Lint-Funde standen bisher nur im
+        # Protokoll, wurden aber nie behoben. `_lint_python()` führt jetzt VOR dem eigentlichen
+        # Check-Lauf `ruff check --fix` (NUR sichere Autofixes, kein `--unsafe-fixes`) aus.
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="[]", stderr="", duration_seconds=0.1)
+        verifier = ProjectVerifier(self.project_dir)
+
+        verifier.check_lint()
+
+        self.assertEqual(mock_run.call_count, 2)
+        fix_call_args = mock_run.call_args_list[0][0][0]
+        check_call_args = mock_run.call_args_list[1][0][0]
+        self.assertIn("--fix", fix_call_args)
+        self.assertNotIn("--unsafe-fixes", fix_call_args)
+        self.assertNotIn("--fix", check_call_args)
+
+    @patch("core.verifier.lint.ENABLE_AUTO_LINT_FIX", False)
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
+    def test_autofix_disabled_via_config_flag(self, mock_which, mock_run):
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="[]", stderr="", duration_seconds=0.1)
+        verifier = ProjectVerifier(self.project_dir)
+
+        verifier.check_lint()
+
+        self.assertEqual(mock_run.call_count, 1)
+        self.assertNotIn("--fix", mock_run.call_args[0][0])
+
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
     def test_reports_clean_when_no_issues_found(self, mock_which, mock_run):
         mock_run.return_value = ExecutionResult(exit_code=0, stdout="[]", stderr="", duration_seconds=0.1)
         verifier = ProjectVerifier(self.project_dir)

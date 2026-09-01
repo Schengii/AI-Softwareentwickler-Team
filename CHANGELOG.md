@@ -7,6 +7,24 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🎨 Automatischer Safe-Fix für Lint-Funde statt liegenbleibender Warnungen
+
+Zweiter Fund derselben cloudvault-Bestandsaufnahme: 13 ruff-Lint-Funde standen im
+Verifikations-Protokoll ("⚠️ ruff: 13 Lint-Fund(e)"), wurden aber nie behoben – Lint ist
+bewusst rein informativ (kein Blocker wie ein Testfehler, siehe `LintReport`-Docstring), aber
+bisher war auch niemand je beauftragt, sie zu FIXEN, selbst wenn es triviale, syntaktisch
+zweifelsfreie Autofixes gewesen wären (unsortierte/ungenutzte Importe, veraltete
+Typannotationen, …).
+
+- `core/verifier/lint.py._lint_python()` führt vor dem eigentlichen Check-Lauf jetzt
+  `ruff check --fix` aus – NUR sichere Autofixes, bewusst OHNE `--unsafe-fixes` (das kann
+  Verhalten ändern). Dieselbe Idee wie `black`/`prettier` im Pre-Commit-Hook eines echten
+  Teams: trivialer Aufräumschritt ohne Agenten-Auftrag, bevor überhaupt berichtet wird.
+  Opt-out über `ENABLE_AUTO_LINT_FIX=false` (Standard: an).
+- 2 neue Tests in `tests/test_verifier_lint.py` (Fix-Aufruf vor Check-Aufruf, Opt-out-Flag).
+
+---
+
 ## 🧩 Vollständigkeits-Check: "Tests grün" ≠ "Feature fertig" (cloudvault-Bestandsaufnahme)
 
 Analyse des zuletzt generierten Projekts (`workspace/cloudvault`, sichere File-Sharing-

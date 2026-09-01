@@ -241,6 +241,16 @@ LOAD_TEST_TIMEOUT_SECONDS: float = float(os.getenv("LOAD_TEST_TIMEOUT_SECONDS", 
 # wie ein Lint-Fund, weil ein Stub-Kommentar eine nicht erfüllte fachliche Anforderung ist.
 ENABLE_COMPLETENESS_CHECK: bool = os.getenv("ENABLE_COMPLETENESS_CHECK", "true").lower() in ("true", "1", "yes")
 
+# Realer Fund (Bestandsaufnahme cloudvault-Projekt): 13 ruff-Lint-Funde standen im
+# Verifikations-Protokoll, wurden aber nie behoben - Lint ist rein informativ (siehe
+# core/verifier/lint.py.LintReport-Docstring), kein Agent war je beauftragt, sie zu fixen.
+# ENABLE_AUTO_LINT_FIX=true (Standard) lässt core/verifier/lint.py._lint_python() vor dem
+# eigentlichen Check-Lauf `ruff check --fix` (NUR sichere Autofixes, kein `--unsafe-fixes`)
+# ausführen - unsortierte/ungenutzte Importe, veraltete Typannotationen u.Ä. verschwinden so
+# automatisch, ohne einen Agenten-Auftrag zu brauchen, analog zu `black`/`prettier` im
+# Pre-Commit-Hook eines echten Teams.
+ENABLE_AUTO_LINT_FIX: bool = os.getenv("ENABLE_AUTO_LINT_FIX", "true").lower() in ("true", "1", "yes")
+
 # ──────────────────────────────────────────
 # Governance-Kritisch-Fix-Schleife (core/review_gate.py, agents/orchestrator.py._run_governance_fix_loop)
 # ──────────────────────────────────────────

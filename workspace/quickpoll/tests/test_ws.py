@@ -1,4 +1,3 @@
-import pytest
 from fastapi.websockets import WebSocketState
 from connection_manager import manager
 from schemas import PollUpdateEvent

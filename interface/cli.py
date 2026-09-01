@@ -599,6 +599,28 @@ class CLIInterface:
                         pr_url = pr_out.splitlines()[-1] if pr_out else pr_out
                         console.print(f"🔀 [bold green]Pull Request erstellt:[/bold green] {pr_url}")
                         ticket_status, ticket_detail = "review", pr_url
+
+                        # Realer Fund: Titel-Präfix und Body-Warnung (oben) sieht nur, wer den PR
+                        # tatsächlich öffnet - in der PR-LISTE auf GitHub (wo ein Reviewer mehrere
+                        # offene PRs überfliegt) war der Verifikationsstatus bisher unsichtbar.
+                        # Labels erscheinen dort als eigene, farbige Chips. budget_aborted separat
+                        # von verification_ok: ein vorzeitig wegen Budget beendeter Lauf ist ein
+                        # anderer Grund zur Vorsicht als eine fehlgeschlagene Testsuite, auch wenn
+                        # beide denselben Draft-Status auslösen.
+                        status_labels = []
+                        if not verification_ok:
+                            status_labels.append("verification-failed")
+                        if getattr(self._orchestrator, "last_budget_aborted", False):
+                            status_labels.append("budget-aborted")
+                        if needs_human_input:
+                            status_labels.append("needs-clarification")
+                        if status_labels:
+                            success_label, label_out = github_agent.label_pr(pr_url, status_labels)
+                            if not success_label:
+                                console.print(
+                                    f"⚠️ Label(s) {status_labels} konnten nicht gesetzt werden ({label_out}) "
+                                    "– PR bleibt trotzdem bestehen.", style="dim yellow",
+                                )
                     else:
                         console.print(
                             f"⚠️ PR-Erstellung fehlgeschlagen ({pr_out}) – Branch ist trotzdem "

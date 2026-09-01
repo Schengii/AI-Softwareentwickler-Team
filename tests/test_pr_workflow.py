@@ -130,6 +130,7 @@ class TestCLIUsesPRWorkflowOnProtectedBranch(unittest.TestCase):
         self.fake_github.build_feature_branch_name.return_value = "feat/some-task-abc123"
         self.fake_github.scan_for_secrets.return_value = []
         self.fake_github.wait_for_ci_status = AsyncMock(return_value=("no_run", "kein CI im Test"))
+        self.fake_github.label_pr.return_value = (True, "")
         self.cli._orchestrator._agents["github"] = self.fake_github
         self.cli._orchestrator.last_verification_ok = True
         self._print_patcher = patch("interface.cli.console.print")
@@ -220,6 +221,33 @@ class TestCLIUsesPRWorkflowOnProtectedBranch(unittest.TestCase):
         pr_kwargs = self.fake_github.create_pull_request.call_args.kwargs
         self.assertFalse(pr_kwargs["draft"])
         self.assertNotIn("UNVERIFIZIERT", pr_kwargs["title"])
+        self.fake_github.label_pr.assert_not_called()  # nichts zu labeln bei einem sauberen Lauf
+
+    @patch("interface.cli.Confirm.ask", return_value=True)
+    def test_unverified_run_gets_verification_failed_label(self, _mock_confirm):
+        # Realer Fund: Titel-Präfix und Body-Warnung sieht nur, wer den PR tatsächlich öffnet -
+        # in der PR-LISTE auf GitHub (wo ein Reviewer mehrere offene PRs überfliegt) war der
+        # Verifikationsstatus bisher unsichtbar. Labels erscheinen dort als eigene Chips.
+        self.fake_github.get_current_branch.return_value = "main"
+        self.fake_github.gh_ready.return_value = True
+        self.cli._orchestrator.last_verification_ok = False
+        asyncio.run(self.cli._ask_for_git_push("Testaufgabe"))
+
+        self.fake_github.label_pr.assert_called_once_with(
+            "https://github.com/x/y/pull/1", ["verification-failed"],
+        )
+
+    @patch("interface.cli.Confirm.ask", return_value=True)
+    def test_budget_aborted_run_gets_its_own_label_alongside_verification_failed(self, _mock_confirm):
+        self.fake_github.get_current_branch.return_value = "main"
+        self.fake_github.gh_ready.return_value = True
+        self.cli._orchestrator.last_verification_ok = False
+        self.cli._orchestrator.last_budget_aborted = True
+        asyncio.run(self.cli._ask_for_git_push("Testaufgabe"))
+
+        labels = self.fake_github.label_pr.call_args.args[1]
+        self.assertIn("verification-failed", labels)
+        self.assertIn("budget-aborted", labels)
 
     @patch("interface.cli.Confirm.ask", return_value=True)
     def test_open_clarification_question_opens_draft_pr_with_question_in_body(self, _mock_confirm):
@@ -238,6 +266,9 @@ class TestCLIUsesPRWorkflowOnProtectedBranch(unittest.TestCase):
         self.assertTrue(pr_kwargs["draft"])
         self.assertIn("RÜCKFRAGE", pr_kwargs["title"])
         self.assertIn("Zahlungsanbieter", pr_kwargs["body"])
+        self.fake_github.label_pr.assert_called_once_with(
+            "https://github.com/x/y/pull/1", ["needs-clarification"],
+        )
 
 
 class TestCLIFullPRWorkflowAgainstRealRepo(unittest.TestCase):
@@ -294,6 +325,7 @@ class TestCLIFullPRWorkflowAgainstRealRepo(unittest.TestCase):
             agent = GitHubAgent()
             agent.gh_ready = lambda: True
             agent.create_pull_request = MagicMock(return_value=(True, "https://github.com/x/y/pull/1"))
+            agent.label_pr = MagicMock(return_value=(True, ""))
             agent.wait_for_ci_status = AsyncMock(return_value=("no_run", "kein CI im Test"))
 
             cli = CLIInterface()
@@ -326,6 +358,7 @@ class TestCLIFullPRWorkflowAgainstRealRepo(unittest.TestCase):
             agent = GitHubAgent()
             agent.gh_ready = lambda: True
             agent.create_pull_request = MagicMock(return_value=(True, "https://github.com/x/y/pull/1"))
+            agent.label_pr = MagicMock(return_value=(True, ""))
             agent.wait_for_ci_status = AsyncMock(return_value=("no_run", "kein CI im Test"))
 
             cli = CLIInterface()

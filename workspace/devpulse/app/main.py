@@ -1,7 +1,6 @@
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from starlette.responses import Response
 
 from app.api.endpoints import incidents, services
 

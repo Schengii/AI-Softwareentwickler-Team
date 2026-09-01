@@ -321,6 +321,28 @@ def record_run(
         pass
 
 
+def count_consecutive_failed_runs(project_dir: str) -> int:
+    """
+    Zählt, wie viele der ZULETZT protokollierten Läufe (neueste zuerst) OHNE Unterbrechung
+    `verification_ok=False` waren - Grundlage für eine deutlichere Warnung in
+    agents/orchestrator.py, wenn dieselbe Aufgabe wiederholt an derselben Hürde scheitert,
+    statt nur informativ auf `/load` hinzuweisen.
+
+    Ein manuell abgebrochener Lauf (`cancelled=True`) zählt NICHT als Fehlschlag und
+    UNTERBRICHT die Zählung - ein bewusster menschlicher Stopp sagt nichts über die
+    Qualität der Aufgabe/des Agenten-Teams aus, im Unterschied zu einer nicht bestandenen
+    Verifikation oder einem erreichten Budget.
+    """
+    count = 0
+    for entry in read_status(project_dir):
+        if entry.get("cancelled"):
+            break
+        if entry.get("verification_ok"):
+            break
+        count += 1
+    return count
+
+
 def format_context_for_agents(project_dir: str, max_entries: int = 3) -> str:
     """
     Formatiert den aktuellen Projekt-Checkpoint (PROJECT_STATE.md) sowie die letzten Läufe

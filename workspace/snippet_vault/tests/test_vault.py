@@ -49,3 +49,23 @@ def test_get_tags(client):
     response = client.get("/tags")
     assert response.status_code == 200
     assert isinstance(response.json(), list)
+
+
+def test_created_tags_are_persisted_and_reused(client):
+    """
+    Realer Fund: SnippetCreate.tags wurde beim Anlegen bisher vollständig ignoriert - jeder
+    übermittelte Tag verschwand stillschweigend, /tags blieb dauerhaft leer und die
+    Tag-Filterung (?tag=...) konnte nie etwas finden.
+    """
+    client.post("/snippets", json={"title": "A", "content": "a", "language": "python", "tags": ["fastapi", "python"]})
+    client.post("/snippets", json={"title": "B", "content": "b", "language": "python", "tags": ["fastapi"]})
+
+    tags_response = client.get("/tags")
+    tag_names = {t["name"] for t in tags_response.json()}
+    assert tag_names == {"fastapi", "python"}
+    # "fastapi" wurde für beide Snippets übermittelt - darf trotzdem nur EINMAL angelegt
+    # werden (Wiederverwendung per Name), nicht als Duplikat.
+    assert len(tags_response.json()) == 2
+
+    filtered = client.get("/snippets", params={"tag": "python"})
+    assert [s["title"] for s in filtered.json()] == ["A"]

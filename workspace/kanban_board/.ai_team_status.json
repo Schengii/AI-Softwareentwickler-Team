@@ -1,0 +1,20 @@
+[
+  {
+    "timestamp": "2026-08-31T15:06:20+00:00",
+    "task_summary": "FastAPI Kanban-Board mit WebSockets und Frontend implementiert",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 0,
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- ⚠️ Keine Testdateien (test_*.py), kein npm-Test-Skript und kein Rust/Go-Projekt gefunden – Verifikation übersprungen. Generierter Code wurde NICHT automatisch verifiziert."
+  },
+  {
+    "timestamp": "2026-08-31T15:04:13+00:00",
+    "task_summary": "FastAPI Kanban-Backend und Tailwind-Frontend implementiert",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 0,
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- ⚠️ Keine Testdateien (test_*.py), kein npm-Test-Skript und kein Rust/Go-Projekt gefunden – Verifikation übersprungen. Generierter Code wurde NICHT automatisch verifiziert."
+  }
+]

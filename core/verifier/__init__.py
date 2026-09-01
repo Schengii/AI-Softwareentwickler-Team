@@ -80,12 +80,15 @@ import urllib.request  # noqa: F401 - re-exportiert für Tests, die core.verifie
 from core.code_sandbox import (
     CodeSandbox,  # noqa: F401 - re-exportiert für Tests, die core.verifier.CodeSandbox.run_command patchen
 )
+from core.verifier.completeness import CompletenessMixin
 from core.verifier.coverage import CoverageMixin
 from core.verifier.environment import EnvironmentMixin
 from core.verifier.lint import LintMixin
 from core.verifier.models import (
     LOAD_TEST_DIRNAME,
     VENV_DIRNAME,
+    CompletenessIssue,
+    CompletenessReport,
     CoverageReport,
     DependencyAuditReport,
     DependencyVulnerability,
@@ -121,6 +124,8 @@ __all__ = [
     "CoverageReport",
     "RuntimeSmokeReport",
     "PerfCheckReport",
+    "CompletenessIssue",
+    "CompletenessReport",
     "VENV_DIRNAME",
     "LOAD_TEST_DIRNAME",
 ]
@@ -132,6 +137,7 @@ class ProjectVerifier(
     LintMixin,
     SecurityMixin,
     TestRunnerMixin,
+    CompletenessMixin,
     EnvironmentMixin,
 ):
     """Installiert Abhängigkeiten isoliert und führt die reale Testsuite eines Projekts aus."""

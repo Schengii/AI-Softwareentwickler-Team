@@ -7,6 +7,40 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🧩 Vollständigkeits-Check: "Tests grün" ≠ "Feature fertig" (cloudvault-Bestandsaufnahme)
+
+Analyse des zuletzt generierten Projekts (`workspace/cloudvault`, sichere File-Sharing-
+Plattform) zeigte einen Lauf, der als "✅ Vollständig verifiziert & einsatzbereit" markiert
+wurde (`verification_ok: true`), obwohl:
+- der Upload-Endpunkt nur den Kommentar `# Hier würde die AES-256-GCM Verschlüsselung ... und
+  S3-Speicherung erfolgen` enthielt statt echter Verschlüsselung – die Tests prüften denselben
+  Stub, den der Code tatsächlich lieferte, also bestanden sie trivial;
+- das README `pip install -r requirements.txt` vorschrieb, obwohl diese Datei nie erzeugt wurde;
+- 13 ruff-Lint-Funde im Protokoll standen, aber nie behoben wurden.
+
+Keiner der bisherigen Checks (Testsuite, Lint, SAST, Coverage, Runtime-Smoke) erkennt einen
+absichtlich unfertig gelassenen Codepfad, nur einen tatsächlich FALSCHEN – "Tests grün" wurde
+bisher mit "Anforderung erfüllt" gleichgesetzt.
+
+- Neuer Check `core/verifier/completeness.py.check_completeness()`: durchsucht generierten
+  Code nach Platzhalter-/Stub-Markern (deutsch/englisch: "Hier würde ... erfolgen",
+  `NotImplementedError`, "placeholder implementation", …) und prüft, ob im README per
+  Installationsbefehl referenzierte Dateien (`pip install -r X`, `psql -f X.sql`, …)
+  tatsächlich existieren.
+- Anders als Lint/SAST (rein informativ) blockiert ein Fund hier `verification_ok` wie ein
+  echter Testfehler – ein Stub-Kommentar ist eine nicht erfüllte fachliche Anforderung, keine
+  Stil-Frage. `agents/orchestrator/verification.py` löst bei einem Fund dieselbe gezielte
+  Fix-Schleife aus wie bei einem echten Testfehler (Owner per Dateipfad ermittelt, Auftrag "die
+  Funktionalität WIRKLICH implementieren, nicht nur den Kommentar entfernen").
+  Opt-out über `ENABLE_COMPLETENESS_CHECK=false` (Standard: an).
+- `agents/security_agent.py`: der Systemprompt weist den Security-Agenten jetzt explizit an,
+  einen Sicherheits-Stub (simulierte Verschlüsselung, ein Auth-Check, der immer `True`
+  zurückgibt, …) immer als **Kritisch** einzustufen statt als Hinweis – ein solcher Stub sieht
+  in Reports wie ein erledigtes Feature aus, bietet aber keinerlei Schutz.
+- 7 neue Tests in `tests/test_verifier_completeness.py`.
+
+---
+
 ## 🩹 Echter Praxistest des Ziel-Loops deckt Kosten-Historie-Bug auf: `KeyError('cache_read_tokens')`
 
 Erster echter Live-Lauf von `/goal` (echte LLM-Aufrufe, kein Mock) nach der Kill-Switch-Runde:

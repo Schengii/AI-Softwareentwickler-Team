@@ -230,6 +230,17 @@ ENABLE_LOAD_TEST_CHECK: bool = os.getenv("ENABLE_LOAD_TEST_CHECK", "true").lower
 LOAD_TEST_DURATION_SECONDS: float = float(os.getenv("LOAD_TEST_DURATION_SECONDS", "5"))
 LOAD_TEST_TIMEOUT_SECONDS: float = float(os.getenv("LOAD_TEST_TIMEOUT_SECONDS", "60"))
 
+# Realer Fund (Bestandsaufnahme cloudvault-Projekt, siehe core/verifier/completeness.py): eine
+# Testsuite kann vollständig grün sein, obwohl der geprüfte Code selbst nur ein Platzhalter ist
+# (z.B. "Hier würde die AES-256-GCM Verschlüsselung ... erfolgen" statt echter Verschlüsselung)
+# - keiner der bisherigen Checks erkennt das, weil sie alle nur prüfen, ob vorhandener Code
+# FUNKTIONIERT, nicht ob er tatsächlich das tut, was die Aufgabe verlangt. ENABLE_COMPLETENESS_
+# CHECK=true (Standard) lässt den Orchestrator nach Stub-/Platzhalter-Markern im generierten
+# Code UND nach im README referenzierten, aber fehlenden Dateien (z.B. requirements.txt) suchen
+# und blockiert verification_ok bei einem Fund - wie ein echter Testfehler, nicht nur informativ
+# wie ein Lint-Fund, weil ein Stub-Kommentar eine nicht erfüllte fachliche Anforderung ist.
+ENABLE_COMPLETENESS_CHECK: bool = os.getenv("ENABLE_COMPLETENESS_CHECK", "true").lower() in ("true", "1", "yes")
+
 # ──────────────────────────────────────────
 # Governance-Kritisch-Fix-Schleife (core/review_gate.py, agents/orchestrator.py._run_governance_fix_loop)
 # ──────────────────────────────────────────

@@ -323,3 +323,66 @@ class PerfCheckReport:
 # api_integration-Agenten: ein fester, dokumentierter Pfad, an dem check_load_test() gezielt
 # suchen kann, statt beliebige Dateinamen im ganzen Projekt erraten zu müssen.
 LOAD_TEST_DIRNAME = "tests/load"
+
+# Realer Fund (Bestandsaufnahme cloudvault-Projekt): "Tests grün" wurde bisher mit "Feature
+# fertig" verwechselt - ein Endpunkt mit dem Kommentar "Hier würde die AES-256-GCM
+# Verschlüsselung ... erfolgen" bestand die Testsuite trotzdem, weil die Tests denselben Stub
+# prüften, den der Code tatsächlich liefert. Diese Marker fangen die verbreitetsten Deutsch-/
+# Englisch-Formulierungen für "hier fehlt die echte Implementierung" ab - bewusst eine Text-
+# Heuristik wie _CRITICAL_RE (core/review_gate.py), kein Anspruch auf Vollständigkeit. Ein
+# einzelner Treffer ist kein Beweis für unfertigen Code (z.B. ein legitimer TODO-Kommentar für
+# spätere Optimierung) - deshalb bleibt check_completeness() informativ genug dokumentiert,
+# aber blockiert verification_ok wie ein echter Testfehler (siehe CompletenessReport).
+_STUB_MARKER_RE = re.compile(
+    r"hier\s+w[üu]rde\b"
+    r"|hier\s+w[äa]re\b"
+    r"|\(simuliert\)"
+    r"|wird\s+simuliert\b"
+    r"|not\s+implemented"
+    r"|notimplementederror"
+    r"|todo\s*:?\s*implement"
+    r"|for\s+demo(nstration)?\s+purposes"
+    r"|placeholder\s+(implementation|for|value)"
+    r"|in\s+(einer\s+)?echten\s+implementierung\s+w[üu]rde",
+    re.IGNORECASE,
+)
+
+# Dateiendungen, die check_completeness() nach Stub-Markern durchsucht - dieselben Sprachen,
+# die auch der echte Lint-/SAST-Check abdeckt (Python/JS/TS immer relevant, Go/Rust/Ruby/Java
+# als verbreitete Backend-Sprachen des Frameworks, siehe agents/backend_agent.py).
+_STUB_SCAN_EXTENSIONS = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".rb", ".java"}
+
+# README-Installationsbefehle, die typischerweise auf eine konkrete Datei verweisen, die dann
+# auch wirklich existieren muss (z.B. "pip install -r requirements.txt", "psql -f schema.sql")
+# - real beobachtet: cloudvault-Projekt verwies auf eine requirements.txt, die nie generiert
+# wurde. Erfasst den Dateinamen als Gruppe 1.
+_README_FILE_REF_RE = re.compile(
+    r"(?:-r|--requirement|-f|--file)\s+([./\w-]+\.(?:txt|sql|ya?ml|json|env))",
+    re.IGNORECASE,
+)
+
+
+@dataclass
+class CompletenessIssue:
+    """Ein einzelner Stub-/Platzhalter-Fund oder ein fehlender, in README referenzierter Pfad."""
+    file_path: str
+    line_number: int = 0
+    message: str = ""
+
+
+@dataclass
+class CompletenessReport:
+    """
+    Ergebnis eines Vollständigkeits-Checks: durchsucht generierten Code nach Platzhalter-/
+    Stub-Markern (z.B. "Hier würde die Verschlüsselung erfolgen") und prüft, ob im README per
+    Installationsbefehl referenzierte Dateien (requirements.txt, schema.sql, ...) tatsächlich
+    existieren. Anders als Lint/SAST rein informativ zu behandeln wäre hier falsch: ein
+    Endpunkt, der nur einen Kommentar statt echter Verschlüsselung liefert, ist keine
+    Stil-Frage, sondern eine nicht erfüllte fachliche Anforderung - deshalb blockiert ein
+    Fund hier verification_ok wie ein echter Testfehler (siehe agents/orchestrator/
+    verification.py._run_verification_loop()).
+    """
+    attempted: bool
+    passed: bool = True
+    issues: list[CompletenessIssue] = field(default_factory=list)
+    reason_skipped: str = ""

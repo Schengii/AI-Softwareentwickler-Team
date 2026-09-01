@@ -20,6 +20,7 @@ from collections.abc import Callable
 
 from agents.orchestrator.constants import REVIEW_ONLY_AGENT_IDS
 from config import (
+    ENABLE_COMPLETENESS_CHECK,
     ENABLE_GOVERNANCE_FIX_LOOP,
     ENABLE_LOAD_TEST_CHECK,
     LOAD_TEST_DURATION_SECONDS,
@@ -488,6 +489,90 @@ class VerificationMixin:
                 else:
                     notify(f"  🎨 [bold green]{lint.tool}: keine Lint-Funde.[/bold green]")
                     summary_lines.append(f"- 🎨 {lint.tool}: keine Lint-Funde.")
+
+        # Vollständigkeits-Check: erkennt Stub-/Platzhalter-Code (z.B. "Hier würde die
+        # Verschlüsselung erfolgen") und im README referenzierte, aber fehlende Dateien (z.B.
+        # requirements.txt) - siehe core/verifier/completeness.py und ENABLE_COMPLETENESS_CHECK
+        # (config.py) für den vollständigen Kontext. Anders als Lint/SAST blockiert ein Fund
+        # hier verification_ok, weil ein Stub-Kommentar eine nicht erfüllte fachliche
+        # Anforderung ist, kein Stil-Hinweis - deshalb dieselbe gezielte Fix-Schleife wie beim
+        # echten Testfehler oben, statt nur eine informative Zeile im Protokoll.
+        if ENABLE_COMPLETENESS_CHECK and not (budget_aborted or manually_cancelled):
+            for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
+                if run_start_tokens is not None and (
+                    self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                ):
+                    budget_aborted = True
+                    notify("  🚫 [bold red]Budget erreicht[/bold red] – weitere Vollständigkeits-Fixversuche werden übersprungen.")
+                    summary_lines.append(f"- 🚫 {self._budget_exceeded_label(run_start_tokens)} erreicht – Vollständigkeits-Check nach Versuch {attempt - 1} abgebrochen.")
+                    break
+                if cancel_requested and cancel_requested():
+                    manually_cancelled = True
+                    notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – weitere Vollständigkeits-Fixversuche werden übersprungen.")
+                    summary_lines.append(f"- ⏹️ Manuell abgebrochen – Vollständigkeits-Check nach Versuch {attempt - 1} beendet.")
+                    break
+
+                completeness_report = await asyncio.to_thread(verifier.check_completeness)
+                if not completeness_report.attempted:
+                    break
+                if completeness_report.passed:
+                    if attempt == 1:
+                        notify("  🧩 [bold green]Vollständigkeits-Check:[/bold green] keine Stub-/Platzhalter-Funde, keine fehlenden README-Referenzen.")
+                        summary_lines.append("- 🧩 Vollständigkeits-Check: keine Stub-/Platzhalter-Funde, keine fehlenden README-referenzierten Dateien.")
+                    else:
+                        notify(f"  🧩 [bold green]Vollständigkeits-Check nach Fix (Versuch {attempt}) bestanden.[/bold green]")
+                        summary_lines.append(f"- 🧩 Vollständigkeits-Check nach {attempt} Durchlauf/Durchläufen bestanden.")
+                    break
+
+                top = "; ".join(
+                    f"{i.file_path}" + (f":{i.line_number}" if i.line_number else "") + f" – {i.message}"
+                    for i in completeness_report.issues[:5]
+                )
+                if len(completeness_report.issues) > 5:
+                    top += f" … und {len(completeness_report.issues) - 5} weitere"
+                notify(f"  🧩 [bold red]Vollständigkeits-Check: {len(completeness_report.issues)} Fund(e).[/bold red]")
+                verification_ok = False
+
+                agents_to_fix: dict[str, list] = {}
+                for issue in completeness_report.issues:
+                    owner = file_owners.get(issue.file_path)
+                    if owner and owner in self._agents:
+                        agents_to_fix.setdefault(owner, []).append(issue)
+
+                if not agents_to_fix:
+                    summary_lines.append(f"- 🧩 ❌ {len(completeness_report.issues)} Vollständigkeits-Fund(e) blieben ungelöst (keinem Agenten eindeutig zuordenbar): {top}")
+                    break
+
+                fix_tasks = []
+                for agent_id, agent_issues in agents_to_fix.items():
+                    issue_text = "\n".join(
+                        f"- {i.file_path}" + (f":{i.line_number}" if i.line_number else "") + f" – {i.message}"
+                        for i in agent_issues
+                    )
+                    fix_tasks.append(AgentTask(
+                        task_id=f"verify_fix_completeness_{agent_id}_{attempt}",
+                        agent_id=agent_id,
+                        description=(
+                            f"Der Vollständigkeits-Check hat unfertigen Code gefunden: ein Kommentar/Stub "
+                            f"beschreibt eine Funktionalität, die NICHT wirklich implementiert ist (z.B. "
+                            f"\"Hier würde X erfolgen\"), oder eine im README referenzierte Datei fehlt. "
+                            f"Nutze read_file, um die betroffene(n) Stelle(n) zu prüfen, und implementiere "
+                            f"die fehlende Funktionalität WIRKLICH (nicht nur den Kommentar entfernen) bzw. "
+                            f"lege die fehlende Datei an.\n\n{issue_text}"
+                        ),
+                        context="",
+                        project_dir=project_dir,
+                    ))
+
+                notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix (Vollständigkeit):[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())}...")
+                fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+                self._update_file_owners(file_owners, fix_results)
+                all_results.extend(fix_results)
+                summary_lines.append(f"- 🧩 Versuch {attempt}: {len(completeness_report.issues)} Vollständigkeits-Fund(e) → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt: {top}")
+
+                if attempt == MAX_VERIFICATION_ITERATIONS:
+                    notify("  ⚠️ [yellow]Maximale Vollständigkeits-Fixversuche erreicht – letzter Stand wird übernommen.[/yellow]")
+                    summary_lines.append(f"- 🧩 ⚠️ Nach {MAX_VERIFICATION_ITERATIONS} Versuchen weiterhin Stub-/Platzhalter-Funde – letzter Stand wurde übernommen.")
 
         # Realer Fund bei einer Bestandsaufnahme des eigenen Teams: die Verifikation misst
         # bisher nur Pass/Fail, keine Abdeckung - ein Projekt mit 3 bestandenen Tests bei 500

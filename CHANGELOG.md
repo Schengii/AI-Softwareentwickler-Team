@@ -31,6 +31,746 @@ bekannten, schnellen Rollback-Pfad.
 
 ---
 
+## 🎯 Autonomer Ziel-Loop, Runde 2: Rand- & Fehlerfälle, Ticket-Status, `pytest` ohne Pfadangabe
+
+Zweite Prüfrunde am Ziel-Loop (`core/goal_loop.py`) nach der ersten Kill-Switch-Runde
+darunter – diesmal auf Rand- und Fehlerfälle statt der Kernlogik, plus ein reales
+Test-Tooling-Problem, das beim vollständigen Verifizieren der Suite auffiel:
+
+- **Nutzerabbruch/Absturz landeten irreführend als "review" im Backlog:** `upsert_ticket()`
+  setzte bei JEDEM nicht-erfolgreichen Ausgang denselben Status `"review"` – ein per Strg+C
+  abgebrochener Loop sah damit im Board wie ein fertig zur Prüfung anstehender PR aus, obwohl
+  nichts zu prüfen ist. Jetzt: `"cancelled"` bei Nutzerabbruch, `"blocked"` bei einer echten
+  Exception, `"review"` nur noch beim tatsächlichen "Ziel nach max. Iterationen offen"-Fall.
+- **Exceptions verschwanden in einer irreführenden Standardmeldung:** Warf
+  `orchestrator.process()` mitten in einer Iteration eine Exception (z.B. komplett erschöpfte
+  Provider-Kette), landete das zwar korrekt als Fehlschlag in `iterations_history`, der
+  `final_message` des Abschlussberichts sagte aber trotzdem nur "Ziel nach maximalen
+  Iterationen noch nicht vollständig abgeschlossen" – als wäre einfach das Budget an
+  Iterationen ausgegangen. `final_message` nennt jetzt explizit Iteration und Fehlertext der
+  Exception.
+- **Kein Schutz vor leerem Ziel oder `max_iterations < 1`:** Ein leeres/nur-Whitespace-`goal`
+  hätte einen sinnlosen Orchestrator-Lauf mit leerer Aufgabe gestartet (Tokenverbrauch ohne
+  jeden Nutzen); `max_iterations=0` (oder negativ, z.B. durch einen Tippfehler in
+  `/goal -1 ...`) ließ den Loop bisher still und ohne jede Rückmeldung zu einem kompletten
+  No-Op werden. Beide Fälle werden jetzt VOR dem ersten Orchestrator-Aufruf abgefangen – ein
+  leeres Ziel bricht sofort mit klarer Meldung ab, ein zu kleines `max_iterations` wird sichtbar
+  auf 1 angehoben statt schweigend zu nichts zu führen.
+- **`pytest`/`python -m pytest` ohne Pfadangabe crashte mit einem internen Capture-Fehler:**
+  Realer Fund beim vollständigen Verifizieren dieser Änderungsrunde – ohne `testpaths` sammelte
+  ein blankes `pytest` im Projekt-Root auch jeden Test aus generierten
+  `workspace/<projekt>/tests/`-Verzeichnissen ein, deren Abhängigkeiten hier nicht installiert
+  sind (`ModuleNotFoundError: No module named 'app'` etc.) – genug betroffene Module ließen
+  pytest sogar mit `ValueError: I/O operation on closed file` beim Teardown abstürzen, statt nur
+  die eigene, tatsächlich grüne Framework-Suite zu melden. Neues `pytest.ini` (`testpaths =
+  tests`) behebt das: `pytest` ohne jede Pfadangabe läuft jetzt zuverlässig nur gegen die 888
+  Tests der eigenen Suite.
+
+5 neue Tests (leeres Ziel, `max_iterations`-Clamping, Exception-Reporting im Abschlussbericht);
+volle Suite (888 Tests) grün, ruff sauber.
+
+---
+
+## 🎯 Autonomer Ziel-Loop (`core/goal_loop.py`): Kill-Switches gegen Endlosschleifen & echter Provider-Fallback
+
+Neuer Baustein: der autonome Ziel-Loop (`/goal`, `python main.py --goal`) lässt das Team nicht
+mehr nur einen einzelnen `Orchestrator.process()`-Durchlauf abarbeiten, sondern iteriert
+selbstständig weiter – nach jeder Runde bewertet ein LLM-Judge (`GOAL_LOOP_EVAL_MODEL`) anhand
+von Zwischenstand, Dateiliste und Verifikations-Status, ob das Ziel erreicht ist, und erzeugt
+andernfalls automatisch den präzisen Folge-Prompt für die nächste Runde. Bei der Analyse des
+Erstentwurfs (noch vor dem ersten Commit) fielen drei konkrete Lücken auf, die jetzt behoben
+sind:
+
+- **Echter Bug: `LLMFactory.create_llm` existiert gar nicht.** Der Bewertungsschritt rief eine
+  nicht existierende Factory-Methode auf, die JEDES Mal eine `AttributeError` warf – durch das
+  breite `except Exception` fiel die Bewertung dadurch bei jedem einzelnen Lauf sofort auf die
+  simple Heuristik zurück, ohne dass das je sichtbar wurde (alle Tests mockten
+  `_evaluate_and_synthesize_next_step` direkt und liefen daher am Bug vorbei). Zusätzlich wurde
+  die bereits asynchrone `generate()`-Coroutine fälschlich über `asyncio.to_thread()`
+  aufgerufen, was ein unawaited Coroutine-Objekt statt eines Strings zurückgegeben hätte.
+  Ersetzt durch `LLMFactory.create_for_model(...)` + `await llm.generate(...)` – dieselbe
+  zentrale Provider-Erkennung, die auch jeder Agent nutzt, inklusive der in
+  `GeminiClient._call_with_retry_and_usage()` eingebauten `MODEL_FALLBACKS`-Kette (echter
+  Cross-Provider-Fallback bei Erschöpfung/Fehler des primären Eval-Modells statt eines starren
+  Single-Shot-Aufrufs).
+- **Kein kumulatives Token-Budget über Iterationen hinweg:** `MAX_RUN_TOKENS` begrenzt nur
+  EINEN einzelnen `orchestrator.process()`-Aufruf – ein Ziel-Loop mit mehreren Iterationen
+  konnte dieses Budget bis zu `max_iterations`-mal hintereinander ausschöpfen, ohne dass der
+  Loop selbst je abgebrochen wäre. Neues `GOAL_LOOP_MAX_TOTAL_TOKENS` (Standard `0` = aus)
+  summiert den Tokenverbrauch aller Iterationen dieses Loops über `token_guard.get_summary()`
+  und bricht den Loop ab, sobald das Budget erreicht ist – die bis dahin erarbeiteten
+  Ergebnisse bleiben erhalten (Graceful Degradation statt Abbruch ohne Ergebnis).
+- **Kein Stagnations-Abbruch:** Liefert die Verifikation zwei Iterationen in Folge exakt
+  denselben Fehler, dreht sich der Loop erkennbar im Kreis (ein Bug, den das Team offenbar
+  nicht selbst löst) – bisher liefen trotzdem alle `max_iterations` Runden durch und
+  verbrannten dabei unnötig Tokens. Der Loop erkennt identische `failure_detail`-Werte
+  aufeinanderfolgender Iterationen jetzt und bricht sofort mit klarer Begründung ab.
+
+6 neue/erweiterte Tests (`tests/test_goal_loop.py`): Stagnations-Abbruch, kumulatives
+Token-Budget (per gemocktem `token_guard.get_summary()`), plus die bestehenden 4 Tests für
+Erfolg-bei-erster-Iteration, Mehrrunden-Recovery, Abschlussbericht-Formatierung und
+kooperativen Abbruch – alle grün, ruff sauber.
+
+---
+
+## 🔍 Workspace-Audit: unvollständige Projekte & Nahezu-Duplikate erkennen
+
+Realer Fund bei einer manuellen Bestandsaufnahme aller `workspace/`-Projekte: mehrere Läufe
+wurden vom Orchestrator als abgeschlossen protokolliert, obwohl das Ergebnis erkennbar
+unvollständig war. `workspace/api_health_monitor` importierte in `main.py` ein Objekt, das in
+`checker.py` nur durch einen Platzhalterkommentar ("... beibehalten") ersetzt worden war –
+der allererste Testlauf brach schon beim Import ab (jetzt gefixt). `workspace/api-health-monitor`
+(Nahezu-Duplikat desselben Namens, nur mit Bindestrich statt Unterstrich) hatte gar keinen
+Einstiegspunkt, `workspace/realtime_polling_platform` bestand nur aus zwei Modulen ohne
+Tests/Manifest – beide liefen bisher unter dem harmlosen "keine Tests gefunden" durch.
+
+- `core/verifier.py`: neue `ProjectVerifier._find_incomplete_project_reason()` erkennt zwei
+  konkret beobachtete Muster als echten Fehlschlag statt als Skip: ein mehrteiliges
+  Backend-Projekt mit `requirements.txt`/`pyproject.toml`, aber ohne jeden Einstiegspunkt
+  (`main.py`/`app.py`/`manage.py`/…), sowie ein `tests/`-Ordner mit `conftest.py`, aber ohne
+  eine einzige echte Testdatei. Ein einzelnes Skript ohne Manifest (der bereits bestehende
+  legitime Fall) bleibt unverändert ein harmloser Skip.
+- `agents/orchestrator.py`: zeigt diesen neuen Fall im Verifikations-Protokoll als ❌ statt als
+  ⚠️ an. Zusätzlich neue `_find_near_duplicate_slug()`-Prüfung: warnt gezielt, wenn ein neuer
+  `project_slug` sich von einem bereits vorhandenen Workspace-Projekt nur durch Schreibweise
+  (`_`/`-`/Groß-Kleinschreibung) unterscheidet, statt nur generisch "bereits vorhanden: ..."
+  aufzulisten.
+- `agents/frontend_agent.py`, `mobile_agent.py`, `database_agent.py`: dieselbe Regel gegen
+  "... (X beibehalten)"-Platzhalterkommentare in frisch generiertem Code wie beim
+  `backend`-Agenten ergänzt – ein generisches LLM-Fehlerbild, nicht backend-spezifisch.
+- `core/workspace_audit.py` (neu) + `python main.py --audit-workspace`: periodischer
+  Poll-Zyklus (analog `core/dependency_watch.py`), der `ProjectVerifier.run_tests()` erneut
+  gegen JEDES Workspace-Projekt ausführt – unabhängig von aktiver Entwicklung – und bei einem
+  echten Fehlschlag ein Backlog-Ticket öffnet. Schließt die Lücke, dass ein Projekt, das seit
+  seinem letzten Lauf nie wieder angefasst wurde, sonst nie von selbst erneut geprüft würde.
+- 15 neue Tests (`core/verifier.py`, `agents/orchestrator.py`, `core/workspace_audit.py`);
+  volle Suite (855 Tests) grün, ruff sauber.
+
+---
+
+## ⌨️ Mehrzeilige Eingabe im interaktiven CLI-Prompt
+
+Realer Fund (Nutzeranfrage): `interface/cli.py._main_loop()` las die Nutzereingabe über
+`console.input()` (dünner Wrapper um Pythons `input()`) - das liest immer nur bis zum ersten
+Zeilenumbruch. Eine mehrzeilige Aufgabenbeschreibung, oder ein ins Terminal eingefügter
+mehrzeiliger Text, wurde dadurch NICHT als eine Eingabe erkannt, sondern jede Zeile einzeln
+als eigener, meist unsinniger Prompt verarbeitet. Neue Methode
+`CLIInterface._read_user_input()`: endet eine Zeile auf ein einzelnes `\` (dieselbe
+Fortsetzungs-Konvention wie in der Shell/in Python selbst), wird die nächste Zeile
+angehängt statt die Eingabe abzuschließen. Eine normale, einzeilige Aufgabe bleibt dadurch
+unverändert genauso schnell wie bisher (ein `console.input()`-Aufruf, kein Overhead).
+
+---
+
+## 🧪 CI-Testrunner von `unittest discover` auf `pytest` umgestellt
+
+Realer Fund bei der Prüfung der `core/llm_factory.py`-Fallback-Ketten: der CI-„Tests"-Job
+(`.github/workflows/ci.yml`) lief bisher über `python -m unittest discover`. Dessen
+`TestLoader` sammelt ausschließlich `unittest.TestCase`-Subklassen ein - drei bereits
+existierende, reine Pytest-Fixture-/`@pytest.mark.anyio`-Testdateien
+(`test_dashboard_sse.py`, `test_mcp_server_extended.py`, `test_prompt_caching.py`, keine
+`TestCase`-Klassen) wurden dadurch zwar importiert, ihre Tests aber **nie tatsächlich
+ausgeführt** - ein grüner CI-Lauf bedeutete für diese drei Dateien seit ihrer Einführung nur
+"importierbar", nicht "getestet". `python -m pytest tests/` sammelt beide Testarten
+gleichwertig ein und läuft unittest.TestCase-basierte Tests unverändert mit; `tests/` bleibt
+bewusst als Argument (nicht `.`) nötig, damit pytest über die vorhandene
+`tests/__init__.py`-Package-Erkennung dieselbe `RUN_HISTORY_FILE`-Umleitung wie zuvor
+`unittest discover -t .` sicherstellt.
+
+`pytest>=8.0.0,<9.0.0` zu `requirements.txt` ergänzt (vorher nur transitiv über
+`pytest-cov` in `requirements-dev.txt` vorhanden) - der CI-„Tests"-Job installiert bewusst nur
+`requirements.txt`, nicht `requirements-dev.txt`.
+
+---
+
+## 🤖 Vier Schritte Richtung "echtes Team": Selbstgesteuertes Backlog, Mid-Task-Eskalation, Epics & Produktions-Monitoring
+
+Nutzerwunsch: das Team soll "noch eigenständiger, autonomer, voll funktionsfähiger und
+professioneller genau wie ein echtes Softwareentwickler-Team aus Menschen arbeiten". Vier
+konkrete, verifizierte Lücken gegenüber echtem Team-Verhalten geschlossen:
+
+- **`core/backlog_worker.py`** (`python main.py --work-backlog`): ein "todo"-Ticket aus
+  `/backlog-add` wurde laut eigenem CLI-Hinweistext bisher NIE automatisch angegangen ("Führt
+  selbst nichts aus... wird erst zu echter Arbeit, wenn du die Aufgabe regulär in den Chat
+  schreibst") - core/issue_watcher.py reagiert nur auf NEU gelabelte GitHub-Issues, nicht auf
+  bereits wartende Backlog-Punkte. Greift jetzt eigenständig das höchstpriorisierte,
+  abhängigkeitsfreie Ticket auf, über denselben PR-Workflow/dasselbe Sicherheitsmodell wie
+  der Issue-Watcher. Bewusst NICHT in `.github/workflows/ai-team-scheduler.yml` verdrahtet
+  (eigene `scripts/run_backlog_worker.ps1` für den lokalen Taskplaner) - `memory/backlog.json`
+  ist gitignored, ein GitHub-Actions-Runner mit frischem Checkout hätte hier immer leeren
+  Zustand und würde scheinbar erfolgreich, aber wirkungslos durchlaufen.
+- **`core/backlog_store.py`**: Tickets tragen jetzt `epic`/`depends_on` -
+  `is_ticket_ready()` prüft echte Abhängigkeiten (unbekannte IDs gelten bewusst als NICHT
+  erfüllt, nie stillschweigend ignoriert), `/backlog` markiert blockierte Tickets sichtbar
+  (`🔗 ... wartet auf: ...`). Ein größeres Vorhaben lässt sich jetzt als zusammenhängende,
+  sinnvoll sortierte Ticket-Kette planen statt jede Anfrage isoliert zu bearbeiten.
+- **`ask_human_for_clarification`** (`core/agent_toolbox.py`): Rückfragen passierten bisher
+  nur VOR dem Start einer Aufgabe (core/task_manager.py needs_clarification) - sobald Agenten
+  liefen, gab es kein Mittel mehr, eine echte, entscheidende Unklarheit zu melden, nur
+  Weiterarbeiten mit einer geratenen Annahme. Jeder toolbox-fähige Agent kann jetzt mitten in
+  der Aufgabe eskalieren; sichtbar im Ergebnis, im Git-Push-Gate der CLI, und als eigener,
+  als Draft markierter PR-Zustand in `--check-issues`/`--work-backlog` (core/message_bus.py.
+  AgentResult.needs_human_input/clarification_questions, agents/orchestrator.py.
+  last_needs_human_input).
+- **`core/production_monitor.py`** (`python main.py --check-deployments`) + **`/deploy-cloud`**
+  (interface/cli.py): realer Fund beim Umsetzen - `core/cloud_deployment.py` (Fly.io/Vercel/
+  Render/Railway) existierte bereits vollständig fertig implementiert, war aber NIRGENDS in
+  CLI/Dashboard verdrahtet, obwohl das README das Gegenteil behauptete. Jetzt per
+  `/deploy-cloud <provider> [projekt] [--real]` erreichbar (Standard: sicherer Dry-Run).
+  Dabei zwei weitere echte Bugs in `core/cloud_deployment.py.deploy()` gefunden und behoben:
+  ein "echter" Deploy-Versuch für render/railway behauptete UNGEPRÜFT Erfolg, ohne je einen
+  Deploy-Befehl auszuführen (beide haben kein lokales CLI-Deploy-Kommando - jetzt ehrlich als
+  "nicht möglich" statt fälschlich "erfolgreich" gemeldet); ein "echter" Vercel-Deploy prüfte
+  nur, ob die CLI installiert ist, rief sie aber NIE tatsächlich auf (jetzt ein echter
+  `vercel --prod`-Aufruf). Ein erfolgreicher ECHTER Deploy wird über `core/deployment_status.py`
+  persistiert (gitignored, reiner Laufzeit-Zustand) und von `--check-deployments` periodisch
+  per echtem HTTP-Request auf Erreichbarkeit geprüft - ein Ausfall eröffnet automatisch ein
+  hochpriorisiertes Backlog-Ticket + externe Benachrichtigung, eine Wiederherstellung schließt
+  es automatisch. Dieselbe lokale-Zustand-Begründung wie beim Backlog-Worker: eigene
+  `scripts/run_production_monitor.ps1`, bewusst nicht im GitHub-Actions-Scheduler.
+
+51 neue/angepasste Tests (815 gesamt), `ruff check .` sauber.
+
+---
+
+## 🕳️ Fünf zusammenhängende Verifikations-Lücken am Pong-Projekt (Frontend "geprüft und ok", aber funktional tot)
+
+Realer Fund: das generierte Pong-Spiel (`workspace/pong-game`) hatte einen grünen PR (#20,
+CI grün, Backlog-Status "review") und trug trotzdem KEINEN einzigen funktionierenden
+Bootstrap-/Render-Code (`game.js` besaß keine `draw()`-Methode, keinen Game-Loop, `index.html`
+lud das ES-Modul ohne `type="module"` - die Seite crashte beim Öffnen sofort mit einem
+JS-Syntaxfehler). `npm test` schlug sogar komplett fehl (0 von 2 Tests liefen je), bevor
+dieser Fund überhaupt gemacht wurde. Fünf unabhängige, sich gegenseitig verstärkende Lücken
+im Verifikations-Pfad ließen das durchrutschen:
+
+- **`interface/cli.py._ask_for_git_push()`**: der PR-Body enthielt bisher NIE den
+  Verifikationsstatus - nur das Terminal warnte (`verification_note`), aber genau das sieht
+  ein GitHub-Reviewer nie. Ein PR, dessen echte Testsuite nicht bestätigt bestanden hat,
+  bekommt jetzt einen `⚠️ [UNVERIFIZIERT]`-Titel-Präfix, das vollständige
+  Verifikations-Protokoll im Body (`Orchestrator.last_verification_summary`, neu) und wird per
+  `github_agent.create_pull_request(draft=True)` als Draft angelegt statt als normaler,
+  mergebarer PR.
+- **`requirements.txt`**: Playwright war nur Dev-Abhängigkeit - ohne installiertes Playwright
+  fällt `core/browser_verifier.py` STILL auf eine rein statische Datei-Existenz-Prüfung
+  zurück, die kein JavaScript ausführt. Jetzt Laufzeit-Abhängigkeit; ein `static_dom`-Pass
+  wird im Verifikations-Protokoll außerdem explizit als "nur eingeschränkt geprüft" markiert
+  statt optisch identisch zu einem echten Playwright-Lauf zu erscheinen.
+- **`core/browser_verifier.py`**: neue Blank-Canvas-Heuristik (`blank_canvases`) - ein
+  `<canvas>`-Element, dessen Pixelinhalt nach dem Laden byte-identisch mit einem frisch
+  erzeugten LEEREN Canvas ist, wurde nachweislich nie gezeichnet (kein Fehler wird dabei
+  geworfen, es fehlt schlicht jeder Render-Aufruf) - genau das Pong-Muster.
+- **`agents/orchestrator.py._run_verification_loop()`**: ein Fehlschlag des Frontend/UI-Checks
+  (Konsolenfehler, fehlendes Asset, jetzt auch Blank-Canvas) war bisher rein informativ und
+  beeinflusste `verification_ok` NICHT - für ein Frontend-Projekt ist dieser Check aber oft die
+  einzige Instanz, die überhaupt echten Browser-Code ausführt. Zählt jetzt wie ein
+  fehlgeschlagener Lastentest/Runtime-Smoke-Test als echte Anforderungsverletzung.
+- **`core/verifier.py._parse_node_failures()`**: zwei Bugs zugleich. (1) `message` blieb für
+  per "FAIL <datei>"-Header erkannte Jest-Fehlschläge IMMER `""` - der Fix-Agent im
+  Verifikations-Fix-Loop bekam nie die tatsächliche Fehlermeldung zu sehen. (2) ein
+  Jest-Konfigurationsfehler ("Cannot use import statement outside a module" u.ä.) wurde
+  ausschließlich der Testdatei zugeschrieben und landete deshalb beim `tester`-Agenten, obwohl
+  die Ursache in der Node-Projekt-Konfiguration liegt - `package.json` wird bei erkannter
+  Fehlersignatur jetzt zusätzlich implizierter Owner.
+- **`.github/workflows/ci.yml`**: neuer Job `workspace-frontend-tests` führt echtes
+  `npm test` in jedem `workspace/*`-Projekt mit Test-Skript aus - CI testete bisher
+  AUSSCHLIESSLICH den Python-Code des Orchestrators selbst (`ruff.toml` schließt `workspace/`
+  bewusst aus), ein grüner PR-Check bedeutete nie "das generierte Frontend funktioniert".
+
+`workspace/pong-game` selbst wurde im selben Zug repariert (`draw()`/Game-Loop/Event-Handling
+ergänzt, `type="module"`, Jest-ESM-Konfiguration) - sonst hätte der neue CI-Job und der neue
+Blank-Canvas-Check sofort auf diesem PR angeschlagen.
+
+---
+
+## 🔧 Datenbasierte Selbstoptimierungs-Vorschläge über mehrere Läufe hinweg
+
+Nutzerwunsch: "Loops einbauen, damit das Team eigenständiger arbeiten und sich weiter
+optimieren kann". Nach Rückfrage (drei mögliche Lesarten: eingebauter Daemon-Modus im
+Framework, Claude-Code-`/schedule` für wiederkehrende Läufe, oder eine tiefere
+Selbstoptimierungs-Schleife) fiel die Wahl bewusst auf Letzteres – als reiner VORSCHLAG, keine
+automatische Änderung, dieselbe Linie wie die bereits weiter unten dokumentierte Entscheidung,
+Phasenreihenfolge-Änderungen nicht automatisch, sondern nur nach Rücksprache umzusetzen.
+
+- **`memory/run_history.py.get_agent_model_performance()`**: `agent_results`-Einträge trugen
+  bisher `agent_id`/`success`/`total_tokens`, aber NICHT, welches Modell tatsächlich genutzt
+  wurde (`AgentResult.model_used` existierte bereits, wurde aber nie mit aufgezeichnet) – es
+  gab dadurch keine Möglichkeit zu sehen, ob die aktuell konfigurierte Modellzuweisung eines
+  Agenten (z. B. nach einem manuellen `.env`-Wechsel) empirisch tatsächlich die beste ist.
+  Gruppiert Erfolgsquote/Tokenverbrauch je (Agent, Modell)-Kombination; ältere Historien-
+  Einträge ohne `model_used` landen unter "unbekannt" statt zu crashen.
+- **`core/optimization_advisor.py`** (`analyze()`, `format_report_for_humans()`): rein
+  deterministische Auswertung (keine LLM-Interpretation nötig – Erfolgsquoten sind bereits
+  harte Zahlen) erkennt zwei Muster: (1) ein Agent lief bereits mit mehreren Modellen in der
+  Historie, eines davon deutlich besser (Mindest-Stichprobengröße `MIN_SAMPLE_SIZE=5` je
+  Modell UND Mindest-Lücke `MIN_SUCCESS_RATE_GAP=15` Prozentpunkte, sonst gilt es als
+  Rauschen); (2) ein Agent scheitert auffällig oft gegenüber dem Team-Durchschnitt. Beides
+  bewusst NUR als Empfehlung formatiert, ändert `config.py` nie automatisch.
+- Erscheint automatisch als eigener Abschnitt im Abschlussbericht JEDES Laufs (`agents/
+  orchestrator.py`), aber NUR wenn ein aussagekräftiger Befund vorliegt – kein unnötiger
+  Abschnitt für die Mehrheit der Läufe. Zusätzlich jederzeit ohne neuen Lauf über den neuen
+  CLI-Befehl `/optimize` abrufbar.
+
+23 neue Tests (`test_optimization_advisor.py`, `test_optimization_advisor_integration.py`,
+`test_cli_optimize_command.py`, Erweiterung von `test_run_history.py`). Volle Suite
+(752 Tests) grün, ruff sauber.
+
+---
+
+## ♿ Echter axe-core-Accessibility-Scan statt LLM-Freitext-Checkliste
+
+Letzter offener Punkt aus der Bestandsaufnahme gegen ein professionelles Team: Nach SAST
+(`bandit`) und Lizenz-Audit (`pip-licenses`) blieb der `accessibility`-Agent als dritter Agent
+übrig, dessen Report reine LLM-Einschätzung ohne echten Fundort war – ausgerechnet, obwohl
+`core/browser_verifier.py` bereits per Playwright echt gerenderte Seiten für den UI-Check
+zur Verfügung hatte.
+
+- **`core/browser_verifier.py.verify_accessibility()`** (`AccessibilityReport`,
+  `AccessibilityViolation`): führt `axe-core-python` (WCAG 2.x, dieselbe Engine, die auch
+  `@axe-core/playwright`, `cypress-axe`, `jest-axe` nutzen) gegen den ersten gefundenen
+  HTML-Einstiegspunkt aus – eigener, unabhängiger Playwright-Lauf statt Wiederverwendung des
+  bestehenden UI-Checks, damit ein Fehlschlag hier den Konsolen-/Asset-Check nicht beeinflusst
+  und umgekehrt. `core/verifier.py.check_accessibility()` delegiert dünn daran, exakt wie
+  `check_browser_ui()`. Braucht zwingend eine echt gerenderte Seite (Playwright UND
+  `axe-core-python`) – ohne beides `attempted=False`, NIEMALS fälschlich "keine Verstöße".
+  Rein informativ im Abschlussbericht wie der bestehende Frontend/UI-Check direkt darüber,
+  beeinflusst `verification_ok` nicht.
+- Parsing bewusst defensiv (`.get()`-Ketten statt direkter Zugriffe) gegen axe-core-Versions-
+  Drift, dasselbe Prinzip wie beim k6-Summary-Parser: fehlende/abweichende Felder degradieren
+  konservativ, statt mit `KeyError` zu crashen.
+
+14 neue Tests (`test_accessibility_verifier.py`, `test_accessibility_integration.py`). Neue
+optionale Dev-Abhängigkeit `axe-core-python` in `requirements-dev.txt`. Volle Suite
+(737 Tests) grün, ruff sauber.
+
+Damit sind jetzt alle drei Agenten mechanisiert, die zuvor reine LLM-Einschätzungen ohne
+echten Fundort abgaben: `security` (SAST), `compliance` (Lizenz-Audit) und `accessibility`
+(axe-core) – durchgängig dasselbe Muster wie beim ursprünglichen Dependency-Audit.
+
+---
+
+## 📜 CHANGELOG.md für generierte Projekte & echtes Slack-Block-Kit-Format
+
+Letzte zwei kleinere Punkte aus derselben Bestandsaufnahme:
+
+- **`core/release_manager.py.update_project_changelog()`:** `tag_release()` erstellte bisher
+  nur ein GitHub-Release (Tag + Notes) – nur das Framework-Repo hatte eine im Projekt selbst
+  lesbare Versionshistorie, generierte Projekte in `workspace/` nicht. Nach jedem erfolgreichen
+  Release schreibt derselbe Aufruf jetzt zusätzlich eine echte `CHANGELOG.md` **im generierten
+  Projekt** (`workspace/<projekt>/CHANGELOG.md`, neueste Einträge zuerst) – über die
+  GitHub-Contents-API (`gh api --method PUT`) direkt gegen den Default-Branch, ohne den
+  lokalen Checkout in `BASE_DIR` anzufassen (derselbe Grund wie bei `gh release create`
+  selbst: der lokale Checkout könnte gerade auf einem völlig anderen Branch stehen, z. B.
+  mitten in einem parallelen Lauf). Sicher gegen versehentliches Überschreiben: ohne das
+  korrekte `sha` einer bereits existierenden Datei lehnt GitHubs eigene Contents-API den
+  Schreibvorgang ab, statt ihn stillschweigend zu ersetzen – `_fetch_existing_changelog()`
+  startet deshalb im Fehlerfall bewusst konservativ mit einer frischen Datei, statt zu raten.
+  Erkennt einen fremden/von Hand abweichenden Header, wird der neue Eintrag nur oben angefügt,
+  statt bestehenden Inhalt zu überschreiben. Best effort wie das Release-Tagging selbst: ein
+  fehlgeschlagenes CHANGELOG-Update lässt das bereits erfolgreiche Release NIE nachträglich
+  als Fehlschlag gelten.
+- **`core/notifier.py`:** Das Slack-Webhook-Payload war bisher ein einziger flacher
+  `{"text": "..."}`-String – in Slack kam das unformatiert an, obwohl Slack für genau diesen
+  Zweck ein eigenes Nachrichtenformat (Block Kit) mit fett/Struktur/Farbe anbietet.
+  `_build_slack_payload()` nutzt jetzt echtes Block Kit: fett hervorgehobenes Event-Label,
+  farbiger Rand je nach grob an Schlagworten erkanntem Schweregrad ("fehlgeschlagen"/
+  "blockiert"/"Budget erreicht" → Rot, "Warnung"/"Achtung" → Orange, sonst Blau) und ein
+  Kontext-Footer mit Zeitstempel. Das oberste `"text"`-Feld bleibt zusätzlich gesetzt – Slacks
+  eigene Fallback-Konvention für Push-Vorschauen/Clients ohne Block-Kit-Rendering, zugleich
+  Rückwärtskompatibilität für Fremd-Webhooks, die nur ein einfaches `"text"`-Feld auswerten.
+  Bewusst NICHT umgesetzt: Threads/Mentions – beides bräuchte die `chat.postMessage`-API mit
+  einem echten Bot-Token statt der aktuellen, einfachen Webhook-URL, ein anderes Auth-Modell.
+
+29 neue Tests (`test_release_manager.py` erweitert, `test_notifier.py` erweitert). Volle Suite
+(723 Tests) grün, ruff sauber.
+
+---
+
+## 🏋️ Echte Ausführung der Lastentest-Skripte statt ungeprüfter Ablage
+
+Direkte Fortsetzung der Bestandsaufnahme unten: der `performance`-Agent schrieb bereits
+vollständige k6-/Locust-Lastentest-Skripte, aber – anders als `run_tests()` für die normale
+Testsuite – wurden sie NIE tatsächlich ausgeführt. Ein Skript, das nie läuft, ist praktisch
+wertlos: niemand (Mensch oder Team) weiß, ob es syntaktisch überhaupt funktioniert oder was
+es unter Last ergäbe.
+
+- **`core/verifier.py.check_load_test()`** (`PerfCheckReport`): startet einen gefundenen
+  Python-Web-Einstiegspunkt (dieselbe Erkennung wie im `http_api`-Zweig von
+  `check_runtime_smoke()`) auf einem freien Port und führt einen kurzen SMOKE-Lasttest
+  dagegen aus – wenige Sekunden, wenige virtuelle Nutzer. Bewusst KEIN vollständiger
+  Lasttest/Benchmark (würde Minuten dauern und echte Ressourcen binden), nur eine Prüfung,
+  ob die App unter minimaler gleichzeitiger Last überhaupt fehlerfrei antwortet. Sucht
+  ausschließlich unter der neuen Konvention `tests/load/` (`locustfile.py` hat Vorrang vor
+  `*.js`-k6-Skripten) – `agents/performance_agent.py` wurde entsprechend angepasst, inkl. der
+  Vorgabe, die Ziel-URL NIEMALS hart zu codieren (Locust: `--host` zur Laufzeit; k6:
+  `__ENV.BASE_URL`), da der automatische Testlauf den freien Port erst zur Laufzeit kennt.
+  `locust`-CSV-Ergebnisse werden per `csv.DictReader` geparst (robust gegen Spalten-
+  Reihenfolge-Unterschiede zwischen Locust-Versionen), `k6`-JSON-Summaries defensiv gegen
+  bekannte Format-Abweichungen zwischen Versionen. Wie bei jedem anderen Check: fehlendes
+  Skript/Tool oder ein technischer Fehlschlag (App startet nicht) ist KEIN Fehler, nur nicht
+  prüfbar (`attempted=False`) – in der Praxis für die meisten Projekte ein No-Op. Neuer
+  Opt-out `ENABLE_LOAD_TEST_CHECK=false`, Dauer über `LOAD_TEST_DURATION_SECONDS` (Standard 5s)
+  konfigurierbar. Ein fehlgeschlagener Request zählt wie beim Runtime-Smoke-Test als echte
+  Anforderungsverletzung (`verification_ok = False`), nicht als reiner Stil-Hinweis.
+- **Nebenfund beim Bau des Checks:** `check_runtime_smoke()`s `http_api`-Zweig rief
+  `CodeSandbox.safe_environment()` auf – eine Methode, die nie existiert hat (korrekt ist
+  `_restricted_env()`). Jeder erkannte FastAPI-/Flask-/uvicorn-Einstiegspunkt wäre dadurch mit
+  `AttributeError` gecrasht. Blieb unbemerkt, weil `tests/test_verifier_smoke.py` nur die
+  `cli_script`-/`node_server`-Zweige mit einem echten Aufruf testet, nie den `http_api`-Zweig
+  (der lief bisher ausschließlich über gemockte `check_runtime_smoke()`-Rückgabewerte in
+  Integrationstests) – derselbe Musterfund wie schon beim `browser_verifier.py`-`NameError` im
+  CHANGELOG-Eintrag weiter unten: reine Mocks sehen strukturell nicht jeden echten,
+  dynamischen Codepfad. Direkt mitgefixt.
+
+24 neue Tests (`test_verifier_load_test.py`, `test_load_test_integration.py`), 8 bestehende
+Verifikations-Integrationstests um `check_load_test.return_value.attempted = False` ergänzt
+(dasselbe Musterproblem wie bei `check_docker_build`/`check_browser_ui`: ein komplett
+gemockter `ProjectVerifier` liefert für einen neuen, nicht explizit gemockten Single-Report-
+Check sonst ein truthy `MagicMock` statt `attempted=False`). `agents/orchestrator.py` formatiert
+`p95_ms` zusätzlich per `isinstance()`-Prüfung statt `is not None`, damit ein unvollständig
+gemockter Verifier in künftigen Tests nicht erneut an derselben Stelle crasht. Volle Suite
+(711 Tests) grün, ruff sauber. Neue optionale Dev-Abhängigkeit `locust` in
+`requirements-dev.txt` (`k6` ist kein pip-Paket und muss separat installiert werden, wie
+`docker` bei `check_docker_build()`).
+
+---
+
+## 🕵️ Mechanisierte Security-/Lizenz-Prüfung statt LLM-Raten & persistentes Design-System
+
+Bestandsaufnahme auf explizite Nutzeranfrage ("welche Verbesserungen fehlen für ein
+vollständiges, professionelles Team?"): Der Dependency-Audit (`pip-audit`/`npm audit`) und
+der Lint-Check (`ruff`/`eslint`/`tsc`) hatten die rein LLM-basierte Einschätzung von
+`security`/Code-Qualität bereits durch echte Tool-Läufe ersetzt – zwei weitere Agenten-Reports
+hingen aber noch im alten Zustand fest: reines, ungeprüftes Freitext-Raten des Modells, ohne
+Datei/Zeile oder echte Paket-Metadaten.
+
+- **SAST für generierten Python-Code** (`core/verifier.py.check_sast()`, `SastReport`): Neuer
+  echter statischer Scan (`bandit`) gegen bekannte Schwachstellenmuster (hartcodierte
+  Secrets, unsichere Deserialisierung, SQL-Injection-Vektoren, unsichere Zufallszahlen,
+  `eval`/`exec`, …) – ersetzt die bisherige Freitext-Einschätzung des `security`-Agenten
+  (der Schwachstellen nur "plausibel" vermuten konnte) durch einen geparsten Fund mit
+  exakter Datei/Zeile/Regel/Schweregrad. Dasselbe Graceful-Degradation-Prinzip wie beim
+  Dependency-Audit: fehlendes `bandit` oder ein technischer Fehlschlag ist NIE ein Fehler,
+  nur nicht prüfbar (`attempted=False`), niemals fälschlich als "keine Funde" gemeldet. Rein
+  informativ im Abschlussbericht (wie Lint), kein automatischer Blocker – ein SAST-Fund kann
+  ein False Positive sein und braucht menschliche Einschätzung, anders als ein roter Test.
+  Aktuell nur Python; Node/Rust/Go (z. B. via `semgrep`) sind eine naheliegende spätere
+  Erweiterung, analog dazu, wie auch der Dependency-Audit schrittweise über mehrere Runden
+  auf Node/Rust/Go ausgeweitet wurde.
+- **Echter Lizenz-/SBOM-Scan** (`core/verifier.py.check_licenses()`, `LicenseAuditReport`):
+  `pip-licenses` liest die Lizenzen der TATSÄCHLICH installierten Python-Abhängigkeiten aus
+  der isolierten Projekt-venv (`--python <venv-interpreter>`) und markiert bekannte
+  Copyleft-Lizenzen (GPL/AGPL/LGPL/MPL/CDDL/EUPL/SSPL per Namens-Heuristik) – ersetzt die
+  bisherige, vom `compliance`-Agenten GERATENE Lizenz-Tabelle ("MIT/AGPL 🔴") durch echte
+  Paket-Metadaten. Rechtlich relevant: eine geratene Lizenzangabe bei einem echten
+  Copyleft-Paket ist eine falsche Sicherheit, kein bloßer Stil-Hinweis wie ein Lint-Fund.
+- **Persistentes Projekt-Design-System** (`core/design_system.py`, `/design-system [projekt]`):
+  Die bereits bestehende Projekt-Konstitution (`core/project_constitution.py`) hält feste
+  Tech-Stack-Präferenzen über mehrere Läufe hinweg fest – seit der Design-vor-Dev-
+  Phasenaufteilung (`design_lead` läuft VOR `dev_lead`) fehlte ausgerechnet dem VISUELLEN
+  Design (Farbpalette, Typografie, Spacing-Skala, Komponenten-Namenskonvention, Tonalität für
+  `copywriter`) ein Pendant: ein zweiter Lauf am selben Projekt hätte eine andere
+  Primärfarbe/Schriftart wählen können als der erste, ohne dass die Nutzeranfrage das je
+  erwähnt hätte. Neue Datei `.ai-team-design.toml` im Projektverzeichnis (bewusst NICHT
+  gitignored, wie `.ai-team.toml`), nach demselben Muster gelesen/geschrieben und bei JEDEM
+  künftigen Lauf in den Kontext aller Teilaufgaben injiziert.
+
+50 neue Tests (`test_verifier_sast.py`, `test_sast_integration.py`, `test_verifier_license.py`,
+`test_license_audit_integration.py`, `test_design_system.py`, `test_cli_design_system_command.py`,
+`test_design_system_integration.py`). Volle Suite (692 Tests) grün, ruff sauber. Neue optionale
+Dev-Abhängigkeiten `bandit`/`pip-licenses` in `requirements-dev.txt` (dieselbe Graceful-Skip-
+Philosophie wie `pip-audit`: fehlt das Tool lokal, wird der jeweilige Scan übersprungen statt
+zu crashen oder fälschlich "sauber" zu melden).
+
+**Bewusst zurückgestellt: mechanisierte Ausführung der vom `performance`-Agenten geschriebenen
+k6-/Locust-Lastentests.** Anders als SAST/Lizenz-Scan (einmaliger, kurzer Tool-Aufruf) würde
+ein echter Lasttest die generierte Anwendung tatsächlich unter Last hochfahren müssen – ein
+deutlich größerer Eingriff (Ports, Laufzeit, Ressourcenverbrauch) als die übrigen
+Verifikationsschritte. Als nächster Schritt vorgemerkt, aber nicht Teil dieser Runde.
+
+---
+
+## 🎨 Design-vor-Dev-Phasenaufteilung: Vorab-Design & Post-Dev-Content/Dokumentation
+
+Strukturelle Weiterentwicklung der Fachbereichs-Hierarchie basierend auf dem von Claude
+gekennzeichneten Architektur-Diskussionspunkt:
+
+- **Aufspaltung der Design- und Content-Phasen:** Bisher lief `dev_lead` vor `creative_lead`
+  – `creative_lead` enthielt jedoch sowohl vorlaufende Rollen (`ui_ux`, `image_generator`, `copywriter`),
+  die Entwürfe und Assets vor dem Coden liefern sollten, als auch nachlaufende Rollen
+  (`accessibility`, `i18n`, `documentation`, `readme`), die zwingend auf fertigen Code angewiesen sind.
+- **6-Phasen-Ablauf:**
+  1. `planning_lead`: Anforderungsanalyse, Scope & Architektur-Blueprint.
+  2. `design_lead`: Wireframes, Design-Tokens, SVG-Icons/Logos & Copywriting vorab.
+  3. `dev_lead`: Fullstack-, Backend- und Frontend-Entwicklung basierend auf den Design-Spezifikationen.
+  4. `content_lead`: Barrierefreiheit (a11y), Mehrsprachigkeit (i18n), Dokumentation & README auf dem erzeugten Code.
+  5. `qa_lead`: Echte Testsuite, Security-Audits & Resilience-Prüfung.
+  6. `governance_lead`: Code-Review, Refactoring, DSGVO/Compliance & Hygiene.
+- **Rückwärtskompatibilität:** `config.py` unterstützt weiterhin `CREATIVE_LEAD_MODEL` und
+  `DEPARTMENT_CREATIVE_MODEL` als Fallbacks für `design_lead` und `content_lead`.
+- **Neue Tests:** `tests/test_department_phase_order.py` validiert die strikte Phasenfolge und den
+  Kontextfluss zwischen Design, Dev und Content/Doku.
+
+---
+
+## 🤖 Drei weitere Lücken gegenüber einem echten Profi-Team: Pro-Projekt-Budget, Release-Tagging, Sprint-Priorisierung
+
+Zweite Runde derselben Nutzeranfrage-getriebenen Bestandsaufnahme (siehe Eintrag unten):
+
+- **Pro-Projekt-Kostenbudget über ALLE Läufe hinweg:** `MAX_RUN_TOKENS` begrenzt nur EINEN
+  einzelnen Lauf – ein Projekt mit vielen aufeinanderfolgenden Läufen (z.B. für einen externen
+  Auftraggeber mit festem Kostenrahmen) hatte kein Limit über die gesamte Projekt-Lebenszeit.
+  `/constitution` (neues Feld `max_project_tokens`) + `memory/run_history.get_total_tokens_for_project()`
+  (bereits vorhandene, project_slug-gefilterte Lauf-Historie, nur neu summiert) schließen die
+  Lücke, unabhängig vom globalen Lauf-Budget geprüft: ist das Projekt-Budget bereits VOR
+  Laufbeginn erschöpft, bricht `agents/orchestrator.py.process()` ab, ohne auch nur einen
+  Agenten zu starten; während des Laufs wird es an denselben drei Prüfpunkten wie
+  `MAX_RUN_TOKENS` mitgeprüft (`_project_budget_exceeded()`). `_budget_exceeded_label()` nennt
+  in jeder Abbruch-Meldung korrekt, WELCHES der beiden unabhängigen Budgets tatsächlich bindend
+  war, statt pauschal auf `MAX_RUN_TOKENS` zu verweisen. `max_project_tokens` ist bewusst NICHT
+  Teil des in den Agenten-Kontext injizierten Konstitutions-Texts (operative Kennzahl, keine
+  inhaltliche Vorgabe).
+- **Generierte Projekte bekommen jetzt eine eigene Versionshistorie:** Der PR-Workflow deckte
+  Feature-Branch → Pull Request → Merge vollständig ab, aber danach passierte nichts mehr – nur
+  das Framework selbst hatte ein gepflegtes CHANGELOG.md. `core/release_manager.py` (neu)
+  taggt automatisch ein neues GitHub-Release (`<projekt>-vX.Y.Z`, fortlaufende Patch-Version je
+  Projekt – workspace/-Projekte liegen im selben Repo wie das Framework, daher das
+  Projekt-Präfix) MIT Release-Notes (Ticket-Titel + PR-Link), sobald `core/merge_watcher.py`
+  einen echten Merge erkennt UND das Ticket ein `project_slug` trägt. Nächste freie Version wird
+  über `gh release list` ermittelt (bewusst NICHT lokale `git tag`-Einträge, die ohne
+  `git fetch --tags` veraltet sein könnten und denselben Tag doppelt vergeben würden). Best
+  effort: ein fehlgeschlagenes Tagging lässt das Ticket trotzdem korrekt auf `done` stehen.
+  Nebenbefund beim Verdrahten: `check_merged_tickets()` hätte für jeden Test versehentlich eine
+  ECHTE, intern neu angelegte `GitHubAgent()`-Instanz für das Tagging verwendet statt der
+  gemockten übergebenen Instanz – gefixt, bevor es zu echten `gh`-Aufrufen während der Tests
+  kommen konnte.
+- **Sprint-/Kapazitäts-Grundlagen im Backlog:** Bisher entstand JEDES Ticket erst, wenn eine
+  Aufgabe bereits lief – keine Möglichkeit, mehrere geplante Aufgaben vorab zu priorisieren, und
+  kein Kapazitätsbegriff über mehrere gleichzeitig laufende Tickets hinweg. `core/backlog_store.py`:
+  `Ticket` bekommt `priority` (1=hoch/2=mittel/3=niedrig, dieselbe Konvention wie
+  `AgentTask.priority`) und `estimate` (freier Text). `upsert_ticket()` behandelt beide als
+  Sentinel (`None` = unverändert übernehmen) statt als echten Default – ein echter Default hätte
+  eine beim Anlegen gesetzte Priorität bei jedem der zahlreichen bestehenden Status-Update-Aufrufe
+  (z.B. `core/issue_watcher.py`, die priority/estimate nie mitgeben) stillschweigend auf
+  "mittel" zurückgesetzt. Neuer CLI-Befehl `/backlog-add [priorität] <titel>` legt ein noch
+  nicht begonnenes, priorisiertes `todo`-Ticket an (führt selbst nichts aus – wird erst zu
+  echter Arbeit, wenn die Aufgabe regulär in den Chat geschrieben wird, genau wie die bereits
+  bestehenden `todo`-Tickets aus `core/pr_review_watcher.py`). `/backlog` sortiert jede Spalte
+  nach Priorität und zeigt eine rein informative WIP-Limit-Warnung (`BACKLOG_WIP_LIMIT_IN_PROGRESS`,
+  Standard `0` = aus) – bewusst kein Hard-Block, ein Kanban-WIP-Limit ist Team-Disziplin, keine
+  technische Zwangsbeschränkung.
+- **Geprüft, aber bewusst NICHT geändert: Design-vor-Dev-Reihenfolge.** Vermutung aus der
+  vorherigen Runde war, Design/Content liefe parallel zu oder nach der Entwicklung. Tatsächliche
+  Prüfung von `_run_department_hierarchy()`: die 5 Fachbereichs-Phasen laufen strikt
+  SEQUENZIELL (eine einfache `for`-Schleife über `PHASE_ORDER`) – nur die Mitglieder INNERHALB
+  eines Fachbereichs können parallel laufen (`run_mode`). Entwicklung (`dev_lead`) läuft also
+  bereits vollständig VOR Design/Content (`creative_lead`) ab, nicht parallel dazu. Eine
+  Umkehrung (Design vor Dev) wäre für `ui_ux`/`image_generator` plausibel wertvoll, aber
+  `creative_lead` enthält auch `accessibility`/`i18n`/`documentation`/`readme` – Rollen, die
+  zwingend AUF bereits existierenden Code angewiesen sind (sie prüfen/beschreiben, was gebaut
+  wurde). Eine pauschale Verschiebung des gesamten Fachbereichs würde diese vier Rollen ohne
+  Not verschlechtern; eine gezielte Aufspaltung (nur `ui_ux`/`image_generator` vor `dev_lead`)
+  wäre eine grössere Strukturänderung mit Auswirkung auf JEDEN künftigen Lauf – bewusst nicht
+  ohne weitere Rücksprache umgesetzt.
+
+42 neue Tests (`test_project_token_budget.py`, `test_release_manager.py`, Erweiterungen an
+`test_project_constitution.py`/`test_run_history.py`/`test_merge_watcher.py`/
+`test_backlog_store.py`, neues `test_cli_backlog_commands.py`). Volle Suite (656 Tests) grün,
+ruff sauber.
+
+---
+
+## 🤖 Drei Lücken gegenüber einem echten Profi-Team: stille Datei-Kollisionen, passiver Dependency-Scan, fehlende Branch-Protection
+
+Gezielte Bestandsaufnahme auf Nutzeranfrage ("was fehlt noch, damit das Team wie ein echtes
+Entwicklerteam arbeitet?"), keine aus einem einzelnen Lauf beobachteten Symptome, sondern drei
+strukturelle Lücken beim Durchsehen des Orchestrierungs-Codes selbst:
+
+- **Datei-Kollisionen zwischen parallel arbeitenden Fachteam-Mitgliedern blieben stumm:**
+  `agents/orchestrator.py._run_department_hierarchy()` lässt Fachbereiche mit 3+ Mitgliedern
+  echt parallel per `asyncio.gather` laufen (der bestehende Kommentar dort dokumentiert
+  bereits, dass sich Agenten dabei NIE gegenseitig sehen – Grundlage für die schon vorhandene
+  Zwei-Mitglieder-Ausnahme). `core/agent_toolbox.py._tool_write_file()` überschreibt eine
+  Datei dabei blind (kein Lock/Merge) – schreiben zwei Agenten dieselbe Datei (z.B.
+  `requirements.txt`), gewann bisher stillschweigend nur der laut Ergebnis-Reihenfolge letzte
+  Schreiber als `file_owners`-Eintrag, ohne dass irgendjemand vom Verlust der zuerst
+  geschriebenen Version erfuhr. `_detect_file_write_collisions()` (neu) erkennt Kollisionen
+  direkt nach jedem parallelen Ausführungs-Batch, meldet sie live UND sammelt sie für einen
+  neuen, deterministischen `### ⚠️ Datei-Kollisionen`-Abschnitt im Abschlussbericht
+  (`_build_file_collision_section()`) – automatisch entscheidbar, welche Version richtig ist,
+  ist es nicht, deshalb "melden statt raten", dieselbe Philosophie wie bei fehlgeschlagener
+  Verifikation. Rein additiv über den neuen, optionalen `collision_sink`-Parameter durchgereicht
+  – bestehende Aufrufer/Tests ohne Interesse daran bleiben unverändert.
+- **`--check-dependencies` warnte nur, statt wie ein echter Dependabot/Renovate zu handeln:**
+  `core/dependency_watch.py` fand bekannte CVEs, legte aber nur ein `blocked`-Ticket an – ein
+  Mensch musste die Abhängigkeit danach manuell selbst anheben. `core/dependency_updater.py`
+  (neu) hebt jedes Paket mit bekannter Schwachstelle UND mindestens einer von `pip-audit`
+  gelieferten `fix_versions`-Angabe in `requirements.txt` automatisch auf die erste (niedrigste
+  sichere) Version an – bewusst NUR für Python: `pip-audit` liefert eine einfache, verlässliche
+  "eine sichere Version"-Angabe direkt aus der Advisory-Datenbank, `npm audit` dagegen nicht
+  (oft ein ganzer Abhängigkeitsbaum-Umbau mit möglichen Breaking Changes) – Node/Rust/Go
+  bleiben deshalb bei der reinen Meldung. Der Update-PR läuft über denselben
+  `agents/github_agent.py`-Mechanismus wie der Issue-Watcher, ohne menschliche Bestätigung
+  (unbeaufsichtigter Poll-Zyklus – ein Mensch reviewt/merged den PR anschließend ganz normal
+  über GitHub). Nebenbefund beim Verdrahten: `core/merge_watcher.py` erkannte eine PR-URL im
+  Ticket-`detail`-Feld bisher nur per striktem `startswith("http")` – die neuen
+  Dependency-Update-Tickets hängen die URL aber hinter einen beschreibenden Text (damit die
+  Schwachstellen-Beschreibung im Board sichtbar bleibt), wären also NIE automatisch von
+  "review" auf "done" gezogen worden. Auf einen Substring-Regex-Match umgestellt (deckt beide
+  Fälle ab, keine Verhaltensänderung für die bestehenden PR-Workflow-/Issue-Tickets).
+  `ENABLE_DEPENDENCY_AUTO_UPDATE=true` (Standard) schaltet es ab.
+- **Der PR-Workflow verhinderte nur eigene Direct-Pushes, nicht die eines Menschen:**
+  `agents/github_agent.py.create_branch()`/`create_pull_request()` sorgen dafür, dass DIESES
+  Tool nicht direkt auf `main` committet – GitHub selbst kannte davon nichts, ein `git push
+  origin main` von Hand (oder einem anderen Tool) wäre weiterhin klaglos durchgegangen. Neue
+  Methoden `get_repo_slug()`/`set_branch_protection()` aktivieren echte Branch-Protection über
+  `gh api --method PUT ... --input -` (Pflicht-Freigaben vor dem Merge, kein
+  Force-Push/Löschen, gilt auch für Repo-Admins). Neuer CLI-Befehl `/protect-branch [branch]`
+  mit Vorschau + Bestätigung (`BRANCH_PROTECTION_REQUIRED_REVIEWS`, Standard `1`) – bewusst nur
+  ein expliziter, einmaliger Befehl statt eines automatischen Laufs, da eine Änderung an den
+  Repo-Einstellungen selbst Admin-Rechte voraussetzt und ein bewusster Schritt sein soll, kein
+  Seiteneffekt eines normalen Team-Laufs.
+
+46 neue Tests (`test_file_write_collisions.py`, `test_dependency_updater.py`, Erweiterungen an
+`test_dependency_watch.py`/`test_merge_watcher.py`/`test_github_agent_issue_methods.py`, neues
+`test_protect_branch_command.py`). Volle Suite (614 Tests) grün, ruff sauber.
+
+---
+
+## 🔍 Code-Review-Runde: drei stille Verifikations-Lücken, Lint-Gate & Test-Isolation
+
+Eine gezielte Bestandsaufnahme des gesamten Frameworks (nicht aus einem einzelnen Lauf,
+sondern aus systematischem Code-Review + echtem Ausführen von `ruff`/der vollen Testsuite)
+förderte drei echte Bugs zutage, die ausgerechnet die eigenen Verifikations-Features
+betrafen – also genau die Stellen, denen ein autonomer Lauf am meisten vertraut:
+
+- **`core/browser_verifier.py`:** `sys.executable` wurde verwendet, obwohl `import sys` im
+  Modul fehlte. Der resultierende `NameError` wurde vom umgebenden `except Exception: return
+  None` lautlos verschluckt – der dynamische Playwright-Check lief dadurch **nie**, selbst
+  wenn Playwright installiert war, und das System fiel bei JEDEM Lauf unbemerkt auf die
+  statische DOM-Prüfung zurück (`engine` blieb fälschlich `"static_dom"`).
+- **`agents/orchestrator.py`:** Der `else`-Zweig für einen fehlgeschlagenen Runtime-Smoke-Test
+  (App startet nachweislich nicht) baute nur eine ungenutzte `err`-Variable (von `ruff` als
+  `F841` markiert) – ohne `notify()`, ohne Eintrag in `summary_lines`, ohne `verification_ok`
+  zurückzusetzen. Ein echter Startfehler blieb dadurch komplett unsichtbar UND unblockiert,
+  obwohl genau das der Zweck dieses Checks ist ("Tests grün != App startet", siehe Eintrag
+  weiter unten). Jetzt analog zur Testabdeckungs-Schwelle behandelt: sichtbar gemeldet UND
+  `verification_ok = False`.
+- **`interface/web_dashboard.py`:** `DashboardServer.shutdown()` stoppte den Event-Loop, ohne
+  den dauerhaft laufenden `_dispatch_loop()`-Task vorher zu canceln – sichtbar als `Task was
+  destroyed but it is pending!`/`RuntimeError: Event loop is closed`-Rauschen am Ende der
+  Testsuite. Rein kosmetisch (keine Tests schlugen dadurch fehl), aber ein sauberer Shutdown
+  sollte keine offenen Tasks lautlos zurücklassen.
+
+**Nebenbefund beim Verifizieren der Fixes:** `tests/test_commit_message_summary.py` war nicht
+workspace-isoliert (fehlende `self.orchestrator._workspace = WorkspaceManager(tempdir)`,
+anders als `test_coverage_integration.py` & Co.) und schrieb bei JEDEM Testlauf über
+`core/project_status.py.record_run()` eine echte `.ai_team_status.json` in einen neuen, nie
+committeten `workspace/fastapi_health_check/`-Ordner im echten Framework-Workspace – die
+volle Testsuite hat also bei jedem Durchlauf den eigenen Workspace vollgemüllt. Jetzt isoliert.
+
+`ruff check .` fand darüber hinaus 36 Lint-Fehler auf `main` (u.a. genau der `NameError` oben
+als `F821`) – der CI-Lint-Job war zum Zeitpunkt dieser Bestandsaufnahme also tatsächlich rot,
+nur bemerkte es niemand, weil `ruff` nirgends lokal vor dem Commit lief:
+
+- **Neues lokales Pre-Commit-Lint-Gate** (`scripts/git-hooks/pre-commit` +
+  `scripts/install-git-hooks.ps1`/`.sh`, einmalig zu installieren): bricht `git commit` ab,
+  wenn `ruff check .` Funde meldet (umgehbar mit `--no-verify`). `.gitattributes` (neu, gab es
+  bisher gar nicht) erzwingt LF für diese Shell-Skripte, da `core.autocrlf=true` (Windows-
+  Standard) sie sonst beim nächsten Checkout auf CRLF umgestellt und damit an der
+  Shebang-Zeile gebrochen hätte.
+- **README-Empfehlung statt automatisiertem Workflow:** ein regelmäßiger `--eval`-Lauf mit
+  echten Provider-Keys vor größeren Releases wurde bewusst NUR als dokumentierter manueller
+  Schritt ergänzt (README, Abschnitt "Tests ausführen"), nicht als automatisierter
+  GitHub-Actions-Workflow – das würde wiederkehrende, echte API-Kosten verursachen und eigene
+  Secrets-Freigaben voraussetzen, eine Entscheidung, die bewusst beim Repo-Betreiber bleibt.
+
+4 neue Regressionstests (Playwright-`sys.executable`-Aufruf, Smoke-Test-Sichtbarkeit im
+Erfolgs- UND Fehlerfall, Dashboard-Shutdown-Task-Cleanup); volle Suite (568 Tests) grün, ruff
+sauber.
+
+---
+
+## 🔔 Externe Benachrichtigung bei Vorfällen, die menschliche Aufmerksamkeit brauchen
+
+Dritter Fund derselben Bestandsaufnahme (siehe die beiden Einträge unten): Blockaden waren
+bisher nur sichtbar, wenn jemand aktiv ins Dashboard/Log/Issue schaute – core/issue_watcher.py
+(Cron-Poll-Zyklus) und interface/web_dashboard.py (Hintergrund-Jobs) laufen aber gerade
+UNBEAUFSICHTIGT, anders als interface/cli.py.
+
+- `core/notifier.py` (neu): `notify_external(event, message)` – No-op ohne konfiguriertes
+  `NOTIFY_WEBHOOK_URL` (Standard), sonst ein einfacher JSON-POST (`{"text": "..."}`,
+  Slack-Incoming-Webhook-kompatibel) über die bereits vorhandene `httpx`-Abhängigkeit. Ein
+  Fehlschlag beim Senden wird verschluckt – darf nie einen sonst erfolgreichen Lauf zum
+  Scheitern bringen, dieselbe Best-Effort-Philosophie wie `memory/run_history.py.record_run()`.
+- Vier Integrationsstellen, bewusst an bereits bestehenden "das braucht Aufmerksamkeit"-Punkten
+  statt neuer verstreuter Logik: `agents/orchestrator.py` (ein zentraler Aufruf dort, wo das
+  erreichte Lauf-Budget bereits in die Statistik einfließt – deckt alle drei Stellen ab, an
+  denen `budget_aborted` gesetzt werden kann), `core/issue_watcher.py` (EIN Aufruf direkt neben
+  dem bestehenden `upsert_ticket()`-Mapping-Ort in `run_issue_poll_cycle()`, feuert für jeden
+  Outcome außer dem echten Erfolgsfall `pr_opened`), `interface/web_dashboard.py`
+  (`_execute_job()` bei `ticket_status == "blocked"`), `interface/cli.py._report_ci_status()`
+  (siehe CI-Feedback-Loop-Eintrag unten).
+- 3 neue Tests (`tests/test_notifier.py`) plus je ein Test an den vier Integrationsstellen
+  (`tests/test_governance_fix_loop.py`, `tests/test_issue_watcher.py`,
+  `tests/test_web_dashboard.py`, `tests/test_cli_push_gate.py`).
+
+---
+
+## 🔀 CI-Feedback-Loop geschlossen: rote CI zieht den Backlog-Status jetzt nach
+
+Zweiter Fund derselben Bestandsaufnahme: `agents/github_agent.py.wait_for_ci_status()` wurde
+nach einem Push zwar aufgerufen, das Ergebnis aber nur angezeigt/geloggt – der
+Backlog-Ticket-Status (`core/backlog_store.py`) blieb "review"/"done" stehen, selbst wenn die
+echte CI-Pipeline danach tatsächlich rot wurde. `core/issue_watcher.py` prüfte CI nach einem PR
+bisher gar nicht.
+
+- `interface/cli.py._report_ci_status()` gibt jetzt `(status, detail)` statt `None` zurück.
+  `_ask_for_git_push()` zieht den Ticket-Status bei `"failed"` auf `"blocked"` (statt bei
+  "review"/"done" stehen zu bleiben) und ergänzt die CI-Fehlermeldung im Ticket-Detail –
+  `"passed"`/`"timeout"`/`"no_run"` ändern nichts am bisherigen Verhalten.
+- `core/issue_watcher.py`: nach erfolgreicher PR-Erstellung wird jetzt zusätzlich
+  `wait_for_ci_status()` abgefragt. Neuer Ausgang `"pr_opened_ci_failed"` (Label bleibt
+  `ai-team-done` – ein PR WURDE eröffnet, das beschreibt das Label bereits korrekt; die
+  CI-Info steht stattdessen im Issue-Kommentar), gemappt auf Backlog-Status `"blocked"` – über
+  denselben bereits bestehenden EIN-Mapping-Ort (`_OUTCOME_TO_TICKET_STATUS` in
+  `run_issue_poll_cycle()`), kein neuer Sonderfall an einer zweiten Stelle.
+- 4 neue Tests in `tests/test_cli_push_gate.py`, 4 neue Tests in `tests/test_issue_watcher.py`.
+  `tests/test_ci_feedback_loop.py` (reine `wait_for_ci_status()`-Unit-Tests) unverändert.
+
+---
+
+## 🛡️ Governance-Fix-Loop: kritische Review-Befunde lösen jetzt einen Korrekturauftrag aus
+
+Erster Fund einer Bestandsaufnahme des eigenen Teams (kein einzelner End-to-End-Testlauf
+diesmal, sondern eine gezielte Durchsicht, ob das Team wie ein echtes Entwicklerteam
+funktioniert): `code_reviewer`/`security`/`compliance` (`REVIEW_ONLY_AGENT_IDS`)
+kategorisieren Befunde in ihren Reports selbst nach Schweregrad ("Kritisch") – das löste aber
+NIE einen Korrekturauftrag aus, nur ein echter Testfehler tat das
+(`agents/orchestrator.py._run_verification_loop()`). Ein "Kritisch" im Code-Review ist bei
+einem echten Team ein Blocker, kein FYI im Abschlussbericht.
+
+- `core/review_gate.py` (neu): `find_critical_findings()` erkennt kritisch markierte
+  Abschnitte per Text-Heuristik (🔴-Emoji und/oder das Wort "Kritisch", mit Negativ-Filter gegen
+  "keine kritischen Befunde"-Bestätigungen) – bewusst KEIN vollständiger Markdown-Parser,
+  sondern gezielt auf die drei tatsächlich in den System-Prompts vorgeschriebenen Formate
+  getestet (analog zu `_ADR_TEXT_MARKERS`/`_is_rate_limit_error()` an anderer Stelle im
+  Projekt). `route_findings_to_owners()` gleicht Backtick-Dateipfade in jedem Fund gegen
+  `file_owners` ab und ordnet ihn dem zuständigen Agenten zu; nicht zuordenbare Funde landen
+  transparent im Protokoll statt still zu verschwinden.
+- `agents/orchestrator.py._run_governance_fix_loop()`: neue Methode, strukturell ein
+  Geschwister von `_run_verification_loop()` (gleiche Budget-/Abbruch-Prüfpunkte, gleiches
+  Fix-Dispatch-Muster über `file_owners`). Läuft NACH der Fachbereichs-Hierarchie und VOR der
+  echten Testverifikation. `MAX_REVIEW_ITERATIONS` (bisher ein toter, nie verdrahteter Rest aus
+  einer früheren Version unter "Sprache & Verhalten" – ebenfalls ein realer Fund dieser
+  Bestandsaufnahme) steuert jetzt tatsächlich, ob nach einem Fix-Versuch die ursprünglich
+  meldenden Review-Rollen frisch erneut geprüft werden (Standard `1` = genau ein Fix-Dispatch
+  ohne erneute Prüfung). Neuer Flag `ENABLE_GOVERNANCE_FIX_LOOP` (Standard an).
+- 12 neue Tests (`tests/test_review_gate.py`), 6 neue Tests
+  (`tests/test_governance_fix_loop.py`, voller `Orchestrator.process()`-Lauf mit gemocktem LLM).
+- Volle Suite (506 Tests) grün, ruff sauber.
+
+---
+
 ## ⚡ Team-Komplexitäts-Skalierung: kein Teamleiter-Overhead mehr bei trivialen Aufgaben
 
 Realer Fund aus Probelauf 3 (FastAPI-Ping-API, ein einziger Endpunkt + ein Test): 66.000

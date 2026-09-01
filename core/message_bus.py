@@ -61,6 +61,16 @@ class AgentResult:
     total_tokens: int = 0                # Gesamt-Tokens für diese Teilaufgabe
     files_written: list[str] = field(default_factory=list)  # Relative Pfade, die der Agent selbst via Tools geschrieben/geändert hat
     tool_calls_count: int = 0            # Anzahl der Werkzeug-Aufrufe während der Ausführung
+    # Realer Fund: Rückfragen (core/task_manager.py needs_clarification) passierten bisher NUR
+    # VOR dem Start, wenn die Gesamtaufgabe zu vage war - sobald Agenten liefen, gab es kein
+    # "Moment, das ist wirklich mehrdeutig" mehr, nur Weiterarbeiten mit einer geratenen
+    # Annahme. Das `ask_human_for_clarification`-Werkzeug (core/agent_toolbox.py) füllt diese
+    # beiden Felder, wenn ein Agent MITTEN in der Aufgabe auf eine echte, für die Aufgabe
+    # entscheidende Unklarheit trifft - success bleibt dabei True (der Agent liefert trotzdem
+    # eine ehrliche Teil-Zusammenfassung), aber agents/orchestrator.py behandelt einen solchen
+    # Lauf NICHT als abgeschlossen "Fertig!".
+    needs_human_input: bool = False
+    clarification_questions: list[str] = field(default_factory=list)
 
 
 class MessageBus:

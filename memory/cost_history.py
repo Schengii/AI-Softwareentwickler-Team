@@ -22,7 +22,7 @@ from config import BASE_DIR
 
 COST_HISTORY_FILE = Path(BASE_DIR) / "memory" / "cost_history.json"
 
-_STAT_KEYS = ("total_calls", "prompt_tokens", "completion_tokens", "total_tokens")
+_STAT_KEYS = ("total_calls", "prompt_tokens", "completion_tokens", "total_tokens", "cache_read_tokens", "cache_write_tokens")
 
 
 def record_run_usage(model_deltas: dict[str, dict[str, int]]) -> None:

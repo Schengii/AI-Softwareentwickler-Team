@@ -37,10 +37,18 @@ class TestIssueWatcherOrchestration(unittest.TestCase):
         self.fake_github.push.return_value = (True, "push ok")
         self.fake_github.create_pull_request.return_value = (True, "https://github.com/x/y/pull/7")
         self.fake_github.checkout.return_value = (True, "checkout ok")
+        # wait_for_ci_status() ist async (siehe agents/github_agent.py) - MagicMock kennt das
+        # nicht automatisch, ohne AsyncMock würde `await` mit TypeError fehlschlagen.
+        self.fake_github.wait_for_ci_status = AsyncMock(return_value=("no_run", "kein CI im Test"))
 
         self.fake_orchestrator = MagicMock()
         self.fake_orchestrator.process = AsyncMock(return_value="### Fertig\nHealth-Check gebaut.")
         self.fake_orchestrator.last_verification_ok = True
+        # MagicMock generiert JEDES nicht explizit gesetzte Attribut als eigenes (truthy!)
+        # Mock-Objekt - ohne diese beiden Zeilen würde core/issue_watcher.py's
+        # `getattr(orchestrator, "last_needs_human_input", False)` fälschlich True liefern.
+        self.fake_orchestrator.last_needs_human_input = False
+        self.fake_orchestrator.last_clarification_questions = []
 
         self._gh_patcher = patch("core.issue_watcher.GitHubAgent", return_value=self.fake_github)
         self._orch_patcher = patch("core.issue_watcher.Orchestrator", return_value=self.fake_orchestrator)
@@ -162,6 +170,25 @@ class TestIssueWatcherOrchestration(unittest.TestCase):
         pr_body = self.fake_github.create_pull_request.call_args.kwargs["body"]
         self.assertIn("Verifikation nicht bestanden", pr_body)
 
+    def test_open_clarification_question_opens_draft_pr_and_blocks_ticket(self):
+        # Realer Fund: eine mitten in der Aufgabe aufgetretene Rückfrage (core/agent_toolbox.py.
+        # ask_human_for_clarification) blieb im autonomen Issue-Watcher-Pfad bisher komplett
+        # unsichtbar - anders als im interaktiven CLI-Pfad gibt es hier KEINEN Menschen, der
+        # sie im Chat mitliest.
+        self.fake_orchestrator.last_needs_human_input = True
+        self.fake_orchestrator.last_clarification_questions = ["Welches Zahlungssystem soll genutzt werden?"]
+        report = asyncio.run(run_issue_poll_cycle())
+
+        self.assertEqual(report.results[0].outcome, "pr_opened_needs_clarification")
+        pr_kwargs = self.fake_github.create_pull_request.call_args.kwargs
+        self.assertTrue(pr_kwargs["draft"])
+        self.assertIn("Zahlungssystem", pr_kwargs["body"])
+        comment_text = self.fake_github.comment_on_issue.call_args.args[1]
+        self.assertIn("Zahlungssystem", comment_text)
+
+        tickets = backlog_store.list_tickets()
+        self.assertEqual(tickets[0].status, "blocked")
+
     def test_pr_creation_failure_still_removes_in_progress_and_blocks(self):
         self.fake_github.create_pull_request.return_value = (False, "permission denied")
         report = asyncio.run(run_issue_poll_cycle())
@@ -197,6 +224,40 @@ class TestIssueWatcherOrchestration(unittest.TestCase):
         self.fake_github.list_actionable_issues.return_value = [_fake_issue(1), _fake_issue(2), _fake_issue(3)]
         report = asyncio.run(run_issue_poll_cycle(max_issues=1))
         self.assertEqual(len(report.results), 1)
+
+    def test_failed_ci_after_pr_pulls_ticket_to_blocked_but_keeps_done_label(self):
+        """
+        Realer Fund: die echte CI-Pipeline wurde nach einem eröffneten PR bisher gar nicht
+        geprüft - anders als interface/cli.py._ask_for_git_push() (interaktiver Pfad).
+        """
+        self.fake_github.wait_for_ci_status = AsyncMock(return_value=("failed", "1 Job fehlgeschlagen"))
+        report = asyncio.run(run_issue_poll_cycle())
+
+        self.assertEqual(report.results[0].outcome, "pr_opened_ci_failed")
+        # Label bleibt "ai-team-done" (ein PR WURDE eröffnet - das Label beschreibt genau das).
+        self.fake_github.add_issue_label.assert_any_call(1, "ai-team-done")
+        self.assertIn("CI-Pipeline ist fehlgeschlagen", self.fake_github.comment_on_issue.call_args[0][1])
+        self.assertEqual(backlog_store.list_tickets()[0].status, "blocked")
+
+    def test_passed_ci_after_pr_keeps_review_status(self):
+        self.fake_github.wait_for_ci_status = AsyncMock(return_value=("passed", "https://x/y"))
+        report = asyncio.run(run_issue_poll_cycle())
+
+        self.assertEqual(report.results[0].outcome, "pr_opened")
+        self.assertEqual(backlog_store.list_tickets()[0].status, "review")
+        self.assertIn("CI grün", self.fake_github.comment_on_issue.call_args[0][1])
+
+    @patch("core.issue_watcher.notify_external")
+    def test_non_success_outcome_triggers_external_notification(self, mock_notify):
+        self.fake_github.get_status.return_value = ""  # -> outcome "no_changes"
+        asyncio.run(run_issue_poll_cycle())
+        mock_notify.assert_called_once()
+        self.assertIn("#1", mock_notify.call_args[0][1])
+
+    @patch("core.issue_watcher.notify_external")
+    def test_pr_opened_outcome_does_not_notify(self, mock_notify):
+        asyncio.run(run_issue_poll_cycle())
+        mock_notify.assert_not_called()
 
 
 if __name__ == "__main__":

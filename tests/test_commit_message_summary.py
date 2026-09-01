@@ -14,6 +14,7 @@ Diese Tests stellen sicher, dass:
 """
 
 import asyncio
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,6 +24,7 @@ import core.backlog_store as backlog_store
 from agents.orchestrator import Orchestrator
 from core.message_bus import AgentTask
 from core.verifier import VerificationReport
+from core.workspace import WorkspaceManager
 from interface.cli import CLIInterface
 
 
@@ -48,11 +50,23 @@ class _FakeToolCapableLLM:
 
 class TestCommitMessageUsesRealSummary(unittest.TestCase):
     def setUp(self):
+        # Bugfix (Code-Review-Fund): ohne isolierte WorkspaceManager-Instanz schrieb dieser Test
+        # bei jedem Lauf über core/project_status.py.record_run() eine echte
+        # .ai_team_status.json in den TATSÄCHLICHEN Framework-Workspace
+        # (workspace/fastapi_health_check/ - der project_slug aus dem gemockten decompose()
+        # unten) statt in eine temporäre Testumgebung, und legte diesen Projektordner dabei
+        # sogar neu an. Gleiches Isolationsmuster wie test_coverage_integration.py/
+        # test_runtime_smoke_integration.py.
+        self.temp_workspace = tempfile.mkdtemp()
         self.orchestrator = Orchestrator()
+        self.orchestrator._workspace = WorkspaceManager(self.temp_workspace)
         for agent in list(self.orchestrator._agents.values()) + list(self.orchestrator._dept_leads.values()):
             agent._llm = _FakeToolCapableLLM("Kurze Erledigung.")
 
-    @patch("agents.orchestrator.ProjectVerifier")
+    def tearDown(self):
+        shutil.rmtree(self.temp_workspace, ignore_errors=True)
+
+    @patch("agents.orchestrator.verification.ProjectVerifier")
     @patch("core.task_manager.TaskManager.decompose")
     @patch("core.result_aggregator.ResultAggregator.synthesize")
     async def _run(self, mock_synthesize, mock_decompose, mock_verifier_cls):

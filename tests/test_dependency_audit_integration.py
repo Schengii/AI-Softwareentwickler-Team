@@ -47,7 +47,7 @@ class TestDependencyAuditInVerificationLoop(unittest.TestCase):
         shutil.rmtree(self.temp_workspace, ignore_errors=True)
 
     def _run(self, audit_reports: list[DependencyAuditReport]):
-        @patch("agents.orchestrator.ProjectVerifier")
+        @patch("agents.orchestrator.verification.ProjectVerifier")
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")
         def _inner(mock_synthesize, mock_decompose, mock_verifier_cls):
@@ -60,6 +60,7 @@ class TestDependencyAuditInVerificationLoop(unittest.TestCase):
                 ran=True, passed=True, exit_code=0, stdout="", stderr="", duration_seconds=0.1,
             )
             mock_verifier.check_docker_build.return_value.attempted = False
+            mock_verifier.check_load_test.return_value.attempted = False
             mock_verifier.check_dependency_vulnerabilities.return_value = audit_reports
 
             status_logs: list[str] = []

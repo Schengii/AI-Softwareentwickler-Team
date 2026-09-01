@@ -78,6 +78,8 @@ AGENT_MODELS: dict[str, str] = {
     "dev_lead":          os.getenv("DEV_LEAD_MODEL",        HEAVY_MODEL),
     "governance_lead":   os.getenv("GOVERNANCE_LEAD_MODEL", HEAVY_MODEL),
     # Leads mit eher konsolidierender/koordinierender Aufgabe -> STANDARD reicht
+    "design_lead":       os.getenv("DESIGN_LEAD_MODEL",     os.getenv("CREATIVE_LEAD_MODEL", STANDARD_MODEL)),
+    "content_lead":      os.getenv("CONTENT_LEAD_MODEL",    os.getenv("CREATIVE_LEAD_MODEL", STANDARD_MODEL)),
     "creative_lead":     os.getenv("CREATIVE_LEAD_MODEL",   STANDARD_MODEL),
     "qa_lead":           os.getenv("QA_LEAD_MODEL",         STANDARD_MODEL),
 
@@ -125,6 +127,52 @@ AGENT_MODELS: dict[str, str] = {
     "project_cleaner":   os.getenv("PROJECT_CLEANER_MODEL", LITE_MODEL),
 }
 
+# Fachbereichs-Zuweisungen für bereichsweite Modell-Konfiguration
+DEPARTMENT_PLANNING_AGENTS = {"planning_lead", "team_lead", "product_owner", "business_analyst", "web_research", "architect", "finops"}
+DEPARTMENT_DESIGN_AGENTS = {"design_lead", "image_generator", "copywriter", "ui_ux"}
+DEPARTMENT_DEV_AGENTS = {"dev_lead", "backend", "frontend", "database", "api_integration", "data_engineer", "mobile", "ml", "prompt_engineer", "performance"}
+DEPARTMENT_CONTENT_AGENTS = {"content_lead", "accessibility", "i18n", "documentation", "readme"}
+DEPARTMENT_CREATIVE_AGENTS = DEPARTMENT_DESIGN_AGENTS | DEPARTMENT_CONTENT_AGENTS | {"creative_lead"}
+DEPARTMENT_QA_AGENTS = {"qa_lead", "devops", "tester", "security", "resilience_guard", "github"}
+DEPARTMENT_GOVERNANCE_AGENTS = {"governance_lead", "code_reviewer", "refactoring", "compliance", "project_cleaner", "agent_trainer", "retrospective"}
+
+DEPARTMENT_MODELS: dict[str, str] = {
+    "planning": os.getenv("DEPARTMENT_PLANNING_MODEL", ""),
+    "design": os.getenv("DEPARTMENT_DESIGN_MODEL", os.getenv("DEPARTMENT_CREATIVE_MODEL", "")),
+    "dev": os.getenv("DEPARTMENT_DEV_MODEL", ""),
+    "content": os.getenv("DEPARTMENT_CONTENT_MODEL", os.getenv("DEPARTMENT_CREATIVE_MODEL", "")),
+    "creative": os.getenv("DEPARTMENT_CREATIVE_MODEL", ""),
+    "qa": os.getenv("DEPARTMENT_QA_MODEL", ""),
+    "governance": os.getenv("DEPARTMENT_GOVERNANCE_MODEL", ""),
+}
+
+
+def get_model_for_agent(agent_id: str) -> str:
+    """Ermittelt das konfigurierte LLM-Modell für einen Agenten unter Berücksichtigung von Overrides."""
+    # 1. Spezifischer Rollen-Override
+    if agent_id in AGENT_MODELS and os.getenv(f"{agent_id.upper()}_MODEL"):
+        return AGENT_MODELS[agent_id]
+
+    # 2. Fachbereichsweiter Override
+    if agent_id in DEPARTMENT_PLANNING_AGENTS and DEPARTMENT_MODELS["planning"]:
+        return DEPARTMENT_MODELS["planning"]
+    if agent_id in DEPARTMENT_DESIGN_AGENTS and DEPARTMENT_MODELS["design"]:
+        return DEPARTMENT_MODELS["design"]
+    if agent_id in DEPARTMENT_DEV_AGENTS and DEPARTMENT_MODELS["dev"]:
+        return DEPARTMENT_MODELS["dev"]
+    if agent_id in DEPARTMENT_CONTENT_AGENTS and DEPARTMENT_MODELS["content"]:
+        return DEPARTMENT_MODELS["content"]
+    if agent_id in DEPARTMENT_CREATIVE_AGENTS and DEPARTMENT_MODELS["creative"]:
+        return DEPARTMENT_MODELS["creative"]
+    if agent_id in DEPARTMENT_QA_AGENTS and DEPARTMENT_MODELS["qa"]:
+        return DEPARTMENT_MODELS["qa"]
+    if agent_id in DEPARTMENT_GOVERNANCE_AGENTS and DEPARTMENT_MODELS["governance"]:
+        return DEPARTMENT_MODELS["governance"]
+
+    # 3. Standard-Zuordnung aus AGENT_MODELS oder Fallback
+    return AGENT_MODELS.get(agent_id, DEFAULT_AGENT_MODEL)
+
+
 # ──────────────────────────────────────────
 # Sprache & Verhalten
 # ──────────────────────────────────────────
@@ -132,8 +180,6 @@ AGENT_LANGUAGE: str = os.getenv("AGENT_LANGUAGE", "de")
 MAX_OUTPUT_TOKENS: int = int(os.getenv("MAX_OUTPUT_TOKENS", "4096"))
 TEMPERATURE: float = float(os.getenv("TEMPERATURE", "0.4"))
 
-# Iterative Review & Fix Settings
-MAX_REVIEW_ITERATIONS: int = int(os.getenv("MAX_REVIEW_ITERATIONS", "1"))
 AUTO_SAVE_WORKSPACE: bool = os.getenv("AUTO_SAVE_WORKSPACE", "true").lower() in ("true", "1", "yes")
 
 # ──────────────────────────────────────────
@@ -161,6 +207,49 @@ AGENT_MAX_TOOL_ITERATIONS: dict[str, int] = {
 MAX_VERIFICATION_ITERATIONS: int = int(os.getenv("MAX_VERIFICATION_ITERATIONS", "2"))
 DEPENDENCY_INSTALL_TIMEOUT_SECONDS: float = float(os.getenv("DEPENDENCY_INSTALL_TIMEOUT_SECONDS", "120"))
 TEST_RUN_TIMEOUT_SECONDS: float = float(os.getenv("TEST_RUN_TIMEOUT_SECONDS", "60"))
+# Realer Fund: die Verifikation misst bisher nur Pass/Fail, keine Abdeckung - ein Projekt mit
+# 3 bestandenen Tests bei 500 Zeilen ungetestetem Code gilt genauso als "verifiziert" wie eines
+# mit echter Abdeckung. MIN_TEST_COVERAGE=0 (Standard) deaktiviert die Prüfung, bestehende
+# Läufe bleiben unangetastet. Gesetzt (z.B. 70 = 70%), misst core/verifier.py.check_coverage()
+# die echte Abdeckung per pytest-cov (nur wenn das Projekt es selbst installiert hat - siehe
+# CoverageReport-Docstring) und setzt agents/orchestrator.py._run_verification_loop()s
+# verification_ok explizit auf False, wenn die Schwelle unterschritten wird - anders als ein
+# Lint-Fund (rein informativ) ist eine EXPLIZIT konfigurierte Schwelle als echte Anforderung
+# gemeint, kein bloßes FYI.
+MIN_TEST_COVERAGE: float = float(os.getenv("MIN_TEST_COVERAGE", "0"))
+# Realer Fund: der performance-Agent schreibt vollständige k6-/Locust-Lastentest-Skripte, die
+# aber NIE ausgeführt werden - anders als run_tests() landen sie ungeprüft im Projekt, niemand
+# (Mensch oder Team) weiß, ob sie überhaupt laufen oder was sie ergeben. check_load_test()
+# startet die generierte App auf einem freien Port und führt einen kurzen, wenige Sekunden
+# dauernden SMOKE-Lasttest aus (wenige virtuelle Nutzer) - kein vollständiger Lasttest (würde
+# Minuten dauern und echte Ressourcen binden), nur eine Prüfung, ob die App unter minimaler
+# gleichzeitiger Last überhaupt fehlerfrei antwortet. Läuft nur, wenn ein Skript unter
+# tests/load/ (locustfile.py oder *.js) UND das jeweilige Tool (locust/k6) lokal installiert
+# sind UND die App tatsächlich startet - in der Praxis für die meisten Projekte ein No-Op.
+ENABLE_LOAD_TEST_CHECK: bool = os.getenv("ENABLE_LOAD_TEST_CHECK", "true").lower() in ("true", "1", "yes")
+LOAD_TEST_DURATION_SECONDS: float = float(os.getenv("LOAD_TEST_DURATION_SECONDS", "5"))
+LOAD_TEST_TIMEOUT_SECONDS: float = float(os.getenv("LOAD_TEST_TIMEOUT_SECONDS", "60"))
+
+# ──────────────────────────────────────────
+# Governance-Kritisch-Fix-Schleife (core/review_gate.py, agents/orchestrator.py._run_governance_fix_loop)
+# ──────────────────────────────────────────
+# Realer Fund: code_reviewer/security/compliance (REVIEW_ONLY_AGENT_IDS) kategorisieren Befunde
+# selbst nach Schweregrad ("Kritisch") - das löste bisher NIE einen Korrekturauftrag aus, nur
+# echte Testfehler taten das (siehe MAX_VERIFICATION_ITERATIONS oben). Ein "Kritisch" im
+# Code-Review ist bei einem echten Team ein Blocker, kein FYI im Abschlussbericht.
+# ENABLE_GOVERNANCE_FIX_LOOP=true (Standard) lässt den Orchestrator kritische Befunde per
+# Text-Heuristik erkennen (core/review_gate.py) und gezielt an den Datei-Owner zur Korrektur
+# zurückspielen, BEVOR die echte Testverifikation läuft.
+ENABLE_GOVERNANCE_FIX_LOOP: bool = os.getenv("ENABLE_GOVERNANCE_FIX_LOOP", "true").lower() in ("true", "1", "yes")
+# MAX_REVIEW_ITERATIONS war früher ein nie verdrahteter Rest aus einer früheren Version dieses
+# Features (stand unter "Sprache & Verhalten", ohne dass irgendein Code ihn je gelesen hätte -
+# echter Fund bei einer Bestandsaufnahme). Steuert jetzt tatsächlich, wie oft die Schleife
+# läuft: Standard 1 = genau EIN Fix-Dispatch, OHNE die Review-Rollen danach erneut aufzurufen
+# (die anschließende echte Testverifikation deckt technische Regressionen ab, nicht aber die
+# qualitative Review-Aussage selbst). Ein höherer Wert ruft die ursprünglich meldenden
+# Review-Rollen nach jedem Fix-Versuch frisch erneut auf, um zu prüfen, ob noch kritische
+# Befunde bestehen - kostet entsprechend mehr LLM-Aufrufe pro zusätzlicher Runde.
+MAX_REVIEW_ITERATIONS: int = int(os.getenv("MAX_REVIEW_ITERATIONS", "1"))
 
 # ──────────────────────────────────────────
 # Echtes lokales Deployment: Docker Compose (core/deployment.py, manuell per /deploy ausgelöst)
@@ -235,6 +324,14 @@ ENABLE_PR_WORKFLOW: bool = os.getenv("ENABLE_PR_WORKFLOW", "true").lower() in ("
 GIT_PROTECTED_BRANCHES: tuple[str, ...] = tuple(
     b.strip() for b in os.getenv("GIT_PROTECTED_BRANCHES", "main,master").split(",") if b.strip()
 )
+# `/protect-branch` (interface/cli.py) aktiviert echte GitHub-Branch-Protection (Pflicht-
+# Reviews vor dem Merge, kein Force-Push/Löschen) für den Hauptbranch – der PR-Workflow oben
+# verhindert nur, dass DIESES Tool direkt auf den Hauptbranch pusht, nicht dass ein Mensch (oder
+# ein anderes Tool) es weiterhin tut. Bewusst ein manueller, einmaliger CLI-Befehl statt eines
+# automatischen Laufs beim Start – eine Repo-Einstellungsänderung mit echten
+# Admin-API-Rechten verdient dieselbe bewusste Bestätigung wie `/deploy`, nicht ein
+# stillschweigender Seiteneffekt.
+BRANCH_PROTECTION_REQUIRED_REVIEWS: int = int(os.getenv("BRANCH_PROTECTION_REQUIRED_REVIEWS", "1"))
 
 # ──────────────────────────────────────────
 # Autonome, getriggerte Arbeit: GitHub-Issues als Backlog (core/issue_watcher.py)
@@ -258,6 +355,76 @@ ISSUE_BLOCKED_LABEL: str = os.getenv("ISSUE_BLOCKED_LABEL", "ai-team-blocked")
 ISSUE_POLL_MAX_PER_CYCLE: int = int(os.getenv("ISSUE_POLL_MAX_PER_CYCLE", "1"))
 
 # ──────────────────────────────────────────
+# Dependency-Watch: automatischer Update-PR statt reiner Warnung (core/dependency_updater.py)
+# ──────────────────────────────────────────
+# core/dependency_watch.py (`python main.py --check-dependencies`) fand bekannte CVEs in
+# Workspace-Projekten bisher nur und meldete sie als blockiertes Ticket – ein echtes Team hat
+# einen Dependabot-/Renovate-artigen Mechanismus, der direkt einen fertigen Update-PR öffnet.
+# ENABLE_DEPENDENCY_AUTO_UPDATE=true (Standard) hebt betroffene Python-Pakete (requirements.txt,
+# nur wenn pip-audit eine `fix_versions`-Angabe liefert) automatisch an und öffnet dafür über
+# denselben agents/github_agent.py-PR-Mechanismus wie core/issue_watcher.py einen Pull Request –
+# OHNE menschliche Bestätigung (unbeaufsichtigter Poll-Zyklus, ein Mensch reviewt/merged den PR
+# anschließend ganz normal über GitHub, siehe /protect-branch oben für einen erzwungenen
+# Review vor dem Merge). Node/Rust/Go bleiben bewusst bei der reinen Meldung (siehe
+# core/dependency_updater.py-Modul-Docstring für die Begründung).
+ENABLE_DEPENDENCY_AUTO_UPDATE: bool = os.getenv("ENABLE_DEPENDENCY_AUTO_UPDATE", "true").lower() in ("true", "1", "yes")
+
+# ──────────────────────────────────────────
+# Backlog: Priorität, Schätzung & WIP-Limit (core/backlog_store.py)
+# ──────────────────────────────────────────
+# core/backlog_store.py hielt bisher nur eine flache Ticket-Liste ohne Priorisierung oder
+# Kapazitätsbegriff - ausreichend für Einzelaufträge, aber ohne jede Steuerungsmöglichkeit,
+# sobald mehrere Tickets gleichzeitig anstehen (z.B. `/backlog-add` für mehrere geplante
+# Aufgaben). BACKLOG_WIP_LIMIT_IN_PROGRESS=0 (Standard) deaktiviert die Warnung vollständig -
+# bewusst nur eine WARNUNG (`/backlog` in interface/cli.py), kein Hard-Block: ein echtes
+# Kanban-WIP-Limit ist eine Team-Disziplin-Regel, keine technische Zwangsbeschränkung, die
+# einen bereits laufenden Auftrag verhindern dürfte.
+BACKLOG_WIP_LIMIT_IN_PROGRESS: int = int(os.getenv("BACKLOG_WIP_LIMIT_IN_PROGRESS", "0"))
+
+# ──────────────────────────────────────────
+# Selbstgesteuertes Backlog-Abarbeiten (core/backlog_worker.py)
+# ──────────────────────────────────────────
+# Realer Fund: core/issue_watcher.py reagiert nur auf NEU gelabelte GitHub-Issues - "todo"-
+# Tickets aus `/backlog-add` (interface/cli.py) oder dem Dashboard wurden bisher laut eigenem
+# Docstring ("Führt selbst nichts aus") NIE automatisch angegangen, ein Mensch musste die
+# Aufgabe irgendwann erneut manuell in den Chat schreiben. Ein echtes Team wartet nicht auf ein
+# Label, um den nächsten Backlog-Punkt zu beginnen. `python main.py --work-backlog` (analog zu
+# --check-issues) greift eigenständig das höchstpriorisierte, abhängigkeitsfreie "todo"-Ticket
+# auf (core/backlog_store.py.is_ticket_ready()) und arbeitet es über denselben Orchestrator +
+# PR-Workflow ab. BACKLOG_WORKER_MAX_PER_CYCLE=1 (Standard) - dieselbe konservative Begrenzung
+# wie ISSUE_POLL_MAX_PER_CYCLE, aus demselben Grund (kein Cron-Tick soll nach einer Pause gleich
+# eine ganze Batch teurer Läufe lostreten).
+BACKLOG_WORKER_MAX_PER_CYCLE: int = int(os.getenv("BACKLOG_WORKER_MAX_PER_CYCLE", "1"))
+# Anders als die reine WIP-Anzeige-Warnung oben (bewusst kein Hard-Block für einen MENSCHEN,
+# der bewusst trotzdem eine weitere Aufgabe startet): hier gibt es NIEMANDEN, der übersteuern
+# könnte - ein erreichtes WIP-Limit blockiert den autonomen Worker deshalb hart, bis laufende
+# Arbeit abgeschlossen ist. 0 (Standard) = deaktiviert, dieselbe Konvention wie oben.
+BACKLOG_WORKER_WIP_LIMIT: int = int(os.getenv("BACKLOG_WORKER_WIP_LIMIT", "0"))
+
+# ──────────────────────────────────────────
+# Produktions-Monitoring nach dem Deploy (core/production_monitor.py)
+# ──────────────────────────────────────────
+# Realer Fund: core/cloud_deployment.py kann ein Projekt echt live deployen (Fly.io/Vercel),
+# aber danach schaute niemand mehr hin - kein echtes On-Call/SRE-Verhalten. `python main.py
+# --check-deployments` (analog zu --check-issues/--work-backlog) prüft periodisch jede per
+# `/deploy-cloud --real` deployte URL (core/deployment_status.py) auf echte Erreichbarkeit und
+# eröffnet bei einem Ausfall automatisch ein Backlog-Ticket, statt dass ein Ausfall unbemerkt
+# bleibt, bis ein Mensch zufällig selbst nachschaut.
+DEPLOYMENT_HEALTH_CHECK_TIMEOUT_SECONDS: float = float(os.getenv("DEPLOYMENT_HEALTH_CHECK_TIMEOUT_SECONDS", "10.0"))
+
+# ──────────────────────────────────────────
+# Externe Benachrichtigung bei Vorfällen, die menschliche Aufmerksamkeit brauchen (core/notifier.py)
+# ──────────────────────────────────────────
+# core/issue_watcher.py (Cron-Poll-Zyklus) und interface/web_dashboard.py (Hintergrund-Jobs)
+# laufen unbeaufsichtigt - anders als interface/cli.py sieht dort in dem Moment niemand aktiv
+# zu, in dem etwas menschliche Aufmerksamkeit braucht (blockiertes Issue, rote CI, erreichtes
+# Lauf-Budget, fehlgeschlagener Dashboard-Job). NOTIFY_WEBHOOK_URL="" (Standard) deaktiviert
+# das Feature komplett - gesetzt, schickt core/notifier.py einen einfachen JSON-POST
+# ({"text": "..."}, Slack-Incoming-Webhook-kompatibel) dorthin. Best-effort: ein Fehlschlag
+# beim Senden darf NIE einen sonst erfolgreichen Lauf zum Scheitern bringen.
+NOTIFY_WEBHOOK_URL: str = os.getenv("NOTIFY_WEBHOOK_URL", "")
+
+# ──────────────────────────────────────────
 # Web-Dashboard: sichere Standardwerte (nur lokal, optionaler Token für Netzwerkzugriff)
 # ──────────────────────────────────────────
 # Standardmäßig NUR auf localhost erreichbar (siehe interface/web_dashboard.py). Wer das
@@ -276,6 +443,20 @@ DASHBOARD_AUTH_TOKEN: str = os.getenv("DASHBOARD_AUTH_TOKEN", "")
 # Standardwert (2), um kostenlose Provider-Rate-Limits nicht durch zu viele gleichzeitige
 # Läufe unnötig zu strapazieren – bei Bedarf über .env erhöhen.
 DASHBOARD_MAX_CONCURRENT_JOBS: int = int(os.getenv("DASHBOARD_MAX_CONCURRENT_JOBS", "2"))
+
+# ──────────────────────────────────────────
+# Autonomer Ziel- & Iterations-Loop (core/goal_loop.py)
+# ──────────────────────────────────────────
+# Maximale Anzahl aufeinanderfolgender Entwicklungsrunden, die der autonome
+# Ziel-Loop (/goal, python main.py --goal) standardmäßig durchläuft, bis das
+# Projektziel erreicht ist und alle Tests grün sind.
+GOAL_LOOP_DEFAULT_MAX_ITERATIONS: int = int(os.getenv("GOAL_LOOP_DEFAULT_MAX_ITERATIONS", "5"))
+GOAL_LOOP_EVAL_MODEL: str = os.getenv("GOAL_LOOP_EVAL_MODEL", GEMINI_STANDARD_MODEL)
+# Kumulatives Token-Budget ÜBER ALLE Iterationen eines Ziel-Loops hinweg (0 = deaktiviert).
+# MAX_RUN_TOKENS begrenzt nur einen einzelnen orchestrator.process()-Aufruf; ohne dieses
+# zusätzliche Limit könnte der Loop dieses Budget bis zu max_iterations-mal hintereinander
+# ausschöpfen, bevor er überhaupt abbricht.
+GOAL_LOOP_MAX_TOTAL_TOKENS: int = int(os.getenv("GOAL_LOOP_MAX_TOTAL_TOKENS", "0"))
 
 # ──────────────────────────────────────────
 # Pfade

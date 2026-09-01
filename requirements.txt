@@ -12,3 +12,29 @@ httpx>=0.28.1,<1.0.0
 python-dotenv>=1.2.2,<2.0.0
 rich>=15.0.0,<16.0.0
 aiofiles>=25.1.0,<26.0.0
+
+# core/browser_verifier.py nutzt Playwright, um generierte Web-Frontends ECHT in einem
+# Headless-Browser zu laden (JS-Konsolenfehler, kaputte Assets, ein <canvas>, das nie
+# tatsächlich gezeichnet wird - siehe blank_canvases). War bisher nur in requirements-dev.txt:
+# ohne installiertes Playwright fällt der Check STILL auf eine rein statische Datei-Existenz-
+# Prüfung zurück, die kein einziges JavaScript ausführt (core/browser_verifier.py.
+# _run_playwright_check() gibt dann None zurück) - ein generiertes Frontend mit einem echten
+# Laufzeitfehler (z.B. fehlendes `type="module"` bei ES-Modulen) bestand die Verifikation
+# dadurch trotzdem. Für Frontend-Projekte ist dieser Check oft die EINZIGE Instanz, die
+# überhaupt echten Browser-Code ausführt - deshalb jetzt Laufzeit- statt reine Dev-
+# Abhängigkeit. NACH `pip install` zusätzlich einmalig nötig: `playwright install chromium`
+# (lädt das Browser-Binary, kein pip-Paket - CI installiert das bewusst NICHT, da CI keine
+# echten Generierungsläufe ausführt, siehe .github/workflows/ci.yml).
+playwright>=1.40.0,<2.0.0
+
+# Einige Testmodule (u.a. tests/test_dashboard_sse.py, test_prompt_caching.py,
+# test_mcp_server_extended.py) importieren pytest direkt (Fixtures/@pytest.mark.anyio) statt
+# reinem unittest - bisher nur über pytest-cov in requirements-dev.txt transitiv vorhanden.
+# .github/workflows/ci.yml installiert im "Tests"-Job aber bewusst NUR requirements.txt (nicht
+# requirements-dev.txt) und lässt die Suite über `unittest discover` laufen - ohne dieses
+# Paket hier brach der Import dieser Module den gesamten Lauf mit ModuleNotFoundError ab.
+# Bekannte Einschränkung, NICHT durch diese Zeile behoben: `unittest discover` sammelt nur
+# unittest.TestCase-Subklassen ein - die reinen Pytest-Fixture-Tests in den genannten Dateien
+# werden dadurch zwar importierbar, aber vom CI-Runner weiterhin nicht tatsächlich AUSGEFÜHRT
+# (der CI-"Tests"-Job müsste dafür auf `pytest` statt `unittest discover` umgestellt werden).
+pytest>=8.0.0,<9.0.0

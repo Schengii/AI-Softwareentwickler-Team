@@ -25,6 +25,28 @@ Deine Aufgabe:
 Antworte auf Deutsch.
 """
 
+# Realer Fund bei einer Bestandsaufnahme des eigenen Teams: product_owner/business_analyst
+# formulieren User Stories mit Given/When/Then-Akzeptanzkriterien (siehe deren System-Prompts),
+# aber nichts im Team prüft am Ende mechanisch, ob diese Kriterien vom fertigen Ergebnis
+# tatsächlich erfüllt wurden - sie stehen nur als Text im Plan, ohne Rückbezug. Statt eines
+# ZUSÄTZLICHEN LLM-Aufrufs (Kostenfrage) wird der ohnehin stattfindende EINE Synthese-Aufruf um
+# diese Anweisung erweitert - er sieht in `results_text` bereits die vollständigen Berichte
+# ALLER Agenten (siehe _format_results unten), hat also schon alles nötige, um Kriterium gegen
+# tatsächlich Geliefertes abzugleichen.
+ACCEPTANCE_CRITERIA_CHECK_INSTRUCTION = """
+
+5. WICHTIG: Mindestens eine der User-Story-/Anforderungs-Berichte oben (product_owner/
+   business_analyst) enthält Akzeptanzkriterien (Given/When/Then). Schließe deine Antwort mit
+   einem eigenen Abschnitt `## ✅ Akzeptanzkriterien-Check` ab: liste JEDES genannte Kriterium
+   einzeln auf und kennzeichne es anhand der TATSÄCHLICHEN Ergebnisse der anderen Agenten oben
+   (nicht durch Vermutung) mit ✅ (erfüllt), ❌ (nicht erfüllt/fehlt) oder ❓ (aus den Berichten
+   nicht eindeutig prüfbar). Kurze Begründung je Zeile (max. 1 Satz)."""
+
+# Agenten, deren Bericht Akzeptanzkriterien im Given/When/Then-Format enthalten kann (siehe
+# agents/product_owner_agent.py/agents/business_analyst_agent.py Ausgabeformate) - nur wenn
+# mindestens einer davon erfolgreich im Plan war, lohnt sich der zusätzliche Prompt-Absatz.
+_ACCEPTANCE_CRITERIA_SOURCE_AGENT_IDS = {"product_owner", "business_analyst"}
+
 
 class ResultAggregator:
     """Kombiniert Agenten-Ergebnisse zu einer einheitlichen Antwort."""
@@ -63,8 +85,12 @@ ERGEBNISSE DES TEAMS:
 
 Erstelle jetzt das finale, strukturierte Gesamtergebnis für den Nutzer."""
 
+        system_prompt = SYNTHESIZE_SYSTEM_PROMPT
+        if any(r.agent_id in _ACCEPTANCE_CRITERIA_SOURCE_AGENT_IDS for r in successful):
+            system_prompt += ACCEPTANCE_CRITERIA_CHECK_INSTRUCTION
+
         try:
-            resp = await self._llm.generate_with_usage(prompt, SYNTHESIZE_SYSTEM_PROMPT)
+            resp = await self._llm.generate_with_usage(prompt, system_prompt)
             return resp.text, resp.total_tokens
         except Exception as e:
             # KRITISCH: Das Team hat zu diesem Zeitpunkt bereits echte Arbeit geleistet

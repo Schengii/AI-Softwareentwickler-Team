@@ -3,8 +3,9 @@
 <div align="center">
 
 [![CI](https://github.com/Schengii/AI-Softwareentwickler-Team/actions/workflows/ci.yml/badge.svg)](https://github.com/Schengii/AI-Softwareentwickler-Team/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![Hierarchy](https://img.shields.io/badge/Fachbereichs--Hierarchie-5_Teamleiter-blue?style=for-the-badge)
+![Hierarchy](https://img.shields.io/badge/Fachbereichs--Hierarchie-6_Teamleiter-blue?style=for-the-badge)
 ![Specialists](https://img.shields.io/badge/KI--Spezialisten-33_Agenten-success?style=for-the-badge)
 ![Resilience-Guard](https://img.shields.io/badge/Resilience--Guard-Fault--Tolerance_&_CircuitBreaker-orange?style=for-the-badge)
 ![RAG](https://img.shields.io/badge/Codebase_RAG-Gemini_Embeddings_%2B_BM25--Fallback-orange?style=for-the-badge)
@@ -14,7 +15,7 @@
 ![Sandbox-Validation](https://img.shields.io/badge/Sandbox_Auto--Validierung-Aktiv-blueviolet?style=for-the-badge)
 
 **Ein autonomes, hierarchisch strukturiertes KI-Team für vollständige, token-optimierte Softwareentwicklung.**  
-33 hochspezialisierte KI-Experten – aufgeteilt in **5 Fachbereiche mit jeweils eigenem Teamleiter**, **Resilience-Guard (Circuit Breakers, Backoff, Graceful Degradation & Chaos Tests)**, **persistentem Langzeit-Gedächtnis & automatischer Selbstoptimierung**, **Prompt-Engineering**, **WCAG 2.2 Barrierefreiheit (a11y)**, **integriertem RAG-Vektorindex**, **Model Context Protocol (MCP)**, **Web-Dashboard**, **Sandbox-Code-Validierung**, **Tavily Live-Web-Recherche**, **DeepSeek Reasoning**, **Groq Turbo Inferenz** und Workspace-Dateisystem.
+33 hochspezialisierte KI-Experten – aufgeteilt in **6 Fachbereiche mit jeweils eigenem Teamleiter**, **Resilience-Guard (Circuit Breakers, Backoff, Graceful Degradation & Chaos Tests)**, **persistentem Langzeit-Gedächtnis & automatischer Selbstoptimierung**, **Prompt-Engineering**, **WCAG 2.2 Barrierefreiheit (a11y)**, **integriertem RAG-Vektorindex**, **Model Context Protocol (MCP)**, **Web-Dashboard**, **Sandbox-Code-Validierung**, **Tavily Live-Web-Recherche**, **DeepSeek Reasoning**, **Groq Turbo Inferenz** und Workspace-Dateisystem.
 
 </div>
 
@@ -34,13 +35,17 @@ damit dieses README als aktuelle Funktionsübersicht schlank bleibt.
 - [Hierarchische Team- & Fachbereichsstruktur (Grafik)](#teamstruktur)
 - [Kommunikations- & Delegations-Workflow](#kommunikations-workflow)
 - [🛡️ Neuer Spezialist: Resilience-Guard (QA & Fault-Tolerance)](#resilience-guard)
-- [🔀 PR-Workflow: Feature-Branch + Pull Request statt Direct-Push](#pr-workflow)
+- [🔀 PR-Workflow & Kollaborativer Review-Loop](#pr-workflow)
 - [🎫 Autonome, getriggerte Arbeit: GitHub-Issues als Backlog](#issue-watcher)
+- [🤖 Vollständig eigenständige Arbeit: Backlog-Worker & Produktions-Monitoring](#selbstgesteuert)
 - [📋 Backlog/Kanban-Board über CLI, Dashboard & Issue-Watcher hinweg](#backlog-kanban)
 - [🌐 Modernes Web-Dashboard & Visualisierung](#web-dashboard)
 - [🔌 MCP-Server: Einbindung in Cursor, Windsurf & Antigravity](#mcp-server)
+- [🕸️ AST-Codebase-Graph & Semantische Impact-Analyse](#code-graph)
+- [🎭 Headless-Browser & Frontend-UI-Validierung](#browser-ui)
+- [☁️ Cloud-Preview-Deployments (Fly.io, Vercel, Render)](#cloud-deploy)
 - [🔍 Lokales Codebase-RAG & Semantische Suche](#codebase-rag)
-- [🧪 Sandbox-Code-Validierung & Automatische Test-Execution](#sandbox-validierung)
+- [🧪 Sandbox-Code-Validierung & Multi-Sprachen-Testing](#sandbox-validierung)
 - [🪙 Hartes Lauf-Budget (MAX_RUN_TOKENS)](#lauf-budget)
 - [🧠 Persistente KI-Selbstoptimierung & Langzeitgedächtnis](#persistente-selbstoptimierung)
 - [🎯 Die 33 Spezialisten & Fachbereiche](#die-33-spezialisten)
@@ -121,9 +126,11 @@ Was die Grafik oben zeigt, läuft technisch über zwei einfache Datenstrukturen
 1. **Zerlegung:** `TaskManager.decompose()` lässt den Hauptagenten die Nutzeranfrage in eine
    Liste von `AgentTask`-Objekten (Agent-ID + präzise Teilaufgabe) aufteilen – nur die
    Spezialisten, die für die Aufgabe wirklich gebraucht werden.
-2. **Phasen-Durchlauf:** Die 5 Fachbereiche laufen in fester Reihenfolge (`PHASE_ORDER`):
-   Planung → Entwicklung → Design/Content → QA/Security → Governance. Planung und
-   Governance laufen sequenziell, die anderen drei parallel (`asyncio.gather`).
+2. **Phasen-Durchlauf:** Die 6 Fachbereiche laufen in fester Reihenfolge (`PHASE_ORDER`):
+   Planung → Vorab-Design → Software-Entwicklung → Content & Doku → QA/Security → Governance.
+   Planung und Governance laufen sequenziell, die anderen parallel (`asyncio.gather`).
+   Vorab-Design (UI/UX, Assets, Wireframes) liefert Spezifikationen direkt an die Entwickler,
+   während Content & Dokumentation nachgelagert auf dem echten Code aufbauen.
 3. **Echte Delegation:** Vor jeder Phase bekommt der zuständige Teamleiter einen echten
    LLM-Aufruf mit der Aufgabenliste seines Fachteams und liefert priorisierte
    Arbeitsanweisungen zurück, die den Mitgliedern als Zusatzkontext mitgegeben werden. **Ausnahme
@@ -140,7 +147,14 @@ Was die Grafik oben zeigt, läuft technisch über zwei einfache Datenstrukturen
    (bei einem einzelnen Mitglied und kleiner Gesamtaufgabe entfällt auch dieser Schritt, siehe
    Punkt 3). Eine `file_owners`-Map merkt sich dabei, welcher Agent welche Datei geschrieben
    hat – die Grundlage für die gezielte Fehlerbehebung in der Verifikationsphase (siehe unten).
-6. **Synthese:** Der Hauptagent fasst alle Fachbereichsberichte über `ResultAggregator`
+6. **Governance-Fix-Loop:** `code_reviewer`/`security`/`compliance` kategorisieren Befunde in
+   ihren Reports selbst nach Schweregrad ("Kritisch") – `agents/orchestrator.py._run_governance_fix_loop()`
+   (`core/review_gate.py`) erkennt diese Befunde per Text-Heuristik und spielt sie GEZIELT an
+   den laut `file_owners` zuständigen Agenten zur Korrektur zurück, BEVOR die echte
+   Testverifikation läuft – ein "Kritisch" im Review ist bei einem echten Team ein Blocker,
+   kein FYI im Abschlussbericht. Abschaltbar über `ENABLE_GOVERNANCE_FIX_LOOP=false`, Anzahl
+   der Fix-/Recheck-Runden über `MAX_REVIEW_ITERATIONS` (Standard `1`).
+7. **Synthese:** Der Hauptagent fasst alle Fachbereichsberichte über `ResultAggregator`
    zu einem einheitlichen Gesamtergebnis zusammen und liefert es an den Nutzer zurück.
 
 ---
@@ -216,6 +230,21 @@ zuverlässiger die vorhandene Infrastruktur.
 - **Ergebnis immer als Issue-Kommentar sichtbar:** PR-Link, Blockade-Grund oder Fehler landen
   als Kommentar auf dem Issue – die einzige Rückmeldung, die ohne CLI/Dashboard-Ansicht
   überhaupt ankommt.
+- **CI-Feedback-Loop:** Nach der PR-Erstellung wartet `core/issue_watcher.py` zusätzlich auf
+  die echte CI-Pipeline (`agents/github_agent.py.wait_for_ci_status()`). Wird sie tatsächlich
+  rot, zieht das Backlog-Ticket auf `blocked` (statt bei `review` stehen zu bleiben) und der
+  Issue-Kommentar warnt explizit – das `ai-team-done`-Label bleibt trotzdem gesetzt, da ein PR
+  ja tatsächlich eröffnet wurde. Derselbe Mechanismus (inkl. Ticket-Status) gilt auch für den
+  interaktiven `/push`-Dialog in der CLI (`interface/cli.py._ask_for_git_push()`).
+- **Externe Benachrichtigung:** `NOTIFY_WEBHOOK_URL` (Standard leer = deaktiviert) schickt bei
+  jedem Ausgang, der menschliche Aufmerksamkeit braucht (blockiertes Issue, rote CI,
+  erreichtes Lauf-Budget, fehlgeschlagener Dashboard-Job), einen echten Slack-Block-Kit-POST
+  über `core/notifier.py` – fett hervorgehobenes Event-Label, farbiger Rand je nach grob
+  erkanntem Schweregrad ("fehlgeschlagen"/"blockiert"/… → Rot) und Zeitstempel-Footer statt
+  eines flachen, unformatierten Text-Strings. Ein `"text"`-Fallback-Feld bleibt zusätzlich
+  gesetzt (Slacks eigene Konvention für Push-Vorschauen/Clients ohne Block-Kit-Rendering) –
+  wichtig gerade hier, da beim Poll-Zyklus (und bei Dashboard-Hintergrund-Jobs) anders als in
+  der CLI niemand aktiv zusieht.
 
 **Einrichtung unter Windows** (`scripts/run_issue_watcher.ps1`): ruft `--check-issues` auf
 und hängt die Ausgabe UTF-8-sicher an `logs/issue_watcher.log` an (nicht versioniert, siehe
@@ -234,6 +263,58 @@ Alternative (z.B. Claude Codes `/schedule`) hat KEINEN Zugriff auf lokale Secret
 Framework und würde entweder eigene API-Keys in der Cloud-Umgebung brauchen oder die Arbeit
 mit cloud-eigenen Tools statt dem eigenen Multi-Agent-Team erledigen – für dieses Feature
 deshalb bewusst lokal gelöst.
+
+---
+
+<a id="selbstgesteuert"></a>
+## 🤖 Vollständig eigenständige Arbeit: Backlog-Worker & Produktions-Monitoring
+
+`--check-issues` reagiert nur auf NEU gelabelte GitHub-Issues. Zwei weitere Poll-Zyklen
+schließen die Lücke zu einem Team, das auch ohne externen Trigger eigenständig weiterarbeitet:
+
+**`python main.py --work-backlog`** (`core/backlog_worker.py`) greift eigenständig das
+höchstpriorisierte, abhängigkeitsfreie `"todo"`-Ticket aus `/backlog-add` oder dem Dashboard
+auf – bisher wurde ein solches Ticket laut eigenem CLI-Hinweistext NIE automatisch angegangen,
+ein Mensch musste die Aufgabe irgendwann erneut manuell in den Chat schreiben. Respektiert
+Ticket-Abhängigkeiten (`core/backlog_store.py.is_ticket_ready()` – siehe Epics/`depends_on`
+unten) und ein konfigurierbares WIP-Limit (`BACKLOG_WORKER_WIP_LIMIT`), das hier – anders als
+die reine Anzeige-Warnung im Board – hart blockiert, da niemand da ist, der bewusst
+übersteuern könnte. Derselbe PR-Workflow, dasselbe Sicherheitsmodell wie `--check-issues`
+(harter Secret-Block, Draft-PR bei fehlgeschlagener Verifikation oder offener Rückfrage, siehe
+unten). Bewusst NUR `cli`-/`dashboard`-Tickets – `issue`-Tickets bleiben bei
+`core/issue_watcher.py`, `pr_review`-Tickets (beziehen sich auf einen bereits bestehenden
+Feature-Branch) bleiben aktuell ausgeklammert.
+
+**Epics & Abhängigkeiten:** Tickets tragen jetzt `epic` (freier Text, z.B. `"Checkout-Flow"`)
+und `depends_on` (IDs anderer Tickets) – ein größeres Vorhaben lässt sich damit als
+zusammenhängende, sinnvoll sortierte Kette planen statt jede Anfrage isoliert zu bearbeiten.
+Ein Ticket mit noch offenen Abhängigkeiten wird im `/backlog`-Board sichtbar markiert
+(`🔗 ... (wartet auf: ...)`) und vom Backlog-Worker übersprungen, bis sie erledigt sind.
+
+**Mid-Task-Eskalation statt Raten:** Rückfragen (`/backlog-add` o.ä.) passierten bisher nur
+VOR dem Start einer Aufgabe. Jeder Agent kann jetzt über das Werkzeug
+`ask_human_for_clarification` (`core/agent_toolbox.py`) mitten in der Aufgabe eine echte,
+entscheidende Unklarheit melden, statt zu raten – sichtbar im Ergebnis (Abschnitt "Offene
+Rückfragen"), im Git-Push-Gate der CLI und als eigener, als Draft markierter PR-Zustand in
+`--check-issues`/`--work-backlog`.
+
+**`python main.py --check-deployments`** (`core/production_monitor.py`) prüft periodisch
+jedes per `/deploy-cloud <provider> --real` echt deployte Projekt auf tatsächliche
+Erreichbarkeit (echter HTTP-Request, kein reiner Ping) und eröffnet bei einem Ausfall
+automatisch ein hochpriorisiertes Backlog-Ticket + externe Benachrichtigung – bisher schaute
+nach einem Cloud-Deployment niemand mehr hin (`core/cloud_deployment.py` war zuvor nicht
+einmal im CLI/Dashboard verdrahtet). Erholt sich das Deployment wieder, schließt der nächste
+grüne Check das Ticket automatisch. Bewusst NICHT vom Backlog-Worker aufgegriffen – ein
+Ausfall kann eine Infrastruktur-/DNS-/Billing-Ursache haben, die kein Code-Fix löst.
+
+**Einrichtung unter Windows** identisch zu `run_issue_watcher.ps1` oben, nur mit
+`scripts/run_backlog_worker.ps1`/`scripts/run_production_monitor.ps1` und eigenen
+Taskplaner-Einträgen (`AI-Team-BacklogWorker`/`AI-Team-ProductionMonitor`). **Wichtig:**
+anders als `--check-issues` (Zustand lebt auf GitHub selbst) liegt der Zustand dieser beiden
+Zyklen NUR lokal (`memory/backlog.json`, `.ai_team_deployment.json` – beide gitignored) –
+deshalb bewusst NICHT in `.github/workflows/ai-team-scheduler.yml` verdrahtet, ein Cloud-
+Runner mit frischem Checkout hätte hier immer leeren Zustand und würde scheinbar
+erfolgreich, aber wirkungslos durchlaufen.
 
 ---
 
@@ -261,6 +342,27 @@ Quellen schreiben:
   `gh pr view` ab und zieht den Backlog-Status nach: echt gemerged → `done`, ohne Merge
   geschlossen → `blocked`. Läuft automatisch im selben `--check-issues`-Poll-Zyklus mit
   (kein zusätzlicher Cron-Eintrag nötig) UND vor jeder `/backlog`-Anzeige in der CLI.
+- **Automatisches Release-Tagging (`core/release_manager.py`):** Wird ein Ticket dabei echt
+  auf `done` gezogen (der PR also wirklich gemerged wurde) UND hat es ein `project_slug`,
+  öffnet derselbe Zyklus direkt ein neues GitHub-Release (`<projekt>-vX.Y.Z`, fortlaufende
+  Patch-Version je Projekt) mit automatischen Release-Notes (Ticket-Titel + PR-Link) – nicht
+  nur das Framework selbst hatte bisher eine Versionshistorie, generierte Projekte in
+  `workspace/` jetzt auch. Best effort: ein fehlgeschlagenes Tagging (z. B. `gh` fehlt) lässt
+  das Ticket trotzdem korrekt auf `done` stehen. Zusätzlich pflegt `update_project_changelog()`
+  bei jedem erfolgreichen Release eine echte `CHANGELOG.md` **im generierten Projekt selbst**
+  (`workspace/<projekt>/CHANGELOG.md`, neueste Einträge zuerst) – über die GitHub-Contents-API
+  direkt gegen den Default-Branch geschrieben (wie `gh release create` selbst operiert das ohne
+  Eingriff in den lokalen Checkout). Bisher hatte nur das Framework-Repo ein gepflegtes
+  CHANGELOG.md; das GitHub-Release allein macht die Versionshistorie nicht auch im Projekt
+  selbst lesbar. Ebenfalls Best effort, ohne Rückwirkung auf den Release-Erfolg.
+- **Priorität, Schätzung & WIP-Limit:** Jedes Ticket trägt jetzt `priority` (1=hoch/2=mittel/
+  3=niedrig, bleibt über den gesamten Lebenszyklus erhalten, auch wenn ein Update sie nicht
+  erneut mitgibt) und optional `estimate` (freier Text). `/backlog-add [priorität] <titel>`
+  legt manuell ein noch nicht begonnenes, priorisiertes `todo`-Ticket an – bisher entstand
+  jedes Ticket erst, wenn eine Aufgabe bereits lief, es gab keine Möglichkeit, mehrere geplante
+  Aufgaben vorab zu priorisieren. `/backlog` sortiert jede Spalte danach und warnt (rein
+  informativ, kein Hard-Block), wenn `BACKLOG_WIP_LIMIT_IN_PROGRESS` (Standard `0` = aus)
+  überschritten ist.
 
 ---
 
@@ -284,11 +386,23 @@ Ein echter, funktionsfähiger HTTP-Server (`interface/web_dashboard.py`, stdlib
 - **`POST /api/cancel/<job_id>`** + "⏹️ Lauf abbrechen"-Button im UI: bricht einen laufenden
   oder noch wartenden Job kooperativ ab (dieselben Prüfpunkte wie das bestehende
   `MAX_RUN_TOKENS`-Budget) – bereits erarbeitete Ergebnisse werden trotzdem ausgeliefert.
-- **`GET /api/status/<job_id>`:** Wird vom Frontend alle 2 Sekunden abgefragt und liefert
-  denselben Live-Fortschritt (Status-Zeilen je Fachbereich/Agent), den auch die CLI zeigt,
-  plus das fertige Ergebnis, sobald der Lauf abgeschlossen ist.
+- **`GET /api/stream/<job_id>` (Server-Sent Events / SSE):** Echtzeit-Streaming von Status-Updates,
+  Konsolen-Logs und Zwischenschritten direkt in den Browser ohne Polling-Latenz (mit automatischem
+  Fallback auf Polling bei Verbindungsunterbrechungen).
+- **`GET /api/status/<job_id>`:** Liefert den Status, Logzeilen und das Endergebnis eines Jobs.
+- **📂 Workspace-Dateien & Diff-Inspektor:** Erlaubt das direkte Durchsuchen generierter Projektdateien
+  (`GET /api/project-files`, `GET /api/project-file-content`) und das Einsehen von Git-Diffs (`GET /api/project-diff`)
+  mit Syntax-Vorschau direkt im Web-Dashboard.
+- **⚡ Prompt-Caching & Context-Caching:** Automatische Nutzung von Anthropic Prompt Caching
+  (`cache_control: ephemeral`) und Gemini Context Caching. Reduziert Latenz und senkt Kosten bei
+  wiederholten Multi-Turn-Tool-Loops (System-Prompts & Tool-Kataloge) um bis zu 90% bei Cache-Reads.
 - **`GET /api/status`:** Echte Team-Metadaten (Agentenanzahl, Fachbereiche, Mitglieder) aus
   einer festen `Orchestrator`-Instanz statt fest verdrahteter Werte.
+- **`GET /api/observability`** + Panel "📈 Observability & Trends": Erfolgsquote je Agent
+  (letzte 50 Läufe) als Balkenanzeige + Liste der jüngsten Läufe (Tokens, Dauer, Ergebnis) –
+  aus `memory/run_history.py`, über ALLE Trigger-Quellen hinweg (CLI/Dashboard/Issue-Watcher),
+  nicht nur Dashboard-Jobs. Ergänzt die bereits bestehende kumulierte Kosten-Historie
+  (`/tokens`) um echte Trends statt nur Gesamtsummen.
 
 **🔒 Sicherheit standardmäßig aktiv:** Der Server bindet per Default nur auf `127.0.0.1`
 (`config.DASHBOARD_HOST`) – aus dem Netzwerk nicht erreichbar. Wer das Dashboard bewusst im
@@ -327,27 +441,75 @@ Claude Desktop `claude_desktop_config.json`):
 
 | Tool | Beschreibung |
 |---|---|
-| `ai_team_develop` | Führt das komplette Team für eine beliebige Aufgabe aus (`prompt`) und liefert das fertige, geprüfte Ergebnis. |
+| `ai_team_develop` | Führt das komplette 33-köpfige Team für eine beliebige Aufgabe aus (`prompt`) und liefert das fertige, geprüfte Ergebnis. |
 | `ai_team_list_projects` | Listet alle vorhandenen Projekte im `workspace/`-Verzeichnis auf. |
 | `ai_team_rag_search` | Durchsucht ein konkretes Projekt (`project` + `query`) semantisch – dieselbe Gemini-Embedding-Suche wie `/rag` in der CLI. |
+| `ai_team_run_tests` | Führt die automatisierte Testsuite eines Workspace-Projekts isoliert aus und liefert das Testergebnis. |
+| `ai_team_explain_symbol` | Liefert per AST-Code-Graph Definition, Aufrufe und Impact-Analyse für ein Symbol (`project` + `symbol`). |
+| `ai_team_get_backlog` | Ruft alle aktuellen Kanban-Tickets aus dem zentralen Backlog-Store ab. |
+
+**Bereitgestellte MCP-Ressourcen:**
+- `ki-team://backlog`: Live-JSON-Stream aller aktuellen Kanban-Tickets über alle Trigger-Quellen hinweg.
+- `ki-team://projects`: JSON-Liste aller vorhandenen Workspace-Projekte.
+
+---
+
+<a id="code-graph"></a>
+## 🕸️ Polyglot AST-Codebase-Graph & Semantische Impact-Analyse
+
+Große Codebases (50+ Dateien) erfordern mehr als reine Vektorsuche: Der [CodebaseGraph](core/code_graph.py) parst den gesamten Quelltext polyglott in einen echten Abstract-Syntax-Tree (AST) und Symbol-Index für **Python (`.py`)**, **TypeScript/JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`)**, **Go (`.go`)** und **Rust (`.rs`)**:
+
+- **`find_symbol_definition`:** Findet die exakte Definition (Klassen, Interfaces, Structs, Traits, Methoden, Funktionen) dateiübergreifend mit Signatur und Docstring.
+- **`find_symbol_references`:** Listet alle Aufrufe, Ableitungen und Imports eines Symbols über das gesamte Projekt hinweg.
+- **`analyze_code_impact`:** Berechnet vor einem Refactoring die Auswirkung einer Änderung (welche Dateien, Module und Aufrufer brechen bei einer Signaturänderung?).
+
+---
+
+<a id="browser-ui"></a>
+## 🎭 Headless-Browser & Frontend-UI-Validierung
+
+Frontends (HTML/CSS/JS, React, Vue, FastAPI/Flask-Templates) werden durch [BrowserVerifier](core/browser_verifier.py) echten Funktionstests unterzogen:
+
+- **Dynamischer Headless-Browser-Check (Playwright):** Startet die Anwendung auf einem freien Port, fängt JavaScript-Konsolenfehler (`console.error`, Uncaught Exceptions) ab und prüft das Rendering.
+- **Blank-Canvas-Erkennung:** Ein `<canvas>`-Element, dessen Pixelinhalt nach dem Laden byte-identisch mit einem frisch erzeugten LEEREN Canvas ist, wurde nachweislich nie gezeichnet (z.B. fehlender Game-Loop) - wird als echter Fehlschlag gewertet, nicht nur informativ gemeldet.
+- **Asset- & 404-Integritätsprüfung:** Verifiziert, ob alle in HTML verlinkten CSS-, JS- und Bilddateien existieren.
+- **Graceful, aber SICHTBARER Fallback:** Ist kein Browser-Binary installiert, analysiert das System den DOM-Baum nur noch statisch (keine JS-Ausführung) - dieser eingeschränkte Modus wird im Verifikations-Protokoll jetzt explizit als "nur eingeschränkt geprüft" markiert, statt optisch identisch zu einem echten Browser-Lauf als "erfolgreich" zu erscheinen.
+- **Ein echter Fehlschlag hier (Konsolenfehler, fehlendes Asset, nie gezeichnetes Canvas) blockiert die Verifikation** genau wie ein fehlgeschlagener Unit-Test - für Frontend-Projekte ist dieser Check oft die einzige Instanz, die überhaupt echten Browser-Code ausführt.
+
+Playwright ist Laufzeit-Abhängigkeit (`requirements.txt`), nicht nur Dev-Tool - nach `pip install -r requirements.txt` einmalig zusätzlich `playwright install chromium` ausführen, um den echten Browser-Check nutzen zu können (sonst degradiert er automatisch, aber sichtbar, auf die eingeschränkte statische Prüfung).
+
+---
+
+<a id="cloud-deploy"></a>
+## ☁️ Cloud-Preview-Deployments (Fly.io, Vercel, Render, Railway)
+
+Über das lokale Docker-Deployment hinaus generiert [CloudDeploymentManager](core/cloud_deployment.py) produktionsreife Cloud-Manifeste:
+
+- **Fly.io:** Erstellt `fly.toml` und `Dockerfile` mit Region Frankfurt (`fra`) und Auto-Stop/Start, `--real` löst einen echten `flyctl deploy` aus.
+- **Vercel:** Erstellt `vercel.json` für Serverless Python-, Next.js- oder Static-Deployments, `--real` löst einen echten `vercel --prod` aus.
+- **Render / Railway:** Erstellt Blueprints (`render.yaml`, `railway.json`) – beide deployen über eine Git-Integration im jeweiligen Web-Dashboard (Repository dort verbinden), kein lokales CLI-Deploy-Kommando, `--real` meldet das ehrlich statt einen nie ausgeführten Deploy als erfolgreich zu behaupten.
+- **CLI:** `/deploy-cloud <fly|vercel|render|railway> [projekt] [--real]` – ohne `--real` ein sicherer Dry-Run (nur Manifeste), mit `--real` ein echter Deploy-Versuch mit echter, überwachter (siehe [🤖 Backlog-Worker & Produktions-Monitoring](#selbstgesteuert)) Preview-URL.
+- **Web-Dashboard:** eigene Karte „☁️ Cloud-Deployment" (Provider- und Projekt-Auswahl, Checkbox für `--real` mit zusätzlicher Bestätigung) – ruft `POST /api/deploy-cloud` auf, Fortschritt über `GET /api/deploy-cloud-status/<projekt>` pollbar (gleiches Prinzip wie das lokale Docker-Deployment).
 
 ---
 
 <a id="sandbox-validierung"></a>
-## 🧪 Sandbox-Code-Validierung & Automatische Test-Execution
+## 🧪 Sandbox-Code-Validierung & Multi-Sprachen-Testing
 
 Zwei unabhängige Prüfebenen, die sich ergänzen:
 
 1. **Statische Validierung** (`core/code_sandbox.py`): Prüft Python-Code per `ast.parse()`
-   auf Syntaxfehler, JSON per `json.loads()`, YAML auf grobe Formatierungsfehler (z. B. Tabs
-   statt Leerzeichen) – schnell, ohne Ausführung, ohne Abhängigkeiten.
-2. **Echte dynamische Verifikation** (`core/verifier.py`, `ProjectVerifier`): Legt bei
-   vorhandener `requirements.txt` eine isolierte venv im Projekt an, installiert die
-   Abhängigkeiten wirklich per `pip`, und führt die tatsächliche Testsuite aus (`pytest`,
-   falls installiert, sonst `unittest discover`). Schlägt ein Test fehl, wird der reale
-   Traceback geparst (beide Formate: klassischer Python-Traceback und pytest-Kurzformat)
-   und der betroffene Agent anhand der `file_owners`-Map gezielt zur Korrektur beauftragt –
-   bis zu `MAX_VERIFICATION_ITERATIONS` Runden (Standard: 2).
+   auf Syntaxfehler, JSON per `json.loads()`, YAML auf grobe Formatierungsfehler – schnell, ohne Ausführung.
+2. **Echte dynamische Multi-Sprachen-Verifikation** (`core/verifier.py`, `ProjectVerifier`):
+   - **Python:** Isolierte venv, echte Testausführung (`pytest` / `unittest`), Testabdeckungsschwelle (`pytest-cov`), Linting (`ruff`), Security-Audit (`pip-audit`), Runtime-Smoke-Test.
+   - **Node / TypeScript:** Echte Installation (`npm ci`/`npm install`), Testläufe (`npm test`), Linting (`eslint`, `tsc`), Security-Audit (`npm audit`).
+   - **Rust:** `Cargo.toml`-Erkennung, Build-Check (`cargo check`), echte Tests (`cargo test`), Linting (`cargo clippy`), Security-Audit (`cargo audit`).
+   - **Go:** `go.mod`-Erkennung, Modul-Download (`go mod download`), echte Tests (`go test -v ./...`), Linting (`go vet`), Security-Audit (`govulncheck`).
+   - **SAST (Static Application Security Testing):** `bandit` scannt generierten Python-Code statisch auf bekannte Schwachstellenmuster (hartcodierte Secrets, unsichere Deserialisierung, SQL-Injection-Vektoren, unsichere Zufallszahlen, `eval`/`exec`, …) – ersetzt die bisher rein LLM-basierte Freitext-Einschätzung des `security`-Agenten (keine Datei/Zeile) durch einen echten, geparsten Fund mit exaktem Fundort. Node/Rust/Go folgen ggf. in einer späteren Runde.
+   - **Lizenz-/SBOM-Audit:** `pip-licenses` liest die Lizenzen der tatsächlich installierten Python-Abhängigkeiten aus und markiert bekannte Copyleft-Lizenzen (GPL/AGPL/LGPL/MPL/CDDL/EUPL/SSPL) – ersetzt die bisher geratene Lizenz-Tabelle des `compliance`-Agenten durch echte Paket-Metadaten statt einer LLM-Vermutung.
+   - **Lastentest (Smoke-Level):** Vom `performance`-Agenten geschriebene k6-/Locust-Skripte (`tests/load/`) werden jetzt tatsächlich AUSGEFÜHRT statt nur unausgeführt im Projekt zu liegen – die App wird auf einem freien Port gestartet, ein kurzer Lasttest (wenige Sekunden, wenige virtuelle Nutzer) läuft dagegen. Kein vollständiger Lasttest/Benchmark, nur eine Prüfung, ob die App unter minimaler gleichzeitiger Last fehlerfrei antwortet. Opt-out über `ENABLE_LOAD_TEST_CHECK=false`.
+   - **Accessibility-Scan (WCAG 2.x):** `axe-core-python` scannt generierte Web-Frontends echt per axe-core gegen eine per Playwright gerenderte Seite – ersetzt die bisher rein LLM-basierte Freitext-Checkliste des `accessibility`-Agenten durch geparste Verstöße mit Regel/Schweregrad/betroffenem Element.
+   Schlägt ein Test fehl, wird der reale Traceback geparst und der betroffene Agent anhand der `file_owners`-Map gezielt zur Korrektur beauftragt (bis zu `MAX_VERIFICATION_ITERATIONS` Runden). SAST- und Lizenz-Funde sind (wie Lint) rein informativ im Abschlussbericht sichtbar – ein Fund braucht menschliche Einschätzung (False Positives, Lizenz-Nutzungskontext) statt eines automatischen Blockers. Ein fehlgeschlagener Lastentest zählt dagegen wie der Runtime-Smoke-Test als echte Anforderungsverletzung.
 
 Beide Ebenen laufen automatisch als Teil jedes Orchestrator-Laufs, ohne dass der Nutzer sie
 manuell anstoßen muss. Manuell erreichbar über `/run-tests [projekt]` in der CLI.
@@ -379,6 +541,16 @@ bricht Läufe jetzt tatsächlich ab, sobald das per `.env` konfigurierte `MAX_RU
   ohne Ergebnis).
 - Die `### 📈 Projekt-Kennzahlen`-Tabelle zeigt bei aktivem Budget zusätzlich `Lauf-Budget: X / Y
   Tokens` an, sodass der Verbrauch schon während des Laufs sichtbar ist (nicht erst danach).
+
+**Zusätzlich: Pro-Projekt-Kostenbudget über ALLE Läufe hinweg.** `MAX_RUN_TOKENS` begrenzt nur
+EINEN einzelnen Lauf – ein Projekt mit vielen aufeinanderfolgenden Läufen (z. B. für einen
+externen Auftraggeber mit festem Kostenrahmen) hatte bisher kein Limit über die gesamte
+Projekt-Lebenszeit. `/constitution` (Feld `max_project_tokens`, `0`/leer = unbegrenzt) setzt
+ein zusätzliches, unabhängiges Budget, das den bereits über `memory/run_history.py`
+aufgezeichneten Tokenverbrauch FRÜHERER Läufe an diesem Projekt mit einbezieht – ist es
+bereits VOR Laufbeginn erschöpft, bricht der Lauf ab, ohne auch nur einen Agenten zu starten.
+Beide Budgets sind unabhängig konfigurierbar; die Abbruch-Meldung nennt immer korrekt, welches
+der beiden gerade bindend war.
 
 ---
 
@@ -414,6 +586,15 @@ bricht Läufe jetzt tatsächlich ab, sobald das per `.env` konfigurierte `MAX_RU
   Deployment-Ziel) fest, die bei JEDEM künftigen Lauf an diesem Projekt als verbindlicher
   Kontext an alle Agenten mitgegeben werden – einmal festgelegt statt bei jeder Anfrage neu
   spezifiziert.
+- **Projekt-Design-System** (`core/design_system.py`): Das Pendant zur Konstitution, nur für
+  visuelle statt technische Präferenzen. Seit der Design-vor-Dev-Aufspaltung (`design_lead`
+  läuft VOR `dev_lead`) fehlte ausgerechnet dem Design selbst eine Persistenz über mehrere
+  Läufe hinweg – `ui_ux`/`image_generator`/`copywriter` hätten Farbpalette, Typografie,
+  Spacing-Skala, Komponenten-Namenskonvention und Tonalität bei jedem Lauf am selben Projekt
+  neu erfinden können, ohne dass die Nutzeranfrage das je erwähnt. `/design-system [projekt]`
+  legt diese Werte einmal fest; sie werden danach wie die Konstitution bei JEDEM künftigen
+  Lauf an diesem Projekt in den Kontext aller Teilaufgaben injiziert. Datei `.ai-team-design.toml`
+  im Projektverzeichnis, bewusst nicht gitignored – echte Projekt-Konfiguration.
 - **Architecture Decision Records** (`core/adr.py`): Die Konstitution hält das WAS fest
   (Tech-Stack), aber nicht das WARUM ("REST statt GraphQL, weil…"). Der `architect`-Agent
   (und grundsätzlich jeder Agent im Werkzeug-Loop) dokumentiert echte Trade-off-Entscheidungen
@@ -423,6 +604,19 @@ bricht Läufe jetzt tatsächlich ab, sobald das per `.env` konfigurierte `MAX_RU
   `memory/backlog.json`. Bereits getroffene Entscheidungen werden bei JEDEM künftigen Lauf
   automatisch in den Kontext aller Teilaufgaben injiziert, damit spätere Läufe nicht
   unbemerkt gegen frühere, bewusste Entscheidungen arbeiten. Über `/adr [projekt]` einsehbar.
+- **Datenbasierte Selbstoptimierungs-Vorschläge** (`core/optimization_advisor.py`): `agent_trainer`
+  passt bisher einzelne Agenten-Prompts nach EINEM Lauf per LLM-Interpretation an – es fehlte
+  eine rein deterministische Auswertung über VIELE Läufe hinweg (`memory/run_history.py`), ob
+  die aktuell konfigurierte Modellzuweisung eines Agenten (z. B. nach einem manuellen
+  `.env`-Wechsel) tatsächlich die empirisch beste ist, und ob ein Agent auffällig oft
+  gegenüber dem Team-Durchschnitt scheitert. Kein zusätzlicher LLM-Aufruf nötig (Erfolgsquoten/
+  Tokenverbrauch sind bereits harte Zahlen) – erscheint automatisch am Ende jedes Laufs, wenn
+  ein statistisch aussagekräftiger Befund vorliegt (Mindest-Stichprobengröße + deutlicher
+  Unterschied, kein Rauschen bei knappen Abweichungen), sonst kein zusätzlicher Abschnitt.
+  Bewusst **nur ein Vorschlag, keine automatische Änderung an `config.py`** – eine
+  Modellzuweisung hat neben der reinen Erfolgsquote weitere Faktoren (Kosten, Rate-Limits,
+  bewusste Provider-Präferenzen), die das Modul nicht kennt. Jederzeit auch ohne neuen Lauf
+  über `/optimize` abrufbar.
 
 ---
 
@@ -451,8 +645,9 @@ eingeloggt?"* die passende `auth.py`, obwohl dort nirgends "einloggen" steht.
 | Fachbereich | Teamleiter | Spezialisten im Team |
 |---|---|---|
 | 🔵 **Planung, Analyse & Architektur** | `planning_lead` | `product_owner`, `business_analyst`, `web_research`, `architect`, `finops`, `team_lead` |
+| 🎨 **Vorab-Design, UI/UX & Media** | `design_lead` | `ui_ux`, `image_generator`, `copywriter` |
 | 🟢 **Software-Entwicklung** | `dev_lead` | `backend`, `frontend`, `database`, `api_integration`, `data_engineer`, `mobile`, `ml`, `prompt_engineer`, `performance` |
-| 🎨 **Design, Media & Content** | `creative_lead` | `image_generator`, `copywriter`, `ui_ux`, `accessibility`, `i18n`, `documentation`, `readme` |
+| 📚 **Content, Doku & Barrierefreiheit** | `content_lead` | `accessibility`, `i18n`, `documentation`, `readme` |
 | 🟡 **Qualität, DevOps & Security** | `qa_lead` | `devops`, `tester`, `security`, `resilience_guard`, `github` |
 | 🔴 **Excellence & Governance** | `governance_lead` | `code_reviewer`, `refactoring`, `compliance`, `project_cleaner`, `agent_trainer`, `retrospective` |
 
@@ -462,13 +657,61 @@ eingeloggt?"* die passende `auth.py`, obwohl dort nirgends "einloggen" steht.
 ## 🚀 Alle CLI-Befehle im Überblick
 
 ```bash
-python main.py                          # Interaktive CLI (Standard)
-python main.py --dashboard [--port N]   # Web-Dashboard unter http://localhost:8080
-python main.py --check-issues           # EIN Poll-Zyklus über offene GitHub-Issues, dann Ende
+python main.py                              # Interaktive CLI (Standard)
+python main.py --dashboard [--port N]       # Web-Dashboard unter http://localhost:8080
+python main.py --check-issues               # EIN Poll-Zyklus über offene GitHub-Issues
+python main.py --check-pr-reviews           # EIN Poll-Zyklus über offene PR-Review-Kommentare
+python main.py --check-dependencies         # Workspace-weiter Schwachstellen-Scan + Auto-Update-PR
+python main.py --work-backlog                # EIN Poll-Zyklus über wartende "todo"-Backlog-Tickets
+python main.py --check-deployments           # EIN Poll-Zyklus: Erreichbarkeit aller Cloud-Deployments prüfen
+python main.py --audit-workspace             # EIN Poll-Zyklus: Verifikation aller Workspace-Projekte erneut prüfen
+python main.py --eval [--tasks t1,t2]       # Reproduzierbare Benchmark-Suite ausführen
+python main.py --list-evals                 # Alle Benchmark-Aufgaben auflisten
 ```
 
 Details zum Web-Dashboard: [🌐 Modernes Web-Dashboard & Visualisierung](#web-dashboard).
 Details zu `--check-issues`: [🎫 Autonome, getriggerte Arbeit](#issue-watcher).
+Details zu `--work-backlog`/`--check-deployments`: [🤖 Vollständig eigenständige Arbeit](#selbstgesteuert).
+
+**`--check-dependencies` öffnet jetzt automatisch einen Update-PR statt nur zu warnen:**
+Findet der Scan eine bekannte Schwachstelle mit einer von `pip-audit` gelieferten
+`fix_versions`-Angabe (nur Python/`requirements.txt`; Node/Rust/Go bleiben bei der reinen
+Meldung, siehe `core/dependency_updater.py`), hebt `core/dependency_updater.py` das
+betroffene Paket automatisch an und öffnet dafür – über denselben PR-Mechanismus wie der
+Issue-Watcher, ohne menschliche Bestätigung (unbeaufsichtigter Poll-Zyklus) – einen echten
+Pull Request. Das Backlog-Ticket landet dann auf `review` statt `blocked`. Abschaltbar über
+`ENABLE_DEPENDENCY_AUTO_UPDATE=false`.
+
+**`--audit-workspace` deckt unbemerkt liegen gebliebene Projekte auf:** Realer Fund bei einer
+Bestandsaufnahme des eigenen Teams – mehrere Workspace-Projekte trugen `verification_ok: false`
+in ihrer `.ai_team_status.json`, wurden aber seit dem letzten Lauf nie erneut geprüft, ob der
+Zustand noch aktuell ist. `core/workspace_audit.py` führt `ProjectVerifier.run_tests()` erneut
+gegen JEDES Workspace-Projekt aus (unabhängig von aktiver Entwicklung) und öffnet bei einem
+echten Fehlschlag ein Backlog-Ticket – dasselbe On-Call-Prinzip wie `--check-dependencies`, nur
+für Verifikations-Drift statt neuer CVEs. `core/verifier.py` erkennt dabei zusätzlich zwei
+konkret beobachtete Muster als echten Fehlschlag statt als harmloses "keine Tests gefunden":
+ein mehrteiliges Backend-Projekt mit `requirements.txt`/`pyproject.toml`, aber ohne jeden
+Einstiegspunkt (`main.py`/`app.py`/…), sowie ein `tests/`-Ordner mit `conftest.py`, aber ohne
+eine einzige echte Testdatei – beides sieht nach einem mitten in der Generierung abgebrochenen
+Lauf aus, nicht nach einem Projekt, das bewusst auf Tests verzichtet.
+
+**`/protect-branch [branch]` sichert den Hauptbranch zusätzlich auf GitHub-Seite selbst ab:**
+Der PR-Workflow oben verhindert nur, dass dieses Tool direkt auf `main` pusht – ein Mensch
+(oder ein anderes Tool) könnte weiterhin `git push origin main` direkt ausführen. Der Befehl
+aktiviert per `gh api` echte Branch-Protection (Pflicht-Freigaben vor dem Merge, kein
+Force-Push/Löschen, gilt auch für Repo-Admins) – mit Vorschau & Bestätigung, da eine Änderung
+an den Repo-Einstellungen selbst Admin-Rechte voraussetzt und ein bewusster, einmaliger
+Schritt ist statt eines automatischen Laufs.
+
+**Datei-Kollisionen zwischen parallel arbeitenden Fachteam-Mitgliedern werden jetzt gemeldet:**
+Läuft ein Fachbereich mit 3+ Mitgliedern parallel (`asyncio.gather`), sehen sich die Agenten
+nie gegenseitig (jeder bekommt nur den Dateibaum zu seinem eigenen Startzeitpunkt) –
+schreiben zwei von ihnen dieselbe Datei (z.B. `requirements.txt`), überschrieb das bisher
+unbemerkt die zuerst geschriebene Version. `agents/orchestrator.py._detect_file_write_collisions()`
+erkennt das jetzt nach jedem parallelen Ausführungs-Batch und macht es per Live-Warnung sowie
+einem eigenen `### ⚠️ Datei-Kollisionen`-Abschnitt im Abschlussbericht sichtbar, statt es
+stillschweigend zu verwerfen – automatisch entscheidbar, welche Version richtig ist, ist es
+nicht, ein Mensch prüft die betroffene(n) Datei(en) gezielt nach.
 
 | Befehl | Beschreibung |
 |---|---|
@@ -476,21 +719,25 @@ Details zu `--check-issues`: [🎫 Autonome, getriggerte Arbeit](#issue-watcher)
 | `/load <pfad/name>` | Lädt ein bestehendes Projekt (Workspace oder externer Pfad) zur Weiterentwicklung |
 | `/tokens` | Zeigt den aktuellen Tokenverbrauch dieser Sitzung UND den kumulierten Verbrauch über alle bisherigen Läufe an |
 | `/rag <begriff>` | Führt eine semantische Code-Recherche im geladenen Projekt durch |
-| `/team` | Zeigt alle 5 Fachbereiche, Teamleiter und 33 Spezialisten an |
+| `/team` | Zeigt alle 6 Fachbereiche, Teamleiter und 33 Spezialisten an |
 | `/workspace [projekt]` | Listet alle generierten Dateien im Projektordner auf |
 | `/export [projekt]` | Packt das Projektverzeichnis in ein ZIP-Archiv |
 | `/run-tests [projekt]` | Führt automatische Unit-Tests im Projekt aus |
 | `/delete-project <name>` | Löscht ein Projekt unwiderruflich aus dem Workspace (mit Bestätigung) |
 | `/audit-projekt [projekt]` | Lässt den Projekt-Hygiene-Agenten das Framework (oder ein Projekt) wirklich durchsehen; Löschungen nur nach Bestätigung |
+| `/prune-worktrees` | Räumt verwaiste, vom KI-Team angelegte Git-Isolations-Worktrees auf (bereits gemergte oder seit 7+ Tagen inaktive Worktrees; niemals der aktive Worktree oder ungemergte Änderungen) |
 | `/learnings` | Zeigt alle von den Agenten gelernten Regeln (persistentes Gedächtnis) mit Nummer je Agent an |
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
 | `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/adr [projekt]` | Zeigt die dokumentierten Architecture Decision Records (Begründungen echter Architektur-Entscheidungen) eines Projekts |
-| `/backlog` | Zeigt das Kanban-Board (Todo/In Bearbeitung/Review/Blockiert/Fertig) über CLI, Dashboard UND autonome Issue-Läufe hinweg |
+| `/backlog` | Zeigt das Kanban-Board (Todo/In Bearbeitung/Review/Blockiert/Fertig) über CLI, Dashboard UND autonome Issue-Läufe hinweg, inkl. Priorität und WIP-Limit-Warnung |
+| `/team-health` (Aliase `/teamgesundheit`, `/rollup`) | Projektübergreifender Health-Rollup über alle Projekte in `workspace/` (aus `core/team_health.py`): pro Projekt Status, seit wann in Folge rot, sowie erkannte gemeinsame Fehlermuster (z.B. mehrere Projekte scheitern gleichzeitig am selben Frontend-Check) |
+| `/backlog-add [priorität] <titel>` | Legt manuell ein priorisiertes, noch nicht begonnenes Ticket im Status "todo" an (Priorität: 1/hoch, 2/mittel, 3/niedrig) |
 | `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
 | `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |
 | `/push` | Führt manuell einen Git-Commit & Push aus (mit Secret-Scan, Verifikations-Warnung & PR-Workflow) |
 | `/rollback <PR-Nummer>` | Revertiert einen bereits gemergten PR über einen echten `git revert` + Revert-Pull-Request (mit Vorschau & Bestätigung) – kein Direct-Commit auf den Hauptbranch |
+| `/protect-branch [branch]` | Aktiviert echte GitHub-Branch-Protection (Pflicht-Reviews vor Merge, kein Force-Push/Löschen) für den Hauptbranch – mit Vorschau & Bestätigung |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
 | `/hilfe` | Zeigt die Befehlsübersicht an |
@@ -506,14 +753,45 @@ erzwingt den sofortigen Abbruch.
 ## 🧪 Tests ausführen
 
 ```bash
-python -m unittest discover -s tests -p "test_*.py"
+python -m pytest tests/
 ```
+
+Vorher `python -m unittest discover -s tests -t . -p "test_*.py"`: `unittest discover` sammelt
+nur `unittest.TestCase`-Subklassen ein - reine Pytest-Fixture-/`@pytest.mark.anyio`-Tests ohne
+`TestCase` (z.B. `test_dashboard_sse.py`, `test_mcp_server_extended.py`,
+`test_prompt_caching.py`) wurden dadurch zwar importiert, aber nie tatsächlich ausgeführt. `pytest`
+sammelt beide Testarten gleichwertig ein.
+
+`tests/` als Argument (nicht `.` fürs ganze Repo) bleibt wichtig: pytest erkennt
+`tests/__init__.py` und importiert jedes Modul als `tests.*`-Paket (Rootdir-Package-Erkennung)
+- genau die Datei, die `memory/run_history.py` für die gesamte Testsuite strukturell auf ein
+Temp-Verzeichnis umbiegt, damit Testläufe nicht in die echte, projektübergreifende
+Lauf-Historie schreiben. `--import-mode=importlib` würde diese Package-Erkennung umgehen und
+ist deshalb bewusst nicht gesetzt.
 
 Die komplette Testsuite ist vollständig gemockt und läuft **ohne jeden API-Key/echten
 LLM-Aufruf** durch (verifiziert). `.github/workflows/ci.yml` führt sie bei jedem Push/PR
 gegen `main` automatisch aus (Python 3.11 & 3.12) – kostenlos, ohne Secrets nötig, plus
 ein Syntax-Check aller Quelldateien. Echte End-to-End-Läufe mit echten LLM-Aufrufen
 bleiben bewusst ein manueller, gezielter Schritt und sind nicht Teil der CI.
+
+**Empfehlung: vor größeren Releases einmal `--eval` mit echten Keys laufen lassen.** Die
+gemockte Suite prüft nur die Logik-Zweige, die ein Mock auch tatsächlich durchläuft – ein
+realer Fund beim Code-Review zeigte genau die Lücke: ein `NameError` in
+`core/browser_verifier.py` (fehlendes `import sys`) und ein stiller, nicht gemeldeter
+Runtime-Smoke-Test-Fehlschlag in `agents/orchestrator.py` blieben unbemerkt, weil kein Mock
+je den echten, dynamischen Codepfad ausgeführt hat. Ein einmaliger, gezielter Lauf mit
+echten Provider-Keys fängt genau solche Lücken auf, die reine Mocks strukturell nicht
+sehen können:
+
+```bash
+python main.py --eval          # alle Benchmark-Aufgaben, echte LLM-Aufrufe (kostenpflichtig)
+python main.py --list-evals    # Übersicht aller Aufgaben, falls nur eine Teilmenge nötig ist
+```
+
+Bewusst weiterhin kein automatisierter Cloud-Workflow dafür: das würde wiederkehrende, echte
+API-Kosten verursachen und eigene Secrets-Freigaben im Repo voraussetzen – dieser Schritt
+bleibt deshalb manuell und gezielt, nicht Teil von CI oder des Scheduler-Workflows.
 
 ## 🧹 Lint (ruff)
 
@@ -525,3 +803,21 @@ ruff check .
 Konfiguration in `ruff.toml` (bewusst auf den Framework-Code beschränkt, `workspace/`
 mit den vom Team selbst generierten Beispielprojekten ist ausgeschlossen). Läuft als
 eigener, paralleler `lint`-Job in `.github/workflows/ci.yml` bei jedem Push/PR.
+
+**Lokales Pre-Commit-Lint-Gate (empfohlen, einmalig einrichten):** Ein realer Fund zeigte,
+dass ein rot-lintender Stand (u.a. ein echter `NameError`, siehe oben) unbemerkt bis auf
+`main` gelangen konnte, weil `ruff` nirgends VOR dem Commit lief – erst der CI-Lint-Job in
+der Cloud fing es auf, nachdem der Stand bereits gepusht war. `scripts/git-hooks/pre-commit`
+holt genau diese Prüfung lokal nach vorne (bricht `git commit` ab, wenn `ruff check .`
+Funde meldet; umgehbar mit `git commit --no-verify`):
+
+```bash
+# Windows:
+powershell -ExecutionPolicy Bypass -File scripts/install-git-hooks.ps1
+# macOS/Linux:
+sh scripts/install-git-hooks.sh
+```
+
+## 📄 Lizenz
+
+MIT – siehe [LICENSE](LICENSE).

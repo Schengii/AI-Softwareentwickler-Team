@@ -59,8 +59,11 @@ async def create_note(
     status_code=status.HTTP_200_OK,
 )
 async def list_notes(session: AsyncSession = Depends(get_session)):
-    result = await session.exec(select(Note))
-    notes = result.all()
+    # .exec() gibt es nur auf sqlmodel.ext.asyncio.session.AsyncSession - hier wird die
+    # normale sqlalchemy.ext.asyncio.AsyncSession verwendet, die nur .execute() kennt
+    # (liefert Row-Objekte, .scalars() extrahiert daraus die eigentlichen Note-Instanzen).
+    result = await session.execute(select(Note))
+    notes = result.scalars().all()
     logger.info("Liste von %d Notizen abgerufen.", len(notes))
     return notes
 

@@ -272,7 +272,7 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
             return False
         return result.returncode == 0
 
-    def create_pull_request(self, title: str, body: str, base: str, head: str) -> tuple[bool, str]:
+    def create_pull_request(self, title: str, body: str, base: str, head: str, draft: bool = False) -> tuple[bool, str]:
         """
         Erstellt einen Pull Request per `gh pr create` – Voraussetzung: `head` wurde bereits
         gepusht (push()) und gh_ready() war True. Gibt bei Erfolg die von `gh` ausgegebene
@@ -280,11 +280,98 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
         Exception – ein fehlgeschlagener PR-Aufruf soll den bereits gepushten Branch nicht
         verwerfen, nur ohne automatisch erstellten PR liegen lassen (der Nutzer kann ihn dann
         manuell auf GitHub anlegen).
+
+        draft=True erstellt den PR als Draft (`gh pr create --draft`) - genutzt von
+        interface/cli.py._ask_for_git_push(), wenn die echte Testsuite den Code NICHT
+        bestätigt bestanden hat (realer Fund: ein normaler PR mit rein informativer Warnung im
+        Body wurde trotzdem anstandslos gemerged, siehe README/PR-Workflow-Abschnitt - ein
+        Draft-Status macht "noch nicht bereit" für GitHub selbst sichtbar, nicht nur im Text).
+        """
+        command = ["gh", "pr", "create", "--title", title, "--body", body, "--base", base, "--head", head]
+        if draft:
+            command.append("--draft")
+        try:
+            result = subprocess.run(
+                command,
+                cwd=BASE_DIR, capture_output=True, text=True, timeout=30, encoding="utf-8",
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        success = result.returncode == 0
+        output = (result.stdout + result.stderr).strip()
+        return success, output
+
+    def get_repo_slug(self) -> str | None:
+        """
+        Gibt `owner/repo` des aktuellen GitHub-Remotes zurück (via `gh repo view`), oder None
+        bei JEDEM Problem (kein `gh`, kein GitHub-Remote, nicht eingeloggt, …) – Grundlage für
+        set_branch_protection() unten, das den Repo-Slug für den API-Pfad braucht.
         """
         try:
             result = subprocess.run(
-                ["gh", "pr", "create", "--title", title, "--body", body, "--base", base, "--head", head],
-                cwd=BASE_DIR, capture_output=True, text=True, timeout=30, encoding="utf-8",
+                ["gh", "repo", "view", "--json", "nameWithOwner"],
+                cwd=BASE_DIR, capture_output=True, text=True, timeout=15, encoding="utf-8",
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return None
+        slug = data.get("nameWithOwner")
+        return slug or None
+
+    def set_branch_protection(
+        self,
+        branch: str,
+        required_approving_reviews: int = 1,
+        required_status_check_contexts: list[str] | None = None,
+    ) -> tuple[bool, str]:
+        """
+        Aktiviert echte GitHub-Branch-Protection für `branch` über die REST-API (`gh api
+        --method PUT ... --input -`): Pull-Request-Pflicht mit mindestens
+        `required_approving_reviews` Freigaben VOR dem Merge, optional Pflicht-Status-Checks
+        (z.B. der CI-Job-Name aus .github/workflows/ci.yml), kein Force-Push, keine Löschung
+        des Branches, gilt auch für Repo-Admins (`enforce_admins`).
+
+        Realer struktureller Unterschied zu einem echten Team: der PR-Workflow oben
+        (create_branch/create_pull_request) verhindert nur, dass DIESES Tool direkt auf einen
+        Hauptbranch pusht – ein Mensch (oder ein anderes Tool/Skript) könnte weiterhin
+        `git push origin main` direkt ausführen, ohne dass GitHub selbst das verhindert. Ein
+        echtes Team sichert seinen Hauptbranch zusätzlich auf GitHub-Seite selbst ab.
+
+        Erfordert Admin-Rechte auf dem Repo (die verwendete `gh`-Anmeldung muss sie haben) –
+        wirft NIE eine Exception, fehlende Rechte/kein Remote/`gh` fehlt liefern
+        (False, Fehlermeldung) statt abzubrechen. Bewusst NUR über einen expliziten
+        CLI-Befehl (`/protect-branch`) ausgelöst, nie automatisch – eine Änderung an den
+        Repo-Einstellungen selbst ist ein bewusster, einmaliger Schritt, kein Seiteneffekt
+        eines normalen Team-Laufs.
+        """
+        repo_slug = self.get_repo_slug()
+        if not repo_slug:
+            return False, "Kein GitHub-Remote gefunden oder `gh` nicht nutzbar/eingeloggt."
+
+        payload: dict = {
+            "required_status_checks": (
+                {"strict": True, "contexts": required_status_check_contexts}
+                if required_status_check_contexts else None
+            ),
+            "enforce_admins": True,
+            "required_pull_request_reviews": {
+                "required_approving_review_count": max(0, required_approving_reviews),
+            },
+            "restrictions": None,
+            "allow_force_pushes": False,
+            "allow_deletions": False,
+        }
+        try:
+            result = subprocess.run(
+                ["gh", "api", "--method", "PUT", f"repos/{repo_slug}/branches/{branch}/protection",
+                 "-H", "Accept: application/vnd.github+json", "--input", "-"],
+                input=json.dumps(payload),
+                cwd=BASE_DIR, capture_output=True, text=True, timeout=20, encoding="utf-8",
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             return False, str(e)

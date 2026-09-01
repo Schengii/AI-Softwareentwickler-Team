@@ -66,4 +66,63 @@ jobs:
           python -m py_compile $(git ls-files '*.py' | grep -v '^workspace/' | grep -v '^test_proj/' | grep -v '^zip_proj/')
 
       - name: Testsuite ausführen
-        run: python -m unittest discover -s tests -p "test_*.py" -v
+        # Vorher `python -m unittest discover -s tests -t . -p "test_*.py"`: sammelt nur
+        # unittest.TestCase-Subklassen ein - reine Pytest-Fixture-/@pytest.mark.anyio-Tests
+        # ohne TestCase (test_dashboard_sse.py, test_mcp_server_extended.py,
+        # test_prompt_caching.py) wurden zwar importiert, aber NIE tatsächlich ausgeführt
+        # (unittest.TestLoader kennt nur TestCase-Methoden, keine losen Testfunktionen) - ein
+        # grüner CI-Lauf bedeutete für diese drei Dateien nur "importierbar", nicht "getestet".
+        # `pytest` sammelt beide Testarten gleichwertig ein UND ersetzt unittest discover
+        # vollständig (unittest.TestCase-Tests laufen unverändert unter pytest mit).
+        #
+        # `tests/` bleibt trotzdem als Argument (nicht "." fürs ganze Repo) nötig: pytest
+        # erkennt tests/__init__.py und importiert jedes Modul als "tests.test_x" (Rootdir-
+        # Package-Erkennung) - exakt dasselbe Verhalten wie vorher `-t .` bei unittest discover,
+        # notwendig, damit tests/__init__.py (isoliert memory/run_history.py.RUN_HISTORY_FILE
+        # auf ein Temp-Verzeichnis, siehe dort) für JEDEN Testlauf tatsächlich einmal ausgeführt
+        # wird. --import-mode=importlib würde diese Package-Erkennung umgehen - bewusst NICHT
+        # gesetzt.
+        run: python -m pytest tests/ -v
+
+  workspace-frontend-tests:
+    name: Workspace-Frontend-Tests (echte npm-Testsuiten generierter Projekte)
+    runs-on: ubuntu-latest
+    # Realer Fund: diese CI-Datei testete bisher AUSSCHLIESSLICH den Python-Code des
+    # Orchestrator-Teams selbst - ruff.toml schließt workspace/ bewusst aus (siehe dort), und
+    # kein Schritt führte je `npm test` in einem generierten Node-Projekt aus. Ein grüner PR-
+    # Check bedeutete deshalb nur "der Orchestrator ist ok", nicht "das generierte Frontend
+    # funktioniert" - ein Node-Projekt mit kaputtem `npm test` (z.B. Jest-Konfigurationsfehler)
+    # konnte so unbemerkt gemergt werden. Dieser Job findet und testet JEDES workspace/*-
+    # Projekt mit einem "test"-Skript in package.json, genau wie core/verifier.py._find_node_
+    # projects() das für einen echten Agentenlauf tut - kein Keyword-Matching, echtes `npm test`.
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Node.js einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Alle workspace/-Projekte mit npm-Test-Skript real testen
+        shell: bash
+        run: |
+          set -e
+          found_any=0
+          for pkg in workspace/*/package.json workspace/*/*/package.json; do
+            [ -f "$pkg" ] || continue
+            dir=$(dirname "$pkg")
+            has_test=$(node -e "
+              const s = require('./$pkg').scripts || {};
+              process.stdout.write(s.test ? '1' : '0');
+            ")
+            if [ "$has_test" = "1" ]; then
+              found_any=1
+              echo "::group::npm test ($dir)"
+              (cd "$dir" && npm ci && npm test)
+              echo "::endgroup::"
+            fi
+          done
+          if [ "$found_any" -eq 0 ]; then
+            echo "Keine workspace/-Projekte mit npm-Test-Skript gefunden - nichts zu tun."
+          fi

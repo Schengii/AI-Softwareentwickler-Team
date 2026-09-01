@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background-color: #0f172a;
+}
+
+canvas {
+  image-rendering: pixelated;
+  box-shadow: 0 0 20px rgba(0, 0, 0, 0.8);
+}

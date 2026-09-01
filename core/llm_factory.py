@@ -53,6 +53,19 @@ if GROQ_API_KEY:
 # funktionierte. Groq/openai/gpt-oss-120b jetzt als letzte Stufe auch in den STANDARD/LITE-
 # Ketten ergänzt – kein Endlosloop möglich, da _allow_self_fallback=False verhindert, dass
 # Groq bei eigenem Scheitern zurück zu Gemini zurückspringt (siehe generate_with_tools()).
+#
+# WICHTIG (Reichweite dieses Dicts): `MODEL_FALLBACKS.get()` wird AUSSCHLIESSLICH von
+# GeminiClient gelesen (siehe generate_with_tools()/_call_with_retry_and_usage() weiter
+# unten), keyed auf `self.model_name` eines GeminiClient - und ein GeminiClient wird im
+# echten Betrieb nie mit einem Nicht-Gemini-Modellnamen instanziiert (LLMFactory.create_
+# for_model() routet Claude/Groq/DeepSeek/OpenRouter/HuggingFace-Namen immer an den
+# jeweils passenden eigenen Client-Wrapper). Frühere Versionen enthielten hier zusätzlich
+# Einträge mit Nicht-Gemini-Keys ("groq:...", "deepseek:...", ...) in der Annahme, damit
+# ließe sich die Fallback-Kette DIESER Provider steuern - das war totes Konfigurations-
+# wissen: DeepSeekClient/GroqClient/OpenRouterClient/HuggingFaceClient haben stattdessen
+# jeweils fest einprogrammiert genau EINEN Hop direkt zu gemini-3.6-flash (siehe deren
+# generate_with_usage()/generate_with_tools() oben), unabhängig vom Inhalt dieses Dicts.
+# Nur Gemini-Modellnamen gehören hier als Key rein.
 MODEL_FALLBACKS = {
     # Gemini erschöpft/fehlerhaft -> auf das jeweils gleichwertige Claude-Modell ausweichen,
     # dann eine kleinere Gemini-Stufe, zuletzt Groq als kostenloser Backstop.
@@ -61,12 +74,6 @@ MODEL_FALLBACKS = {
     "gemini-3.1-flash-lite": ["claude-haiku-4-5-20251001", "gemini-3.6-flash", "groq:openai/gpt-oss-120b"],
     # Ältere/abweichende Konfigurationswerte (falls per .env manuell gesetzt) ebenfalls abdecken.
     "gemini-3.5-flash":     ["claude-sonnet-5", "gemini-3.6-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
-    # Legacy-Provider-Fallbacks (nur relevant, falls ein Agent per .env explizit auf sie gesetzt wird).
-    "huggingface:auto": ["gemini-3.6-flash", "gemini-3.1-flash-lite"],
-    "openrouter:auto": ["gemini-3.6-flash", "gemini-3.1-flash-lite"],
-    "deepseek:deepseek-chat": ["gemini-3.6-flash", "gemini-3.1-flash-lite"],
-    "deepseek:deepseek-reasoner": ["deepseek:deepseek-chat", "gemini-3.6-flash"],
-    "groq:openai/gpt-oss-120b": ["gemini-3.6-flash", "gemini-3.1-flash-lite"],
 }
 
 MAX_RETRIES = 3
@@ -163,6 +170,8 @@ class LLMResponse:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     tool_calls: list[ToolCall] = field(default_factory=list)
 
 
@@ -238,7 +247,9 @@ class HuggingFaceClient:
         # Fallback auf Gemini für Text-/SVG-Generierung. _allow_self_fallback=False wird von
         # GeminiClient gesetzt, wenn dieser Client bereits ALS Fallback-Ziel innerhalb einer
         # Provider-Kette aufgerufen wird – verhindert eine Endlosschleife (Gemini -> HF -> Gemini
-        # -> ...), falls HuggingFace irgendwann als MODEL_FALLBACKS-Ziel eingetragen wird.
+        # -> ...), falls HuggingFace irgendwann direkt in MODEL_FALLBACKS als Fallback-ZIEL
+        # (Wert, nicht Key) eingetragen wird - MODEL_FALLBACKS.get() wird aber nur mit
+        # Gemini-Modellnamen als Key aufgerufen, siehe Kommentar an MODEL_FALLBACKS oben.
         if not _allow_self_fallback:
             raise RuntimeError("HuggingFace-Provider innerhalb einer Fallback-Kette nicht verfügbar.")
         fallback = GeminiClient(model_name="gemini-3.6-flash")
@@ -691,14 +702,15 @@ class GeminiClient:
             elif getattr(part, "text", None):
                 text_parts.append(part.text)
 
-        prompt_tokens = completion_tokens = total_tokens = 0
+        prompt_tokens = completion_tokens = total_tokens = cache_read_tokens = 0
         if hasattr(response, "usage_metadata") and response.usage_metadata:
             meta = response.usage_metadata
             prompt_tokens = getattr(meta, "prompt_token_count", 0) or 0
             completion_tokens = getattr(meta, "candidates_token_count", 0) or 0
             total_tokens = getattr(meta, "total_token_count", 0) or (prompt_tokens + completion_tokens)
+            cache_read_tokens = getattr(meta, "cached_content_token_count", 0) or 0
 
-        token_guard.record_usage(model, prompt_tokens, completion_tokens)
+        token_guard.record_usage(model, prompt_tokens, completion_tokens, cache_read_tokens=cache_read_tokens)
 
         return LLMResponse(
             text="\n".join(text_parts),
@@ -706,6 +718,7 @@ class GeminiClient:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            cache_read_tokens=cache_read_tokens,
             tool_calls=tool_calls,
         )
 
@@ -761,18 +774,20 @@ class GeminiClient:
                     prompt_tokens = 0
                     completion_tokens = 0
                     total_tokens = 0
+                    cache_read_tokens = 0
 
                     if hasattr(response, "usage_metadata") and response.usage_metadata:
                         meta = response.usage_metadata
                         prompt_tokens = getattr(meta, "prompt_token_count", 0) or 0
                         completion_tokens = getattr(meta, "candidates_token_count", 0) or 0
                         total_tokens = getattr(meta, "total_token_count", 0) or (prompt_tokens + completion_tokens)
+                        cache_read_tokens = getattr(meta, "cached_content_token_count", 0) or 0
                     else:
                         prompt_tokens = len(contents) // 4
                         completion_tokens = len(text) // 4
                         total_tokens = prompt_tokens + completion_tokens
 
-                    token_guard.record_usage(model, prompt_tokens, completion_tokens)
+                    token_guard.record_usage(model, prompt_tokens, completion_tokens, cache_read_tokens=cache_read_tokens)
 
                     return LLMResponse(
                         text=text,
@@ -780,6 +795,7 @@ class GeminiClient:
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
                         total_tokens=total_tokens,
+                        cache_read_tokens=cache_read_tokens,
                     )
 
                 except Exception as e:
@@ -971,16 +987,29 @@ class ClaudeClient:
             "messages": messages,
         }
         if system_prompt:
-            kwargs["system"] = system_prompt
+            # Anthropic Prompt Caching für den System-Prompt
+            kwargs["system"] = [
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
 
         try:
             response = await self._client.messages.create(**kwargs)
             text = response.content[0].text if response.content else ""
-            prompt_tokens = response.usage.input_tokens if hasattr(response, "usage") else len(prompt) // 4
-            comp_tokens = response.usage.output_tokens if hasattr(response, "usage") else len(text) // 4
-            total = prompt_tokens + comp_tokens
+            usage = getattr(response, "usage", None)
+            prompt_tokens = getattr(usage, "input_tokens", len(prompt) // 4) if usage else len(prompt) // 4
+            comp_tokens = getattr(usage, "output_tokens", len(text) // 4) if usage else len(text) // 4
+            cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0 if usage else 0
+            cache_write_tokens = getattr(usage, "cache_creation_input_tokens", 0) or 0 if usage else 0
+            total = prompt_tokens + comp_tokens + cache_read_tokens + cache_write_tokens
 
-            token_guard.record_usage(self.model_name, prompt_tokens, comp_tokens)
+            token_guard.record_usage(
+                self.model_name, prompt_tokens, comp_tokens,
+                cache_read_tokens=cache_read_tokens, cache_write_tokens=cache_write_tokens,
+            )
 
             return LLMResponse(
                 text=text,
@@ -988,6 +1017,8 @@ class ClaudeClient:
                 prompt_tokens=prompt_tokens,
                 completion_tokens=comp_tokens,
                 total_tokens=total,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
             )
         except Exception as e:
             is_rate_limit = _is_rate_limit_error(e)
@@ -1017,6 +1048,9 @@ class ClaudeClient:
             {"name": t["name"], "description": t.get("description", ""), "input_schema": t.get("parameters", {"type": "object", "properties": {}})}
             for t in tools
         ]
+        # Prompt Caching: Letztes Werkzeug im Katalog cachen
+        if anthropic_tools:
+            anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
 
         kwargs: dict = {
             "model": self.model_name,
@@ -1025,7 +1059,13 @@ class ClaudeClient:
             "tools": anthropic_tools,
         }
         if system_prompt:
-            kwargs["system"] = system_prompt
+            kwargs["system"] = [
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
 
         try:
             response = await self._client.messages.create(**kwargs)
@@ -1037,13 +1077,22 @@ class ClaudeClient:
                 elif block.type == "tool_use":
                     tool_calls.append(ToolCall(id=block.id, name=block.name, arguments=dict(block.input) if block.input else {}))
 
-            p_tok = response.usage.input_tokens if hasattr(response, "usage") else 0
-            c_tok = response.usage.output_tokens if hasattr(response, "usage") else 0
-            token_guard.record_usage(self.model_name, p_tok, c_tok)
+            usage = getattr(response, "usage", None)
+            p_tok = getattr(usage, "input_tokens", 0) if usage else 0
+            c_tok = getattr(usage, "output_tokens", 0) if usage else 0
+            cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0 if usage else 0
+            cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0 if usage else 0
+            tot = p_tok + c_tok + cache_read + cache_write
+
+            token_guard.record_usage(
+                self.model_name, p_tok, c_tok,
+                cache_read_tokens=cache_read, cache_write_tokens=cache_write,
+            )
 
             return LLMResponse(
                 text="\n".join(text_parts), model_name=self.model_name,
-                prompt_tokens=p_tok, completion_tokens=c_tok, total_tokens=p_tok + c_tok,
+                prompt_tokens=p_tok, completion_tokens=c_tok, total_tokens=tot,
+                cache_read_tokens=cache_read, cache_write_tokens=cache_write,
                 tool_calls=tool_calls,
             )
         except Exception as e:
@@ -1132,6 +1181,7 @@ class LLMFactory:
 
     @staticmethod
     def create_for_agent(agent_id: str):
-        from config import AGENT_MODELS, DEFAULT_AGENT_MODEL
-        model_name = AGENT_MODELS.get(agent_id, DEFAULT_AGENT_MODEL)
+        from config import get_model_for_agent
+        model_name = get_model_for_agent(agent_id)
         return LLMFactory.create_for_model(model_name)
+

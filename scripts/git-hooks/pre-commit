@@ -1,0 +1,40 @@
+#!/bin/sh
+# scripts/git-hooks/pre-commit – lokales Lint-Gate vor jedem Commit
+#
+# Realer Fund: main.py/agents/orchestrator.py & Co. landeten mehrfach mit Lint-Fehlern
+# (ungenutzte Imports, ein echter F821-Undefined-Name-Bug) auf `main`, weil `ruff check .`
+# nirgends VOR dem Commit lief - erst der CI-Lint-Job in der Cloud fing es auf, nachdem der
+# rote Stand bereits gepusht war. Dieser Hook holt genau diese Prüfung lokal nach vorne,
+# ohne einen neuen Python-Paketmanager oder das `pre-commit`-Framework einzuführen - nur
+# `ruff` (ohnehin in requirements-dev.txt), dieselbe ruff.toml wie CI.
+#
+# Installation (einmalig, siehe scripts/install-git-hooks.ps1 bzw. .sh):
+#   Kopiert diese Datei nach .git/hooks/pre-commit (Git versioniert .git/hooks/ selbst nicht,
+#   deshalb liegt das Original hier im normal versionierten scripts/-Verzeichnis).
+#
+# Bewusst NUR ein Gate, kein automatischer Fix: ein Commit, der sich lautlos selbst verändert,
+# wäre überraschender als ein abgebrochener Commit mit klarer Fehlermeldung.
+
+staged_py=$(git diff --cached --name-only --diff-filter=ACMR -- '*.py')
+if [ -z "$staged_py" ]; then
+    exit 0
+fi
+
+if ! command -v ruff >/dev/null 2>&1; then
+    echo "⚠️  ruff nicht gefunden (pip install -r requirements-dev.txt) – Pre-Commit-Lint-Gate übersprungen."
+    exit 0
+fi
+
+echo "🧹 Pre-Commit-Lint-Gate: ruff check . ..."
+ruff check .
+status=$?
+
+if [ $status -ne 0 ]; then
+    echo ""
+    echo "❌ Commit abgebrochen: ruff hat Lint-Fehler gefunden (siehe oben)."
+    echo "   Viele lassen sich automatisch beheben: ruff check . --fix"
+    echo "   Absichtlich trotzdem committen: git commit --no-verify"
+    exit 1
+fi
+
+exit 0

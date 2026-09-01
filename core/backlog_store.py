@@ -16,7 +16,7 @@ core/issue_watcher.py) schreibt hier hinein statt eigene Parallel-Zustände zu p
 
 import json
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -46,6 +46,20 @@ class Ticket:
     updated_at: str
     detail: str = ""       # PR-URL / Fehlermeldung / Issue-Nummer, je nach Status
     project_slug: str = ""
+    # Sprint-/Kapazitäts-Konzept: 1=hoch, 2=mittel (Standard), 3=niedrig - dieselbe
+    # Konvention wie core/message_bus.py.AgentTask.priority, damit sich beide Systeme nicht
+    # widersprechen. estimate ist bewusst freier Text (z.B. "S"/"M"/"L" oder Story Points wie
+    # "3") statt eines festen Enums - unterschiedliche Teams/Nutzer schätzen unterschiedlich.
+    priority: int = 2
+    estimate: str = ""
+    # Realer Fund: Tickets waren bisher eine flache, unzusammenhängende Liste - ein größeres
+    # Vorhaben ("kompletter Checkout-Flow") ließ sich nicht als zusammengehörige, sinnvoll
+    # sortierte Kette abbilden, jede Anfrage wurde isoliert bearbeitet. epic ist freier Text
+    # (z.B. "Checkout-Flow") statt eines festen Enums - dieselbe Konvention wie `estimate`,
+    # unterschiedliche Teams benennen Epics unterschiedlich. depends_on sind IDs anderer
+    # Tickets, die zuerst status="done" erreichen müssen - siehe is_ticket_ready() unten.
+    epic: str = ""
+    depends_on: list[str] = field(default_factory=list)
 
 
 def _now() -> str:
@@ -86,6 +100,8 @@ def new_ticket_id(source: str) -> str:
 
 def upsert_ticket(
     ticket_id: str, title: str, source: str, status: str, detail: str = "", project_slug: str = "",
+    priority: int | None = None, estimate: str | None = None,
+    epic: str | None = None, depends_on: list[str] | None = None,
 ) -> Ticket:
     """
     Legt ein Ticket an ODER aktualisiert ein bestehendes (anhand `ticket_id`) – ein einziger
@@ -95,10 +111,22 @@ def upsert_ticket(
     Aufruf erneuert. `status` außerhalb von STATUSES wird nicht validiert (bewusst tolerant -
     ein unbekannter Status soll den aufrufenden Lauf nicht crashen, nur unpassend einsortiert
     im Board landen).
+
+    `priority`/`estimate`: None (Standard) übernimmt den bereits vorhandenen Wert unverändert
+    (Sentinel, KEIN Reset auf den Ticket-Standard) – die meisten bestehenden Aufrufer
+    aktualisieren ein Ticket mehrfach über seinen Lebenszyklus (z.B. core/issue_watcher.py:
+    "in_progress" beim Aufgreifen, "review"/"blocked" beim Abschluss) OHNE Priorität/Schätzung
+    jedes Mal erneut mitzugeben – ein echter Zahlen-Default hier hätte eine beim Anlegen
+    gesetzte Priorität beim nächsten Status-Update stillschweigend wieder auf "mittel"
+    zurückgesetzt.
     """
     tickets = _load_raw()
     existing = next((t for t in tickets if t["id"] == ticket_id), None)
     created_at = existing["created_at"] if existing else _now()
+    resolved_priority = priority if priority is not None else (existing.get("priority", 2) if existing else 2)
+    resolved_estimate = estimate if estimate is not None else (existing.get("estimate", "") if existing else "")
+    resolved_epic = epic if epic is not None else (existing.get("epic", "") if existing else "")
+    resolved_depends_on = depends_on if depends_on is not None else (existing.get("depends_on", []) if existing else [])
     # Alte Position entfernen (falls vorhanden) - das aktualisierte Ticket wird unten ans
     # ENDE angehängt, damit die Listenreihenfolge selbst die Aktualisierungsreihenfolge
     # abbildet (siehe list_tickets()/_save_raw()).
@@ -106,7 +134,36 @@ def upsert_ticket(
     result = Ticket(
         id=ticket_id, title=title, source=source, status=status,
         created_at=created_at, updated_at=_now(), detail=detail, project_slug=project_slug,
+        priority=resolved_priority, estimate=resolved_estimate,
+        epic=resolved_epic, depends_on=list(resolved_depends_on),
     )
     tickets.append(asdict(result))
     _save_raw(tickets)
     return result
+
+
+def is_ticket_ready(ticket: Ticket, all_tickets: list[Ticket] | None = None) -> tuple[bool, list[str]]:
+    """
+    Prüft, ob ALLE Abhängigkeiten eines Tickets bereits status="done" erreicht haben - genau
+    die Prüfung, die core/backlog_worker.py vor dem eigenständigen Aufgreifen eines
+    "todo"-Tickets braucht, damit ein autonom arbeitendes Team nicht Ticket 2 einer Kette
+    beginnt, bevor Ticket 1 fertig ist. Gibt (ready, blocking_ids) zurück - blocking_ids IMMER
+    sichtbar statt eines reinen bool, damit ein Aufrufer den Grund loggen kann (dieselbe
+    "niemals stumm überspringen"-Linie wie reason_skipped an anderer Stelle im Projekt).
+
+    Ein depends_on-Eintrag ohne zugehöriges Ticket (z.B. Tippfehler in der ID, oder das Ticket
+    wurde inzwischen durch MAX_TICKETS_KEPT verdrängt) gilt bewusst als NICHT erfüllt - lieber
+    ein Ticket fälschlich blockiert liegen lassen (sichtbar im Backlog/Board) als eine
+    tatsächlich noch offene Abhängigkeit stillschweigend zu ignorieren.
+    """
+    if not ticket.depends_on:
+        return True, []
+    by_id = {t.id: t for t in (all_tickets if all_tickets is not None else list_tickets())}
+    blocking = [dep_id for dep_id in ticket.depends_on if by_id.get(dep_id, None) is None or by_id[dep_id].status != "done"]
+    return not blocking, blocking
+
+
+def count_by_status(status: str) -> int:
+    """Anzahl Tickets in einer Spalte – Grundlage für die WIP-Limit-Warnung (siehe
+    config.BACKLOG_WIP_LIMIT_IN_PROGRESS) ohne die komplette Liste beim Aufrufer neu zu filtern."""
+    return sum(1 for t in _load_raw() if t.get("status") == status)

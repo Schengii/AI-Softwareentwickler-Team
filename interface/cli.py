@@ -14,6 +14,7 @@ import os
 import signal
 import sys
 import threading
+import traceback
 import uuid
 from pathlib import Path
 
@@ -28,10 +29,18 @@ from rich.text import Text
 
 from agents.department_lead_agent import DEPARTMENT_DEFINITIONS
 from agents.orchestrator import PHASE_ORDER, Orchestrator
-from config import ENABLE_PLAN_CONFIRMATION, ENABLE_PR_WORKFLOW, GIT_PROTECTED_BRANCHES, validate_config
-from core.backlog_store import STATUSES, list_tickets, new_ticket_id, upsert_ticket
+from config import (
+    BACKLOG_WIP_LIMIT_IN_PROGRESS,
+    BRANCH_PROTECTION_REQUIRED_REVIEWS,
+    ENABLE_PLAN_CONFIRMATION,
+    ENABLE_PR_WORKFLOW,
+    GIT_PROTECTED_BRANCHES,
+    validate_config,
+)
+from core.backlog_store import STATUSES, count_by_status, is_ticket_ready, list_tickets, new_ticket_id, upsert_ticket
 from core.code_sandbox import CodeSandbox
 from core.message_bus import AgentTask
+from core.notifier import notify_external
 from core.task_manager import AVAILABLE_AGENTS
 
 console = Console()
@@ -50,9 +59,14 @@ BANNER = """
 ║        🤖  KI-Softwareentwickler-Team (v4.3)  🤖            ║
 ║        ─────────────────────────────────────                 ║
 ║  Dein 33-köpfiges autonomes KI-Entwickler-Team               ║
-║  5 Fachbereiche • RAG • Sandbox • MCP & Web-Dashboard        ║
+║  6 Fachbereiche • RAG • Sandbox • MCP & Web-Dashboard        ║
 ╚══════════════════════════════════════════════════════════════╝
 """
+
+# Priorität eines Backlog-Tickets (core/backlog_store.py.Ticket.priority) - dieselbe
+# 1=hoch/2=mittel/3=niedrig-Konvention wie core/message_bus.py.AgentTask.priority.
+_PRIORITY_LABELS: dict[str, int] = {"1": 1, "hoch": 1, "2": 2, "mittel": 2, "3": 3, "niedrig": 3}
+_PRIORITY_ICONS: dict[int, str] = {1: "🔴 hoch", 2: "🟡 mittel", 3: "🟢 niedrig"}
 
 HELP_TEXT = """
 **Verfügbare Befehle:**
@@ -63,21 +77,30 @@ HELP_TEXT = """
 | `/load <pfad/name>` | Lädt ein bestehendes Projekt (Workspace oder externer Pfad) zur Weiterentwicklung |
 | `/tokens` | Zeigt den aktuellen Tokenverbrauch und verbleibende Kontingente an |
 | `/rag <begriff>` | Führt eine semantische Code-Recherche im geladenen Projekt durch |
-| `/team` | Zeigt alle 5 Fachbereiche, Teamleiter und 33 Spezialisten an |
+| `/team` | Zeigt alle 6 Fachbereiche, Teamleiter und 33 Spezialisten an |
 | `/workspace [projekt]` | Listet alle generierten Dateien im Projektordner auf |
 | `/export [projekt]` | Packt das Projektverzeichnis in ein ZIP-Archiv |
 | `/run-tests [projekt]` | Führt automatische Unit-Tests im Projekt aus |
 | `/delete-project <name>` | Löscht ein Projekt unwiderruflich aus dem Workspace (mit Bestätigung) |
 | `/audit-projekt [projekt]` | Lässt den Projekt-Hygiene-Agenten das Framework (oder ein Projekt) wirklich durchsehen; Löschungen nur nach Bestätigung |
+| `/prune-worktrees` | Räumt verwaiste, vom KI-Team angelegte Git-Isolations-Worktrees auf (gemergt oder seit 7+ Tagen inaktiv) |
 | `/learnings` | Zeigt alle von den Agenten gelernten Regeln (persistentes Gedächtnis) mit Nummer je Agent an |
+| `/optimize` | Zeigt datenbasierte Selbstoptimierungs-Vorschläge über alle bisherigen Läufe hinweg (Modellzuweisung, auffällig niedrige Erfolgsquoten) – rein informativ, keine automatische Änderung |
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
 | `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
+| `/design-system [projekt]` | Zeigt/bearbeitet feste visuelle Präferenzen (Farbpalette, Typografie, Spacing-Skala, Tonalität, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/backlog` | Zeigt das Kanban-Board (Todo/In Bearbeitung/Review/Blockiert/Fertig) über CLI, Dashboard UND autonome Issue-Läufe hinweg |
+| `/team-health` | Projektübergreifender Health-Rollup über alle Projekte in `workspace/`: Status, seit wann rot, erkannte gemeinsame Fehlermuster |
+| `/backlog-add [priorität] <titel>` | Legt manuell ein priorisiertes, noch nicht begonnenes Ticket im Status "todo" an (Priorität: 1/hoch, 2/mittel, 3/niedrig) |
 | `/adr [projekt]` | Zeigt die dokumentierten Architecture Decision Records (Begründungen echter Architektur-Entscheidungen) eines Projekts |
 | `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
 | `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |
+| `/deploy-cloud <fly/vercel/render/railway> [projekt] [--real]` | Deployt in die Cloud (echte Preview-URL) – ohne `--real` nur Dry-Run/Manifeste |
 | `/push` | Führt manuell einen Git-Commit & Push aus |
 | `/rollback <PR-Nummer>` | Revertiert einen bereits gemergten PR über einen echten Revert-Pull-Request (mit Vorschau & Bestätigung) |
+| `/protect-branch [branch]` | Aktiviert echte GitHub-Branch-Protection (Pflicht-Reviews, kein Force-Push) für den Hauptbranch – mit Vorschau & Bestätigung |
+| `/state [projekt]` | Zeigt den aktuellen State-Checkpoint (PROJECT_STATE.md) und nächste Schritte für ein Projekt an |
+| `/goal [max] <ziel>` | Startet den autonomen Ziel-Loop: arbeitet selbstständig in Feedback-Schleifen weiter, bis das Projektziel erreicht und verifiziert ist |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
 | `/hilfe` | Zeigt diese Hilfe an |
@@ -120,19 +143,43 @@ class CLIInterface:
 
         console.print(BANNER, style="bold cyan")
         console.print(
-            "💡 Schreibe einfach deine Projektidee in den Chat! (Tippe /hilfe für Befehle)\n",
+            "💡 Schreibe einfach deine Projektidee in den Chat! (Tippe /hilfe für Befehle)\n"
+            "   Für mehrzeilige Eingaben: Zeile mit \\ beenden, um sie fortzusetzen.\n",
             style="dim"
         )
 
         asyncio.run(self._main_loop())
 
+    def _read_user_input(self) -> str:
+        """
+        Liest EINE Nutzereingabe, ggf. über mehrere Zeilen hinweg – realer Fund: `console.
+        input()` (dünner Wrapper um Pythons `input()`) liest immer nur bis zum ersten
+        Zeilenumbruch. Eine mehrzeilige Aufgabenbeschreibung wurde dadurch nicht als EINE
+        Eingabe erkannt, sondern jede Zeile einzeln als eigener, meist unsinniger Prompt an
+        `_main_loop()` weitergereicht (im schlimmsten Fall ein mehrzeiliger Paste, der als
+        mehrere separate Läufe endete statt als einer). Endet eine Zeile auf ein einzelnes
+        `\\` (dieselbe Fortsetzungs-Konvention wie in der Shell/in Python selbst), wird die
+        NÄCHSTE Zeile angehängt statt die Eingabe abzuschließen – ein einzelnes Enter am Ende
+        einer normalen, einzeiligen Aufgabe bleibt dadurch unverändert genauso schnell wie
+        bisher, kein zusätzlicher Aufwand für den Alltagsfall.
+        """
+        lines: list[str] = []
+        prompt_label = "[bold green]Du[/bold green] → "
+        while True:
+            line = console.input(prompt_label)
+            if line.endswith("\\"):
+                lines.append(line[:-1])
+                prompt_label = "[bold green]…[/bold green] → "
+                continue
+            lines.append(line)
+            break
+        return "\n".join(lines).strip()
+
     async def _main_loop(self) -> None:
         """Hauptschleife: Eingabe → Verarbeitung → Ausgabe."""
         while True:
             try:
-                user_input = console.input(
-                    "[bold green]Du[/bold green] → "
-                ).strip()
+                user_input = self._read_user_input()
             except (KeyboardInterrupt, EOFError):
                 self._print_goodbye()
                 break
@@ -261,9 +308,18 @@ class CLIInterface:
                         f"\n❌ Fehler bei der Verarbeitung: {e}",
                         style="bold red"
                     )
+                    # Realer Fund (Backlog-Bestandsaufnahme): mehrere "blocked"-Tickets trugen nur
+                    # str(e)[:200] als detail - z.B. bloß "sequence item 0: expected str instance,
+                    # NoneType found", OHNE Traceback. Ohne den ist nachträglich nicht mehr
+                    # rekonstruierbar, WELCHE Zeile den Fehler auslöste - der Fund war praktisch
+                    # unbehebbar, sobald die Sitzung vorbei war. Jetzt wird der volle Traceback
+                    # (gedeckelt, wie MAX_FAILURE_DETAIL_CHARS in core/project_status.py) mit
+                    # gespeichert, damit ein künftiger Wiederholungsfall tatsächlich diagnostizierbar
+                    # bleibt statt erneut nur die nackte Exception-Nachricht zu hinterlassen.
+                    tb = traceback.format_exc()[-1000:]
                     upsert_ticket(
                         ticket_id=ticket_id, title=user_input[:80], source="cli",
-                        status="blocked", detail=str(e)[:200],
+                        status="blocked", detail=f"{e}\n\n{tb}"[:1200],
                     )
                     return
             finally:
@@ -431,6 +487,18 @@ class CLIInterface:
             "Code NICHT bestätigt bestanden (siehe Verifikations-Protokoll im Ergebnis oben)."
             if not verification_ok else ""
         )
+        # Realer Fund: Rückfragen (core/agent_toolbox.py.ask_human_for_clarification) passierten
+        # bisher nur VOR dem Start - eine mitten in der Aufgabe aufgetretene Blockade blieb im
+        # Push-Gate unsichtbar, obwohl genau HIER die letzte Chance ist, sie vor einem Commit/PR
+        # zu bemerken. Getrennt von verification_note: ein fehlgeschlagener Test und eine offene
+        # fachliche Rückfrage sind unterschiedliche Gründe, nicht blind zu vertrauen.
+        needs_human_input = getattr(self._orchestrator, "last_needs_human_input", False)
+        clarification_questions = getattr(self._orchestrator, "last_clarification_questions", [])
+        clarification_note = (
+            "\n\n[bold cyan]❓ Offene Rückfrage(n):[/bold cyan]\n"
+            + "\n".join(f"  • {q}" for q in clarification_questions)
+            if needs_human_input else ""
+        )
 
         console.print(
             Panel(
@@ -443,15 +511,18 @@ class CLIInterface:
                     + f"\n\n[bold]Geplante Commit-Message:[/bold]\n  {commit_msg}"
                     + branch_note
                     + verification_note
+                    + clarification_note
                     + secret_note
                 ),
                 title="🔀 GitHub-Agent: Vorschau vor Commit & Push",
-                border_style="red" if secret_findings else ("cyan" if verification_ok else "yellow"),
+                border_style="red" if secret_findings else ("cyan" if (verification_ok and not needs_human_input) else "yellow"),
             )
         )
         try:
             if secret_findings:
                 prompt = "🔑 Trotz möglicher Secret-Funde (siehe oben) wirklich committen und pushen?"
+            elif needs_human_input:
+                prompt = "Trotz offener Rückfrage(n) (siehe oben) committen und pushen?"
             elif verification_ok:
                 prompt = "Möchtest du, dass ich GENAU DIESE Änderungen committe und auf GitHub pushe?"
             else:
@@ -485,10 +556,42 @@ class CLIInterface:
             if success_p:
                 if use_pr_workflow:
                     console.print(f"🚀 [bold green]Feature-Branch `{feature_branch}` gepusht.[/bold green]")
+                    # Realer Fund am Pong-Projekt: der PR-Titel/Body trug bisher UNTER KEINEN
+                    # UMSTÄNDEN einen Hinweis auf den Verifikationsstatus - nur das Terminal
+                    # (verification_note oben) warnte, aber genau das sieht ein Reviewer auf
+                    # GitHub nie. Ein PR, dessen echte Testsuite nie bestätigt bestanden hat,
+                    # bekommt jetzt einen unübersehbaren Titel-Präfix, das vollständige
+                    # Verifikations-Protokoll im Body UND wird als Draft angelegt (github_agent.
+                    # create_pull_request(draft=...)) - "noch nicht mergebereit" ist damit für
+                    # GitHub selbst sichtbar, nicht nur im Fließtext, den man überlesen kann.
+                    # needs_human_input reiht sich hier als ZWEITER, unabhängiger Grund für
+                    # denselben Titel-Präfix/Draft-Mechanismus ein - eine offene Rückfrage ist
+                    # kein Testfehler, verdient aber dieselbe Behandlung ("nicht blind mergen").
+                    title_prefixes = []
+                    if needs_human_input:
+                        title_prefixes.append("❓ [RÜCKFRAGE]")
+                    if not verification_ok:
+                        title_prefixes.append("⚠️ [UNVERIFIZIERT]")
+                    pr_title = f"{' '.join(title_prefixes)} {commit_msg}" if title_prefixes else commit_msg
+                    verification_summary = getattr(self._orchestrator, "last_verification_summary", "") or ""
+                    pr_body = f"Automatisch erstellt vom KI-Softwareentwickler-Team.\n\nAufgabe: {task_summary}"
+                    if needs_human_input:
+                        pr_body += (
+                            "\n\n---\n\n❓ **Offene Rückfrage(n):** Mindestens eine Fachrolle hat NICHT "
+                            "geraten, sondern gezielt nachgefragt - bitte beantworten:\n"
+                            + "\n".join(f"- {q}" for q in clarification_questions)
+                        )
+                    if not verification_ok:
+                        pr_body += (
+                            "\n\n---\n\n⚠️ **Nicht verifiziert:** Die echte Testsuite hat diesen Code NICHT "
+                            "bestätigt bestanden - vor dem Merge manuell prüfen.\n\n"
+                            f"{verification_summary}"
+                        )
                     success_pr, pr_out = github_agent.create_pull_request(
-                        title=commit_msg,
-                        body=f"Automatisch erstellt vom KI-Softwareentwickler-Team.\n\nAufgabe: {task_summary}",
+                        title=pr_title,
+                        body=pr_body,
                         base=base_branch, head=feature_branch,
+                        draft=not verification_ok or needs_human_input,
                     )
                     if success_pr:
                         pr_url = pr_out.splitlines()[-1] if pr_out else pr_out
@@ -503,7 +606,16 @@ class CLIInterface:
                 else:
                     console.print("🚀 [bold green]Änderungen erfolgreich auf GitHub gepusht![/bold green]")
                     ticket_status = "done"
-                await self._report_ci_status(github_agent)
+                # Realer Fund: das CI-Ergebnis wurde bisher nur angezeigt, nie ausgewertet - ein
+                # eröffneter PR/Direct-Push blieb im Backlog auf "review"/"done" stehen, selbst
+                # wenn die echte CI-Pipeline danach tatsächlich rot wurde. Rote CI zieht den
+                # Ticket-Status jetzt auf "blocked" (braucht menschliche Aufmerksamkeit), bevor
+                # jemand versehentlich einen kaputten PR mergt. "passed"/"timeout"/"no_run"
+                # ändern nichts am bisherigen Verhalten.
+                ci_status, ci_detail = await self._report_ci_status(github_agent)
+                if ci_status == "failed":
+                    ticket_status = "blocked"
+                    ticket_detail = f"{ticket_detail} | CI fehlgeschlagen: {ci_detail}" if ticket_detail else f"CI fehlgeschlagen: {ci_detail}"
             else:
                 console.print(f"⚠️ Push nicht abgeschlossen: {out_p}", style="yellow")
                 ticket_detail = out_p
@@ -526,12 +638,16 @@ class CLIInterface:
         # abgezweigt) einen neuen Feature-Branch anlegt statt fälschlich direkt auf diesen
         # Leftover-Branch zu committen.
 
-    async def _report_ci_status(self, github_agent) -> None:
+    async def _report_ci_status(self, github_agent) -> tuple[str, str]:
         """
         Wartet auf die echte CI-Pipeline (.github/workflows/ci.yml, läuft bei jedem Push) und
         meldet das tatsächliche Ergebnis – realer Fund: push() war bisher "fire and forget",
         ob CI tatsächlich grün wurde, hat das Team nie erfahren. Ein `no_run`-Ergebnis (kein
         `gh` verfügbar, kein GitHub-Remote, ...) ist dabei kein Fehler, nur nicht prüfbar.
+
+        Gibt (status, detail) zurück – zweiter realer Fund: das Ergebnis wurde bisher nur
+        angezeigt, nie ausgewertet. _ask_for_git_push() nutzt es jetzt, um den Backlog-Ticket-
+        Status bei roter CI auf "blocked" zu ziehen, statt bei "review"/"done" stehen zu bleiben.
         """
         branch = github_agent.get_current_branch()
         console.print(f"🔄 [dim]Warte auf CI-Status für `{branch}` (max. 90s)...[/dim]")
@@ -540,6 +656,7 @@ class CLIInterface:
             console.print(f"✅ [bold green]CI grün:[/bold green] {detail}")
         elif status == "failed":
             console.print(f"❌ [bold red]CI fehlgeschlagen:[/bold red] {detail}", style="red")
+            await asyncio.to_thread(notify_external, "CI fehlgeschlagen", f"Branch `{branch}`: {detail}")
         elif status == "timeout":
             console.print(f"⏳ [yellow]{detail}[/yellow] – prüfe den Status später manuell.")
         else:  # "no_run"
@@ -706,6 +823,81 @@ class CLIInterface:
             "💡 [dim]Eine falsche/überholte Regel entfernen: `/delete-learning <agent> <nr>`[/dim]"
         )
 
+    def _show_optimization_report(self) -> None:
+        """
+        Zeigt core/optimization_advisor.py auf Abruf an - dieselbe datenbasierte Analyse, die
+        auch automatisch am Ende jedes Laufs angehängt wird (nur dort leer, wenn nichts
+        Auffälliges gefunden wurde), hier jederzeit ohne einen neuen Lauf abrufbar. Rein
+        informativ, ändert nichts an config.py.
+        """
+        from core.optimization_advisor import analyze, format_report_for_humans
+
+        report = analyze()
+        if report.is_empty():
+            console.print(
+                "📭 Aktuell keine auffälligen Optimierungspotenziale erkannt (zu wenig Historie "
+                "oder alle Agenten performen vergleichbar - siehe MIN_SAMPLE_SIZE/MIN_SUCCESS_RATE_GAP "
+                "in core/optimization_advisor.py).",
+                style="dim",
+            )
+            return
+        console.print(Panel(Markdown(format_report_for_humans(report)), title="🔧 Selbstoptimierungs-Vorschläge", border_style="cyan"))
+
+    async def _run_goal_loop_command(self, args: list[str]) -> None:
+        """
+        Startet den autonomen Ziel- und Feedback-Loop (/goal, /autoloop).
+        Arbeitet in aufeinanderfolgenden Iterationen weiter, bis das Ziel erreicht
+        und die Verifikation (Tests) grün ist.
+        """
+        from core.goal_loop import GoalLoopRunner
+
+        max_iterations = 5
+        goal_parts = []
+        if args and args[0].isdigit():
+            max_iterations = int(args[0])
+            goal_parts = args[1:]
+        else:
+            goal_parts = args
+
+        goal_text = " ".join(goal_parts).strip()
+        if not goal_text:
+            if self._loaded_project_dir:
+                proj_name = Path(self._loaded_project_dir).name
+                goal_text = f"Vervollständige die Entwicklung von {proj_name}, behebe alle offenen Test- und Schnittstellenfehler und stelle sicher, dass alle Tests grün sind."
+                console.print(f"🎯 [cyan]Kein separates Ziel angegeben – nutze geladenes Projekt `{proj_name}`:[/cyan]\n  '{goal_text}'\n")
+            else:
+                console.print(
+                    "⚠️ Bitte gib ein Ziel für den autonomen Loop an:\n"
+                    "👉 `/goal [max_runden] <Zielbeschreibung>` (z. B. `/goal Baue ein vollständiges Dashboard mit Tests`)",
+                    style="yellow"
+                )
+                return
+
+        runner = GoalLoopRunner(orchestrator=self._orchestrator)
+        original_sigint = self._install_cancel_handler()
+        try:
+            res = await runner.run(
+                goal=goal_text,
+                project_dir=self._loaded_project_dir,
+                max_iterations=max_iterations,
+                status_callback=lambda msg: console.print(msg),
+                cancel_requested=self._cancel_event.is_set,
+            )
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+
+        console.print()
+        console.print(
+            Panel(
+                Markdown(res.format_summary()),
+                title="[bold green]🎯 Autonomer Ziel-Loop: Abschlussbericht[/bold green]",
+                border_style="green" if res.success else "yellow",
+                padding=(1, 2),
+            )
+        )
+        if res.success:
+            await self._ask_for_git_push(f"feat: {goal_text[:60]}")
+
     async def _show_backlog(self) -> None:
         """
         Zeigt memory/backlog.json (core/backlog_store.py) - alle Tickets über CLI, Dashboard
@@ -727,17 +919,58 @@ class CLIInterface:
             console.print("📭 Noch keine Tickets im Backlog (memory/backlog.json ist leer).", style="dim")
             return
 
+        if BACKLOG_WIP_LIMIT_IN_PROGRESS > 0:
+            in_progress_count = count_by_status("in_progress")
+            if in_progress_count > BACKLOG_WIP_LIMIT_IN_PROGRESS:
+                console.print(
+                    f"⚠️ [bold yellow]WIP-Limit überschritten:[/bold yellow] {in_progress_count} Tickets "
+                    f"gleichzeitig 'in_progress' (Limit: {BACKLOG_WIP_LIMIT_IN_PROGRESS}) – laufende "
+                    "Arbeit erst abschließen, bevor Neues gestartet wird.", style="yellow",
+                )
+
         table = Table(title="🎫 Backlog / Kanban-Board", box=box.ROUNDED)
         table.add_column("Status", style="cyan")
+        table.add_column("Prio.", justify="center")
+        table.add_column("Schätzung", style="dim")
+        table.add_column("Epic", style="magenta")
         table.add_column("Quelle", style="dim")
         table.add_column("Titel")
         table.add_column("Details/Aktualisiert", style="dim")
 
         for status in STATUSES:
-            for ticket in [t for t in tickets if t.status == status]:
-                table.add_row(status, ticket.source, ticket.title, ticket.detail or ticket.updated_at)
+            # Innerhalb einer Spalte nach Priorität sortiert (1=hoch zuerst) - macht sichtbar,
+            # woran als Nächstes gearbeitet werden sollte, statt nur chronologisch.
+            in_column = sorted((t for t in tickets if t.status == status), key=lambda t: t.priority)
+            for ticket in in_column:
+                title = ticket.title
+                # Sichtbar machen, WARUM ein "todo"-Ticket noch nicht angefasst werden kann,
+                # bevor core/backlog_worker.py es eigenständig aufgreift - genau die "niemals
+                # stumm überspringen"-Linie wie is_ticket_ready() selbst schon verfolgt.
+                if status == "todo" and ticket.depends_on:
+                    ready, blocking = is_ticket_ready(ticket, tickets)
+                    if not ready:
+                        title = f"🔗 {title} [dim](wartet auf: {', '.join(blocking)})[/dim]"
+                table.add_row(
+                    status, _PRIORITY_ICONS.get(ticket.priority, str(ticket.priority)), ticket.estimate,
+                    ticket.epic, ticket.source, title, ticket.detail or ticket.updated_at,
+                )
 
         console.print(table)
+
+    def _add_backlog_ticket(self, title: str, priority_arg: str | None) -> None:
+        """
+        Legt manuell ein neues, noch nicht begonnenes Ticket im Status "todo" an (Sprint-/
+        Kapazitäts-Planung: bisher entstand JEDES Ticket erst, wenn eine Aufgabe bereits lief
+        (`_process_task()` legt sofort "in_progress" an) - es gab keine Möglichkeit, mehrere
+        geplante Aufgaben VORAB zu priorisieren, bevor das Team sie tatsächlich angeht. Führt
+        selbst nichts aus – ein "todo"-Ticket wird erst zu echter Arbeit, wenn du die
+        Aufgabe regulär in den Chat schreibst (genau wie core/pr_review_watcher.py bereits
+        "todo"-Tickets aus PR-Kommentaren anlegt, ohne sie automatisch abzuarbeiten).
+        """
+        priority = _PRIORITY_LABELS.get((priority_arg or "").strip().lower(), 2)
+
+        ticket = upsert_ticket(ticket_id=new_ticket_id("cli"), title=title, source="cli", status="todo", priority=priority)
+        console.print(f"✅ [bold green]Ticket angelegt:[/bold green] `{ticket.title}` (Priorität: {_PRIORITY_ICONS[priority]}, Status: todo)")
 
     def _show_adrs(self, project_name: str | None) -> None:
         """
@@ -772,6 +1005,89 @@ class CLIInterface:
         for r in records:
             table.add_row(f"{r.number:04d}", r.status, r.title, str(r.path.relative_to(project_dir)))
         console.print(table)
+
+    def _show_project_state(self, project_name: str | None) -> None:
+        """
+        Zeigt den aktuellen State-Checkpoint (PROJECT_STATE.md) eines Projekts an –
+        kompakt, inklusive aller Kernkomponenten, letztem Verifikations-Status und nächsten Schritten.
+        """
+        from core.project_status import generate_project_state_md, read_project_state_md
+
+        project_dir = self._resolve_project_dir(project_name)
+        if project_dir is None:
+            if project_name:
+                console.print(f"⚠️ Projekt `{project_name}` existiert nicht in `workspace/`.", style="yellow")
+            else:
+                console.print(
+                    "⚠️ Kein Projekt angegeben und keines geladen. Nutze `/state <projekt>` "
+                    "oder lade zuerst eines mit `/load <projekt>`.",
+                    style="yellow",
+                )
+            return
+
+        state_md = read_project_state_md(str(project_dir))
+        if not state_md:
+            # Fallback: Live generieren
+            state_md = generate_project_state_md(str(project_dir))
+
+        console.print(
+            Panel(
+                Markdown(state_md),
+                title=f"📌 Projekt-Checkpoint: {project_dir.name}",
+                border_style="cyan",
+                padding=(1, 2),
+            )
+        )
+
+    def _show_team_health(self) -> None:
+        """
+        Zeigt einen projektübergreifenden Health-Rollup (core/team_health.py) über ALLE
+        Projekte in workspace/ - macht sichtbar, welche Projekte gerade "rot" sind, seit wann,
+        und ob mehrere Projekte an DERSELBEN Fehlerkategorie scheitern (z.B. ein gemeinsam
+        kaputter Frontend-Baustein). Bisher musste dafür jedes .ai_team_status.json einzeln
+        von Hand gelesen werden.
+        """
+        from config import WORKSPACE_DIR
+        from core.team_health import build_team_health_rollup
+
+        rollup = build_team_health_rollup(WORKSPACE_DIR)
+        if not rollup.projects:
+            console.print(
+                "📭 Noch keine Projekte mit protokollierter Lauf-Historie in `workspace/` gefunden.",
+                style="dim",
+            )
+            return
+
+        status_icons = {
+            "ok": "✅", "failed": "⚠️", "budget_aborted": "🚫", "cancelled": "⏹️", "unknown": "❔",
+        }
+
+        table = Table(title="🩺 Team-Health-Rollup (alle Projekte)", box=box.ROUNDED)
+        table.add_column("Status")
+        table.add_column("Projekt", style="cyan")
+        table.add_column("Seit wann rot", justify="center")
+        table.add_column("Kategorie", style="magenta")
+        table.add_column("Letzter Lauf", style="dim")
+        table.add_column("Kurzfehler", style="dim")
+
+        for p in rollup.projects:
+            icon = status_icons.get(p.status, "❔")
+            streak = f"{p.red_streak} Lauf/Läufe in Folge" if p.red_streak else "-"
+            short_error = (p.failure_detail or "").splitlines()[0][:80] if p.failure_detail else ""
+            table.add_row(
+                icon, p.name, streak, p.failure_category or "-",
+                f"{p.timestamp}\n{p.task_summary}", short_error,
+            )
+
+        console.print(table)
+
+        if rollup.shared_patterns:
+            lines = ["🔗 [bold]Erkannte gemeinsame Fehlermuster:[/bold]"]
+            for category, names in rollup.shared_patterns.items():
+                lines.append(f"  • [bold]{category}[/bold]: {len(names)} Projekte betroffen ({', '.join(names)})")
+            console.print(Panel("\n".join(lines), border_style="yellow"))
+        else:
+            console.print("ℹ️ Kein gemeinsames Fehlermuster über mehrere Projekte hinweg erkannt.", style="dim")
 
     async def _delete_learning_with_confirmation(self, agent_id: str, index_str: str) -> None:
         """Entfernt eine einzelne gelernte Regel - IRREVERSIBEL, mit Bestätigung analog zu
@@ -875,6 +1191,67 @@ class CLIInterface:
         write_constitution(project_dir, updated)
         console.print(f"✅ [bold green]Projekt-Konstitution für `{project_label}` gespeichert.[/bold green]")
 
+    def _resolve_design_system_target(self, project_arg: str | None) -> tuple[str | None, str | None]:
+        """Gibt (project_dir, error_message) zurück – dieselbe Existenzprüfung wie
+        _resolve_constitution_target, nur mit dem passenden Befehlshinweis in der Fehlermeldung."""
+        if project_arg:
+            exists = (
+                Path(project_arg).exists() if os.path.isabs(project_arg)
+                else project_arg in self._workspace.list_projects()
+            )
+            if not exists:
+                return None, f"⚠️ Projekt `{project_arg}` existiert nicht. Nutze `/projekte` zur Übersicht."
+            return str(self._workspace.get_project_dir(project_arg)), None
+        if self._loaded_project_dir:
+            return self._loaded_project_dir, None
+        return None, "⚠️ Kein Projekt angegeben und keines geladen. Nutze `/design-system <projekt>` oder lade zuerst eines mit `/load <name>`."
+
+    def _manage_design_system(self, project_arg: str | None) -> None:
+        """
+        Zeigt und bearbeitet das Projekt-Design-System (core/design_system.py) – feste
+        visuelle Präferenzen (Farbpalette, Typografie, Spacing-Skala, Komponenten-
+        Namenskonvention, Tonalität), die JEDEM künftigen Lauf an diesem Projekt als
+        verbindlicher Kontext mitgegeben werden – das Pendant zu /constitution, nur für
+        Design statt Tech-Stack.
+        """
+        from core.design_system import FIELDS, read_design_system, write_design_system
+
+        project_dir, error = self._resolve_design_system_target(project_arg)
+        if error:
+            console.print(error, style="yellow")
+            return
+
+        current = read_design_system(project_dir)
+        project_label = Path(project_dir).name
+
+        if current:
+            lines = [f"- **{FIELDS[k]}:** {v}" for k, v in current.items() if k in FIELDS]
+            console.print(Panel(Markdown("\n".join(lines)), title=f"🎨 Projekt-Design-System: {project_label}", border_style="magenta"))
+        else:
+            console.print(f"📭 Noch kein Design-System für `{project_label}` festgelegt.", style="dim")
+
+        try:
+            should_edit = Confirm.ask("Werte jetzt festlegen/bearbeiten?", default=not bool(current))
+        except Exception:
+            should_edit = False
+        if not should_edit:
+            return
+
+        console.print("[dim]Enter = aktuellen Wert behalten, '-' = Feld löschen.[/dim]")
+        updated = dict(current)
+        for key, label in FIELDS.items():
+            try:
+                value = Prompt.ask(label, default=current.get(key, ""))
+            except Exception:
+                break
+            if value.strip() == "-":
+                updated.pop(key, None)
+            elif value.strip():
+                updated[key] = value.strip()
+
+        write_design_system(project_dir, updated)
+        console.print(f"✅ [bold green]Design-System für `{project_label}` gespeichert.[/bold green]")
+
     async def _audit_project(self, target_path: str | None) -> None:
         """
         Lässt den project_cleaner-Agenten mit ECHTEM Lesezugriff (list_files/read_file/
@@ -950,6 +1327,42 @@ class CLIInterface:
         if failed:
             console.print(f"⚠️ {len(failed)} Pfad(e) übersprungen: {', '.join(failed)}", style="yellow")
 
+    def _prune_worktrees(self) -> None:
+        """
+        Räumt verwaiste, vom KI-Team angelegte Git-Isolations-Worktrees (siehe
+        core/git_isolation.py) auf: bereits gemergte oder seit 7+ Tagen inaktive Worktrees
+        werden entfernt (der aktuell aktive Worktree und alles mit ungemergten Änderungen
+        bleibt garantiert unangetastet).
+        """
+        from config import BASE_DIR
+        from core.git_isolation import find_git_root, prune_stale_worktrees
+
+        git_root = find_git_root(BASE_DIR)
+        if not git_root:
+            console.print("⚠️ Kein Git-Repository gefunden - nichts zum Aufräumen.", style="yellow")
+            return
+
+        console.print("🧹 [bold cyan]Prüfe auf verwaiste KI-Team-Worktrees...[/bold cyan]")
+        actions = prune_stale_worktrees(git_root)
+
+        if not actions:
+            console.print("✅ Keine verwaisten Worktrees gefunden.", style="green")
+            return
+
+        removed = [a for a in actions if a.action == "removed"]
+        skipped = [a for a in actions if a.action == "skipped"]
+
+        if removed:
+            lines = [f"  🗑️ {a.branch} ({a.path})\n     Grund: {a.reason}" for a in removed]
+            console.print(
+                Panel("\n".join(lines), title=f"Entfernt ({len(removed)})", border_style="green")
+            )
+        if skipped:
+            lines = [f"  ⏭️ {a.branch} ({a.path})\n     Grund: {a.reason}" for a in skipped]
+            console.print(
+                Panel("\n".join(lines), title=f"Übersprungen ({len(skipped)})", border_style="yellow")
+            )
+
     async def _handle_command(self, command: str) -> bool:
         """Verarbeitet CLI-Befehle."""
         parts = command.strip().split()
@@ -984,11 +1397,34 @@ class CLIInterface:
         elif cmd in ("/audit-projekt", "/audit", "/hygiene"):
             await self._audit_project(args[0] if args else None)
 
+        elif cmd in ("/prune-worktrees", "/worktrees-aufraeumen", "/cleanup-worktrees"):
+            self._prune_worktrees()
+
         elif cmd in ("/learnings", "/gelernt", "/knowledge"):
             self._show_learnings()
 
+        elif cmd in ("/optimize", "/optimierung", "/self-optimize"):
+            self._show_optimization_report()
+
         elif cmd in ("/backlog", "/board", "/kanban", "/tickets"):
             await self._show_backlog()
+
+        elif cmd in ("/backlog-add", "/plan"):
+            if not args:
+                console.print(
+                    "⚠️ Bitte gib einen Titel an: `/backlog-add [priorität] <titel>` "
+                    "(Priorität optional als erstes Wort: 1/hoch, 2/mittel, 3/niedrig)",
+                    style="yellow",
+                )
+                return False
+            # Priorität nur erkannt, wenn sie als ERSTES Wort steht UND noch ein Titel übrig
+            # bleibt - sonst würde ein Titel, der zufällig mit "hoch"/"1" beginnt, falsch
+            # als Prioritäts-Flag statt als Text interpretiert.
+            if args[0].lower() in _PRIORITY_LABELS and len(args) > 1:
+                priority_arg, title = args[0], " ".join(args[1:])
+            else:
+                priority_arg, title = None, " ".join(args)
+            self._add_backlog_ticket(title, priority_arg)
 
         elif cmd in ("/adr", "/adrs", "/entscheidungen"):
             self._show_adrs(args[0] if args else None)
@@ -1001,6 +1437,9 @@ class CLIInterface:
 
         elif cmd in ("/constitution", "/konstitution", "/techstack"):
             self._manage_constitution(args[0] if args else None)
+
+        elif cmd in ("/design-system", "/designsystem"):
+            self._manage_design_system(args[0] if args else None)
 
         elif cmd in ("/push", "/git"):
             await self._ask_for_git_push("manuelles Update")
@@ -1021,6 +1460,21 @@ class CLIInterface:
         elif cmd in ("/deploy-stop", "/undeploy"):
             await self._stop_deployment(args[0] if args else None)
 
+        elif cmd in ("/deploy-cloud", "/cloud-deploy"):
+            await self._deploy_cloud_with_confirmation(args)
+
+        elif cmd in ("/protect-branch", "/branch-protection"):
+            await self._protect_branch_with_confirmation(args[0] if args else None)
+
+        elif cmd in ("/state", "/checkpoint", "/status-projekt", "/status"):
+            self._show_project_state(args[0] if args else None)
+
+        elif cmd in ("/goal", "/autoloop", "/ziel", "/loop"):
+            await self._run_goal_loop_command(args)
+
+        elif cmd in ("/team-health", "/teamgesundheit", "/rollup"):
+            self._show_team_health()
+
         elif cmd in ("/load", "/laden", "/open", "/oeffnen", "/import"):
             if not args:
                 console.print("⚠️ Bitte gib den Pfad oder Namen des Projekts an:\n👉 `/load <pfad_oder_name>`", style="yellow")
@@ -1031,6 +1485,16 @@ class CLIInterface:
                 self._loaded_project_dir = str(self._workspace.get_project_dir(target_path))
                 self._orchestrator._history.add_user_message(f"Hier ist der bestehende Projektcode, den wir analysieren/erweitern:\n\n{ctx}")
                 console.print(f"✅ [bold green]Projekt erfolgreich geladen:[/bold green] `{target_path}` ({len(ctx)} Zeichen analysiert).")
+                
+                # Checkpoint-Vorschau anzeigen, falls vorhanden (spart Tokens und gibt sofort Überblick)
+                from core.project_status import read_project_state_md
+                state_preview = read_project_state_md(self._loaded_project_dir)
+                if state_preview:
+                    console.print("📌 [dim]Aktueller Projekt-Checkpoint gefunden (Details mit `/state`):[/dim]")
+                    # Zeige erste 5 Zeilen des Checkpoints als Vorschau
+                    preview_lines = [line for line in state_preview.splitlines() if line.strip()][:5]
+                    console.print(Panel("\n".join(preview_lines), title="📌 Checkpoint-Zusammenfassung", border_style="dim cyan"))
+                
                 console.print("💡 Du kannst deinem Team jetzt Aufgaben zu diesem Projekt stellen (z. B. *'Refaktoriere die App und füge Tests hinzu'*).", style="dim")
             else:
                 console.print(f"⚠️ Konnte keine relevanten Quellcodedateien unter `{target_path}` finden.", style="yellow")
@@ -1192,6 +1656,90 @@ class CLIInterface:
         else:
             console.print(f"❌ [bold red]Deployment fehlgeschlagen:[/bold red]\n{result.output}", style="red")
 
+    async def _deploy_cloud_with_confirmation(self, args: list[str]) -> None:
+        """
+        Deployt ein Projekt in die Cloud (core/cloud_deployment.py: Fly.io/Vercel echt per CLI,
+        Render/Railway als vorbereitete Manifeste - siehe dort für die Begründung) - mit
+        Vorschau + Bestätigung, analog zu /deploy (core/deployment.py, LOKALES Docker-
+        Deployment). Realer Fund: CloudDeploymentManager existierte bereits vollständig fertig
+        implementiert, war aber nirgends in CLI/Dashboard verdrahtet - README behauptete "CLI
+        & Dashboard können per echtem Deploy-Befehl eine Preview-URL bereitstellen", was schlicht
+        nicht stimmte.
+
+        Syntax: /deploy-cloud <fly|vercel|render|railway> [projekt] [--real]
+        Standard (ohne --real) ist ein Dry-Run (nur Manifeste generieren, kein echter Deploy) -
+        dieselbe "sicherer Default"-Linie wie an anderer Stelle im Projekt (z.B.
+        MAX_RUN_TOKENS=0), da ein echter Cloud-Deploy reale, öffentlich erreichbare Ressourcen
+        anlegt.
+        """
+        if not args:
+            console.print(
+                "⚠️ Bitte gib einen Provider an: `/deploy-cloud <fly|vercel|render|railway> [projekt] [--real]`",
+                style="yellow",
+            )
+            return
+        provider = args[0].lower()
+        if provider not in ("fly", "vercel", "render", "railway"):
+            console.print(f"⚠️ Unbekannter Provider `{provider}`. Erlaubt: fly, vercel, render, railway.", style="yellow")
+            return
+        real_deploy = "--real" in args
+        remaining = [a for a in args[1:] if a != "--real"]
+        project_name = remaining[0] if remaining else None
+
+        project_dir = self._resolve_project_dir(project_name)
+        if project_dir is None:
+            if project_name:
+                console.print(f"⚠️ Projekt `{project_name}` existiert nicht in `workspace/`.", style="yellow")
+            else:
+                console.print(
+                    "⚠️ Kein Projekt angegeben und keines geladen. Nutze `/deploy-cloud <provider> <projekt>` "
+                    "oder lade zuerst eines mit `/load <projekt>`.", style="yellow",
+                )
+            return
+
+        from core.cloud_deployment import CloudDeploymentManager
+
+        manager = CloudDeploymentManager(project_dir)
+        mode_note = "ECHTER Deploy-Versuch" if real_deploy else "Dry-Run (nur Manifeste generieren, kein echter Deploy)"
+        console.print(
+            Panel(
+                f"[bold]Projekt:[/bold] `{project_dir}`\n[bold]Provider:[/bold] {provider}\n[bold]Modus:[/bold] {mode_note}",
+                title="☁️ Cloud-Deployment: Vorschau",
+                border_style="cyan",
+            )
+        )
+        try:
+            should_deploy = Confirm.ask(
+                "Wirklich fortfahren?" + (" (echter Deploy-Befehl, kann mehrere Minuten dauern)" if real_deploy else ""),
+                default=False,
+            )
+        except Exception:
+            should_deploy = False
+        if not should_deploy:
+            console.print("↩️ Cloud-Deployment übersprungen.", style="dim")
+            return
+
+        console.print("☁️ [dim]Deploye...[/dim]")
+        # asyncio.to_thread: deploy() ist blockierend (echte Subprozesse bei fly/vercel) -
+        # direkt im Event-Loop aufgerufen würde es die Live-Anzeige/den Strg+C-Handler einfrieren.
+        result = await asyncio.to_thread(manager.deploy, provider, not real_deploy)
+
+        if not result.attempted:
+            console.print(f"⚠️ {result.reason_skipped}", style="yellow")
+        elif result.success:
+            console.print(f"✅ [bold green]Cloud-Deployment ({result.provider}) erfolgreich:[/bold green]\n  🌐 {result.preview_url}")
+            if result.generated_files:
+                console.print(f"📄 [dim]Generierte Manifeste: {', '.join(result.generated_files)}[/dim]")
+            if real_deploy:
+                # Nur ein ECHTER, erfolgreicher Deploy wird überwacht (core/production_monitor.py)
+                # - eine Dry-Run-URL wurde nie wirklich deployt, ein Health-Check dagegen würde
+                # nur falsche "nicht erreichbar"-Alarme für etwas erzeugen, das nie live war.
+                from core.deployment_status import record_deployment
+                record_deployment(project_dir, provider=result.provider, url=result.preview_url)
+                console.print("💡 [dim]`python main.py --check-deployments` überwacht diese URL künftig automatisch.[/dim]")
+        else:
+            console.print(f"❌ [bold red]Cloud-Deployment fehlgeschlagen:[/bold red]\n{result.output}", style="red")
+
     async def _stop_deployment(self, project_name: str | None) -> None:
         """Fährt ein per /deploy gestartetes Deployment wieder herunter."""
         project_dir = self._resolve_project_dir(project_name)
@@ -1213,6 +1761,52 @@ class CLIInterface:
             console.print("⏹️ [bold green]Deployment gestoppt.[/bold green]")
         else:
             console.print(f"❌ Stoppen fehlgeschlagen:\n{result.output}", style="red")
+
+    async def _protect_branch_with_confirmation(self, branch: str | None) -> None:
+        """
+        Aktiviert echte GitHub-Branch-Protection (agents/github_agent.py.set_branch_protection())
+        für `branch` (Standard: der erste konfigurierte GIT_PROTECTED_BRANCHES-Eintrag, i.d.R.
+        "main") – mit Vorschau + Bestätigung, analog zu /deploy: eine Änderung an den
+        Repo-Einstellungen selbst über die GitHub-API ist ein bewusster, schwer beiläufig
+        rückgängig zu machender Schritt, verdient dieselbe Bestätigungs-Gate-Philosophie statt
+        stillschweigend loszulaufen. Realer struktureller Fund: der PR-Workflow verhindert nur,
+        dass DIESES Tool direkt auf den Hauptbranch pusht – ohne dieses Kommando könnte ein
+        Mensch (oder ein anderes Tool) weiterhin `git push origin main` direkt ausführen.
+        """
+        target_branch = branch or (GIT_PROTECTED_BRANCHES[0] if GIT_PROTECTED_BRANCHES else "main")
+        github_agent = self._orchestrator._agents.get("github")
+        if github_agent is None or not github_agent.gh_ready():
+            console.print(
+                "⚠️ `gh`-CLI nicht installiert/nicht eingeloggt – Branch-Protection kann nicht "
+                "gesetzt werden. Prüfe `gh auth status`.", style="yellow",
+            )
+            return
+
+        console.print(
+            Panel(
+                f"[bold]Branch:[/bold] `{target_branch}`\n"
+                f"[bold]Pflicht-Freigaben vor Merge:[/bold] {BRANCH_PROTECTION_REQUIRED_REVIEWS}\n"
+                "[bold]Zusätzlich:[/bold] kein Force-Push, keine Branch-Löschung, gilt auch für Repo-Admins.\n"
+                "[dim]Erfordert Admin-Rechte auf dem Repo (die aktuelle `gh`-Anmeldung).[/dim]",
+                title="🔒 Branch-Protection: Vorschau",
+                border_style="cyan",
+            )
+        )
+        try:
+            should_apply = Confirm.ask(f"Branch-Protection für `{target_branch}` wirklich aktivieren?", default=False)
+        except Exception:
+            should_apply = False
+        if not should_apply:
+            console.print("↩️ Übersprungen.", style="dim")
+            return
+
+        success, output = await asyncio.to_thread(
+            github_agent.set_branch_protection, target_branch, BRANCH_PROTECTION_REQUIRED_REVIEWS,
+        )
+        if success:
+            console.print(f"✅ [bold green]Branch-Protection für `{target_branch}` aktiviert.[/bold green]")
+        else:
+            console.print(f"❌ [bold red]Fehlgeschlagen:[/bold red]\n{output}", style="red")
 
     def _render_status_panel(self, lines: list[str]) -> Panel:
         if not lines:

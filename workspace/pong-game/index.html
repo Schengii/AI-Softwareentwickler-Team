@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pong Spiel</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="game-container">
+        <div id="ui-layer">
+            <div id="loading-screen" class="screen"><h1>Laden...</h1></div>
+            <div id="start-screen" class="screen hidden">
+                <h1>Pong</h1>
+                <p>Anleitung: Bewege den Schläger mit der Maus.</p>
+                <button id="start-btn">Starten</button>
+            </div>
+            <div id="game-ui" class="hidden">
+                <div id="scoreboard">Spieler: <span id="player-score">0</span> | KI: <span id="ai-score">0</span></div>
+                <div id="timer">Zeit: <span id="time">0</span>s</div>
+            </div>
+            <div id="win-screen" class="screen hidden">
+                <h1 id="win-message">Gewonnen!</h1>
+                <button onclick="location.reload()">Neu starten</button>
+            </div>
+        </div>
+        <canvas id="pongCanvas" width="800" height="400"></canvas>
+    </div>
+    <script type="module" src="game.js"></script>
+</body>
+</html>

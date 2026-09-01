@@ -10,3 +10,39 @@ ruff>=0.16.3,<0.17.0
 # LLM-basierten Einschätzung des security-Agenten). Ohne installiertes pip-audit wird dieser
 # Scan pro Projekt übersprungen (attempted=False), kein Fehler - siehe DependencyAuditReport.
 pip-audit>=2.7.0
+
+# Echte Testabdeckungs-Messung für generierte Python-Projekte (core/verifier.py.check_coverage)
+pytest-cov>=4.1.0
+
+# playwright selbst ist jetzt eine Laufzeit-Abhängigkeit (siehe requirements.txt) - hier
+# nur noch axe-core-python, das für Barrierefreiheits-Scans zusätzlich Playwright braucht.
+
+# core/verifier.py.check_sast() nutzt `bandit`, um generierten Python-Code echt statisch auf
+# bekannte Schwachstellenmuster zu scannen (hartcodierte Secrets, unsichere Deserialisierung,
+# SQL-Injection-Vektoren, …) - statt einer rein LLM-basierten Einschätzung des
+# security-Agenten. Ohne installiertes bandit wird dieser Scan übersprungen (attempted=False),
+# kein Fehler - siehe SastReport.
+bandit>=1.7.0
+
+# core/verifier.py.check_licenses() nutzt `pip-licenses`, um die Lizenzen der tatsächlich in
+# einem generierten Python-Projekt installierten Pakete echt auszulesen - statt einer rein
+# LLM-basierten (geratenen) Lizenz-Tabelle des compliance-Agenten. Untergrenze 4.0.0: erst ab
+# dieser Version existiert --python zum gezielten Prüfen der isolierten Projekt-venv statt der
+# Framework-eigenen Umgebung. Ohne installiertes pip-licenses wird dieser Scan übersprungen
+# (attempted=False), kein Fehler - siehe LicenseAuditReport.
+pip-licenses>=4.0.0
+
+# core/verifier.py.check_load_test() führt vom performance-Agenten geschriebene Locust-
+# Lastentest-Skripte (tests/load/locustfile.py) echt gegen die gestartete generierte App aus -
+# statt sie ungeprüft im Projekt liegen zu lassen. Ohne installiertes locust wird dieser Check
+# übersprungen (attempted=False), kein Fehler - siehe PerfCheckReport. k6 (die Alternative für
+# *.js-Lastentest-Skripte) ist KEIN pip-Paket und muss separat installiert werden
+# (https://k6.io/docs/get-started/installation/) - genau wie docker bei check_docker_build().
+locust>=2.20.0
+
+# core/browser_verifier.py.verify_accessibility() nutzt `axe-core-python`, um generierte
+# Web-Frontends echt per axe-core (WCAG 2.x) auf Barrierefreiheits-Verstöße zu scannen - statt
+# einer rein LLM-basierten Einschätzung des accessibility-Agenten. Braucht zusätzlich Playwright
+# (bereits oben) für eine echt gerenderte Seite. Ohne installiertes axe-core-python wird dieser
+# Scan übersprungen (attempted=False), kein Fehler - siehe AccessibilityReport.
+axe-core-python>=0.1.0

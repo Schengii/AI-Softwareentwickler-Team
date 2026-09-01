@@ -26,7 +26,96 @@ def main():
     config.ISSUE_TRIGGER_LABEL und beendet sich danach wieder – gedacht für einen externen
     Aufruf per Cron/Windows-Taskplaner/GitHub-Actions-Schedule (siehe core/issue_watcher.py),
     kein eingebauter Dauer-Scheduler.
+    Mit `--work-backlog` läuft EIN Poll-Zyklus über bereits im Backlog wartende, abhängigkeits-
+    freie "todo"-Tickets (siehe core/backlog_worker.py) – das Team wartet dabei NICHT auf einen
+    externen Trigger (Issue-Label), sondern greift eigenständig priorisierte Arbeit auf, die
+    z.B. per `/backlog-add` vorgemerkt wurde.
+    Mit `--check-deployments` läuft EIN Poll-Zyklus, der jedes per `/deploy-cloud` deployte
+    Projekt auf echte Erreichbarkeit prüft und bei einem Ausfall automatisch ein Backlog-Ticket
+    eröffnet (siehe core/production_monitor.py) – dasselbe On-Call-Prinzip wie oben, nur für
+    bereits live laufende Deployments statt für offene Aufgaben.
+    Mit `--eval [--tasks t1,t2]` startet die kanonische Benchmark-Evaluierungs-Suite
+    (siehe evals/), misst Token-Verbrauch, Dauer und Verifikationsergebnis und speichert
+    die Ergebnisse in der Benchmark-Historie. Mit `--list-evals` werden alle verfügbaren
+    Benchmark-Aufgaben aufgelistet.
+    Mit `--audit-workspace` läuft EIN Poll-Zyklus, der ProjectVerifier.run_tests() erneut gegen
+    JEDES vorhandene Workspace-Projekt ausführt (unabhängig von aktiver Entwicklung) und bei
+    einem echten Fehlschlag ein Backlog-Ticket öffnet (siehe core/workspace_audit.py) – dasselbe
+    On-Call-Prinzip wie `--check-dependencies`, nur für Verifikations-Drift statt neuer CVEs.
     """
+    if "--list-evals" in sys.argv:
+        from evals.tasks import list_tasks
+        print("🎯 Verfügbare Benchmark-Aufgaben:")
+        for t in list_tasks():
+            print(f"  - {t.slug:<20} [{t.category:<8}] {t.name}: {t.description}")
+        return
+
+    if "--eval" in sys.argv:
+        import asyncio
+
+        from evals.runner import run_benchmark
+
+        tasks_filter = None
+        if "--tasks" in sys.argv:
+            try:
+                tasks_raw = sys.argv[sys.argv.index("--tasks") + 1]
+                tasks_filter = [t.strip() for t in tasks_raw.split(",") if t.strip()]
+            except IndexError:
+                pass
+
+        print("🚀 Starte KI-Team Benchmark-Suite...")
+        suite_res = asyncio.run(run_benchmark(task_slugs=tasks_filter, status_callback=print))
+        print("\n" + suite_res.format_terminal_table())
+        return
+
+    if "--check-dependencies" in sys.argv:
+        import asyncio
+
+        from core.dependency_watch import run_dependency_watch_cycle
+
+        report = asyncio.run(run_dependency_watch_cycle(status_callback=print))
+        if report.scanned_projects == 0:
+            print("ℹ️  Keine Projekte im Workspace gefunden.")
+        elif not report.results:
+            print(f"✅ {report.scanned_projects} Projekt(e) geprüft – keine bekannten Schwachstellen gefunden.")
+        else:
+            for r in report.results:
+                print(f"🔓 {r.project_name}: {r.detail}")
+        return
+
+    if "--audit-workspace" in sys.argv:
+        import asyncio
+
+        from core.workspace_audit import run_workspace_audit_cycle
+
+        report = asyncio.run(run_workspace_audit_cycle(status_callback=print))
+        if report.scanned_projects == 0:
+            print("ℹ️  Keine Projekte im Workspace gefunden.")
+        else:
+            failed = [r for r in report.results if not r.healthy]
+            print(f"📋 {report.scanned_projects} Projekt(e) erneut geprüft.")
+            if not failed:
+                print("✅ Alle Projekte weiterhin verifiziert.")
+            else:
+                for r in failed:
+                    print(f"❌ {r.project_name}: {r.detail}")
+        return
+
+    if "--check-pr-reviews" in sys.argv:
+        import asyncio
+
+        from core.pr_review_watcher import run_pr_review_cycle
+
+        report = asyncio.run(run_pr_review_cycle(status_callback=print))
+        if not report.gh_available:
+            print("ℹ️  `gh`-CLI nicht installiert/nicht authentifiziert – PR-Review-Check übersprungen.")
+        else:
+            if report.created_ticket_ids:
+                print(f"📥 {len(report.created_ticket_ids)} neues PR-Review Feedback Ticket(s) erstellt: {', '.join(report.created_ticket_ids)}")
+            else:
+                print(f"✅ {report.scanned_prs} offene(r) PR(s) geprüft – kein neues Review-Feedback gefunden.")
+        return
+
     if "--check-issues" in sys.argv:
         import asyncio
 
@@ -44,6 +133,75 @@ def main():
                 for r in report.results:
                     detail = f" – {r.detail}" if r.detail else ""
                     print(f"#{r.issue_number} '{r.title}' -> {r.outcome}{detail}")
+        return
+
+    if "--work-backlog" in sys.argv:
+        import asyncio
+
+        from core.backlog_worker import run_backlog_poll_cycle
+
+        report = asyncio.run(run_backlog_poll_cycle(status_callback=print))
+        if report.merged_ticket_ids:
+            print(f"🔀 {len(report.merged_ticket_ids)} Backlog-Ticket(s) auf gemergte PRs aktualisiert: {', '.join(report.merged_ticket_ids)}")
+        if report.skipped_reason:
+            print(f"ℹ️  {report.skipped_reason}")
+        for r in report.results:
+            detail = f" – {r.detail}" if r.detail else ""
+            print(f"`{r.ticket_id}` '{r.title}' -> {r.outcome}{detail}")
+        return
+
+    if "--check-deployments" in sys.argv:
+        import asyncio
+
+        from core.production_monitor import run_deployment_health_check_cycle
+
+        report = asyncio.run(run_deployment_health_check_cycle(status_callback=print))
+        if not report.checked:
+            print("ℹ️  Keine überwachten Deployments gefunden (siehe `/deploy-cloud`).")
+        else:
+            for r in report.checked:
+                print(f"{'✅' if r.healthy else '❌'} {r.project_slug} ({r.url}): {r.detail}")
+        return
+
+    if "--goal" in sys.argv:
+        import asyncio
+        from pathlib import Path
+
+        from config import WORKSPACE_DIR
+        from core.goal_loop import run_goal_loop
+
+        try:
+            goal_idx = sys.argv.index("--goal") + 1
+            goal_text = sys.argv[goal_idx]
+        except IndexError:
+            print("❌ Fehler: Bitte gib ein Ziel nach `--goal` an (z. B. `python main.py --goal \"Baue eine Notiz-API\"`).")
+            return
+
+        max_iterations = 5
+        if "--max-iterations" in sys.argv:
+            try:
+                max_iterations = int(sys.argv[sys.argv.index("--max-iterations") + 1])
+            except (IndexError, ValueError):
+                pass
+
+        project_dir = None
+        if "--project" in sys.argv:
+            try:
+                proj_name = sys.argv[sys.argv.index("--project") + 1]
+                project_dir = str(Path(WORKSPACE_DIR) / proj_name)
+            except IndexError:
+                pass
+
+        print(f"🎯 Starte autonomen Ziel-Loop: '{goal_text}' (max. {max_iterations} Iterationen)...")
+        res = asyncio.run(
+            run_goal_loop(
+                goal=goal_text,
+                project_dir=project_dir,
+                max_iterations=max_iterations,
+                status_callback=print,
+            )
+        )
+        print("\n" + res.format_summary())
         return
 
     if "--dashboard" in sys.argv:

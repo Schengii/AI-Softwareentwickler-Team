@@ -60,6 +60,11 @@ class TestDashboardConcurrency(unittest.TestCase):
         cls.release.set()  # falls noch ein Job hängt - Server sauber beenden können
         cls.httpd.shutdown()
         cls.thread.join(timeout=2)
+        # Ohne dies liefe der interne Event-Loop-Thread von DashboardServer (siehe
+        # DashboardServer.shutdown()-Docstring) als daemon-Thread unbegrenzt weiter - bei
+        # mehreren Testdateien mit demselben Muster in derselben `unittest discover`-Suite
+        # führte das reproduzierbar zu einem minutenlangen Hänger der vollen Suite.
+        cls.server_state.shutdown()
         cls._process_patcher.stop()
         cls._backlog_patcher.stop()
 

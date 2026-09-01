@@ -121,9 +121,63 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "required": ["title", "context", "decision", "consequences"],
         },
     },
+    {
+        "name": "ask_human_for_clarification",
+        "description": (
+            "Meldet, dass ein echter, für die Aufgabe ENTSCHEIDENDER Punkt unklar ist, den nur ein Mensch "
+            "sinnvoll beantworten kann (z.B. eine Geschäftsregel, die im Auftrag fehlt, oder ein Widerspruch "
+            "zwischen Anforderung und bestehendem Code). NICHT für Dinge, die du selbst sinnvoll entscheiden "
+            "kannst (übliche technische Defaults, Namenskonventionen) - dafür entscheide selbst und dokumentiere "
+            "es ggf. über record_architecture_decision. Nutze dies SELTEN, nur bei echter Blockade. Nach dem "
+            "Aufruf beendest du deine Antwort trotzdem mit einer ehrlichen Zusammenfassung: was du bereits "
+            "erledigt hast und was durch diese Rückfrage offen bleibt - kein stilles Abbrechen."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "Die konkrete Frage an den Menschen, präzise genug, um sie ohne Rückfrage beantworten zu können"},
+                "context": {"type": "string", "description": "Warum diese Frage die Aufgabe blockiert und was du bereits versucht/angenommen hast"},
+            },
+            "required": ["question"],
+        },
+    },
+    {
+        "name": "find_symbol_definition",
+        "description": "Findet die exakte AST-Definition (Klasse, Funktion, Methode) eines Code-Symbols im gesamten Projektverzeichnis.",
+        "parameters": {
+            "type": "object",
+            "properties": {"symbol_name": {"type": "string", "description": "Name der gesuchten Klasse/Funktion/Methode, z.B. 'User' oder 'get_user'"}},
+            "required": ["symbol_name"],
+        },
+    },
+    {
+        "name": "find_symbol_references",
+        "description": "Findet alle Aufrufe, Imports, Verwendungen und Ableitungen eines Symbols über alle Dateien des Projekts hinweg.",
+        "parameters": {
+            "type": "object",
+            "properties": {"symbol_name": {"type": "string", "description": "Name des Symbols"}},
+            "required": ["symbol_name"],
+        },
+    },
+    {
+        "name": "analyze_code_impact",
+        "description": "Führt eine Auswirkungsanalyse durch: Zeigt welche Dateien, Aufrufer und Module von einer Änderung an 'symbol_name' betroffen sind.",
+        "parameters": {
+            "type": "object",
+            "properties": {"symbol_name": {"type": "string", "description": "Name des zu modifizierenden Symbols"}},
+            "required": ["symbol_name"],
+        },
+    },
 ]
 
-READ_ONLY_TOOL_NAMES = {"read_file", "list_files", "search_code"}
+READ_ONLY_TOOL_NAMES = {
+    "read_file", "list_files", "search_code",
+    "find_symbol_definition", "find_symbol_references", "analyze_code_impact",
+    # ask_human_for_clarification verändert kein Projekt-Dateisystem (reine Aufzeichnung, siehe
+    # _tool_ask_human_for_clarification) - auch ein NUR-LESE-Agent (z.B. eine reine Review-
+    # Rolle) muss auf eine echte Blockade hinweisen können, nicht nur schreibende Rollen.
+    "ask_human_for_clarification",
+}
 
 
 class ToolExecutionError(Exception):
@@ -172,6 +226,10 @@ class AgentToolbox:
         self.files_written: set[str] = set()
         self.call_count = 0
         self.call_log: list[dict[str, Any]] = []
+        # Gefüllt von _tool_ask_human_for_clarification() - agents/base_agent.py liest das nach
+        # dem Loop-Ende zurück in AgentResult.clarification_questions (dasselbe Muster wie
+        # files_written oben).
+        self.clarification_requests: list[str] = []
 
     async def list_files_snapshot(self, subdir: str = "") -> list[str]:
         """Wie das `list_files`-Werkzeug, aber OHNE call_count/call_log zu erhöhen – für einen
@@ -373,20 +431,97 @@ class AgentToolbox:
             "reason_skipped": report.reason_skipped,
         }
 
+    # ── Eskalations-Werkzeug ──────────────────────────────────────────
+
+    async def _tool_ask_human_for_clarification(self, question: str, context: str = "") -> dict:
+        if not (question or "").strip():
+            return {"error": "'question' darf nicht leer sein."}
+        entry = question.strip() if not context.strip() else f"{question.strip()} (Kontext: {context.strip()})"
+        self.clarification_requests.append(entry)
+        return {
+            "status": "recorded",
+            "note": (
+                "Rückfrage aufgezeichnet - ein Mensch sieht sie, sobald dieser Lauf abgeschlossen ist. "
+                "Beende deine Antwort JETZT mit einer ehrlichen, kurzen Zusammenfassung: was bereits "
+                "erledigt ist und was durch diese Frage offen bleibt."
+            ),
+        }
+
     # ── Dokumentations-Werkzeug ──────────────────────────────────────
 
     async def _tool_record_architecture_decision(
         self, title: str, context: str, decision: str, consequences: str,
     ) -> dict:
-        from core.adr import write_adr
+        from core.adr import find_near_duplicate_adr, write_adr
 
         if not (title or "").strip():
             return {"error": "'title' darf nicht leer sein."}
+
+        duplicate = find_near_duplicate_adr(self.project_dir, title)
+        if duplicate is not None:
+            return {
+                "error": (
+                    f"ADR-{duplicate.number:04d} ('{duplicate.title}') dokumentiert bereits eine sehr "
+                    f"ähnliche Entscheidung - lies sie per read_file('{duplicate.path.relative_to(self.project_dir)}') "
+                    "und ergänze/aktualisiere diese ADR statt eine neue, fast identische anzulegen. Falls es "
+                    "wirklich eine andere Entscheidung ist, wähle einen klar unterscheidbaren Titel."
+                ),
+            }
 
         path = write_adr(self.project_dir, title=title, context=context, decision=decision, consequences=consequences)
         clean_rel = str(path.relative_to(self.project_dir)).replace("\\", "/")
         self.files_written.add(clean_rel)
         return {"path": clean_rel, "status": "ok"}
+
+    # ── Code-Knowledge-Graph Werkzeuge ───────────────────────────────
+
+    async def _tool_find_symbol_definition(self, symbol_name: str) -> dict:
+        import asyncio
+
+        from core.code_graph import CodebaseGraph
+
+        graph = await asyncio.to_thread(CodebaseGraph, self.project_dir)
+        nodes = graph.find_definition(symbol_name)
+        if not nodes:
+            return {"found": False, "note": f"Symbol '{symbol_name}' nicht im Projekt-Index gefunden."}
+        return {
+            "found": True,
+            "definitions": [
+                {
+                    "name": n.name,
+                    "kind": n.kind,
+                    "file_path": n.file_path,
+                    "line_number": n.line_number,
+                    "signature": n.signature,
+                    "docstring": n.docstring[:200] if n.docstring else "",
+                }
+                for n in nodes
+            ],
+        }
+
+    async def _tool_find_symbol_references(self, symbol_name: str) -> dict:
+        import asyncio
+
+        from core.code_graph import CodebaseGraph
+
+        graph = await asyncio.to_thread(CodebaseGraph, self.project_dir)
+        refs = graph.find_references(symbol_name)
+        return {"symbol": symbol_name, "references_count": len(refs), "references": refs[:25]}
+
+    async def _tool_analyze_code_impact(self, symbol_name: str) -> dict:
+        import asyncio
+
+        from core.code_graph import CodebaseGraph
+
+        graph = await asyncio.to_thread(CodebaseGraph, self.project_dir)
+        impact = graph.analyze_impact(symbol_name)
+        return {
+            "symbol": impact.symbol_name,
+            "defining_file": impact.defining_file,
+            "referencing_files": impact.referencing_files,
+            "calling_symbols": impact.calling_symbols,
+            "imported_in": impact.imported_in,
+        }
 
     @staticmethod
     def _split_command(command: str) -> list[str]:

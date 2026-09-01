@@ -16,10 +16,12 @@ import asyncio
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import agents.orchestrator.budget as orch_budget_module
 from agents.orchestrator import Orchestrator
+from core import team_memory
 from core.message_bus import AgentResult
 from core.token_guard import TokenGuard
 from core.workspace import WorkspaceManager
@@ -57,8 +59,14 @@ class TestPermissionBlockedClarificationFix(unittest.TestCase):
         self.orchestrator._workspace = WorkspaceManager(self.temp_workspace)
         for agent in list(self.orchestrator._agents.values()) + list(self.orchestrator._dept_leads.values()):
             agent._llm = _FakeToolCapableLLM()
+        # record_lesson() (core/team_memory.py) schreibt sonst in die ECHTE, repo-weite
+        # memory/team_lessons.jsonl - hier auf eine Wegwerfdatei umgeleitet, damit Testläufe
+        # nicht versehentlich echte Team-Lektionen mit Fake-Testdaten verunreinigen.
+        self._team_memory_patch = patch.object(team_memory, "TEAM_MEMORY_FILE", Path(self.temp_workspace) / "team_lessons.jsonl")
+        self._team_memory_patch.start()
 
     def tearDown(self):
+        self._team_memory_patch.stop()
         shutil.rmtree(self.temp_workspace, ignore_errors=True)
 
     def test_permission_blocked_question_dispatches_fix_to_file_owner(self):
@@ -149,6 +157,82 @@ class TestPermissionBlockedClarificationFix(unittest.TestCase):
         self.assertFalse(cancelled)
         self.assertEqual(summary, "")
         self.assertEqual(security_result.clarification_questions, [PERMISSION_BLOCKED_QUESTION])
+
+    def test_unconfirmed_fix_opens_backlog_ticket(self):
+        # Punkt 4 einer Team-Retrospektive: security (der ursprünglich blockierte Agent) prüft
+        # den Fix read-only nach - meldet er weiterhin "Kritisch", wird ein Backlog-Ticket eröffnet
+        # statt den Fix-Dispatch ungeprüft als erledigt zu behandeln.
+        self.orchestrator._agents["security"]._llm = _FakeToolCapableLLM(
+            text="### 🔴 Kritische Probleme (müssen behoben werden)\nCORS weiterhin offen."
+        )
+        security_result = AgentResult(
+            task_id="t2", agent_id="security", agent_name="Security", success=True,
+            content="Sicherheitsreview durchgeführt.",
+            needs_human_input=True, clarification_questions=[PERMISSION_BLOCKED_QUESTION],
+        )
+
+        with patch("agents.orchestrator.verification.upsert_ticket") as mock_ticket:
+            results, summary, budget_aborted, cancelled = asyncio.run(
+                self.orchestrator._run_permission_blocked_clarification_fix(
+                    project_dir=self.temp_workspace,
+                    all_results=[security_result],
+                    file_owners={"app/main.py": "backend"},
+                    notify=lambda msg: None,
+                )
+            )
+
+        self.assertIn("Re-Review bestätigt den Fix NICHT", summary)
+        mock_ticket.assert_called_once()
+        self.assertIn("unresolved-permission-blocked-", mock_ticket.call_args.kwargs["ticket_id"])
+
+    def test_confirmed_fix_reports_success_without_ticket(self):
+        self.orchestrator._agents["security"]._llm = _FakeToolCapableLLM(text="Alles behoben.")
+        security_result = AgentResult(
+            task_id="t2", agent_id="security", agent_name="Security", success=True,
+            content="Sicherheitsreview durchgeführt.",
+            needs_human_input=True, clarification_questions=[PERMISSION_BLOCKED_QUESTION],
+        )
+
+        with patch("agents.orchestrator.verification.upsert_ticket") as mock_ticket:
+            results, summary, budget_aborted, cancelled = asyncio.run(
+                self.orchestrator._run_permission_blocked_clarification_fix(
+                    project_dir=self.temp_workspace,
+                    all_results=[security_result],
+                    file_owners={"app/main.py": "backend"},
+                    notify=lambda msg: None,
+                )
+            )
+
+        self.assertIn("Re-Review bestätigt: Fix erfolgreich", summary)
+        mock_ticket.assert_not_called()
+
+    def test_oversized_fix_task_warns_and_skips_reverification(self):
+        self.orchestrator._agents["backend"]._llm = _FakeToolCapableLLM(text="Fertig.")
+        security_result = AgentResult(
+            task_id="t2", agent_id="security", agent_name="Security", success=True,
+            content="Sicherheitsreview durchgeführt.",
+            needs_human_input=True, clarification_questions=[PERMISSION_BLOCKED_QUESTION],
+        )
+
+        async def _oversized_run(agent_tasks, notify=None):
+            return [AgentResult(
+                task_id=agent_tasks[0].task_id, agent_id="backend", agent_name="Backend",
+                success=True, content="Fix versucht.", total_tokens=999_999,
+            )]
+
+        with patch.object(self.orchestrator, "_run_agents_parallel", side_effect=_oversized_run), \
+             patch("agents.orchestrator.verification.MAX_TASK_TOKENS", 100):
+            results, summary, budget_aborted, cancelled = asyncio.run(
+                self.orchestrator._run_permission_blocked_clarification_fix(
+                    project_dir=self.temp_workspace,
+                    all_results=[security_result],
+                    file_owners={"app/main.py": "backend"},
+                    notify=lambda msg: None,
+                )
+            )
+
+        self.assertIn("Pro-Task-Budget", summary)
+        self.assertNotIn("Re-Review", summary)
 
 
 if __name__ == "__main__":

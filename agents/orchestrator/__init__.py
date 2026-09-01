@@ -44,6 +44,7 @@ unverändert nutzbar – siehe Re-Exports unten.
 
 import asyncio
 import time
+import uuid
 from collections.abc import Callable
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -99,6 +100,7 @@ from config import (
 )
 from core.adr import format_adr_summary_for_context
 from core.backlog_store import upsert_ticket
+from core.decision_log import log_decision
 from core.design_system import format_design_system_for_agents
 from core.git_isolation import (
     GitIsolationError,
@@ -106,6 +108,7 @@ from core.git_isolation import (
     find_git_root,
     has_uncommitted_changes,
 )
+from core.message_bus import AgentTask
 from core.notifier import notify_external
 from core.optimization_advisor import analyze as analyze_optimization_potential
 from core.optimization_advisor import format_report_for_humans as format_optimization_report
@@ -120,6 +123,7 @@ from core.project_status import (
 )
 from core.result_aggregator import ResultAggregator
 from core.task_manager import TaskManager
+from core.team_memory import format_team_lessons_for_agents, record_lesson
 from core.token_guard import token_guard
 from core.workspace import WorkspaceManager
 from memory.conversation_history import ConversationHistory
@@ -471,6 +475,41 @@ class Orchestrator(
                 f"Verifikations-Bericht lesen – wiederholt sich derselbe Fehler?"
             )
 
+            # Härteres Gate als der reine Hinweis oben (Punkt 1 einer Team-Retrospektive): eine
+            # Prompt-Warnung allein verhindert nicht zuverlässig, dass derselbe Fachbereich mit
+            # demselben Ansatz einfach nochmal loslegt. Ab 2 Fehlschlägen in Folge wird architect
+            # deshalb DETERMINISTISCH (kein LLM-Entscheid, kein Verlass darauf, dass das Modell
+            # die Prompt-Warnung tatsächlich befolgt) als zusätzliche, erste Teilaufgabe
+            # eingeplant - NUR falls architect nicht ohnehin schon Teil des Plans ist. architect
+            # bekommt den zuletzt dokumentierten Fehler direkt mit, statt ihn erst selbst suchen
+            # zu müssen.
+            if agent_tasks and "architect" not in {t.agent_id for t in agent_tasks}:
+                last_detail = next(
+                    (e.get("failure_detail") for e in read_status(project_dir) if e.get("failure_detail")), ""
+                )
+                notify(
+                    "  🧭 [bold yellow]architect wird zusätzlich eingeplant[/bold yellow] – nach wiederholtem "
+                    "Scheitern reicht ein weiterer Versuch derselben Fachbereiche nicht: architect prüft "
+                    "zuerst gezielt die Ursache, bevor der Rest des Teams erneut denselben Ansatz wiederholt."
+                )
+                agent_tasks.insert(0, AgentTask(
+                    task_id=str(uuid.uuid4())[:8],
+                    agent_id="architect",
+                    description=(
+                        "Wiederholtes Scheitern an diesem Projekt (mindestens 2 Läufe in Folge ohne "
+                        "bestandene Verifikation). Analysiere GEZIELT die Ursache des letzten "
+                        "Fehlschlags und liefere eine konkrete technische Root-Cause-Einschätzung samt "
+                        "empfohlener Architektur-/Vorgehensänderung, BEVOR die übrigen Fachbereiche "
+                        "erneut denselben Ansatz wiederholen."
+                        + (f"\n\nLetzter dokumentierter Fehler:\n```\n{last_detail}\n```" if last_detail else "")
+                    ),
+                    context=user_request[:1500],
+                ))
+                log_decision(
+                    project_dir, "architect_forced_reescalation",
+                    f"{consecutive_failures} Läufe in Folge ohne bestandene Verifikation – architect zusätzlich eingeplant.",
+                )
+
         # Pro-Projekt-Kostenbudget (siehe __init__): MAX_RUN_TOKENS begrenzt nur DIESEN einen
         # Lauf - ein Projekt mit vielen aufeinanderfolgenden Läufen (z.B. für einen externen
         # Auftraggeber mit festem Kostenrahmen) hatte bisher kein Limit über ALLE Läufe hinweg.
@@ -499,6 +538,14 @@ class Orchestrator(
         # dass der letzte Lauf am Lauf-Budget abgebrochen wurde, statt das nur aus den rohen
         # Quelldateien zu erraten. Leer für ein brandneues Projekt (kein unnötiger Prompt-Text).
         project_history_context = format_context_for_agents(project_dir)
+
+        # Team-weites, projektübergreifendes Lessons-Learned-Gedächtnis (core/team_memory.py,
+        # Punkt 3 einer Team-Retrospektive): anders als project_history_context oben (nur DIESES
+        # Projekts Lauf-Historie) fasst dies Muster aus Backlog-Ticket-würdigen Vorfällen AN
+        # BELIEBIGEN Projekten zusammen - ein neues, brandaktuelles Projekt profitiert so direkt
+        # von Fehlern, die frühere, völlig andere Projekte bereits gemacht haben. Leer, solange
+        # noch keine Lektion je aufgezeichnet wurde (kein unnötiger Prompt-Text im Normalfall).
+        team_lessons_context = format_team_lessons_for_agents()
 
         # Projekt-Konstitution (core/project_constitution.py): feste Tech-Stack-Präferenzen,
         # die der Nutzer einmal per /constitution festlegt (Sprache, Framework, Test-Framework,
@@ -533,6 +580,8 @@ class Orchestrator(
                 t.context += f"\n\n{design_system_context}"
             if project_history_context:
                 t.context += f"\n\n{project_history_context}"
+            if team_lessons_context:
+                t.context += f"\n\n{team_lessons_context}"
             if adr_context:
                 t.context += f"\n\n{adr_context}"
 
@@ -646,6 +695,7 @@ class Orchestrator(
                 f"- 🚫 Übersprungen: {reason}."
             )
             verification_ok = False
+            log_decision(project_dir, "budget_or_cancel_aborted", reason)
         else:
             results, verification_summary, budget_aborted, manually_cancelled, verification_ok = await self._run_verification_loop(
                 project_dir=project_dir,
@@ -700,6 +750,15 @@ class Orchestrator(
                     )
                 except Exception as e:
                     notify(f"⚠️ [dim yellow]Ticket für wiederkehrenden Fehler konnte nicht angelegt werden: {e}[/dim yellow]")
+                # Projektübergreifendes Lessons-Learned-Gedächtnis (Punkt 3 einer Team-
+                # Retrospektive, core/team_memory.py): derselbe Moment, der ein Backlog-Ticket
+                # auslöst, ist ein starkes Signal für ein Muster, das auch AN ANDEREN Projekten
+                # wieder auftreten kann - best-effort, darf den Lauf nie zum Absturz bringen.
+                record_lesson(
+                    project_slug=self.last_project_slug, category="recurring_failure",
+                    detail=verification_summary.strip()[:300],
+                )
+                log_decision(project_dir, "recurring_failure_ticket_opened", verification_summary.strip()[:300])
 
         # Projekt-Hygiene: automatisch regenerierbare Caches (__pycache__, .pytest_cache, …),
         # die die echte Testausführung gerade erzeugt hat, physisch entfernen. Bewusst OHNE

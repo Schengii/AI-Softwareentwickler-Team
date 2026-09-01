@@ -1,0 +1,66 @@
+"""
+tests/test_team_memory.py – Testet core/team_memory.py (Punkt 3 einer Team-Retrospektive):
+projektübergreifendes Lessons-Learned-Gedächtnis, das Muster aus mehreren, unabhängigen
+Projekten in EINER repo-weiten Datei sammelt und in den Kontext künftiger Läufe einspeist.
+"""
+
+import unittest
+from unittest.mock import patch
+
+from core import team_memory
+
+
+class TestTeamMemory(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = None
+
+    def _use_temp_file(self, tmp_path):
+        return patch.object(team_memory, "TEAM_MEMORY_FILE", tmp_path)
+
+    def test_read_without_any_recorded_lesson_returns_empty(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            fake_file = Path(d) / "does_not_exist.jsonl"
+            with self._use_temp_file(fake_file):
+                self.assertEqual(team_memory.read_team_lessons(), [])
+                self.assertEqual(team_memory.format_team_lessons_for_agents(), "")
+
+    def test_record_then_read_roundtrip_newest_first(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            fake_file = Path(d) / "team_lessons.jsonl"
+            with self._use_temp_file(fake_file):
+                team_memory.record_lesson("project_a", "recurring_failure", "Erster Fund.")
+                team_memory.record_lesson("project_b", "recurring_failure", "Zweiter Fund.")
+
+                lessons = team_memory.read_team_lessons()
+                self.assertEqual(len(lessons), 2)
+                self.assertEqual(lessons[0]["project_slug"], "project_b")
+                self.assertEqual(lessons[1]["project_slug"], "project_a")
+
+    def test_format_for_agents_includes_project_slug_and_detail(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            fake_file = Path(d) / "team_lessons.jsonl"
+            with self._use_temp_file(fake_file):
+                team_memory.record_lesson("cors_bug_proj", "recurring_failure", "CORS wiederholt vergessen.")
+                text = team_memory.format_team_lessons_for_agents()
+                self.assertIn("cors_bug_proj", text)
+                self.assertIn("CORS wiederholt vergessen.", text)
+
+    def test_record_lesson_never_raises_on_unwritable_path(self):
+        from pathlib import Path
+        # Ein Pfad, dessen Elternverzeichnis nicht angelegt werden kann (ungültiges Laufwerk) -
+        # record_lesson() ist best-effort und darf einen laufenden Team-Lauf nie zum Absturz bringen.
+        with self._use_temp_file(Path("Z:\\definitiv\\nicht\\vorhanden\\team_lessons.jsonl")):
+            try:
+                team_memory.record_lesson("x", "y", "z")
+            except OSError:
+                self.fail("record_lesson() darf niemals eine OSError durchreichen (best-effort).")
+
+
+if __name__ == "__main__":
+    unittest.main()

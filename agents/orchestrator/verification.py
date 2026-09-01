@@ -26,15 +26,19 @@ from config import (
     LOAD_TEST_DURATION_SECONDS,
     LOAD_TEST_TIMEOUT_SECONDS,
     MAX_REVIEW_ITERATIONS,
+    MAX_TASK_TOKENS,
     MAX_VERIFICATION_ITERATIONS,
     MIN_TEST_COVERAGE,
 )
+from core.backlog_store import upsert_ticket
+from core.decision_log import log_decision
 from core.message_bus import AgentResult, AgentTask
 from core.review_gate import (
     find_critical_findings,
     find_permission_blocked_questions,
     route_findings_to_owners,
 )
+from core.team_memory import record_lesson
 from core.verifier import ProjectVerifier, VerificationReport
 
 
@@ -237,6 +241,10 @@ class VerificationMixin:
                 ))
 
             notify(f"  🛠️ [bold yellow]Governance-Fix:[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())} mit {len(findings)} kritischem/kritischen Befund(en)...")
+            log_decision(
+                project_dir, "governance_fix_dispatched",
+                f"Versuch {attempt}: {len(findings)} kritische(r) Befund(e) → {', '.join(agents_to_fix.keys())}",
+            )
             fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
             self._update_file_owners(file_owners, fix_results)
             all_results.extend(fix_results)
@@ -247,8 +255,84 @@ class VerificationMixin:
                 f"nur die anschließende echte Testverifikation, nicht die qualitative Review-Aussage selbst)."
             )
 
+            # Proaktives Pro-Task-Budget (Punkt 2 einer Team-Retrospektive): ein einzelner
+            # ausufernder Fix-Task konnte bisher unbemerkt einen unverhältnismäßig großen Teil
+            # des GESAMTEN Lauf-Budgets verbrauchen, bevor spätere Fachbereiche überhaupt an der
+            # Reihe waren. Kein Abbruch mitten im laufenden Aufruf (technisch nicht sauber
+            # möglich), aber ein klares Warnsignal, das WEITERE Versuche für denselben Befund in
+            # dieser Schleife stoppt, statt ungebremst weiterzueskalieren.
+            oversized = [r for r in fix_results if MAX_TASK_TOKENS > 0 and r.total_tokens > MAX_TASK_TOKENS]
+            if oversized:
+                names = ", ".join(sorted({r.agent_id for r in oversized}))
+                notify(f"  🚫 [bold red]Pro-Task-Budget überschritten[/bold red] ({names}) – weitere Governance-Fixversuche für diesen Befund werden übersprungen.")
+                summary_lines.append(
+                    f"- 🚫 Pro-Task-Budget ({MAX_TASK_TOKENS:,} Tokens) von {names} überschritten – "
+                    f"Governance-Fix-Schleife nach Versuch {attempt} beendet, statt unbegrenzt weiter zu eskalieren."
+                )
+                break
+
             if attempt == MAX_REVIEW_ITERATIONS:
-                summary_lines.append(f"- ℹ️ Nach {MAX_REVIEW_ITERATIONS} Versuch(en) letzter Stand übernommen.")
+                # Verpflichtender Re-Review nach dem letzten Fix-Dispatch (Punkt 4 einer
+                # Team-Retrospektive): bisher wurde der Fix im letzten erlaubten Versuch NIE mehr
+                # gegengeprüft (nur Zwischen-Versuche liefen in eine erneute Runde mit Recheck
+                # oben) - ein Fix im finalen Versuch galt damit unbesehen als erledigt, selbst bei
+                # sicherheitskritischen Befunden. Ein einzelner, günstiger Nur-Lese-Recheck
+                # derselben Rollen schließt diese Lücke; bleibt der Befund bestehen, wird ein
+                # Backlog-Ticket für menschliche Prüfung eröffnet statt stillschweigend zu
+                # akzeptieren.
+                notify(f"  🔍 [yellow]Verpflichtender Re-Review nach Versuch {attempt}:[/yellow] prüft, ob der Fix tatsächlich griff...")
+                final_recheck_tasks = [
+                    AgentTask(
+                        task_id=f"governance_final_recheck_{agent_id}",
+                        agent_id=agent_id,
+                        description=(
+                            "Prüfe AUSSCHLIESSLICH, ob das zuvor gemeldete kritische Problem jetzt "
+                            "tatsächlich behoben ist. Melde erneut mit klarer Schweregrad-Markierung "
+                            "(\"Kritisch\"), falls es weiterhin besteht."
+                        ),
+                        context="", project_dir=project_dir, allow_tools=True, tools_read_only=True,
+                    )
+                    for agent_id in sorted(agents_to_fix.keys() & review_agent_ids)
+                ] or [
+                    AgentTask(
+                        task_id=f"governance_final_recheck_{agent_id}",
+                        agent_id=agent_id,
+                        description="Prüfe den aktuellen Stand des Projekts erneut auf kritische Probleme.",
+                        context="", project_dir=project_dir, allow_tools=True, tools_read_only=True,
+                    )
+                    for agent_id in sorted(review_agent_ids)
+                ]
+                final_recheck_results = await self._run_agents_parallel(final_recheck_tasks, notify=notify)
+                all_results.extend(final_recheck_results)
+                still_critical = [
+                    block for res in final_recheck_results if res.success and res.content
+                    for block in find_critical_findings(res.content)
+                ]
+                if still_critical:
+                    notify("  🛑 [bold red]Fix nicht bestätigt:[/bold red] Re-Review meldet weiterhin kritische Befunde – Backlog-Ticket für menschliche Prüfung eröffnet.")
+                    summary_lines.append(
+                        f"- 🛑 Nach {MAX_REVIEW_ITERATIONS} Versuch(en) bestätigt der Re-Review WEITERHIN "
+                        f"{len(still_critical)} kritische(n) Befund(e) – Backlog-Ticket eröffnet statt "
+                        "stillschweigend zu übernehmen."
+                    )
+                    try:
+                        upsert_ticket(
+                            ticket_id=f"unresolved-governance-critical-{getattr(self, 'last_project_slug', 'project')}",
+                            title=f"Ungelöster kritischer Governance-Befund: {getattr(self, 'last_project_slug', 'project')}",
+                            source="orchestrator", status="blocked",
+                            project_slug=getattr(self, "last_project_slug", "project"),
+                            detail="\n\n".join(still_critical)[:300],
+                        )
+                    except Exception as e:
+                        notify(f"⚠️ [dim yellow]Ticket für ungelösten Governance-Befund konnte nicht angelegt werden: {e}[/dim yellow]")
+                    record_lesson(
+                        project_slug=getattr(self, "last_project_slug", "project"),
+                        category="unresolved_governance_critical",
+                        detail="\n\n".join(still_critical)[:300],
+                    )
+                    log_decision(project_dir, "unresolved_governance_critical_ticket_opened", "\n\n".join(still_critical)[:300])
+                else:
+                    summary_lines.append(f"- ✅ Re-Review nach Versuch {attempt} bestätigt: keine kritischen Befunde mehr.")
 
         summary = (
             "### 🔍 Governance-Fix-Protokoll (kritische Review-Befunde)\n" + "\n".join(summary_lines)
@@ -329,6 +413,10 @@ class VerificationMixin:
                     context="", project_dir=project_dir,
                 ))
             notify(f"  🛠️ [bold yellow]Schreibgeschützt blockierte Rückfrage(n):[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())} mit {len(agents_to_fix)} Fund(en)...")
+            log_decision(
+                project_dir, "permission_blocked_fix_dispatched",
+                f"{len(agents_to_fix)} blockierte Rückfrage(n) → {', '.join(agents_to_fix.keys())}",
+            )
             fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
             self._update_file_owners(file_owners, fix_results)
             all_results.extend(fix_results)
@@ -338,6 +426,14 @@ class VerificationMixin:
                 f"Rückfrage mehr im Abschlussbericht)."
             )
 
+            # Dasselbe Pro-Task-Budget-Warnsignal wie in _run_governance_fix_loop oben (Punkt 2
+            # einer Team-Retrospektive) - auch hier kann ein einzelner Fix-Task ausufern.
+            oversized = [r for r in fix_results if MAX_TASK_TOKENS > 0 and r.total_tokens > MAX_TASK_TOKENS]
+            if oversized:
+                names = ", ".join(sorted({r.agent_id for r in oversized}))
+                notify(f"  🚫 [bold red]Pro-Task-Budget überschritten[/bold red] ({names}).")
+                summary_lines.append(f"- 🚫 Pro-Task-Budget ({MAX_TASK_TOKENS:,} Tokens) von {names} überschritten.")
+
             # Behobene Fragen aus dem Abschlussbericht entfernen (open_questions), damit sie nicht
             # trotz erfolgtem Fix als unbeantwortet im Status/PROJECT_STATE.md landen - eine echte
             # fachliche Rückfrage im selben Ergebnis (falls vorhanden) bleibt davon unberührt.
@@ -346,11 +442,66 @@ class VerificationMixin:
             # ohne eigene Owner-Neuberechnung feststellen, welche der ursprünglichen Fragen
             # tatsächlich geroutet (= gerade gefixt) statt unrouted geblieben sind.
             unrouted_set = set(unrouted)
+            fixed_raiser_ids: set[str] = set()
             for agent_id, q, res in blocked:
                 if f"[{agent_id}] {q.strip()}" in unrouted_set:
                     continue
                 if q in res.clarification_questions:
                     res.clarification_questions.remove(q)
+                    fixed_raiser_ids.add(res.agent_id)
+
+            # Verpflichtender Re-Review (Punkt 4 einer Team-Retrospektive, analog zum finalen
+            # Recheck in _run_governance_fix_loop): der ursprünglich blockierte Agent (z.B.
+            # security) prüft den nun schreibbaren Fix noch einmal read-only nach, statt den
+            # Fix-Dispatch ungeprüft als erledigt zu behandeln - genau die Lücke, die im echten
+            # omnichat-Fund dazu führte, dass niemand je bestätigte, ob CORS/Pydantic-v2
+            # tatsächlich behoben wurden.
+            if fixed_raiser_ids and not oversized:
+                notify(f"  🔍 [yellow]Verpflichtender Re-Review:[/yellow] {', '.join(sorted(fixed_raiser_ids))} prüft den Fix nach...")
+                recheck_tasks = [
+                    AgentTask(
+                        task_id=f"permission_blocked_recheck_{raiser_id}",
+                        agent_id=raiser_id,
+                        description=(
+                            "Prüfe, ob das von dir zuvor gemeldete Problem (das du mangels "
+                            "Schreibrechten nicht selbst beheben konntest) jetzt tatsächlich behoben "
+                            "ist. Melde mit klarer Schweregrad-Markierung (\"Kritisch\"), falls nicht."
+                        ),
+                        context="", project_dir=project_dir, allow_tools=True, tools_read_only=True,
+                    )
+                    for raiser_id in sorted(fixed_raiser_ids)
+                    if raiser_id in self._agents or raiser_id in self._dept_leads
+                ]
+                recheck_results = await self._run_agents_parallel(recheck_tasks, notify=notify)
+                all_results.extend(recheck_results)
+                still_critical = [
+                    block for res in recheck_results if res.success and res.content
+                    for block in find_critical_findings(res.content)
+                ]
+                if still_critical:
+                    notify("  🛑 [bold red]Fix nicht bestätigt:[/bold red] Re-Review meldet weiterhin ein kritisches Problem – Backlog-Ticket eröffnet.")
+                    summary_lines.append(
+                        f"- 🛑 Re-Review bestätigt den Fix NICHT – {len(still_critical)} weiterhin kritische(r) "
+                        "Befund(e). Backlog-Ticket für menschliche Prüfung eröffnet."
+                    )
+                    try:
+                        upsert_ticket(
+                            ticket_id=f"unresolved-permission-blocked-{getattr(self, 'last_project_slug', 'project')}",
+                            title=f"Ungelöster, zuvor schreibgeschützt blockierter Befund: {getattr(self, 'last_project_slug', 'project')}",
+                            source="orchestrator", status="blocked",
+                            project_slug=getattr(self, "last_project_slug", "project"),
+                            detail="\n\n".join(still_critical)[:300],
+                        )
+                    except Exception as e:
+                        notify(f"⚠️ [dim yellow]Ticket konnte nicht angelegt werden: {e}[/dim yellow]")
+                    record_lesson(
+                        project_slug=getattr(self, "last_project_slug", "project"),
+                        category="unresolved_permission_blocked_fix",
+                        detail="\n\n".join(still_critical)[:300],
+                    )
+                    log_decision(project_dir, "unresolved_permission_blocked_fix_ticket_opened", "\n\n".join(still_critical)[:300])
+                else:
+                    summary_lines.append("- ✅ Re-Review bestätigt: Fix erfolgreich.")
 
         summary = (
             "### 🔓 Fix-Protokoll (schreibgeschützt blockierte Rückfragen)\n" + "\n".join(summary_lines)

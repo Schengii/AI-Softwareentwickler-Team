@@ -278,6 +278,18 @@ ENABLE_GOVERNANCE_FIX_LOOP: bool = os.getenv("ENABLE_GOVERNANCE_FIX_LOOP", "true
 # ein "Kritisch" im Review potenziell schwerwiegender ist als ein rotes Unit-Test.
 MAX_REVIEW_ITERATIONS: int = int(os.getenv("MAX_REVIEW_ITERATIONS", "2"))
 
+# MAX_TASK_TOKENS: harte Obergrenze für den Token-Verbrauch EINER EINZELNEN Agenten-Teilaufgabe
+# (nicht des gesamten Laufs - siehe MAX_RUN_TOKENS in core/token_guard.py). Bisher gab es nur
+# ein Lauf-weites Budget: ein einzelner hängender/ausufernder Fix-Task (z.B. eine
+# Governance-Fix-Schleife, die an derselben Datei wiederholt viele Tool-Iterationen braucht)
+# konnte dadurch unbemerkt einen unverhältnismäßig großen Teil des GESAMTEN Lauf-Budgets
+# verbrauchen, bevor spätere, u.U. wichtigere Fachbereiche überhaupt an der Reihe waren.
+# 0 = deaktiviert (kein Task-Limit, nur das bestehende Lauf-Budget gilt). Absichtlich nur als
+# Warnsignal in den Fix-Schleifen verdrahtet (agents/orchestrator/verification.py), nicht als
+# harter Abbruch mitten in einem laufenden LLM-Aufruf (technisch nicht sauber möglich) - stoppt
+# aber zuverlässig WEITERE Fix-Versuche für denselben Befund in derselben Schleife.
+MAX_TASK_TOKENS: int = int(os.getenv("MAX_TASK_TOKENS", "40000"))
+
 # ──────────────────────────────────────────
 # Echtes lokales Deployment: Docker Compose (core/deployment.py, manuell per /deploy ausgelöst)
 # ──────────────────────────────────────────

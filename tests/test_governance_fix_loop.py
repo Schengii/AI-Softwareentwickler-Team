@@ -13,10 +13,12 @@ import asyncio
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import agents.orchestrator.budget as orch_budget_module
 from agents.orchestrator import Orchestrator
+from core import team_memory
 from core.llm_factory import LLMResponse, ToolCall
 from core.message_bus import AgentResult, AgentTask
 from core.token_guard import TokenGuard
@@ -99,8 +101,14 @@ class TestGovernanceFixLoop(unittest.TestCase):
         self.orchestrator._workspace = WorkspaceManager(self.temp_workspace)
         for agent in list(self.orchestrator._agents.values()) + list(self.orchestrator._dept_leads.values()):
             agent._llm = _FakeToolCapableLLM()
+        # record_lesson() (core/team_memory.py) schreibt sonst in die ECHTE, repo-weite
+        # memory/team_lessons.jsonl - hier auf eine Wegwerfdatei umgeleitet, damit Testläufe
+        # nicht versehentlich echte Team-Lektionen mit Fake-Testdaten verunreinigen.
+        self._team_memory_patch = patch.object(team_memory, "TEAM_MEMORY_FILE", Path(self.temp_workspace) / "team_lessons.jsonl")
+        self._team_memory_patch.start()
 
     def tearDown(self):
+        self._team_memory_patch.stop()
         shutil.rmtree(self.temp_workspace, ignore_errors=True)
 
     def _run(self, code_reviewer_text: str, backend_written_file: str = "backend/db.py"):

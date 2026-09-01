@@ -38,6 +38,10 @@ def main():
     (siehe evals/), misst Token-Verbrauch, Dauer und Verifikationsergebnis und speichert
     die Ergebnisse in der Benchmark-Historie. Mit `--list-evals` werden alle verfügbaren
     Benchmark-Aufgaben aufgelistet.
+    Mit `--audit-workspace` läuft EIN Poll-Zyklus, der ProjectVerifier.run_tests() erneut gegen
+    JEDES vorhandene Workspace-Projekt ausführt (unabhängig von aktiver Entwicklung) und bei
+    einem echten Fehlschlag ein Backlog-Ticket öffnet (siehe core/workspace_audit.py) – dasselbe
+    On-Call-Prinzip wie `--check-dependencies`, nur für Verifikations-Drift statt neuer CVEs.
     """
     if "--list-evals" in sys.argv:
         from evals.tasks import list_tasks
@@ -77,6 +81,24 @@ def main():
         else:
             for r in report.results:
                 print(f"🔓 {r.project_name}: {r.detail}")
+        return
+
+    if "--audit-workspace" in sys.argv:
+        import asyncio
+
+        from core.workspace_audit import run_workspace_audit_cycle
+
+        report = asyncio.run(run_workspace_audit_cycle(status_callback=print))
+        if report.scanned_projects == 0:
+            print("ℹ️  Keine Projekte im Workspace gefunden.")
+        else:
+            failed = [r for r in report.results if not r.healthy]
+            print(f"📋 {report.scanned_projects} Projekt(e) erneut geprüft.")
+            if not failed:
+                print("✅ Alle Projekte weiterhin verifiziert.")
+            else:
+                for r in failed:
+                    print(f"❌ {r.project_name}: {r.detail}")
         return
 
     if "--check-pr-reviews" in sys.argv:
@@ -139,6 +161,47 @@ def main():
         else:
             for r in report.checked:
                 print(f"{'✅' if r.healthy else '❌'} {r.project_slug} ({r.url}): {r.detail}")
+        return
+
+    if "--goal" in sys.argv:
+        import asyncio
+        from pathlib import Path
+
+        from config import WORKSPACE_DIR
+        from core.goal_loop import run_goal_loop
+
+        try:
+            goal_idx = sys.argv.index("--goal") + 1
+            goal_text = sys.argv[goal_idx]
+        except IndexError:
+            print("❌ Fehler: Bitte gib ein Ziel nach `--goal` an (z. B. `python main.py --goal \"Baue eine Notiz-API\"`).")
+            return
+
+        max_iterations = 5
+        if "--max-iterations" in sys.argv:
+            try:
+                max_iterations = int(sys.argv[sys.argv.index("--max-iterations") + 1])
+            except (IndexError, ValueError):
+                pass
+
+        project_dir = None
+        if "--project" in sys.argv:
+            try:
+                proj_name = sys.argv[sys.argv.index("--project") + 1]
+                project_dir = str(Path(WORKSPACE_DIR) / proj_name)
+            except IndexError:
+                pass
+
+        print(f"🎯 Starte autonomen Ziel-Loop: '{goal_text}' (max. {max_iterations} Iterationen)...")
+        res = asyncio.run(
+            run_goal_loop(
+                goal=goal_text,
+                project_dir=project_dir,
+                max_iterations=max_iterations,
+                status_callback=print,
+            )
+        )
+        print("\n" + res.format_summary())
         return
 
     if "--dashboard" in sys.argv:

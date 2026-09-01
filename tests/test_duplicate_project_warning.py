@@ -49,7 +49,7 @@ class TestDuplicateProjectWarning(unittest.TestCase):
         shutil.rmtree(self.temp_workspace, ignore_errors=True)
 
     def _run(self, new_slug: str):
-        @patch("agents.orchestrator.ProjectVerifier")
+        @patch("agents.orchestrator.verification.ProjectVerifier")
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")
         def _inner(mock_synthesize, mock_decompose, mock_verifier_cls):
@@ -84,6 +84,47 @@ class TestDuplicateProjectWarning(unittest.TestCase):
         (self.orchestrator._workspace.base_dir / "already_here").mkdir()
         logs = self._run("already_here")
         self.assertFalse(any("Neues Projekt" in line for line in logs))
+
+    def test_second_run_in_same_session_names_the_previous_project_slug(self):
+        """
+        Realer Fund aus einem echten Lauf: eine beim Einfügen zerrissene Nutzereingabe kam als
+        mehrere separate Prompts an, jeder ließ das Modell einen NEUEN project_slug für
+        praktisch dieselbe Aufgabe erraten ("fastapi_task_websocket" dann "fastapi-task-mgmt")
+        - INNERHALB derselben Sitzung/desselben Orchestrator-Objekts. Die generische
+        "Bereits vorhanden: ..."-Liste allein macht das eigene Vorprojekt DIESER Sitzung nicht
+        besonders kenntlich. Ein zweiter process()-Aufruf auf demselben Orchestrator muss jetzt
+        explizit auf self.last_project_slug (vom ERSTEN Aufruf) hinweisen.
+        """
+        self._run("erstes_projekt")
+        self.assertEqual(self.orchestrator.last_project_slug, "erstes_projekt")
+
+        logs = self._run("zweites_projekt")
+        self.assertTrue(
+            any("erstes_projekt" in line and "DIESER Sitzung" in line for line in logs),
+            f"Erwarteter Hinweis auf 'erstes_projekt' aus derselben Sitzung fehlt in: {logs}",
+        )
+        self.assertTrue(any("/load erstes_projekt" in line for line in logs))
+
+    def test_warns_on_near_duplicate_slug_differing_only_by_separator(self):
+        """
+        Realer Fund (Workspace-Audit): "api_health_monitor" und "api-health-monitor" entstanden
+        als zwei separate, vollständig bezahlte Läufe für dieselbe Aufgabe - die generische
+        "Bereits vorhanden: ..."-Liste allein macht so einen fast identischen Namen nicht
+        besonders kenntlich. Ein eigener, direkter Hinweis wird jetzt ergänzt.
+        """
+        (self.orchestrator._workspace.base_dir / "api_health_monitor").mkdir()
+        logs = self._run("api-health-monitor")
+        self.assertTrue(
+            any("api_health_monitor" in line and "existiert bereits" in line for line in logs),
+            f"Erwarteter Nahezu-Duplikat-Hinweis fehlt in: {logs}",
+        )
+
+    def test_no_same_session_hint_when_reusing_the_same_slug(self):
+        """Wird im zweiten Lauf wieder derselbe Slug geraten (echte Fortsetzung), ist der
+        Zusatzhinweis überflüssig - project_slug == last_project_slug, keine Verwirrung möglich."""
+        self._run("mein_projekt")
+        logs = self._run("mein_projekt")
+        self.assertFalse(any("DIESER Sitzung" in line for line in logs))
 
 
 if __name__ == "__main__":

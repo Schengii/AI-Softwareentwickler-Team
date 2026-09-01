@@ -12,7 +12,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from core.project_status import format_context_for_agents, read_status, record_run
+import core.project_status as project_status
+from core.project_status import FULL_LOG_FILENAME, format_context_for_agents, read_status, record_run
 
 
 class TestProjectStatus(unittest.TestCase):
@@ -95,6 +96,38 @@ class TestProjectStatus(unittest.TestCase):
         record_run(self.temp_dir, "Alter Aufrufer", verification_ok=True,
                    budget_aborted=False, files_written_count=1)
         self.assertFalse(read_status(self.temp_dir)[0]["cancelled"])
+
+    def test_record_run_appends_to_full_log(self):
+        record_run(self.temp_dir, "Erster Lauf", verification_ok=False, budget_aborted=False,
+                   files_written_count=1, verification_summary="- 🎨 ruff: 1 Lint-Fund")
+        log_path = Path(self.temp_dir) / FULL_LOG_FILENAME
+        self.assertTrue(log_path.exists())
+        content = log_path.read_text(encoding="utf-8")
+        self.assertIn("Erster Lauf", content)
+        self.assertIn("ruff", content)
+
+    def test_full_log_is_rotated_when_over_threshold_oldest_dropped_newest_kept(self):
+        # MAX_FULL_LOG_BYTES klein patchen, damit der Test nicht wirklich MBs schreiben muss.
+        original_max = project_status.MAX_FULL_LOG_BYTES
+        project_status.MAX_FULL_LOG_BYTES = 500
+        try:
+            for i in range(30):
+                record_run(
+                    self.temp_dir, f"Lauf Nr. {i}", verification_ok=False, budget_aborted=False,
+                    files_written_count=1,
+                    verification_summary=f"- 🎨 ruff: Lint-Fund in Lauf {i} " + ("x" * 20),
+                )
+            log_path = Path(self.temp_dir) / FULL_LOG_FILENAME
+            size = log_path.stat().st_size
+            self.assertLessEqual(size, project_status.MAX_FULL_LOG_BYTES)
+
+            content = log_path.read_text(encoding="utf-8")
+            # Neueste Einträge müssen erhalten bleiben ...
+            self.assertIn("Lauf Nr. 29", content)
+            # ... die ältesten dagegen wurden verworfen.
+            self.assertNotIn("Lauf Nr. 0\n", content)
+        finally:
+            project_status.MAX_FULL_LOG_BYTES = original_max
 
 
 if __name__ == "__main__":

@@ -137,7 +137,7 @@ class TestOrchestratorSkipsLeadLayerForMicroTasks(unittest.TestCase):
         """Regressionsschutz: ENABLE_TASK_COMPLEXITY_SCALING=False muss exakt das alte
         Verhalten (immer volle Delegation+Konsolidierung) wiederherstellen."""
         agent_tasks = [AgentTask(task_id="t1", agent_id="backend", description="Endpunkt bauen")]
-        with patch("agents.orchestrator.ENABLE_TASK_COMPLEXITY_SCALING", False):
+        with patch("agents.orchestrator.department.ENABLE_TASK_COMPLEXITY_SCALING", False):
             results, _fo, _ba, _c = asyncio.run(self.orchestrator._run_department_hierarchy(
                 user_request="Baue einen Ping-Endpunkt",
                 task_summary="Ping-Endpunkt implementiert",

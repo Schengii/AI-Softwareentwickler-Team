@@ -50,7 +50,7 @@ class TestRuntimeSmokeInVerificationLoop(unittest.TestCase):
         shutil.rmtree(self.temp_workspace, ignore_errors=True)
 
     def _run(self, smoke_report: RuntimeSmokeReport):
-        @patch("agents.orchestrator.ProjectVerifier")
+        @patch("agents.orchestrator.verification.ProjectVerifier")
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")
         def _inner(mock_synthesize, mock_decompose, mock_verifier_cls):
@@ -82,7 +82,11 @@ class TestRuntimeSmokeInVerificationLoop(unittest.TestCase):
         )
         result, logs, mock_verifier = self._run(smoke_report)
 
-        mock_verifier.check_runtime_smoke.assert_called_once()
+        # Ein fehlgeschlagener Smoke-Test löst jetzt eine gezielte Fix-Schleife aus (siehe
+        # _run_runtime_check_with_fix in agents/orchestrator/verification.py) - der Mock liefert
+        # bei jedem Versuch denselben Fehlschlag zurück, der Check läuft deshalb mehrfach
+        # (initialer Lauf + ein erneuter Check je Fixversuch bis MAX_VERIFICATION_ITERATIONS).
+        self.assertGreater(mock_verifier.check_runtime_smoke.call_count, 1)
         # Muss im Abschlussbericht sichtbar sein, nicht lautlos verschluckt werden.
         self.assertIn("Runtime-Smoke-Test fehlgeschlagen", result)
         self.assertIn("main.py", result)

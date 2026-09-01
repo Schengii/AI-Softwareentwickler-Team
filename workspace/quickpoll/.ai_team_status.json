@@ -1,0 +1,34 @@
+[
+  {
+    "timestamp": "2026-08-30T15:10:25+00:00",
+    "task_summary": "Echtzeit-Umfrage-Plattform (WebSockets, Concurrency-Lock, Pydantic v2, React Frontend)",
+    "verification_ok": true,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 0
+  },
+  {
+    "timestamp": "2026-08-30T14:38:55+00:00",
+    "task_summary": "WebSocket- und Test-Schnittstellen in QuickPoll harmonisiert",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 3
+  },
+  {
+    "timestamp": "2026-08-30T14:28:48+00:00",
+    "task_summary": "QuickPoll-Plattform stabilisiert, getestet und sicherheitsoptimiert",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 4
+  },
+  {
+    "timestamp": "2026-08-30T14:13:43+00:00",
+    "task_summary": "Echtzeit-Umfrage-Plattform mit Full-Stack-Architektur implementiert",
+    "verification_ok": false,
+    "budget_aborted": true,
+    "cancelled": false,
+    "files_written_count": 17
+  }
+]

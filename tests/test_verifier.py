@@ -32,6 +32,42 @@ class TestProjectVerifier(unittest.TestCase):
         self.assertTrue(report.passed)
         self.assertIn("Keine Testdateien", report.reason_skipped)
 
+    def test_incomplete_backend_without_entrypoint_fails_instead_of_skipping(self):
+        """
+        Realer Fund (Workspace-Audit): ein Projekt mit requirements.txt und mehreren
+        Python-Modulen, aber ohne jeden Einstiegspunkt (main.py/app.py/...), sah bisher
+        wie ein bestandenes "keine Tests gefunden" aus - dabei war der Lauf offenbar
+        mitten in der Generierung abgebrochen.
+        """
+        (self.project_dir / "requirements.txt").write_text("fastapi\n")
+        (self.project_dir / "models.py").write_text("class Item:\n    pass\n")
+        (self.project_dir / "security.py").write_text("def hash_password(pw):\n    return pw\n")
+        report = ProjectVerifier(self.project_dir).run_tests()
+        self.assertFalse(report.ran)
+        self.assertFalse(report.passed)
+        self.assertIn("Unvollständiges Projekt", report.reason_skipped)
+
+    def test_incomplete_test_suite_with_only_conftest_fails_instead_of_skipping(self):
+        """Realer Fund: tests/conftest.py existierte, aber keine einzige echte Testdatei."""
+        (self.project_dir / "app.py").write_text("def add(a, b):\n    return a + b\n")
+        tests_dir = self.project_dir / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "conftest.py").write_text("import pytest\n")
+        report = ProjectVerifier(self.project_dir).run_tests()
+        self.assertFalse(report.ran)
+        self.assertFalse(report.passed)
+        self.assertIn("Unvollständiges Projekt", report.reason_skipped)
+
+    def test_single_script_without_manifest_is_still_a_legitimate_skip(self):
+        """Grenzfall: EIN Modul + ein zweites Hilfsmodul, aber ohne requirements.txt, ist
+        weiterhin ein legitimes kleines Skript, kein erkennbar abgebrochenes Backend."""
+        (self.project_dir / "app.py").write_text("def add(a, b):\n    return a + b\n")
+        (self.project_dir / "helpers.py").write_text("def double(x):\n    return x * 2\n")
+        report = ProjectVerifier(self.project_dir).run_tests()
+        self.assertFalse(report.ran)
+        self.assertTrue(report.passed)
+        self.assertIn("Keine Testdateien", report.reason_skipped)
+
     def test_real_passing_test_is_detected(self):
         (self.project_dir / "app.py").write_text("def add(a, b):\n    return a + b\n")
         (self.project_dir / "test_app.py").write_text(

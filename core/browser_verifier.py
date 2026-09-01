@@ -169,6 +169,127 @@ class BrowserVerifier:
             s.bind(("127.0.0.1", 0))
             return s.getsockname()[1]
 
+    # Realer Fund (snippet_vault-Projekt): der Playwright-/axe-Check bediente das Frontend
+    # bisher NUR über einen reinen statischen Dateiserver (siehe QuietHandler unten). Ein
+    # Full-Stack-Projekt, dessen HTML per fetch() echte Backend-Routen aufruft (z. B. `/tags`),
+    # bekam dafür IMMER einen 404 zurück - unabhängig davon, ob der Endpunkt existiert oder das
+    # Frontend den Fehler sauber abfängt. Das meldete den 404 fälschlich als fehlendes Asset.
+    # Fix: falls ein FastAPI-Backend-Einstiegspunkt gefunden wird, per uvicorn-Subprozess
+    # zusätzlich starten und der statische Server proxyt jede Anfrage, die keiner lokalen Datei
+    # entspricht, dorthin (siehe _make_static_handler()).
+    _BACKEND_ENTRYPOINT_CANDIDATES = (
+        ("app/main.py", "app.main:app"),
+        ("main.py", "main:app"),
+        ("app.py", "app:app"),
+        ("backend/main.py", "backend.main:app"),
+    )
+
+    def _find_backend_entrypoint(self) -> str | None:
+        """Sucht eine FastAPI-`app`-Instanz an gängigen Konventionsstellen (best effort)."""
+        for rel_path, module in self._BACKEND_ENTRYPOINT_CANDIDATES:
+            f = self.project_dir / rel_path
+            if not f.exists():
+                continue
+            try:
+                content = f.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            if "FastAPI(" in content and re.search(r"^\s*app\s*=\s*FastAPI", content, re.MULTILINE):
+                return module
+        return None
+
+    def _start_backend(self, timeout_seconds: float = 5.0) -> tuple[subprocess.Popen | None, int | None]:
+        """Startet ein erkanntes FastAPI-Backend per uvicorn; None/None bei jedem Fehlschlag
+        (fehlendes uvicorn, kein Entrypoint, Startup-Timeout) - der Aufrufer fällt dann einfach
+        auf reines statisches Serving zurück, exakt wie bisher."""
+        module = self._find_backend_entrypoint()
+        if not module:
+            return None, None
+        try:
+            import importlib.util
+            if not importlib.util.find_spec("uvicorn"):
+                return None, None
+        except Exception:
+            return None, None
+
+        port = self._find_free_port()
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "uvicorn", module, "--host", "127.0.0.1", "--port", str(port), "--log-level", "error"],
+                cwd=str(self.project_dir),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            return None, None
+
+        start = time.monotonic()
+        while time.monotonic() - start < timeout_seconds:
+            if proc.poll() is not None:
+                return None, None
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                    return proc, port
+            except OSError:
+                time.sleep(0.2)
+        proc.terminate()
+        return None, None
+
+    def _make_static_handler(self, serve_dir: str, backend_port: int | None) -> type:
+        """QuietHandler-Fabrik: dient Dateien aus `serve_dir` statisch, proxyt aber jede Anfrage
+        ohne passende lokale Datei an `backend_port` (falls gesetzt) statt pauschal 404 zu
+        liefern - siehe Erklärung an _find_backend_entrypoint()."""
+        import http.client
+
+        class QuietHandler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=serve_dir, **kwargs)
+
+            def log_message(self, format, *args):
+                pass
+
+            def _proxy_to_backend(self):
+                if not backend_port:
+                    self.send_error(404)
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", 0) or 0)
+                    body = self.rfile.read(length) if length else None
+                    headers = {k: v for k, v in self.headers.items() if k.lower() not in ("host", "content-length")}
+                    conn = http.client.HTTPConnection("127.0.0.1", backend_port, timeout=5)
+                    conn.request(self.command, self.path, body=body, headers=headers)
+                    resp = conn.getresponse()
+                    data = resp.read()
+                    conn.close()
+                    self.send_response(resp.status)
+                    for k, v in resp.getheaders():
+                        if k.lower() in ("content-length", "transfer-encoding", "connection"):
+                            continue
+                        self.send_header(k, v)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                except Exception:
+                    self.send_error(502)
+
+            def do_GET(self):
+                if os.path.isfile(self.translate_path(self.path)):
+                    return super().do_GET()
+                return self._proxy_to_backend()
+
+            def do_POST(self):
+                self._proxy_to_backend()
+
+            def do_PUT(self):
+                self._proxy_to_backend()
+
+            def do_DELETE(self):
+                self._proxy_to_backend()
+
+            def do_PATCH(self):
+                self._proxy_to_backend()
+
+        return QuietHandler
+
     def verify_frontend(self, timeout_seconds: float = 10.0) -> BrowserVerificationReport:
         """
         Hauptmethode zur Prüfung: Sucht nach HTML-Einstiegspunkten und führt
@@ -263,15 +384,13 @@ class BrowserVerifier:
         except Exception:
             return None
 
+        backend_proc, backend_port = self._start_backend()
+
         port = self._find_free_port()
         serve_dir = str(self.project_dir)
 
-        # Starte lokalen statischen HTTP-Server
-        class QuietHandler(http.server.SimpleHTTPRequestHandler):
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, directory=serve_dir, **kwargs)
-            def log_message(self, format, *args):
-                pass
+        # Starte lokalen statischen HTTP-Server (proxyt an backend_port, falls erkannt/gestartet)
+        QuietHandler = self._make_static_handler(serve_dir, backend_port)
 
         httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), QuietHandler)
         server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -319,6 +438,12 @@ class BrowserVerifier:
         finally:
             httpd.shutdown()
             httpd.server_close()
+            if backend_proc:
+                backend_proc.terminate()
+                try:
+                    backend_proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    backend_proc.kill()
 
     def verify_accessibility(self, timeout_seconds: float = 10.0) -> AccessibilityReport:
         """
@@ -347,14 +472,11 @@ class BrowserVerifier:
             return AccessibilityReport(attempted=False, reason_skipped="Konnte Playwright/axe-core-python nicht prüfen.")
 
         entry_html = html_files[0]
+        backend_proc, backend_port = self._start_backend()
         port = self._find_free_port()
         serve_dir = str(self.project_dir)
 
-        class QuietHandler(http.server.SimpleHTTPRequestHandler):
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, directory=serve_dir, **kwargs)
-            def log_message(self, format, *args):
-                pass
+        QuietHandler = self._make_static_handler(serve_dir, backend_port)
 
         httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), QuietHandler)
         server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -405,6 +527,12 @@ except Exception as e:
         finally:
             httpd.shutdown()
             httpd.server_close()
+            if backend_proc:
+                backend_proc.terminate()
+                try:
+                    backend_proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    backend_proc.kill()
 
     def _parse_axe_result(self, result: dict, target_url: str) -> AccessibilityReport:
         """

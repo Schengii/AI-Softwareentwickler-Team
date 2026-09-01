@@ -445,6 +445,20 @@ DASHBOARD_AUTH_TOKEN: str = os.getenv("DASHBOARD_AUTH_TOKEN", "")
 DASHBOARD_MAX_CONCURRENT_JOBS: int = int(os.getenv("DASHBOARD_MAX_CONCURRENT_JOBS", "2"))
 
 # ──────────────────────────────────────────
+# Autonomer Ziel- & Iterations-Loop (core/goal_loop.py)
+# ──────────────────────────────────────────
+# Maximale Anzahl aufeinanderfolgender Entwicklungsrunden, die der autonome
+# Ziel-Loop (/goal, python main.py --goal) standardmäßig durchläuft, bis das
+# Projektziel erreicht ist und alle Tests grün sind.
+GOAL_LOOP_DEFAULT_MAX_ITERATIONS: int = int(os.getenv("GOAL_LOOP_DEFAULT_MAX_ITERATIONS", "5"))
+GOAL_LOOP_EVAL_MODEL: str = os.getenv("GOAL_LOOP_EVAL_MODEL", GEMINI_STANDARD_MODEL)
+# Kumulatives Token-Budget ÜBER ALLE Iterationen eines Ziel-Loops hinweg (0 = deaktiviert).
+# MAX_RUN_TOKENS begrenzt nur einen einzelnen orchestrator.process()-Aufruf; ohne dieses
+# zusätzliche Limit könnte der Loop dieses Budget bis zu max_iterations-mal hintereinander
+# ausschöpfen, bevor er überhaupt abbricht.
+GOAL_LOOP_MAX_TOTAL_TOKENS: int = int(os.getenv("GOAL_LOOP_MAX_TOTAL_TOKENS", "0"))
+
+# ──────────────────────────────────────────
 # Pfade
 # ──────────────────────────────────────────
 BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))

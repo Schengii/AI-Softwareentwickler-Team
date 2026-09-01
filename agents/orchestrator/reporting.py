@@ -97,11 +97,30 @@ class ReportingMixin:
         return "\n".join(lines)
 
     def _format_results_for_review(self, results: list[AgentResult]) -> str:
+        """
+        Realer Fund (echte Rückfrage eines governance_lead-Konsolidierungslaufs): schlugen
+        ALLE Mitglieder einer Phase fehl oder lieferten leeren Inhalt (z.B. ein reines
+        Review-Tool-Ergebnis ohne abschließenden Text), war `results_text` in
+        _run_department_consolidation() komplett LEER - der Teamleiter bekam wörtlich
+        "Deine Fachteam-Mitglieder haben folgende Ergebnisse geliefert:\n\n\nPrüfe sie..."
+        und stellte folgerichtig eine Rückfrage ("Ergebnisse wurden im Prompt nicht
+        mitgeliefert"), statt einen Bericht zu schreiben. Fehlgeschlagene Mitglieder werden
+        jetzt IMMER aufgeführt (mit Fehlertext statt Inhalt), damit der Teamleiter wenigstens
+        weiß, WARUM nichts zu prüfen ist, statt vor einem leeren Block zu stehen.
+        """
         blocks = []
         for r in results:
             if r.success and r.content:
                 files_note = f" (Dateien: {', '.join(r.files_written)})" if r.files_written else ""
                 blocks.append(f"### Ergebnis von {r.agent_name}{files_note}:\n{r.content[:2000]}")
+            elif not r.success:
+                blocks.append(f"### ❌ {r.agent_name} ist fehlgeschlagen:\n{(r.error or 'Kein Fehlertext protokolliert.')[:500]}")
+            else:
+                # success=True, aber content leer - z.B. ein reiner Tool-Aufruf (list_files/
+                # read_file) ohne abschließende Textantwort. Auch das sichtbar machen statt
+                # stillschweigend zu verschwinden, aus demselben Grund wie oben.
+                files_note = f" (Dateien: {', '.join(r.files_written)})" if r.files_written else ""
+                blocks.append(f"### ⚠️ {r.agent_name} lieferte keinen Text-Inhalt{files_note} (nur Werkzeug-Aufrufe, keine abschließende Textantwort).")
         return "\n\n".join(blocks)
 
     # Caps analog zu ResultAggregator.MAX_CONTENT_CHARS_PER_RESULT - verhindert, dass ein

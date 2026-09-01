@@ -7,6 +7,27 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🩹 Leerer Konsolidierungs-Block ließ Teamleiter unnötig Rückfragen stellen
+
+Realer Fund aus einer echten, offen gebliebenen Rückfrage eines `governance_lead`-
+Konsolidierungslaufs (PR #21, "Ergebnisse wurden im Prompt nicht mitgeliefert"):
+`agents/orchestrator/reporting.py._format_results_for_review()` nahm bisher nur Ergebnisse
+mit `success=True and content` in den Ergebnis-Block auf, den ein Fachbereichsleiter zur
+Konsolidierung bekommt. Schlugen ALLE Mitglieder einer Phase fehl, oder lieferte ein
+Mitglied `success=True` mit leerem `content` (z.B. ein reiner Tool-Aufruf ohne
+abschließenden Text – typisch für `project_cleaner`), war der Block komplett LEER. Der
+Teamleiter bekam wörtlich "... haben folgende Ergebnisse geliefert:\n\n\nPrüfe sie ..." und
+stellte folgerichtig eine Rückfrage, statt einen Bericht zu schreiben.
+
+- Fehlgeschlagene Mitglieder werden jetzt mit ihrem Fehlertext aufgeführt (statt zu
+  verschwinden), erfolgreiche-aber-leere Mitglieder mit einem expliziten Hinweis – der
+  Block ist nie mehr komplett leer.
+- 4 neue, isolierte Tests (`tests/test_department_consolidation_review_formatting.py`),
+  inkl. exakter Reproduktion des gemeldeten Szenarios (alle Mitglieder scheitern/liefern
+  nichts). Volle Suite (941 Tests) grün, ruff sauber.
+
+---
+
 ## 🏷️ Echtes Release-Management fürs Framework selbst: `/release`
 
 Realer Fund bei einer Bestandsaufnahme des eigenen Teams: `CHANGELOG.md` wird bei jedem PR

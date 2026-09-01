@@ -15,6 +15,7 @@ import signal
 import sys
 import threading
 import traceback
+import uuid
 from pathlib import Path
 
 from rich import box
@@ -96,6 +97,7 @@ HELP_TEXT = """
 | `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |
 | `/deploy-cloud <fly/vercel/render/railway> [projekt] [--real]` | Deployt in die Cloud (echte Preview-URL) – ohne `--real` nur Dry-Run/Manifeste |
 | `/push` | Führt manuell einen Git-Commit & Push aus |
+| `/rollback <PR-Nummer>` | Revertiert einen bereits gemergten PR über einen echten Revert-Pull-Request (mit Vorschau & Bestätigung) |
 | `/protect-branch [branch]` | Aktiviert echte GitHub-Branch-Protection (Pflicht-Reviews, kein Force-Push) für den Hauptbranch – mit Vorschau & Bestätigung |
 | `/state [projekt]` | Zeigt den aktuellen State-Checkpoint (PROJECT_STATE.md) und nächste Schritte für ein Projekt an |
 | `/goal [max] <ziel>` | Startet den autonomen Ziel-Loop: arbeitet selbstständig in Feedback-Schleifen weiter, bis das Projektziel erreicht und verifiziert ist |
@@ -660,6 +662,91 @@ class CLIInterface:
         else:  # "no_run"
             console.print(f"ℹ️ [dim]CI-Status nicht prüfbar: {detail}[/dim]")
         return status, detail
+
+    async def _rollback_merged_pr(self, pr_number_str: str) -> None:
+        """
+        Echter Rollback-Workflow: revertiert den Merge-Commit eines bereits gemergten PRs auf
+        einem eigenen Branch und öffnet dafür einen ganz normalen Revert-Pull-Request – KEIN
+        Direct-Commit auf den Hauptbranch, derselbe PR-Workflow wie jede andere Änderung.
+        Realer Fund bei einer Bestandsaufnahme des eigenen Teams: bricht ein gemergter PR
+        `main` (z.B. rotes CI erst nach dem Merge bemerkt), gab es dafür bisher keinen
+        Mechanismus – nur der manuelle Weg direkt über GitHub.
+        """
+        github_agent = self._orchestrator._agents.get("github")
+        if not github_agent:
+            console.print("⚠️ GitHub-Agent nicht verfügbar.", style="yellow")
+            return
+        if not github_agent.gh_ready():
+            console.print("⚠️ `gh`-CLI nicht verfügbar/eingeloggt – Rollback braucht echten GitHub-Zugriff.", style="yellow")
+            return
+        try:
+            pr_number = int(pr_number_str)
+        except ValueError:
+            console.print(f"⚠️ '{pr_number_str}' ist keine gültige PR-Nummer.", style="yellow")
+            return
+
+        found, sha_or_error, title = github_agent.get_merged_pr_info(pr_number)
+        if not found:
+            console.print(f"⚠️ Rollback nicht möglich: {sha_or_error}", style="yellow")
+            return
+
+        base_branch = GIT_PROTECTED_BRANCHES[0] if GIT_PROTECTED_BRANCHES else "main"
+        console.print(
+            Panel(
+                f"[bold red]Erstellt einen echten Revert-Commit für PR #{pr_number}[/bold red]\n\n"
+                f"  Titel: {title}\n"
+                f"  Merge-Commit: `{sha_or_error[:12]}`\n\n"
+                f"Legt einen neuen Branch von `{base_branch}` an, revertiert den Merge-Commit "
+                f"darauf und öffnet einen Revert-Pull-Request – merged NICHTS automatisch, "
+                f"CI/Review laufen wie bei jedem anderen PR.",
+                title="↩️ Rollback: Vorschau", border_style="red",
+            )
+        )
+        try:
+            should_rollback = Confirm.ask(f"PR #{pr_number} WIRKLICH per Revert-PR zurückrollen?", default=False)
+        except Exception:
+            should_rollback = False
+        if not should_rollback:
+            console.print("↩️ Rollback abgebrochen.", style="dim")
+            return
+
+        original_branch = github_agent.get_current_branch()
+        revert_branch = f"revert-{pr_number}-{uuid.uuid4().hex[:6]}"
+
+        success_b, out_b = github_agent.create_branch(revert_branch, base=base_branch)
+        if not success_b:
+            console.print(f"⚠️ Revert-Branch konnte nicht angelegt werden: {out_b}", style="yellow")
+            return
+
+        success_r, out_r = github_agent.revert_commit(sha_or_error)
+        if not success_r:
+            console.print(f"⚠️ Revert fehlgeschlagen (evtl. Konflikt mit späteren Änderungen): {out_r}", style="red")
+            github_agent.checkout(original_branch)
+            return
+
+        success_p, out_p = github_agent.push(branch=revert_branch)
+        if not success_p:
+            console.print(f"⚠️ Push des Revert-Branches fehlgeschlagen: {out_p}", style="yellow")
+            return
+
+        success_pr, pr_out = github_agent.create_pull_request(
+            title=f"Revert: {title} (#{pr_number})",
+            body=f"Automatischer Rollback von PR #{pr_number} über `/rollback`.\n\n"
+                 f"Ursprünglicher Merge-Commit: {sha_or_error}",
+            base=base_branch, head=revert_branch,
+        )
+        if success_pr:
+            pr_url = pr_out.splitlines()[-1] if pr_out else pr_out
+            console.print(f"↩️ [bold green]Revert-Pull-Request erstellt:[/bold green] {pr_url}")
+            upsert_ticket(
+                ticket_id=new_ticket_id("cli"), title=f"Revert: {title[:70]}", source="cli",
+                status="review", detail=pr_url,
+            )
+        else:
+            console.print(
+                f"⚠️ Revert-PR-Erstellung fehlgeschlagen ({pr_out}) – Branch `{revert_branch}` "
+                "ist trotzdem gepusht, PR ggf. manuell auf GitHub anlegen.", style="yellow",
+            )
 
     async def _delete_project_with_confirmation(self, project_name: str) -> None:
         """
@@ -1356,6 +1443,12 @@ class CLIInterface:
 
         elif cmd in ("/push", "/git"):
             await self._ask_for_git_push("manuelles Update")
+
+        elif cmd in ("/rollback", "/revert"):
+            if not args:
+                console.print("⚠️ Bitte gib die PR-Nummer an: `/rollback <PR-Nummer>`", style="yellow")
+                return False
+            await self._rollback_merged_pr(args[0])
 
         elif cmd in ("/run-tests", "/test"):
             proj_name = args[0] if args else "jobsuche-app"

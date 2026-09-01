@@ -736,6 +736,7 @@ nicht, ein Mensch prüft die betroffene(n) Datei(en) gezielt nach.
 | `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
 | `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |
 | `/push` | Führt manuell einen Git-Commit & Push aus (mit Secret-Scan, Verifikations-Warnung & PR-Workflow) |
+| `/rollback <PR-Nummer>` | Revertiert einen bereits gemergten PR über einen echten `git revert` + Revert-Pull-Request (mit Vorschau & Bestätigung) – kein Direct-Commit auf den Hauptbranch |
 | `/protect-branch [branch]` | Aktiviert echte GitHub-Branch-Protection (Pflicht-Reviews vor Merge, kein Force-Push/Löschen) für den Hauptbranch – mit Vorschau & Bestätigung |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |

@@ -7,6 +7,28 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🏷️ Echtes Release-Management fürs Framework selbst: `/release`
+
+Realer Fund bei einer Bestandsaufnahme des eigenen Teams: `CHANGELOG.md` wird bei jedem PR
+manuell um einen neuen Eintrag ergänzt, aber es gab über die gesamte Projekthistorie keine
+einzige Versionsnummer, keinen Git-Tag, keine GitHub-Release – das README zeigte "v4.3" nur
+als hart einprogrammierte Zeichenkette ohne jeden Bezug zu echten Commits oder Tags.
+
+- `core/framework_release.py` (neu): leitet den nächsten SemVer-Bump aus den ECHTEN
+  Commit-Messages seit dem letzten Tag ab (nutzt die bereits etablierte
+  feat:/fix:/BREAKING-CHANGE-Konvention). Release-Notes sind die echten kategorisierten
+  Commit-Subjects, kein LLM-Text. Bewusst **nicht** `core/release_manager.py` genannt – das
+  benennt bereits ein anderes, unabhängiges Feature (automatisches Release-Tagging
+  generierter `workspace/`-PROJEKTE beim Mergen ihres Tickets, siehe
+  [📋 Backlog/Kanban](README.md#backlog-kanban)); beide Module lösen ähnlich klingende, aber
+  fachlich getrennte Aufgaben und sollen nicht kollidieren.
+- `interface/cli.py`: neuer Befehl `/release` mit Vorschau + Bestätigungs-Gate.
+- 25 neue Tests, u.a. echte Tag-/Log-Operationen gegen ein lokales Git-Repo mit Bare-Remote.
+
+Volle Suite grün, ruff sauber.
+
+---
+
 ## 🏷️ TypeScript-CI-Check, GitHub-Labels für Verifikationsstatus & Eskalation bei Wiederholungsfehlern
 
 Direkte Fortsetzung der drei Vorschläge aus dem vorherigen Eintrag unten, alle vollständig

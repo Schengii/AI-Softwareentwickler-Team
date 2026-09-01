@@ -37,6 +37,7 @@ from config import (
     GIT_PROTECTED_BRANCHES,
     validate_config,
 )
+from core import framework_release
 from core.backlog_store import STATUSES, count_by_status, is_ticket_ready, list_tickets, new_ticket_id, upsert_ticket
 from core.code_sandbox import CodeSandbox
 from core.message_bus import AgentTask
@@ -97,6 +98,7 @@ HELP_TEXT = """
 | `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |
 | `/deploy-cloud <fly/vercel/render/railway> [projekt] [--real]` | Deployt in die Cloud (echte Preview-URL) – ohne `--real` nur Dry-Run/Manifeste |
 | `/push` | Führt manuell einen Git-Commit & Push aus |
+| `/release` | Erstellt einen echten SemVer-Tag + GitHub-Release des FRAMEWORKS selbst aus den Commits seit dem letzten Release (mit Vorschau & Bestätigung) |
 | `/rollback <PR-Nummer>` | Revertiert einen bereits gemergten PR über einen echten Revert-Pull-Request (mit Vorschau & Bestätigung) |
 | `/protect-branch [branch]` | Aktiviert echte GitHub-Branch-Protection (Pflicht-Reviews, kein Force-Push) für den Hauptbranch – mit Vorschau & Bestätigung |
 | `/state [projekt]` | Zeigt den aktuellen State-Checkpoint (PROJECT_STATE.md) und nächste Schritte für ein Projekt an |
@@ -684,6 +686,54 @@ class CLIInterface:
         else:  # "no_run"
             console.print(f"ℹ️ [dim]CI-Status nicht prüfbar: {detail}[/dim]")
         return status, detail
+
+    async def _create_release_with_confirmation(self) -> None:
+        """
+        Echtes Release-Management: leitet den nächsten SemVer-Bump aus den tatsächlichen
+        Commit-Messages seit dem letzten Tag ab (core/framework_release.py, nutzt die im
+        Projekt bereits etablierte feat:/fix:-Konvention) und erstellt bei Bestätigung einen
+        echten Git-Tag + eine echte GitHub-Release. Realer Fund bei einer Bestandsaufnahme
+        des eigenen Teams: CHANGELOG.md wird bei jedem PR manuell gepflegt, aber es gab über
+        die gesamte Projekthistorie keine einzige Versionsnummer, keinen Git-Tag, keine
+        GitHub-Release – nur eine hart einprogrammierte Zeichenkette im README.
+        """
+        github_agent = self._orchestrator._agents.get("github")
+        if not github_agent or not github_agent.gh_ready():
+            console.print("⚠️ `gh`-CLI nicht verfügbar/eingeloggt – Release braucht echten GitHub-Zugriff.", style="yellow")
+            return
+
+        latest_tag = framework_release.get_latest_tag()
+        commits = framework_release.get_commits_since(latest_tag)
+        bump = framework_release.determine_version_bump(commits)
+        if bump is None:
+            console.print(
+                f"ℹ️ Keine neuen Commits seit `{latest_tag or '(noch kein Release)'}` – nichts zu releasen.",
+                style="dim",
+            )
+            return
+
+        next_version = framework_release.bump_version(latest_tag or "v0.0.0", bump)
+        notes = framework_release.build_release_notes(commits)
+        console.print(
+            Panel(
+                f"[bold green]{latest_tag or '(kein bisheriger Release)'} → {next_version}[/bold green] "
+                f"({bump}-Bump, {len(commits)} Commit(s) seit dem letzten Release)\n\n{notes}",
+                title="🏷️ Release: Vorschau", border_style="green",
+            )
+        )
+        try:
+            should_release = Confirm.ask(f"Release `{next_version}` WIRKLICH erstellen (echter Tag + GitHub-Release)?", default=False)
+        except Exception:
+            should_release = False
+        if not should_release:
+            console.print("↩️ Release abgebrochen.", style="dim")
+            return
+
+        success, output = framework_release.create_release(next_version, notes)
+        if success:
+            console.print(f"🏷️ [bold green]Release {next_version} erstellt:[/bold green] {output}")
+        else:
+            console.print(f"⚠️ Release nicht vollständig erstellt: {output}", style="yellow")
 
     async def _rollback_merged_pr(self, pr_number_str: str) -> None:
         """
@@ -1465,6 +1515,9 @@ class CLIInterface:
 
         elif cmd in ("/push", "/git"):
             await self._ask_for_git_push("manuelles Update")
+
+        elif cmd in ("/release", "/tag"):
+            await self._create_release_with_confirmation()
 
         elif cmd in ("/rollback", "/revert"):
             if not args:

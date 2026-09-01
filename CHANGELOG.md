@@ -7,6 +7,31 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🩹 Echter Praxistest des Ziel-Loops deckt Kosten-Historie-Bug auf: `KeyError('cache_read_tokens')`
+
+Erster echter Live-Lauf von `/goal` (echte LLM-Aufrufe, kein Mock) nach der Kill-Switch-Runde:
+Ziel wurde korrekt erreicht und verifiziert, aber jeder Lauf zeigte still
+`⚠️ Kosten-Historie (record_run_usage) konnte nicht aktualisiert werden: 'cache_read_tokens'`.
+Ein früherer Kommentar hatte das als "vermutlich eine Versions-Eigenheit der
+google-genai/anthropic-SDK-Antwortobjekte" abgetan – tatsächlich ein simples,
+reproduzierbares Schema-Migrations-Loch, das JEDEN echten Lauf seit Einführung von
+`cache_read_tokens`/`cache_write_tokens` betraf (bestätigt: alle drei Modelle in der echten
+`memory/cost_history.json` fehlten beide Spalten).
+
+- `memory/cost_history.py.record_run_usage()`: `totals.setdefault(model_name, ...)` füllt
+  Standardwerte nur bei einem komplett NEUEN Modell-Eintrag – ein bereits vorhandener
+  Eintrag aus der Zeit VOR diesen beiden Spalten hatte sie schlicht nicht, `entry[key] += ...`
+  scheiterte dann mit `KeyError`. `entry.setdefault(key, 0)` backfillt fehlende Schlüssel
+  jetzt auch an bestehenden Einträgen – selbstheilend ab dem nächsten Lauf.
+- `agents/orchestrator/budget.py._model_usage_deltas()`: ein zweiter, unabhängiger Bug –
+  `cache_read_tokens`/`cache_write_tokens` fehlten im berechneten Delta-Dict komplett, das
+  Feld blieb dadurch strukturell IMMER bei 0, selbst wenn `core/token_guard.py` echte
+  Cache-Treffer korrekt mitgezählt hatte.
+- 3 neue Tests (Backfill eines Legacy-Eintrags ohne Cache-Spalten, echte Delta-Berechnung mit
+  Cache-Werten). Volle Suite (943 Tests) grün, ruff sauber.
+
+---
+
 ## 🩹 Leerer Konsolidierungs-Block ließ Teamleiter unnötig Rückfragen stellen
 
 Realer Fund aus einer echten, offen gebliebenen Rückfrage eines `governance_lead`-

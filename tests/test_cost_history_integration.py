@@ -79,6 +79,21 @@ class TestModelUsageDeltasHelper(unittest.TestCase):
 
         self.assertEqual(deltas["claude-sonnet-5"]["total_tokens"], 700)  # nur der NEUE Teil
 
+    def test_delta_includes_cache_read_and_write_tokens(self):
+        """
+        Realer Fund: cache_read_tokens/cache_write_tokens fehlten hier bisher komplett im
+        zurückgegebenen Delta-Dict - record_run_usage() erhielt dadurch für jedes Modell IMMER
+        ein Delta von 0 für beide Werte, selbst wenn Prompt-Caching tatsächlich Cache-Treffer
+        hatte (core/token_guard.py zählt sie längst korrekt mit).
+        """
+        start_stats = orch_module.token_guard.get_summary()["models"]  # leer
+        orch_module.token_guard.record_usage("claude-sonnet-5", 500, 200, cache_read_tokens=300, cache_write_tokens=50)
+
+        deltas = orch_module.Orchestrator._model_usage_deltas(start_stats)
+
+        self.assertEqual(deltas["claude-sonnet-5"]["cache_read_tokens"], 300)
+        self.assertEqual(deltas["claude-sonnet-5"]["cache_write_tokens"], 50)
+
 
 class TestCostHistoryReachesOrchestrator(unittest.TestCase):
     def setUp(self):

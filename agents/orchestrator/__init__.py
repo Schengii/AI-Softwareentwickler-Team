@@ -803,15 +803,17 @@ class Orchestrator(
         # record_run_usage/record_run_history) sind laut ihren eigenen Kommentaren/Docstrings
         # als "rein additiv, darf einen sonst erfolgreichen Lauf niemals zum Scheitern bringen"
         # gedacht - waren das bisher aber nur GEGEN I/O-Fehler (record_run() fängt die
-        # ausdrücklich ab). Ein KeyError('cache_read_tokens') aus core/llm_factory.py (vermutlich
-        # eine Versions-Eigenheit der google-genai/anthropic-SDK-Antwortobjekte bei aktivem
-        # Prompt-Caching, nicht aus eigenem Code - core/token_guard.py und memory/cost_history.py
-        # greifen bereits überall defensiv über .get()/getattr(..., default) zu) schlug hier
-        # unbehandelt durch bis zum CLI-Top-Level-Handler (interface/cli.py) - der bereits fertig
-        # SYNTHETISIERTE, in self._history bereits gespeicherte final_output ging dadurch für den
-        # Nutzer komplett verloren, der Lauf landete als "blocked" im Backlog, obwohl die
-        # eigentliche Team-Arbeit längst erfolgreich abgeschlossen war. Jeder der drei Aufrufe
-        # jetzt einzeln in ein eigenes try/except gekapselt (nicht ein gemeinsamer Block), damit
+        # ausdrücklich ab). Ein KeyError('cache_read_tokens') schlug hier unbehandelt durch bis
+        # zum CLI-Top-Level-Handler (interface/cli.py) - der bereits fertig SYNTHETISIERTE, in
+        # self._history bereits gespeicherte final_output ging dadurch für den Nutzer komplett
+        # verloren, der Lauf landete als "blocked" im Backlog, obwohl die eigentliche
+        # Team-Arbeit längst erfolgreich abgeschlossen war. Ursache war zunächst fälschlich als
+        # SDK-Eigenheit vermutet - tatsächlich ein simples Schema-Migrations-Loch in
+        # memory/cost_history.py.record_run_usage() (siehe dort: setdefault() füllte fehlende
+        # Schlüssel nur bei einem komplett NEUEN Modell-Eintrag, nicht bei einem bereits
+        # vorhandenen Eintrag aus der Zeit vor cache_read_tokens/cache_write_tokens - seitdem
+        # behoben). Jeder der drei Aufrufe unten bleibt trotzdem einzeln in ein eigenes
+        # try/except gekapselt (nicht ein gemeinsamer Block), damit
         # ein Fehler in EINEM Telemetrie-Aufruf die anderen beiden nicht auch noch verhindert.
         try:
             # Projekt-Kontinuität über mehrere Sitzungen hinweg & automatischer State-Checkpoint (core/project_status.py)

@@ -600,6 +600,7 @@ class Orchestrator(
         # bereits während der Fachbereichs-Phasen überschrittenem Lauf-Budget ODER manuellem
         # Abbruch wird sie komplett übersprungen, wie die anschließende Verifikation auch.
         governance_fix_summary = ""
+        permission_blocked_fix_summary = ""
         if budget_aborted or manually_cancelled:
             governance_fix_summary = ""
         else:
@@ -611,6 +612,23 @@ class Orchestrator(
                 notify=notify,
                 cancel_requested=cancel_requested,
             )
+
+            # Rückfragen, in denen ein Agent NICHT ein echtes fachliches Problem hat, sondern
+            # nur fehlende Schreibrechte meldete (siehe core/review_gate.py.
+            # find_permission_blocked_questions für den realen Fund, der das motiviert hat) -
+            # direkt nach der Governance-Fix-Schleife, aus demselben Grund: VOR der echten
+            # Testverifikation, damit die Testsuite den reparierten Stand prüft.
+            if not (budget_aborted or manually_cancelled):
+                results, permission_blocked_fix_summary, budget_aborted, manually_cancelled = (
+                    await self._run_permission_blocked_clarification_fix(
+                        project_dir=project_dir,
+                        all_results=results,
+                        file_owners=file_owners,
+                        run_start_tokens=run_start_tokens,
+                        notify=notify,
+                        cancel_requested=cancel_requested,
+                    )
+                )
 
         # Echte Verifikation: Abhängigkeiten installieren, Tests wirklich ausführen,
         # bei Fehlschlägen gezielt den verantwortlichen Agenten korrigieren lassen.
@@ -787,6 +805,7 @@ class Orchestrator(
             + (f"{clarification_section}\n\n---\n\n" if clarification_section else "")
             + (f"{collision_section}\n\n---\n\n" if collision_section else "")
             + (f"{governance_fix_summary}\n\n---\n\n" if governance_fix_summary else "")
+            + (f"{permission_blocked_fix_summary}\n\n---\n\n" if permission_blocked_fix_summary else "")
             + f"{verification_summary}\n\n"
             f"---\n\n"
             f"{retro_result.content if retro_result else ''}\n\n"

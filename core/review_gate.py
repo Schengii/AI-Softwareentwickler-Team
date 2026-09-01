@@ -223,6 +223,37 @@ def find_critical_findings(content: str) -> list[str]:
     return findings
 
 
+# Realer Fund (Bestandsaufnahme eines echten Laufs, omnichat-Projekt): der security-Agent
+# identifizierte ein echtes kritisches Problem (Pydantic-v2-Migration, CORS-Härtung), hatte in
+# diesem konkreten Aufruf aber keine Schreibrechte (z.B. während einer Konsolidierungs-/
+# Delegationsrunde, siehe agents/orchestrator/department.py) und griff statt zu einem Bericht
+# mit "Kritisch"-Markierung (den _CRITICAL_RE/find_critical_findings oben erfassen würden) zu
+# `ask_human_for_clarification` mit der Frage "Wie erhalte ich Schreibrechte...?". Diese Frage
+# landete unbeantwortet in .ai_team_status.json und wurde NIE automatisch an einen
+# schreibberechtigten Agenten weitergeroutet - anders als ein normaler Governance-Fund blieb
+# das Problem so über beliebig viele Läufe hinweg ungelöst liegen. Dieses Muster (Fund
+# vorhanden, aber "ich kann nicht schreiben/habe keine Berechtigung") wird hier erkannt, damit
+# _run_permission_blocked_clarification_fix() (agents/orchestrator/verification.py) dieselbe
+# Fix-Schleife wie für echte Governance-Befunde anstoßen kann, statt auf eine nie kommende
+# menschliche Antwort auf eine rein technische Blockade zu warten.
+_PERMISSION_BLOCKED_RE = re.compile(
+    r"keine\s+schreibrechte|kann\s+(ich\s+)?(selbst\s+)?nicht\s+(schreiben|ändern|korrigieren|beheben)"
+    r"|habe\s+keine\s+(schreib|bearbeitungs)berechtigung|nicht\s+autorisiert.{0,20}(schreiben|ändern)"
+    r"|no\s+write\s+access|not\s+authorized\s+to\s+(write|edit|modify)|read.?only\s+access",
+    re.IGNORECASE,
+)
+
+
+def find_permission_blocked_questions(questions: list[str]) -> list[str]:
+    """
+    Filtert `questions` (z.B. AgentResult.clarification_questions) auf jene, die laut
+    `_PERMISSION_BLOCKED_RE` einen fehlenden Schreibzugriff als Grund für eine Rückfrage
+    nennen, statt eine echte fachliche Unklarheit. Siehe Kommentar oberhalb von
+    `_PERMISSION_BLOCKED_RE` für den realen Fund, der diese Funktion motiviert hat.
+    """
+    return [q for q in questions if q.strip() and _PERMISSION_BLOCKED_RE.search(q)]
+
+
 def route_findings_to_owners(
     findings: list[tuple[str, str]], file_owners: dict[str, str],
 ) -> tuple[dict[str, list[str]], list[str]]:

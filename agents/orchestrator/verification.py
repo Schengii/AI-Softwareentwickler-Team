@@ -30,7 +30,11 @@ from config import (
     MIN_TEST_COVERAGE,
 )
 from core.message_bus import AgentResult, AgentTask
-from core.review_gate import find_critical_findings, route_findings_to_owners
+from core.review_gate import (
+    find_critical_findings,
+    find_permission_blocked_questions,
+    route_findings_to_owners,
+)
 from core.verifier import ProjectVerifier, VerificationReport
 
 
@@ -251,6 +255,108 @@ class VerificationMixin:
             if summary_lines else ""
         )
         return all_results, summary, budget_aborted, manually_cancelled
+
+    async def _run_permission_blocked_clarification_fix(
+        self,
+        project_dir: str,
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        notify: Callable[[str], None],
+        run_start_tokens: int | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> tuple[list[AgentResult], str, bool, bool]:
+        """
+        Realer Fund (omnichat-Projekt): der security-Agent identifizierte ein echtes kritisches
+        Problem (Pydantic-v2-Migration in `app/schemas.py`, CORS-Härtung in `app/main.py`), hatte
+        in diesem Aufruf aber keine Schreibrechte und griff statt zu einem normalen, per
+        `find_critical_findings` erkennbaren "Kritisch"-Bericht zu `ask_human_for_clarification`
+        mit der Frage "Wie erhalte ich Schreibrechte...?". Diese Frage landete unbeantwortet in
+        .ai_team_status.json (open_questions) und wurde NIE an einen schreibberechtigten Agenten
+        weitergeroutet - anders als bei _run_governance_fix_loop oben blieb das Problem so über
+        beliebig viele Läufe hinweg ungelöst liegen, obwohl der Fund selbst konkret und lösbar
+        war. Läuft direkt NACH der Governance-Fix-Schleife (dieselbe Reihenfolge-Logik: vor der
+        echten Testverifikation, damit die Testsuite den reparierten Stand prüft) und nutzt
+        dieselbe core/review_gate.py.route_findings_to_owners()-Zuordnung wie dort - der
+        Fund-Text ist hier die Rückfrage selbst statt eines Review-Abschnitts.
+
+        Gibt (all_results, summary, budget_aborted, manually_cancelled) zurück - summary ist ""
+        bei nichts zu tun (kein Rauschen im Normalfall).
+        """
+        blocked: list[tuple[str, str, AgentResult]] = []
+        for res in all_results:
+            if not res.clarification_questions:
+                continue
+            for q in find_permission_blocked_questions(res.clarification_questions):
+                blocked.append((res.agent_id, q, res))
+
+        if not blocked:
+            return all_results, "", False, False
+
+        if run_start_tokens is not None and (
+            self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+        ):
+            notify("  🚫 [bold red]Budget erreicht[/bold red] – Fix für schreibgeschützt blockierte Rückfragen übersprungen.")
+            return all_results, "", True, False
+        if cancel_requested and cancel_requested():
+            notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – Fix für schreibgeschützt blockierte Rückfragen übersprungen.")
+            return all_results, "", False, True
+
+        findings = [(agent_id, q) for agent_id, q, _res in blocked]
+        agents_to_fix, unrouted = route_findings_to_owners(findings, file_owners)
+
+        summary_lines: list[str] = []
+        if unrouted:
+            shown = "; ".join(u[:150] for u in unrouted[:3])
+            more = f" … und {len(unrouted) - 3} weitere" if len(unrouted) > 3 else ""
+            summary_lines.append(
+                f"- ⚠️ {len(unrouted)} schreibgeschützt blockierte Rückfrage(n) ohne eindeutigen "
+                f"Datei-Bezug – braucht manuelle Prüfung: {shown}{more}"
+            )
+
+        if agents_to_fix:
+            fix_tasks = []
+            for agent_id, texts in agents_to_fix.items():
+                finding_text = "\n\n".join(texts)[:3000]
+                fix_tasks.append(AgentTask(
+                    task_id=f"permission_blocked_fix_{agent_id}",
+                    agent_id=agent_id,
+                    description=(
+                        f"Ein anderer Agent hat ein konkretes Problem identifiziert, konnte es aber wegen "
+                        f"fehlender Schreibrechte NICHT selbst beheben. Nutze read_file, um die betroffene(n) "
+                        f"Datei(en) zu prüfen, und edit_file/write_file, um das Problem wirklich zu "
+                        f"beheben.\n\n{finding_text}"
+                    ),
+                    context="", project_dir=project_dir,
+                ))
+            notify(f"  🛠️ [bold yellow]Schreibgeschützt blockierte Rückfrage(n):[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())} mit {len(agents_to_fix)} Fund(en)...")
+            fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+            self._update_file_owners(file_owners, fix_results)
+            all_results.extend(fix_results)
+            summary_lines.append(
+                f"- 🛠️ {len(blocked) - len(unrouted)} schreibgeschützt blockierte Rückfrage(n) → gezielt "
+                f"zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt (keine unbeantwortete "
+                f"Rückfrage mehr im Abschlussbericht)."
+            )
+
+            # Behobene Fragen aus dem Abschlussbericht entfernen (open_questions), damit sie nicht
+            # trotz erfolgtem Fix als unbeantwortet im Status/PROJECT_STATE.md landen - eine echte
+            # fachliche Rückfrage im selben Ergebnis (falls vorhanden) bleibt davon unberührt.
+            # `unrouted`-Einträge tragen dasselbe "[agent_id] text"-Format wie
+            # route_findings_to_owners() sie selbst erzeugt (core/review_gate.py) - so lässt sich
+            # ohne eigene Owner-Neuberechnung feststellen, welche der ursprünglichen Fragen
+            # tatsächlich geroutet (= gerade gefixt) statt unrouted geblieben sind.
+            unrouted_set = set(unrouted)
+            for agent_id, q, res in blocked:
+                if f"[{agent_id}] {q.strip()}" in unrouted_set:
+                    continue
+                if q in res.clarification_questions:
+                    res.clarification_questions.remove(q)
+
+        summary = (
+            "### 🔓 Fix-Protokoll (schreibgeschützt blockierte Rückfragen)\n" + "\n".join(summary_lines)
+            if summary_lines else ""
+        )
+        return all_results, summary, False, False
 
     async def _run_verification_loop(
         self,

@@ -270,7 +270,13 @@ ENABLE_GOVERNANCE_FIX_LOOP: bool = os.getenv("ENABLE_GOVERNANCE_FIX_LOOP", "true
 # qualitative Review-Aussage selbst). Ein höherer Wert ruft die ursprünglich meldenden
 # Review-Rollen nach jedem Fix-Versuch frisch erneut auf, um zu prüfen, ob noch kritische
 # Befunde bestehen - kostet entsprechend mehr LLM-Aufrufe pro zusätzlicher Runde.
-MAX_REVIEW_ITERATIONS: int = int(os.getenv("MAX_REVIEW_ITERATIONS", "1"))
+# Auf 2 angehoben (vormals 1): ein echter Lauf (omnichat-Projekt) zeigte, dass ein einziger
+# Fix-Dispatch kritische Sicherheits-/Technical-Debt-Funde (Pydantic-v2-Migration, CORS-
+# Härtung) nicht zuverlässig vollständig behebt - der Testverifikations-Loop direkt darunter
+# bekommt bereits standardmäßig 2 Versuche (MAX_VERIFICATION_ITERATIONS), Governance-Funde
+# hatten strukturell schlechtere Chancen auf echte Behebung als ein simpler Testfehler, obwohl
+# ein "Kritisch" im Review potenziell schwerwiegender ist als ein rotes Unit-Test.
+MAX_REVIEW_ITERATIONS: int = int(os.getenv("MAX_REVIEW_ITERATIONS", "2"))
 
 # ──────────────────────────────────────────
 # Echtes lokales Deployment: Docker Compose (core/deployment.py, manuell per /deploy ausgelöst)

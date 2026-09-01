@@ -1,0 +1,32 @@
+openapi: 3.0.3
+info:
+  title: OmniChat API
+  version: 1.0.0
+  description: API für Echtzeit-Messaging und Collaboration.
+paths:
+  /api/channels:
+    get:
+      summary: Liste alle Kanäle
+      responses:
+        '200':
+          description: Liste der Kanäle
+  /api/channels/{channelId}/messages:
+    get:
+      summary: Nachrichtenverlauf abrufen
+      parameters:
+        - name: channelId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Historie der Nachrichten
+  /ws/chat:
+    get:
+      summary: WebSocket Verbindung für Echtzeit-Events
+      description: |
+        Events:
+        - `message_sent`: { "type": "message", "content": "...", "channel_id": "..." }
+        - `typing`: { "type": "typing", "user_id": "..." }

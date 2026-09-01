@@ -120,8 +120,20 @@ class TestWebDashboard(unittest.TestCase):
 
         # Das Ticket landet im gemeinsamen Backlog (core/backlog_store.py) mit demselben
         # Endstatus wie der Job - sichtbar über /api/backlog, unabhängig vom job_id-Polling.
-        backlog = self._get_json("/api/backlog")
-        ticket = next(t for t in backlog["tickets"] if t["id"] == f"dashboard-{job_id}")
+        # Realer Flake-Fund: job.status wird in interface/web_dashboard.py._execute_job VOR dem
+        # upsert_ticket()-Aufruf für den Endstatus gesetzt (siehe dort) - eine einzelne
+        # Backlog-Abfrage direkt nach "done" konnte das Ticket noch im vorherigen Status
+        # (oder unter hoher Systemlast: transient gar nicht) sehen. Gleicher Poll-Ansatz wie
+        # oben für den Job-Status selbst.
+        ticket = None
+        for _ in range(30):
+            backlog = self._get_json("/api/backlog")
+            ticket = next((t for t in backlog["tickets"] if t["id"] == f"dashboard-{job_id}"), None)
+            if ticket and ticket["status"] == "done":
+                break
+            time.sleep(0.1)
+
+        self.assertIsNotNone(ticket, "Backlog-Ticket wurde nie sichtbar")
         self.assertEqual(ticket["status"], "done")
         self.assertEqual(ticket["source"], "dashboard")
 

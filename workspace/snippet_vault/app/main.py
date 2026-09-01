@@ -52,6 +52,17 @@ def read_snippets(q: str | None = None, tag: str | None = None, db: Session = De
 @app.post("/snippets")
 def create_snippet(snippet: SnippetCreate, db: Session = Depends(get_db)):
     db_snippet = models.Snippet(title=snippet.title, content=snippet.content, language=snippet.language)
+    # Tags aus dem Request-Body wurden bisher nie mit dem Snippet verknüpft (das
+    # SnippetCreate.tags-Feld existierte, wurde hier aber schlicht ignoriert) - jeder
+    # übermittelte Tag verschwand dadurch stillschweigend: /tags blieb immer leer und die
+    # Tag-Filterung über ?tag=... in read_snippets() konnte nie etwas finden. Bestehende
+    # Tags (per Name) werden wiederverwendet statt dupliziert, neue werden angelegt.
+    for tag_name in snippet.tags:
+        tag = db.query(models.Tag).filter(models.Tag.name == tag_name).first()
+        if tag is None:
+            tag = models.Tag(name=tag_name)
+            db.add(tag)
+        db_snippet.tags.append(tag)
     db.add(db_snippet)
     db.commit()
     db.refresh(db_snippet)

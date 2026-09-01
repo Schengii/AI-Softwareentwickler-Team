@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import agents.orchestrator as orch_module
+import agents.orchestrator.budget as orch_budget_module
 from agents.orchestrator import Orchestrator
 from core.llm_factory import LLMResponse
 from core.message_bus import AgentTask
@@ -78,14 +79,14 @@ class TestBudgetHelperMethods(unittest.TestCase):
         self.orchestrator._project_token_budget = 5_000
         self.orchestrator._project_tokens_before_run = 5_000
         with patch.object(Orchestrator, "_tokens_used_since", return_value=0), \
-             patch("agents.orchestrator.MAX_RUN_TOKENS", 0):
+             patch("agents.orchestrator.budget.MAX_RUN_TOKENS", 0):
             label = self.orchestrator._budget_exceeded_label(0)
         self.assertIn("Projekt-Budget", label)
         self.assertIn("kunde_x", label)
 
     def test_label_falls_back_to_run_budget_when_project_budget_not_exceeded(self):
         self.orchestrator._project_token_budget = 0
-        with patch("agents.orchestrator.MAX_RUN_TOKENS", 50_000):
+        with patch("agents.orchestrator.budget.MAX_RUN_TOKENS", 50_000):
             label = self.orchestrator._budget_exceeded_label(0)
         self.assertIn("Lauf-Budget", label)
         self.assertIn("MAX_RUN_TOKENS", label)
@@ -99,6 +100,11 @@ class TestDepartmentHierarchyRespectsProjectBudget(unittest.TestCase):
         guard_patch = patch.object(orch_module, "token_guard", self._fresh_guard)
         guard_patch.start()
         self.addCleanup(guard_patch.stop)
+        # BudgetMixin (agents/orchestrator/budget.py) hält eine EIGENE token_guard-Referenz -
+        # muss separat auf denselben frischen Zähler gepatcht werden (siehe test_run_budget_cap.py).
+        guard_patch_budget = patch.object(orch_budget_module, "token_guard", self._fresh_guard)
+        guard_patch_budget.start()
+        self.addCleanup(guard_patch_budget.stop)
 
         self.orchestrator = Orchestrator()
         self.orchestrator.last_project_slug = "kunde_x"
@@ -117,7 +123,7 @@ class TestDepartmentHierarchyRespectsProjectBudget(unittest.TestCase):
         # das 8.000-Projekt-Budget, obwohl MAX_RUN_TOKENS deaktiviert ist.
         self.orchestrator._project_token_budget = 8000
         self.orchestrator._project_tokens_before_run = 0
-        with patch.object(orch_module, "MAX_RUN_TOKENS", 0):
+        with patch.object(orch_budget_module, "MAX_RUN_TOKENS", 0):
             results, _fo, budget_aborted, _cancelled = asyncio.run(self.orchestrator._run_department_hierarchy(
                 user_request="Baue eine Todo-App", task_summary="Todo-App", agent_tasks=agent_tasks,
                 project_dir=".", run_start_tokens=0, notify=lambda msg: None,
@@ -138,7 +144,7 @@ class TestDepartmentHierarchyRespectsProjectBudget(unittest.TestCase):
         # weiterer Aufruf (5.000 Tokens) in DIESEM Lauf reicht, um das 10.000-Budget zu reißen.
         self.orchestrator._project_token_budget = 10_000
         self.orchestrator._project_tokens_before_run = 7_000
-        with patch.object(orch_module, "MAX_RUN_TOKENS", 0):
+        with patch.object(orch_budget_module, "MAX_RUN_TOKENS", 0):
             _results, _fo, budget_aborted, _cancelled = asyncio.run(self.orchestrator._run_department_hierarchy(
                 user_request="Baue etwas", task_summary="X", agent_tasks=agent_tasks,
                 project_dir=".", run_start_tokens=0, notify=lambda msg: None,
@@ -151,7 +157,7 @@ class TestDepartmentHierarchyRespectsProjectBudget(unittest.TestCase):
             AgentTask(task_id="t2", agent_id="tester", description="Tests"),
         ]
         self.orchestrator._project_token_budget = 0  # Standard: kein Projekt-Budget aktiv
-        with patch.object(orch_module, "MAX_RUN_TOKENS", 0):
+        with patch.object(orch_budget_module, "MAX_RUN_TOKENS", 0):
             _results, _fo, budget_aborted, _cancelled = asyncio.run(self.orchestrator._run_department_hierarchy(
                 user_request="Baue etwas", task_summary="X", agent_tasks=agent_tasks,
                 project_dir=".", run_start_tokens=0, notify=lambda msg: None,
@@ -213,7 +219,7 @@ class TestProcessAbortsBeforeRunWhenProjectBudgetAlreadyExhausted(unittest.TestC
 
         with patch("core.task_manager.TaskManager.decompose") as mock_decompose, \
              patch("agents.orchestrator.get_total_tokens_for_project", return_value=100), \
-             patch("agents.orchestrator.ProjectVerifier") as mock_verifier_cls, \
+             patch("agents.orchestrator.verification.ProjectVerifier") as mock_verifier_cls, \
              patch("core.result_aggregator.ResultAggregator.synthesize") as mock_synthesize, \
              patch.object(Orchestrator, "_run_department_hierarchy") as mock_hierarchy:
             mock_decompose.return_value = ("Kurze Aufgabe", "kunde_projekt2", tasks)

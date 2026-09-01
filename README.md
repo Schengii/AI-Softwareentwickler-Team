@@ -488,7 +488,8 @@ Playwright ist Laufzeit-Abhängigkeit (`requirements.txt`), nicht nur Dev-Tool -
 - **Fly.io:** Erstellt `fly.toml` und `Dockerfile` mit Region Frankfurt (`fra`) und Auto-Stop/Start, `--real` löst einen echten `flyctl deploy` aus.
 - **Vercel:** Erstellt `vercel.json` für Serverless Python-, Next.js- oder Static-Deployments, `--real` löst einen echten `vercel --prod` aus.
 - **Render / Railway:** Erstellt Blueprints (`render.yaml`, `railway.json`) – beide deployen über eine Git-Integration im jeweiligen Web-Dashboard (Repository dort verbinden), kein lokales CLI-Deploy-Kommando, `--real` meldet das ehrlich statt einen nie ausgeführten Deploy als erfolgreich zu behaupten.
-- **CLI:** `/deploy-cloud <fly|vercel|render|railway> [projekt] [--real]` – ohne `--real` ein sicherer Dry-Run (nur Manifeste), mit `--real` ein echter Deploy-Versuch mit echter, überwachter (siehe [🤖 Backlog-Worker & Produktions-Monitoring](#selbstgesteuert)) Preview-URL. Noch nicht im Web-Dashboard verdrahtet.
+- **CLI:** `/deploy-cloud <fly|vercel|render|railway> [projekt] [--real]` – ohne `--real` ein sicherer Dry-Run (nur Manifeste), mit `--real` ein echter Deploy-Versuch mit echter, überwachter (siehe [🤖 Backlog-Worker & Produktions-Monitoring](#selbstgesteuert)) Preview-URL.
+- **Web-Dashboard:** eigene Karte „☁️ Cloud-Deployment" (Provider- und Projekt-Auswahl, Checkbox für `--real` mit zusätzlicher Bestätigung) – ruft `POST /api/deploy-cloud` auf, Fortschritt über `GET /api/deploy-cloud-status/<projekt>` pollbar (gleiches Prinzip wie das lokale Docker-Deployment).
 
 ---
 
@@ -724,11 +725,13 @@ nicht, ein Mensch prüft die betroffene(n) Datei(en) gezielt nach.
 | `/run-tests [projekt]` | Führt automatische Unit-Tests im Projekt aus |
 | `/delete-project <name>` | Löscht ein Projekt unwiderruflich aus dem Workspace (mit Bestätigung) |
 | `/audit-projekt [projekt]` | Lässt den Projekt-Hygiene-Agenten das Framework (oder ein Projekt) wirklich durchsehen; Löschungen nur nach Bestätigung |
+| `/prune-worktrees` | Räumt verwaiste, vom KI-Team angelegte Git-Isolations-Worktrees auf (bereits gemergte oder seit 7+ Tagen inaktive Worktrees; niemals der aktive Worktree oder ungemergte Änderungen) |
 | `/learnings` | Zeigt alle von den Agenten gelernten Regeln (persistentes Gedächtnis) mit Nummer je Agent an |
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
 | `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/adr [projekt]` | Zeigt die dokumentierten Architecture Decision Records (Begründungen echter Architektur-Entscheidungen) eines Projekts |
 | `/backlog` | Zeigt das Kanban-Board (Todo/In Bearbeitung/Review/Blockiert/Fertig) über CLI, Dashboard UND autonome Issue-Läufe hinweg, inkl. Priorität und WIP-Limit-Warnung |
+| `/team-health` (Aliase `/teamgesundheit`, `/rollup`) | Projektübergreifender Health-Rollup über alle Projekte in `workspace/` (aus `core/team_health.py`): pro Projekt Status, seit wann in Folge rot, sowie erkannte gemeinsame Fehlermuster (z.B. mehrere Projekte scheitern gleichzeitig am selben Frontend-Check) |
 | `/backlog-add [priorität] <titel>` | Legt manuell ein priorisiertes, noch nicht begonnenes Ticket im Status "todo" an (Priorität: 1/hoch, 2/mittel, 3/niedrig) |
 | `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
 | `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |

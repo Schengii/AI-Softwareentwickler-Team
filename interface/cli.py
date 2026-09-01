@@ -82,12 +82,14 @@ HELP_TEXT = """
 | `/run-tests [projekt]` | Führt automatische Unit-Tests im Projekt aus |
 | `/delete-project <name>` | Löscht ein Projekt unwiderruflich aus dem Workspace (mit Bestätigung) |
 | `/audit-projekt [projekt]` | Lässt den Projekt-Hygiene-Agenten das Framework (oder ein Projekt) wirklich durchsehen; Löschungen nur nach Bestätigung |
+| `/prune-worktrees` | Räumt verwaiste, vom KI-Team angelegte Git-Isolations-Worktrees auf (gemergt oder seit 7+ Tagen inaktiv) |
 | `/learnings` | Zeigt alle von den Agenten gelernten Regeln (persistentes Gedächtnis) mit Nummer je Agent an |
 | `/optimize` | Zeigt datenbasierte Selbstoptimierungs-Vorschläge über alle bisherigen Läufe hinweg (Modellzuweisung, auffällig niedrige Erfolgsquoten) – rein informativ, keine automatische Änderung |
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
 | `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/design-system [projekt]` | Zeigt/bearbeitet feste visuelle Präferenzen (Farbpalette, Typografie, Spacing-Skala, Tonalität, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/backlog` | Zeigt das Kanban-Board (Todo/In Bearbeitung/Review/Blockiert/Fertig) über CLI, Dashboard UND autonome Issue-Läufe hinweg |
+| `/team-health` | Projektübergreifender Health-Rollup über alle Projekte in `workspace/`: Status, seit wann rot, erkannte gemeinsame Fehlermuster |
 | `/backlog-add [priorität] <titel>` | Legt manuell ein priorisiertes, noch nicht begonnenes Ticket im Status "todo" an (Priorität: 1/hoch, 2/mittel, 3/niedrig) |
 | `/adr [projekt]` | Zeigt die dokumentierten Architecture Decision Records (Begründungen echter Architektur-Entscheidungen) eines Projekts |
 | `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
@@ -96,6 +98,7 @@ HELP_TEXT = """
 | `/push` | Führt manuell einen Git-Commit & Push aus |
 | `/protect-branch [branch]` | Aktiviert echte GitHub-Branch-Protection (Pflicht-Reviews, kein Force-Push) für den Hauptbranch – mit Vorschau & Bestätigung |
 | `/state [projekt]` | Zeigt den aktuellen State-Checkpoint (PROJECT_STATE.md) und nächste Schritte für ein Projekt an |
+| `/goal [max] <ziel>` | Startet den autonomen Ziel-Loop: arbeitet selbstständig in Feedback-Schleifen weiter, bis das Projektziel erreicht und verifiziert ist |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
 | `/hilfe` | Zeigt diese Hilfe an |
@@ -753,6 +756,61 @@ class CLIInterface:
             return
         console.print(Panel(Markdown(format_report_for_humans(report)), title="🔧 Selbstoptimierungs-Vorschläge", border_style="cyan"))
 
+    async def _run_goal_loop_command(self, args: list[str]) -> None:
+        """
+        Startet den autonomen Ziel- und Feedback-Loop (/goal, /autoloop).
+        Arbeitet in aufeinanderfolgenden Iterationen weiter, bis das Ziel erreicht
+        und die Verifikation (Tests) grün ist.
+        """
+        from core.goal_loop import GoalLoopRunner
+
+        max_iterations = 5
+        goal_parts = []
+        if args and args[0].isdigit():
+            max_iterations = int(args[0])
+            goal_parts = args[1:]
+        else:
+            goal_parts = args
+
+        goal_text = " ".join(goal_parts).strip()
+        if not goal_text:
+            if self._loaded_project_dir:
+                proj_name = Path(self._loaded_project_dir).name
+                goal_text = f"Vervollständige die Entwicklung von {proj_name}, behebe alle offenen Test- und Schnittstellenfehler und stelle sicher, dass alle Tests grün sind."
+                console.print(f"🎯 [cyan]Kein separates Ziel angegeben – nutze geladenes Projekt `{proj_name}`:[/cyan]\n  '{goal_text}'\n")
+            else:
+                console.print(
+                    "⚠️ Bitte gib ein Ziel für den autonomen Loop an:\n"
+                    "👉 `/goal [max_runden] <Zielbeschreibung>` (z. B. `/goal Baue ein vollständiges Dashboard mit Tests`)",
+                    style="yellow"
+                )
+                return
+
+        runner = GoalLoopRunner(orchestrator=self._orchestrator)
+        original_sigint = self._install_cancel_handler()
+        try:
+            res = await runner.run(
+                goal=goal_text,
+                project_dir=self._loaded_project_dir,
+                max_iterations=max_iterations,
+                status_callback=lambda msg: console.print(msg),
+                cancel_requested=self._cancel_event.is_set,
+            )
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+
+        console.print()
+        console.print(
+            Panel(
+                Markdown(res.format_summary()),
+                title="[bold green]🎯 Autonomer Ziel-Loop: Abschlussbericht[/bold green]",
+                border_style="green" if res.success else "yellow",
+                padding=(1, 2),
+            )
+        )
+        if res.success:
+            await self._ask_for_git_push(f"feat: {goal_text[:60]}")
+
     async def _show_backlog(self) -> None:
         """
         Zeigt memory/backlog.json (core/backlog_store.py) - alle Tickets über CLI, Dashboard
@@ -893,6 +951,56 @@ class CLIInterface:
                 padding=(1, 2),
             )
         )
+
+    def _show_team_health(self) -> None:
+        """
+        Zeigt einen projektübergreifenden Health-Rollup (core/team_health.py) über ALLE
+        Projekte in workspace/ - macht sichtbar, welche Projekte gerade "rot" sind, seit wann,
+        und ob mehrere Projekte an DERSELBEN Fehlerkategorie scheitern (z.B. ein gemeinsam
+        kaputter Frontend-Baustein). Bisher musste dafür jedes .ai_team_status.json einzeln
+        von Hand gelesen werden.
+        """
+        from config import WORKSPACE_DIR
+        from core.team_health import build_team_health_rollup
+
+        rollup = build_team_health_rollup(WORKSPACE_DIR)
+        if not rollup.projects:
+            console.print(
+                "📭 Noch keine Projekte mit protokollierter Lauf-Historie in `workspace/` gefunden.",
+                style="dim",
+            )
+            return
+
+        status_icons = {
+            "ok": "✅", "failed": "⚠️", "budget_aborted": "🚫", "cancelled": "⏹️", "unknown": "❔",
+        }
+
+        table = Table(title="🩺 Team-Health-Rollup (alle Projekte)", box=box.ROUNDED)
+        table.add_column("Status")
+        table.add_column("Projekt", style="cyan")
+        table.add_column("Seit wann rot", justify="center")
+        table.add_column("Kategorie", style="magenta")
+        table.add_column("Letzter Lauf", style="dim")
+        table.add_column("Kurzfehler", style="dim")
+
+        for p in rollup.projects:
+            icon = status_icons.get(p.status, "❔")
+            streak = f"{p.red_streak} Lauf/Läufe in Folge" if p.red_streak else "-"
+            short_error = (p.failure_detail or "").splitlines()[0][:80] if p.failure_detail else ""
+            table.add_row(
+                icon, p.name, streak, p.failure_category or "-",
+                f"{p.timestamp}\n{p.task_summary}", short_error,
+            )
+
+        console.print(table)
+
+        if rollup.shared_patterns:
+            lines = ["🔗 [bold]Erkannte gemeinsame Fehlermuster:[/bold]"]
+            for category, names in rollup.shared_patterns.items():
+                lines.append(f"  • [bold]{category}[/bold]: {len(names)} Projekte betroffen ({', '.join(names)})")
+            console.print(Panel("\n".join(lines), border_style="yellow"))
+        else:
+            console.print("ℹ️ Kein gemeinsames Fehlermuster über mehrere Projekte hinweg erkannt.", style="dim")
 
     async def _delete_learning_with_confirmation(self, agent_id: str, index_str: str) -> None:
         """Entfernt eine einzelne gelernte Regel - IRREVERSIBEL, mit Bestätigung analog zu
@@ -1132,6 +1240,42 @@ class CLIInterface:
         if failed:
             console.print(f"⚠️ {len(failed)} Pfad(e) übersprungen: {', '.join(failed)}", style="yellow")
 
+    def _prune_worktrees(self) -> None:
+        """
+        Räumt verwaiste, vom KI-Team angelegte Git-Isolations-Worktrees (siehe
+        core/git_isolation.py) auf: bereits gemergte oder seit 7+ Tagen inaktive Worktrees
+        werden entfernt (der aktuell aktive Worktree und alles mit ungemergten Änderungen
+        bleibt garantiert unangetastet).
+        """
+        from config import BASE_DIR
+        from core.git_isolation import find_git_root, prune_stale_worktrees
+
+        git_root = find_git_root(BASE_DIR)
+        if not git_root:
+            console.print("⚠️ Kein Git-Repository gefunden - nichts zum Aufräumen.", style="yellow")
+            return
+
+        console.print("🧹 [bold cyan]Prüfe auf verwaiste KI-Team-Worktrees...[/bold cyan]")
+        actions = prune_stale_worktrees(git_root)
+
+        if not actions:
+            console.print("✅ Keine verwaisten Worktrees gefunden.", style="green")
+            return
+
+        removed = [a for a in actions if a.action == "removed"]
+        skipped = [a for a in actions if a.action == "skipped"]
+
+        if removed:
+            lines = [f"  🗑️ {a.branch} ({a.path})\n     Grund: {a.reason}" for a in removed]
+            console.print(
+                Panel("\n".join(lines), title=f"Entfernt ({len(removed)})", border_style="green")
+            )
+        if skipped:
+            lines = [f"  ⏭️ {a.branch} ({a.path})\n     Grund: {a.reason}" for a in skipped]
+            console.print(
+                Panel("\n".join(lines), title=f"Übersprungen ({len(skipped)})", border_style="yellow")
+            )
+
     async def _handle_command(self, command: str) -> bool:
         """Verarbeitet CLI-Befehle."""
         parts = command.strip().split()
@@ -1165,6 +1309,9 @@ class CLIInterface:
 
         elif cmd in ("/audit-projekt", "/audit", "/hygiene"):
             await self._audit_project(args[0] if args else None)
+
+        elif cmd in ("/prune-worktrees", "/worktrees-aufraeumen", "/cleanup-worktrees"):
+            self._prune_worktrees()
 
         elif cmd in ("/learnings", "/gelernt", "/knowledge"):
             self._show_learnings()
@@ -1228,6 +1375,12 @@ class CLIInterface:
 
         elif cmd in ("/state", "/checkpoint", "/status-projekt", "/status"):
             self._show_project_state(args[0] if args else None)
+
+        elif cmd in ("/goal", "/autoloop", "/ziel", "/loop"):
+            await self._run_goal_loop_command(args)
+
+        elif cmd in ("/team-health", "/teamgesundheit", "/rollup"):
+            self._show_team_health()
 
         elif cmd in ("/load", "/laden", "/open", "/oeffnen", "/import"):
             if not args:

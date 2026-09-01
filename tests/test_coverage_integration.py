@@ -47,8 +47,8 @@ class TestCoverageInVerificationLoop(unittest.TestCase):
         shutil.rmtree(self.temp_workspace, ignore_errors=True)
 
     def _run(self, coverage_report: CoverageReport, min_coverage: float):
-        @patch("agents.orchestrator.MIN_TEST_COVERAGE", min_coverage)
-        @patch("agents.orchestrator.ProjectVerifier")
+        @patch("agents.orchestrator.verification.MIN_TEST_COVERAGE", min_coverage)
+        @patch("agents.orchestrator.verification.ProjectVerifier")
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")
         def _inner(mock_synthesize, mock_decompose, mock_verifier_cls):

@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import agents.orchestrator as orch_module
+import agents.orchestrator.budget as orch_budget_module
 from agents.orchestrator import Orchestrator
 from core.llm_factory import LLMResponse, ToolCall
 from core.message_bus import AgentResult, AgentTask
@@ -108,7 +108,7 @@ class TestGovernanceFixLoop(unittest.TestCase):
         self.orchestrator._agents["backend"]._llm = _ScriptedLLM(written_file=backend_written_file)
         self.orchestrator._agents["code_reviewer"]._llm = _ScriptedLLM(text=code_reviewer_text)
 
-        @patch("agents.orchestrator.ProjectVerifier")
+        @patch("agents.orchestrator.verification.ProjectVerifier")
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")
         def _inner(mock_synthesize, mock_decompose, mock_verifier_cls):
@@ -152,7 +152,7 @@ class TestGovernanceFixLoop(unittest.TestCase):
     def test_review_only_agent_absent_adds_no_section(self):
         # Kein code_reviewer/security/compliance im Plan -> die Schleife hat nichts zu prüfen,
         # keine zusätzliche Sektion im Ergebnis (kein Rauschen für den Alltagsfall).
-        @patch("agents.orchestrator.ProjectVerifier")
+        @patch("agents.orchestrator.verification.ProjectVerifier")
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")
         def _inner(mock_synthesize, mock_decompose, mock_verifier_cls):
@@ -175,7 +175,7 @@ class TestGovernanceFixLoop(unittest.TestCase):
         self.assertNotIn("Governance-Fix-Protokoll", result)
 
     def test_disabled_flag_reproduces_old_behavior(self):
-        with patch("agents.orchestrator.ENABLE_GOVERNANCE_FIX_LOOP", False):
+        with patch("agents.orchestrator.verification.ENABLE_GOVERNANCE_FIX_LOOP", False):
             result, logs = self._run(CRITICAL_CODE_REVIEWER_REPORT)
 
         self.assertNotIn("Governance-Fix-Protokoll", result)
@@ -191,8 +191,8 @@ class TestGovernanceFixLoop(unittest.TestCase):
             content=CRITICAL_CODE_REVIEWER_REPORT,
         )
 
-        with patch.object(orch_module, "token_guard", fresh_guard), \
-             patch.object(orch_module, "MAX_RUN_TOKENS", 1):
+        with patch.object(orch_budget_module, "token_guard", fresh_guard), \
+             patch.object(orch_budget_module, "MAX_RUN_TOKENS", 1):
             results, summary, budget_aborted, cancelled = asyncio.run(self.orchestrator._run_governance_fix_loop(
                 project_dir=self.temp_workspace,
                 all_results=[code_reviewer_result],
@@ -221,8 +221,8 @@ class TestGovernanceFixLoop(unittest.TestCase):
         self.orchestrator._agents["backend"]._llm = _ScriptedLLM(written_file="backend/db.py")
         self.orchestrator._agents["code_reviewer"]._llm = _TwoStageLLM()
 
-        with patch("agents.orchestrator.MAX_REVIEW_ITERATIONS", 2):
-            @patch("agents.orchestrator.ProjectVerifier")
+        with patch("agents.orchestrator.verification.MAX_REVIEW_ITERATIONS", 2):
+            @patch("agents.orchestrator.verification.ProjectVerifier")
             @patch("core.task_manager.TaskManager.decompose")
             @patch("core.result_aggregator.ResultAggregator.synthesize")
             def _inner(mock_synthesize, mock_decompose, mock_verifier_cls):

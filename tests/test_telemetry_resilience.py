@@ -57,7 +57,7 @@ class TestTelemetryResilience(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.temp_workspace, ignore_errors=True)
 
-    @patch("agents.orchestrator.ProjectVerifier")
+    @patch("agents.orchestrator.verification.ProjectVerifier")
     @patch("core.task_manager.TaskManager.decompose")
     @patch("core.result_aggregator.ResultAggregator.synthesize")
     @patch("agents.orchestrator.record_run_usage")
@@ -100,17 +100,20 @@ class TestTelemetryResilience(unittest.TestCase):
         warning_lines = [line for line in status_logs if "Kosten-Historie" in line and "cache_read_tokens" in line]
         self.assertTrue(warning_lines, f"Erwartete Warnung zur fehlgeschlagenen Kosten-Historie fehlt in: {status_logs}")
 
-    @patch("agents.orchestrator.ProjectVerifier")
+    @patch("agents.orchestrator.verification.ProjectVerifier")
     @patch("core.task_manager.TaskManager.decompose")
     @patch("core.result_aggregator.ResultAggregator.synthesize")
-    @patch("agents.orchestrator.record_run")
+    # orchestrator.process() ruft inzwischen save_project_checkpoint() statt direkt
+    # record_run() auf (core/project_status.py) - siehe test_run_cancellation.py für denselben
+    # Patch-Punkt-Wechsel.
+    @patch("agents.orchestrator.save_project_checkpoint")
     @patch("agents.orchestrator.record_run_history")
     async def _run_with_all_three_broken(
-        self, mock_record_run_history, mock_record_run, mock_synthesize, mock_decompose, mock_verifier_cls,
+        self, mock_record_run_history, mock_save_checkpoint, mock_synthesize, mock_decompose, mock_verifier_cls,
     ):
         # Alle DREI Telemetrie-Aufrufe schlagen gleichzeitig fehl - jeder einzeln in einem
         # eigenen try/except, damit ein Fehler im einen die anderen beiden nicht verhindert.
-        mock_record_run.side_effect = RuntimeError("Projekt-Historie kaputt")
+        mock_save_checkpoint.side_effect = RuntimeError("Projekt-Historie kaputt")
         mock_record_run_history.side_effect = RuntimeError("Lauf-Historie kaputt")
 
         mock_decompose.return_value = (

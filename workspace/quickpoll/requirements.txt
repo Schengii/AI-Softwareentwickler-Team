@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+sqlalchemy[asyncio]
+greenlet
+asyncpg
+aiosqlite
+websockets
+pytest
+pytest-asyncio
+httpx

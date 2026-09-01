@@ -50,7 +50,7 @@ class TestDuplicateProjectWarning(unittest.TestCase):
         shutil.rmtree(self.temp_workspace, ignore_errors=True)
 
     def _run(self, new_slug: str):
-        @patch("agents.orchestrator.ProjectVerifier")
+        @patch("agents.orchestrator.verification.ProjectVerifier")
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")
         def _inner(mock_synthesize, mock_decompose, mock_verifier_cls):
@@ -163,6 +163,20 @@ class TestDuplicateProjectWarning(unittest.TestCase):
         logs = self._run("einmal_gescheitert")
 
         self.assertFalse(any("Wiederholtes Scheitern" in line for line in logs))
+
+    def test_warns_on_near_duplicate_slug_differing_only_by_separator(self):
+        """
+        Realer Fund (Workspace-Audit): "api_health_monitor" und "api-health-monitor" entstanden
+        als zwei separate, vollständig bezahlte Läufe für dieselbe Aufgabe - die generische
+        "Bereits vorhanden: ..."-Liste allein macht so einen fast identischen Namen nicht
+        besonders kenntlich. Ein eigener, direkter Hinweis wird jetzt ergänzt.
+        """
+        (self.orchestrator._workspace.base_dir / "api_health_monitor").mkdir()
+        logs = self._run("api-health-monitor")
+        self.assertTrue(
+            any("api_health_monitor" in line and "existiert bereits" in line for line in logs),
+            f"Erwarteter Nahezu-Duplikat-Hinweis fehlt in: {logs}",
+        )
 
     def test_no_same_session_hint_when_reusing_the_same_slug(self):
         """Wird im zweiten Lauf wieder derselbe Slug geraten (echte Fortsetzung), ist der

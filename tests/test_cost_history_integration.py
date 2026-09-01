@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import agents.orchestrator as orch_module
+import agents.orchestrator.budget as orch_budget_module
 import memory.cost_history as cost_history_module
 from agents.orchestrator import Orchestrator
 from core.llm_factory import LLMResponse
@@ -55,6 +56,11 @@ class TestModelUsageDeltasHelper(unittest.TestCase):
         guard_patch = patch.object(orch_module, "token_guard", self._fresh_guard)
         guard_patch.start()
         self.addCleanup(guard_patch.stop)
+        # BudgetMixin (agents/orchestrator/budget.py) hält eine EIGENE token_guard-Referenz -
+        # muss separat auf denselben frischen Zähler gepatcht werden (siehe test_run_budget_cap.py).
+        guard_patch_budget = patch.object(orch_budget_module, "token_guard", self._fresh_guard)
+        guard_patch_budget.start()
+        self.addCleanup(guard_patch_budget.stop)
 
     def test_delta_for_a_brand_new_model_equals_its_full_usage(self):
         start_stats = orch_module.token_guard.get_summary()["models"]  # leer
@@ -80,6 +86,11 @@ class TestCostHistoryReachesOrchestrator(unittest.TestCase):
         guard_patch = patch.object(orch_module, "token_guard", self._fresh_guard)
         guard_patch.start()
         self.addCleanup(guard_patch.stop)
+        # BudgetMixin (agents/orchestrator/budget.py) hält eine EIGENE token_guard-Referenz -
+        # muss separat auf denselben frischen Zähler gepatcht werden (siehe test_run_budget_cap.py).
+        guard_patch_budget = patch.object(orch_budget_module, "token_guard", self._fresh_guard)
+        guard_patch_budget.start()
+        self.addCleanup(guard_patch_budget.stop)
 
         self.temp_workspace = tempfile.mkdtemp()
         self.temp_cost_dir = tempfile.mkdtemp()

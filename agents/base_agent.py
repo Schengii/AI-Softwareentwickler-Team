@@ -367,8 +367,9 @@ Du hast direkten Zugriff auf das Projektverzeichnis über Werkzeuge:
 - `run_command` / `run_tests`: Um Abhängigkeiten zu installieren bzw. deine Änderungen wirklich zu verifizieren.
 
 Speichere Code IMMER direkt über write_file/edit_file im Projektverzeichnis – gib ihn nicht nur als Text in
-deiner Antwort aus. Deine finale Textantwort soll eine KURZE Zusammenfassung sein (was wurde geschrieben/geändert,
-warum, was ist noch offen) – kein erneutes Einfügen des kompletten Codes.{adr_note}
+deiner Antwort aus. Schreibe NIEMALS Platzhalter wie `# ...`, `# Rest beibehalten` oder unvollständigen Pseudo-Code;
+jede Datei muss zu 100% vollständig und syntaktisch lauffähig sein. Deine finale Textantwort soll eine KURZE
+Zusammenfassung sein (was wurde geschrieben/geändert, warum, was ist noch offen) – kein erneutes Einfügen des kompletten Codes.{adr_note}
 
 Triffst du auf eine ECHTE, für die Aufgabe entscheidende Unklarheit, die nur ein Mensch sinnvoll auflösen kann
 (nicht: eine übliche technische Entscheidung, die du selbst treffen kannst) – nutze `ask_human_for_clarification`,

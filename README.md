@@ -511,7 +511,8 @@ Playwright ist Laufzeit-Abhängigkeit (`requirements.txt`), nicht nur Dev-Tool -
 - **Fly.io:** Erstellt `fly.toml` und `Dockerfile` mit Region Frankfurt (`fra`) und Auto-Stop/Start, `--real` löst einen echten `flyctl deploy` aus.
 - **Vercel:** Erstellt `vercel.json` für Serverless Python-, Next.js- oder Static-Deployments, `--real` löst einen echten `vercel --prod` aus.
 - **Render / Railway:** Erstellt Blueprints (`render.yaml`, `railway.json`) – beide deployen über eine Git-Integration im jeweiligen Web-Dashboard (Repository dort verbinden), kein lokales CLI-Deploy-Kommando, `--real` meldet das ehrlich statt einen nie ausgeführten Deploy als erfolgreich zu behaupten.
-- **CLI:** `/deploy-cloud <fly|vercel|render|railway> [projekt] [--real]` – ohne `--real` ein sicherer Dry-Run (nur Manifeste), mit `--real` ein echter Deploy-Versuch mit echter, überwachter (siehe [🤖 Backlog-Worker & Produktions-Monitoring](#selbstgesteuert)) Preview-URL. Noch nicht im Web-Dashboard verdrahtet.
+- **CLI:** `/deploy-cloud <fly|vercel|render|railway> [projekt] [--real]` – ohne `--real` ein sicherer Dry-Run (nur Manifeste), mit `--real` ein echter Deploy-Versuch mit echter, überwachter (siehe [🤖 Backlog-Worker & Produktions-Monitoring](#selbstgesteuert)) Preview-URL.
+- **Web-Dashboard:** eigene Karte „☁️ Cloud-Deployment" (Provider- und Projekt-Auswahl, Checkbox für `--real` mit zusätzlicher Bestätigung) – ruft `POST /api/deploy-cloud` auf, Fortschritt über `GET /api/deploy-cloud-status/<projekt>` pollbar (gleiches Prinzip wie das lokale Docker-Deployment).
 
 ---
 
@@ -686,6 +687,7 @@ python main.py --check-pr-reviews           # EIN Poll-Zyklus über offene PR-Re
 python main.py --check-dependencies         # Workspace-weiter Schwachstellen-Scan + Auto-Update-PR
 python main.py --work-backlog                # EIN Poll-Zyklus über wartende "todo"-Backlog-Tickets
 python main.py --check-deployments           # EIN Poll-Zyklus: Erreichbarkeit aller Cloud-Deployments prüfen
+python main.py --audit-workspace             # EIN Poll-Zyklus: Verifikation aller Workspace-Projekte erneut prüfen
 python main.py --eval [--tasks t1,t2]       # Reproduzierbare Benchmark-Suite ausführen
 python main.py --list-evals                 # Alle Benchmark-Aufgaben auflisten
 ```
@@ -702,6 +704,19 @@ betroffene Paket automatisch an und öffnet dafür – über denselben PR-Mechan
 Issue-Watcher, ohne menschliche Bestätigung (unbeaufsichtigter Poll-Zyklus) – einen echten
 Pull Request. Das Backlog-Ticket landet dann auf `review` statt `blocked`. Abschaltbar über
 `ENABLE_DEPENDENCY_AUTO_UPDATE=false`.
+
+**`--audit-workspace` deckt unbemerkt liegen gebliebene Projekte auf:** Realer Fund bei einer
+Bestandsaufnahme des eigenen Teams – mehrere Workspace-Projekte trugen `verification_ok: false`
+in ihrer `.ai_team_status.json`, wurden aber seit dem letzten Lauf nie erneut geprüft, ob der
+Zustand noch aktuell ist. `core/workspace_audit.py` führt `ProjectVerifier.run_tests()` erneut
+gegen JEDES Workspace-Projekt aus (unabhängig von aktiver Entwicklung) und öffnet bei einem
+echten Fehlschlag ein Backlog-Ticket – dasselbe On-Call-Prinzip wie `--check-dependencies`, nur
+für Verifikations-Drift statt neuer CVEs. `core/verifier.py` erkennt dabei zusätzlich zwei
+konkret beobachtete Muster als echten Fehlschlag statt als harmloses "keine Tests gefunden":
+ein mehrteiliges Backend-Projekt mit `requirements.txt`/`pyproject.toml`, aber ohne jeden
+Einstiegspunkt (`main.py`/`app.py`/…), sowie ein `tests/`-Ordner mit `conftest.py`, aber ohne
+eine einzige echte Testdatei – beides sieht nach einem mitten in der Generierung abgebrochenen
+Lauf aus, nicht nach einem Projekt, das bewusst auf Tests verzichtet.
 
 **`/protect-branch [branch]` sichert den Hauptbranch zusätzlich auf GitHub-Seite selbst ab:**
 Der PR-Workflow oben verhindert nur, dass dieses Tool direkt auf `main` pusht – ein Mensch
@@ -733,15 +748,18 @@ nicht, ein Mensch prüft die betroffene(n) Datei(en) gezielt nach.
 | `/run-tests [projekt]` | Führt automatische Unit-Tests im Projekt aus |
 | `/delete-project <name>` | Löscht ein Projekt unwiderruflich aus dem Workspace (mit Bestätigung) |
 | `/audit-projekt [projekt]` | Lässt den Projekt-Hygiene-Agenten das Framework (oder ein Projekt) wirklich durchsehen; Löschungen nur nach Bestätigung |
+| `/prune-worktrees` | Räumt verwaiste, vom KI-Team angelegte Git-Isolations-Worktrees auf (bereits gemergte oder seit 7+ Tagen inaktive Worktrees; niemals der aktive Worktree oder ungemergte Änderungen) |
 | `/learnings` | Zeigt alle von den Agenten gelernten Regeln (persistentes Gedächtnis) mit Nummer je Agent an |
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
 | `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/adr [projekt]` | Zeigt die dokumentierten Architecture Decision Records (Begründungen echter Architektur-Entscheidungen) eines Projekts |
 | `/backlog` | Zeigt das Kanban-Board (Todo/In Bearbeitung/Review/Blockiert/Fertig) über CLI, Dashboard UND autonome Issue-Läufe hinweg, inkl. Priorität und WIP-Limit-Warnung |
+| `/team-health` (Aliase `/teamgesundheit`, `/rollup`) | Projektübergreifender Health-Rollup über alle Projekte in `workspace/` (aus `core/team_health.py`): pro Projekt Status, seit wann in Folge rot, sowie erkannte gemeinsame Fehlermuster (z.B. mehrere Projekte scheitern gleichzeitig am selben Frontend-Check) |
 | `/backlog-add [priorität] <titel>` | Legt manuell ein priorisiertes, noch nicht begonnenes Ticket im Status "todo" an (Priorität: 1/hoch, 2/mittel, 3/niedrig) |
 | `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
 | `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |
 | `/push` | Führt manuell einen Git-Commit & Push aus (mit Secret-Scan, Verifikations-Warnung & PR-Workflow) |
+| `/rollback <PR-Nummer>` | Revertiert einen bereits gemergten PR über einen echten `git revert` + Revert-Pull-Request (mit Vorschau & Bestätigung) – kein Direct-Commit auf den Hauptbranch |
 | `/protect-branch [branch]` | Aktiviert echte GitHub-Branch-Protection (Pflicht-Reviews vor Merge, kein Force-Push/Löschen) für den Hauptbranch – mit Vorschau & Bestätigung |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |

@@ -461,6 +461,63 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
         return "unknown", f"Unbekannter PR-Status: '{state}'"
 
     # ──────────────────────────────────────────
+    # Rollback: echter Revert-Workflow für bereits gemergte PRs
+    # ──────────────────────────────────────────
+    # Realer Fund bei einer Bestandsaufnahme des eigenen Teams: bricht ein gemergter PR den
+    # Hauptbranch (z.B. rotes CI erst NACH dem Merge bemerkt, siehe oben), gab es keinerlei
+    # Mechanismus, das rückgängig zu machen - nur der manuelle Weg über GitHub selbst. Ein
+    # echtes Team hat einen bekannten, schnellen Rollback-Pfad. interface/cli.py._rollback_
+    # merged_pr() nutzt die folgenden zwei Methoden dafür (`/rollback <PR-Nummer>`).
+
+    def get_merged_pr_info(self, pr_number: int) -> tuple[bool, str, str]:
+        """
+        Liest Merge-Commit-SHA und Titel eines PRs per `gh pr view` – Voraussetzung für
+        revert_commit(). Ein Revert ergibt nur für einen TATSÄCHLICH gemergten PR Sinn, daher
+        (False, Fehlermeldung, "") bei jedem anderen Zustand (offen, geschlossen ohne Merge,
+        nicht gefunden, `gh` nicht nutzbar) statt eines falschen Erfolgs.
+        """
+        try:
+            result = subprocess.run(
+                ["gh", "pr", "view", str(pr_number), "--json", "state,mergeCommit,title"],
+                cwd=BASE_DIR, capture_output=True, text=True, timeout=15, encoding="utf-8",
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return False, f"gh CLI nicht nutzbar: {e}", ""
+        if result.returncode != 0:
+            return False, (result.stderr or result.stdout).strip() or f"PR #{pr_number} nicht gefunden.", ""
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return False, "Unerwartete Ausgabe von `gh pr view`.", ""
+
+        state = (data.get("state") or "").upper()
+        if state != "MERGED":
+            return False, f"PR #{pr_number} ist nicht gemerged (Status: {state or 'unbekannt'}).", ""
+        merge_commit = (data.get("mergeCommit") or {}).get("oid") or ""
+        if not merge_commit:
+            return False, f"PR #{pr_number} hat keinen bekannten Merge-Commit.", ""
+        return True, merge_commit, data.get("title", "")
+
+    def revert_commit(self, commit_sha: str) -> tuple[bool, str]:
+        """
+        Erstellt einen echten `git revert --no-edit <sha>` auf dem AKTUELL ausgecheckten
+        Branch – der Aufrufer legt vorher per create_branch() einen eigenen Revert-Branch an
+        (siehe interface/cli.py._rollback_merged_pr()), damit der Revert genau wie jede andere
+        Änderung über den normalen PR-Workflow läuft statt direkt auf den Hauptbranch
+        durchzuschlagen. `--no-edit` übernimmt Gits Standard-Commit-Message
+        ('Revert "<ursprüngliche Message>"') unverändert, damit die Herkunft nachvollziehbar
+        bleibt. Ein Merge-Konflikt beim Revert selbst (z.B. weil seitdem überlappender Code
+        dazukam) ist KEIN Absturz, nur ein Fehlschlag – der Aufrufer bricht dann sauber ab.
+        """
+        result = subprocess.run(
+            ["git", "revert", "--no-edit", commit_sha],
+            cwd=BASE_DIR, capture_output=True, text=True, encoding="utf-8",
+        )
+        success = result.returncode == 0
+        output = result.stdout + result.stderr
+        return success, output.strip()
+
+    # ──────────────────────────────────────────
     # Issue-Polling: autonome, getriggerte Läufe (core/issue_watcher.py)
     # ──────────────────────────────────────────
     # Gegenstück zum PR-Workflow oben: nicht nur ein Mensch stößt über die CLI einen Lauf an,

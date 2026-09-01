@@ -87,6 +87,39 @@ class TestCostHistory(unittest.TestCase):
         self.assertIn("first_recorded_at", totals)
         self.assertIn("last_recorded_at", totals)
 
+    def test_legacy_entry_missing_cache_keys_does_not_crash_on_next_run(self):
+        """
+        Realer Fund aus einem echten Praxislauf: memory/cost_history.json wurde ursprünglich
+        OHNE "cache_read_tokens"/"cache_write_tokens" geschrieben (bevor diese Spalten zu
+        _STAT_KEYS hinzukamen). record_run_usage()s setdefault() füllt einen Standardwert nur
+        bei einem komplett NEUEN Modell-Eintrag, NICHT bei einem bereits vorhandenen -
+        entry["cache_read_tokens"] += ... schlug deshalb bei jedem folgenden Lauf mit
+        KeyError('cache_read_tokens') fehl. Der Lauf selbst überlebte nur, weil
+        agents/orchestrator.py diesen Aufruf separat in try/except kapselt - hier wird
+        record_run_usage() direkt getestet, ohne dieses Sicherheitsnetz.
+        """
+        # Simuliert einen alten, VOR der cache_read/write-Erweiterung geschriebenen Eintrag.
+        self.file_path.write_text(json.dumps({
+            "models": {
+                "gemini-3.6-flash": {
+                    "total_calls": 5, "prompt_tokens": 500, "completion_tokens": 200, "total_tokens": 700,
+                },
+            },
+            "runs_recorded": 1,
+        }), encoding="utf-8")
+
+        record_run_usage({
+            "gemini-3.6-flash": {
+                "total_calls": 1, "prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70,
+                "cache_read_tokens": 30, "cache_write_tokens": 10,
+            },
+        })
+
+        stat = get_lifetime_totals()["models"]["gemini-3.6-flash"]
+        self.assertEqual(stat["total_tokens"], 770)
+        self.assertEqual(stat["cache_read_tokens"], 30)
+        self.assertEqual(stat["cache_write_tokens"], 10)
+
 
 if __name__ == "__main__":
     unittest.main()

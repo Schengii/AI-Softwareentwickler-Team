@@ -43,7 +43,15 @@ def record_run_usage(model_deltas: dict[str, dict[str, int]]) -> None:
         if delta.get("total_tokens", 0) <= 0:
             continue
         entry = totals.setdefault(model_name, dict.fromkeys(_STAT_KEYS, 0))
+        # Realer Fund aus einem echten Lauf: setdefault() oben füllt einen Standardwert NUR,
+        # wenn model_name INSGESAMT noch fehlt - ein bereits vorhandener Eintrag aus einer
+        # Zeit VOR "cache_read_tokens"/"cache_write_tokens" in _STAT_KEYS (jedes Modell in der
+        # echten memory/cost_history.json war betroffen) hatte diese beiden Schlüssel nicht,
+        # entry[key] += ... schlug dann mit KeyError('cache_read_tokens') fehl - fälschlich
+        # lange als SDK-Eigenheit vermutet, tatsächlich ein simples Schema-Migrations-Loch.
+        # entry.setdefault(key, 0) backfillt fehlende Schlüssel an bestehenden Einträgen.
         for key in _STAT_KEYS:
+            entry.setdefault(key, 0)
             entry[key] += delta.get(key, 0)
 
     data["runs_recorded"] = data.get("runs_recorded", 0) + 1

@@ -24,6 +24,12 @@ class BudgetMixin:
         memory/cost_history.py.record_run_usage(). Ein Modell, das erst WÄHREND dieses Laufs
         zum ersten Mal genutzt wurde, hatte in start_model_stats naturgemäß noch keinen
         Eintrag (Delta = voller aktueller Wert, nicht 0).
+
+        Realer Fund: "cache_read_tokens"/"cache_write_tokens" fehlten hier bisher komplett -
+        record_run_usage() erhielt dadurch für jedes Modell IMMER ein Delta von 0 für beide
+        Werte, selbst wenn Prompt-Caching (core/llm_factory.py) tatsächlich Cache-Treffer
+        hatte. memory/cost_history.json blieb für diese beiden Spalten dauerhaft bei 0 stehen,
+        obwohl core/token_guard.py sie längst korrekt mitzählt.
         """
         end_stats = token_guard.get_summary()["models"]
         deltas: dict[str, dict[str, int]] = {}
@@ -31,7 +37,10 @@ class BudgetMixin:
             start_stat = start_model_stats.get(model_name, {})
             deltas[model_name] = {
                 key: end_stat.get(key, 0) - start_stat.get(key, 0)
-                for key in ("total_calls", "prompt_tokens", "completion_tokens", "total_tokens")
+                for key in (
+                    "total_calls", "prompt_tokens", "completion_tokens", "total_tokens",
+                    "cache_read_tokens", "cache_write_tokens",
+                )
             }
         return deltas
 

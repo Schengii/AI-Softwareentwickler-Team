@@ -52,7 +52,7 @@ def test_goal_iteration_report_and_summary():
     assert "Ziel erfolgreich" in summary
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_goal_loop_single_iteration_success(tmp_path):
     """Testet, dass der Loop sofort stoppt, wenn in Iteration 1 das Ziel erreicht und verifiziert ist."""
     mock_orchestrator = MagicMock()
@@ -80,7 +80,7 @@ async def test_goal_loop_single_iteration_success(tmp_path):
         assert mock_orchestrator.process.call_count == 1
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_goal_loop_multi_iteration_recovery(tmp_path):
     """Testet, dass der Loop bei anfänglichem Fehlschlag einen Folge-Prompt generiert und weiterarbeitet."""
     mock_orchestrator = MagicMock()
@@ -119,7 +119,7 @@ async def test_goal_loop_multi_iteration_recovery(tmp_path):
         assert "Repariere den Testfehler" in mock_orchestrator.process.call_args_list[1].kwargs["user_request"]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_goal_loop_cancellation(tmp_path):
     """Testet den kooperativen Abbruch per Cancel-Event."""
     mock_orchestrator = MagicMock()
@@ -140,7 +140,7 @@ async def test_goal_loop_cancellation(tmp_path):
     assert mock_orchestrator.process.call_count == 0
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_goal_loop_stagnation_aborts_early(tmp_path):
     """
     Liefert die Verifikation zwei Iterationen in Folge exakt denselben Fehler, dreht sich der
@@ -175,7 +175,7 @@ async def test_goal_loop_stagnation_aborts_early(tmp_path):
         assert "stagnier" in res.final_message.lower()
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_goal_loop_cumulative_token_budget_aborts(tmp_path, monkeypatch):
     """
     GOAL_LOOP_MAX_TOTAL_TOKENS begrenzt den Gesamtverbrauch ÜBER ALLE Iterationen hinweg -
@@ -219,7 +219,7 @@ async def test_goal_loop_cumulative_token_budget_aborts(tmp_path, monkeypatch):
         assert "budget" in res.final_message.lower()
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_goal_loop_empty_goal_returns_immediately_without_orchestrator_call():
     """Ein leeres/nur-Whitespace-Ziel darf den Orchestrator nie starten (kein Tokenverbrauch)."""
     mock_orchestrator = MagicMock()
@@ -236,7 +236,7 @@ async def test_goal_loop_empty_goal_returns_immediately_without_orchestrator_cal
     assert "leeres ziel" in res.final_message.lower()
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_goal_loop_max_iterations_below_one_is_clamped(tmp_path):
     """max_iterations=0 (oder negativ) darf den Loop nicht stillschweigend zu einem No-Op machen."""
     mock_orchestrator = MagicMock()
@@ -261,7 +261,7 @@ async def test_goal_loop_max_iterations_below_one_is_clamped(tmp_path):
         assert res.success is True
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_goal_loop_exception_reports_crash_not_generic_max_iterations_message(tmp_path):
     """
     Eine Exception mitten im Orchestrator-Lauf muss als echter Fehler im Abschlussbericht

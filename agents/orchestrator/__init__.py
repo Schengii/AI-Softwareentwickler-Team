@@ -118,6 +118,7 @@ from core.project_status import (
     count_consecutive_failed_runs,
     format_context_for_agents,
     has_repeated_failure,
+    has_repeated_lint_finding,
     read_status,
     save_project_checkpoint,
 )
@@ -779,6 +780,30 @@ class Orchestrator(
                 )
                 log_decision(project_dir, "recurring_failure_ticket_opened", verification_summary.strip()[:300])
 
+        # Analog zur "wiederholtes Scheitern"-Eskalation oben, aber für Lint-Funde: ein
+        # Lint-Fund ist bewusst rein informativ und setzt verification_ok NIE zurück (siehe
+        # core/verifier/lint.py) - has_repeated_failure() griff deshalb nie, egal wie oft
+        # sich derselbe Lint-Fund wiederholte. Realer Fund (Team-Retrospektive, omnichat-
+        # Projekt): dasselbe ruff-F841 blieb über drei volle Läufe unverändert bestehen.
+        # `ruff check --fix` behebt inzwischen triviale Fälle bereits vor dem Report - dieser
+        # Check fängt die verbleibenden, nicht automatisch behebbaren Funde ab.
+        lint_signature = getattr(self, "last_lint_signature", [])
+        if lint_signature and has_repeated_lint_finding(project_dir):
+            notify(
+                "🎨 [bold yellow]Wiederkehrender Lint-Fund erkannt:[/bold yellow] Derselbe Lint-Fund "
+                "besteht unverändert über mehrere Läufe. Ein Backlog-Ticket für menschliche Prüfung "
+                "wurde eröffnet."
+            )
+            try:
+                upsert_ticket(
+                    ticket_id=f"recurring-lint-{self.last_project_slug}",
+                    title=f"Wiederkehrender Lint-Fund: {self.last_project_slug}",
+                    source="orchestrator", status="blocked", project_slug=self.last_project_slug,
+                    detail="; ".join(sorted(lint_signature)[:10]),
+                )
+            except Exception as e:
+                notify(f"⚠️ [dim yellow]Ticket für wiederkehrenden Lint-Fund konnte nicht angelegt werden: {e}[/dim yellow]")
+
         # Projekt-Hygiene: automatisch regenerierbare Caches (__pycache__, .pytest_cache, …),
         # die die echte Testausführung gerade erzeugt hat, physisch entfernen. Bewusst OHNE
         # Bestätigungs-Gate, da ausschließlich sicher regenerierbare Verzeichnisse betroffen
@@ -926,6 +951,7 @@ class Orchestrator(
                 files_written=all_written_files,
                 verification_summary=verification_summary,
                 clarification_questions=self.last_clarification_questions,
+                lint_signature=getattr(self, "last_lint_signature", []),
             )
         except Exception as e:
             notify(f"⚠️ [dim yellow]Projekt-Historie / State-Checkpoint (save_project_checkpoint) konnte nicht aktualisiert werden: {e}[/dim yellow]")

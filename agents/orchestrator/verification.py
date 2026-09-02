@@ -783,6 +783,27 @@ class VerificationMixin:
             if attempt == MAX_VERIFICATION_ITERATIONS:
                 notify("  ⚠️ [yellow]Maximale Verifikations-Iterationen erreicht – letzter Stand wird übernommen.[/yellow]")
                 summary_lines.append(f"- ⚠️ Nach {MAX_VERIFICATION_ITERATIONS} Versuchen nicht vollständig grün – letzter Stand wurde übernommen.")
+                # Realer Fund (Team-Retrospektive, omnichat-Projekt): bisher wurde ein nach
+                # MAX_VERIFICATION_ITERATIONS aufgegebener Testfehlschlag NUR geloggt - kein
+                # Backlog-Ticket, keine sonstige Eskalation. Die bereits bestehende
+                # `has_repeated_failure`-Eskalation in agents/orchestrator/__init__.py greift
+                # erst NACH zwei aufeinanderfolgenden kompletten Läufen - hier wird bereits
+                # beim ERSTEN Scheitern innerhalb dieses einen Laufs ein Ticket eröffnet
+                # (upsert_ticket, dieselbe Ticket-ID wie ein etwaiges späteres wiederholtes
+                # Scheitern würde erzeugen, damit beide Pfade dasselbe Ticket aktualisieren
+                # statt Duplikate anzulegen), statt auf einen zweiten fehlgeschlagenen Lauf
+                # zu warten, bevor überhaupt ein sichtbares Signal für menschliche Prüfung
+                # entsteht.
+                if self.last_project_slug:
+                    try:
+                        upsert_ticket(
+                            ticket_id=f"recurring-failure-{self.last_project_slug}",
+                            title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                            source="orchestrator", status="blocked", project_slug=self.last_project_slug,
+                            detail="\n".join(summary_lines).strip()[:300],
+                        )
+                    except Exception as e:
+                        notify(f"  ⚠️ [dim yellow]Ticket für ungelösten Testfehler konnte nicht angelegt werden: {e}[/dim yellow]")
 
         # Echtes Deployment beginnt damit, dass das Projekt sich überhaupt containerisieren
         # lässt: ein generiertes Dockerfile, das nie tatsächlich baut, bringt niemanden näher
@@ -881,11 +902,20 @@ class VerificationMixin:
         # Meinungsänderung an einem Projekt, das sich nie dafür entschieden hat). Rein
         # informativ, beeinflusst verification_ok nicht - anders als ein Testfehler hat ein
         # Lint-Fund oft keine unmittelbare Ein-Zeilen-Lösung.
+        # Fingerabdruck aller Lint-Funde dieses Laufs ("tool:datei:regel") - dient
+        # core/project_status.py.has_repeated_lint_finding() dazu, denselben, über mehrere
+        # Läufe unverändert bestehen bleibenden Lint-Fund zu erkennen (siehe Kommentar dort).
+        # self.last_lint_signature statt Erweiterung des Rückgabe-Tupels dieser Methode - hält
+        # bestehende Aufrufer/Tests, die die feste Tupel-Länge erwarten, unverändert.
+        self.last_lint_signature: list[str] = []
         if not (budget_aborted or manually_cancelled):
             lint_reports = await asyncio.to_thread(verifier.check_lint)
             for lint in lint_reports:
                 if not lint.attempted:
                     continue
+                self.last_lint_signature.extend(
+                    f"{lint.tool}:{i.file_path}:{i.rule}" for i in lint.issues
+                )
                 if not lint.passed:
                     top = "; ".join(
                         f"{i.file_path}:{i.line_number} [{i.rule}]" for i in lint.issues[:5]

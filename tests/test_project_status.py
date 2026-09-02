@@ -17,6 +17,7 @@ from core.project_status import (
     FULL_LOG_FILENAME,
     count_consecutive_failed_runs,
     format_context_for_agents,
+    has_repeated_lint_finding,
     read_status,
     record_run,
 )
@@ -157,6 +158,36 @@ class TestProjectStatus(unittest.TestCase):
             self.assertNotIn("Lauf Nr. 0\n", content)
         finally:
             project_status.MAX_FULL_LOG_BYTES = original_max
+
+    def test_has_repeated_lint_finding_true_for_identical_signature_across_streak(self):
+        # Realer Fund (Team-Retrospektive, omnichat-Projekt): dasselbe ruff-F841 blieb über
+        # mehrere volle Läufe unverändert bestehen, ohne dass has_repeated_failure() je
+        # griff (Lint beeinflusst verification_ok nicht).
+        sig = ["ruff:tests/test_chat_flow.py:F841"]
+        record_run(self.temp_dir, "Lauf 1", verification_ok=False, budget_aborted=False,
+                   files_written_count=1, lint_signature=sig)
+        record_run(self.temp_dir, "Lauf 2", verification_ok=False, budget_aborted=False,
+                   files_written_count=1, lint_signature=sig)
+        self.assertTrue(has_repeated_lint_finding(self.temp_dir))
+
+    def test_has_repeated_lint_finding_false_when_signature_changes(self):
+        record_run(self.temp_dir, "Lauf 1", verification_ok=False, budget_aborted=False,
+                   files_written_count=1, lint_signature=["ruff:a.py:F841"])
+        record_run(self.temp_dir, "Lauf 2", verification_ok=False, budget_aborted=False,
+                   files_written_count=1, lint_signature=["ruff:b.py:UP007"])
+        self.assertFalse(has_repeated_lint_finding(self.temp_dir))
+
+    def test_has_repeated_lint_finding_false_when_no_lint_findings(self):
+        record_run(self.temp_dir, "Lauf 1", verification_ok=True, budget_aborted=False, files_written_count=1)
+        record_run(self.temp_dir, "Lauf 2", verification_ok=True, budget_aborted=False, files_written_count=1)
+        self.assertFalse(has_repeated_lint_finding(self.temp_dir))
+
+    def test_has_repeated_lint_finding_ignores_signature_order(self):
+        record_run(self.temp_dir, "Lauf 1", verification_ok=False, budget_aborted=False,
+                   files_written_count=1, lint_signature=["ruff:a.py:F841", "ruff:b.py:UP007"])
+        record_run(self.temp_dir, "Lauf 2", verification_ok=False, budget_aborted=False,
+                   files_written_count=1, lint_signature=["ruff:b.py:UP007", "ruff:a.py:F841"])
+        self.assertTrue(has_repeated_lint_finding(self.temp_dir))
 
 
 if __name__ == "__main__":

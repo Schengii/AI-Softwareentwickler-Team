@@ -48,6 +48,15 @@ MAX_FULL_LOG_BYTES = 5 * 1024 * 1024
 # Injektion in format_context_for_agents).
 MAX_FAILURE_DETAIL_CHARS = 500
 
+# Wie viele Lint-Fund-Signaturen ("tool:datei:regel") pro Lauf in der Historie gespeichert
+# werden - Grundlage für has_repeated_lint_finding() unten. Realer Fund (Team-Retrospektive,
+# omnichat-Projekt): derselbe Lint-Fund (ruff F841) blieb über DREI aufeinanderfolgende volle
+# Läufe unverändert bestehen, weil Lint bewusst rein informativ ist (siehe
+# core/verifier/lint.py) und deshalb NIE verification_ok beeinflusst - has_repeated_failure()
+# griff dadurch nie, egal wie oft sich derselbe Lint-Fund wiederholte. 20 reicht für einen
+# aussagekräftigen Fingerabdruck, ohne die Historie-Datei unnötig aufzublähen.
+MAX_LINT_SIGNATURE_ITEMS = 20
+
 
 def _status_path(project_dir: str) -> Path:
     return Path(project_dir) / STATUS_FILENAME
@@ -235,6 +244,7 @@ def save_project_checkpoint(
     next_steps: list[str] | None = None,
     verification_summary: str = "",
     clarification_questions: list[str] | None = None,
+    lint_signature: list[str] | None = None,
 ) -> None:
     """Speichert sowohl .ai_team_status.json als auch die lesbare PROJECT_STATE.md im Projektordner."""
     # 1. Update .ai_team_status.json
@@ -247,6 +257,7 @@ def save_project_checkpoint(
         cancelled=cancelled,
         verification_summary=verification_summary,
         clarification_questions=clarification_questions,
+        lint_signature=lint_signature,
     )
 
     # 2. Update PROJECT_STATE.md
@@ -275,6 +286,7 @@ def record_run(
     cancelled: bool = False,
     verification_summary: str = "",
     clarification_questions: list[str] | None = None,
+    lint_signature: list[str] | None = None,
 ) -> None:
     """Fügt diesen Lauf vorne in die Historie ein (neueste zuerst), gedeckelt auf
     MAX_HISTORY_ENTRIES."""
@@ -287,6 +299,11 @@ def record_run(
         "cancelled": cancelled,
         "files_written_count": files_written_count,
     }
+    if lint_signature:
+        # Sortiert (nicht Erfassungsreihenfolge) - has_repeated_lint_finding() vergleicht
+        # zwei Läufe als Mengen-Gleichheit, die Reihenfolge, in der ruff Funde ausgibt, ist
+        # dafür irrelevant und soll einen echten Vergleich nicht durch Zufall verfälschen.
+        entry["lint_signature"] = sorted(lint_signature)[:MAX_LINT_SIGNATURE_ITEMS]
     if verification_summary.strip():
         # Bei Fehlschlag als failure_detail (siehe format_context_for_agents-Eskalation unten),
         # bei Erfolg als success_detail - Punkt 5 einer Team-Retrospektive: bisher wurde ein
@@ -423,5 +440,24 @@ def has_repeated_failure(project_dir: str, streak: int = 2) -> bool:
         not e.get("verification_ok") and not e.get("budget_aborted") and not e.get("cancelled")
         for e in recent
     )
+
+
+def has_repeated_lint_finding(project_dir: str, streak: int = 2) -> bool:
+    """True, wenn die letzten `streak` Läufe ALLE denselben, nicht-leeren Satz an Lint-Fund-
+    Signaturen ("tool:datei:regel") aufweisen - unabhängig von verification_ok, budget_aborted
+    oder cancelled, denn ein Lint-Fund ist bewusst rein informativ (siehe core/verifier/lint.py)
+    und beeinflusst diese Felder NIE. has_repeated_failure() oben griff deshalb nie, egal wie
+    oft sich derselbe Lint-Fund wiederholte (real beobachtet: omnichat, dasselbe ruff-F841 über
+    drei volle Läufe unverändert). `ruff check --fix` behebt inzwischen triviale Fälle bereits
+    vor dem Report (core/verifier/lint.py) - dieser Check fängt die verbleibenden, nicht
+    automatisch behebbaren Funde ab, die sonst weiterhin unbegrenzt wiederkehren könnten."""
+    recent = read_status(project_dir)[:streak]
+    if len(recent) != streak:
+        return False
+    first_signature = recent[0].get("lint_signature")
+    if not first_signature:
+        return False
+    first_set = set(first_signature)
+    return all(set(e.get("lint_signature") or []) == first_set for e in recent[1:])
 
 

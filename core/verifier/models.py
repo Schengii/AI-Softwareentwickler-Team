@@ -45,6 +45,24 @@ _NODE_ENV_ERROR_PATTERN = re.compile(
 # grep-bare Zeilenformat: "pfad(zeile,spalte): error TSxxxx: nachricht".
 _TSC_ERROR_PATTERN = re.compile(r"^(.+?)\((\d+),(\d+)\): (error|warning) (TS\d+): (.+)$", re.MULTILINE)
 
+# Realer Fund (incidentpilot-Projekt): `docker build` schlug mit "failed to connect to the
+# docker API at npipe:////./pipe/dockerDesktopLinuxEngine; ... check if ... the daemon is
+# running" fehl - Docker war lokal installiert (shutil.which("docker") findet die CLI), aber
+# Docker Desktop lief nicht. Das landete bisher als ganz normaler ❌ Build-Fehlschlag im
+# Verifikations-Report, ununterscheidbar von einem echten, im generierten Dockerfile liegenden
+# Fehler - dabei sagt eine fehlende Daemon-Verbindung nichts über die Codequalität aus, genau
+# wie ein fehlendes `docker`-Kommando selbst (siehe reason_skipped-Zweig oben in
+# check_docker_build()). Erkennt die verbreitetsten Docker-/Podman-Daemon-Konnektivitätsfehler.
+_DOCKER_DAEMON_UNAVAILABLE_RE = re.compile(
+    r"cannot connect to the docker daemon"
+    r"|(?:check if|is) the docker daemon is running"
+    r"|failed to connect to the docker api"
+    r"|error during connect.*(?:pipe|socket)"
+    r"|docker daemon is not running"
+    r"|Is the docker daemon running",
+    re.IGNORECASE,
+)
+
 # ESLint-Konfigurationsdateien, deren Vorhandensein signalisiert, dass das Projekt ESLint
 # selbst bewusst eingerichtet hat – nur DANN wird gelintet, um keine ungefragte Meinung
 # über den Code-Stil eines Projekts durchzusetzen, das sich nie für ESLint entschieden hat.

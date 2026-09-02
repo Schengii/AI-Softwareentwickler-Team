@@ -36,6 +36,7 @@ from core.message_bus import AgentResult, AgentTask
 from core.review_gate import (
     find_critical_findings,
     find_permission_blocked_questions,
+    find_structural_scope_questions,
     route_findings_to_owners,
 )
 from core.team_memory import record_lesson
@@ -509,6 +510,122 @@ class VerificationMixin:
         )
         return all_results, summary, False, False
 
+    async def _run_scope_clarification_autofix(
+        self,
+        project_dir: str,
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        notify: Callable[[str], None],
+        run_start_tokens: int | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> tuple[list[AgentResult], str, bool, bool]:
+        """
+        Realer Fund (incidentpilot-Projekt): der tester-Agent stellte eine echte fachliche
+        Scope-Rückfrage ("Soll ich die Grundstruktur der Anwendung ... von Grund auf neu
+        erstellen, da ich kein 'app/'-Verzeichnis sehe?") statt sie autonom zu beantworten und
+        weiterzuarbeiten. Anders als eine Schreibrechte-Rückfrage (siehe
+        _run_permission_blocked_clarification_fix oben) passt hier KEIN Muster von
+        find_permission_blocked_questions() - die Frage blieb deshalb unbeantwortet in
+        .ai_team_status.json (open_questions) stehen, und der Lauf endete mit
+        verification_ok=False, OHNE dass die eigentliche Kernfunktion je gebaut wurde, obwohl
+        Architektur/ADRs/OpenAPI-Spezifikation für das Projekt bereits vollständig vorlagen.
+
+        Das Team hat keinen anwesenden Menschen, der eine solche Rückfrage in Echtzeit
+        beantworten könnte - der einzig sinnvolle Default ist, dass der fragende Agent selbst
+        die naheliegendste Annahme trifft (z.B. "ja, lege die fehlende Struktur selbst an") und
+        die Aufgabe zu Ende bringt, statt den Lauf unbeantwortet stehen zu lassen. Läuft NACH
+        der Schreibrechte-Fix-Schleife (die spezifischere, bereits behandelte Fälle vorher
+        herausfiltert), aus demselben Grund wie dort: vor der echten Testverifikation, damit
+        die Testsuite den vervollständigten Stand prüft.
+
+        Nutzt bewusst find_structural_scope_questions() (eine enge ALLOWLIST, siehe deren
+        Docstring in core/review_gate.py) statt "alles außer Schreibrechte-Fragen" - eine echte
+        fachliche Unklarheit, die nur ein Mensch beantworten kann (z.B. "Welche Zahlungsanbieter
+        sollen unterstützt werden?"), MUSS weiterhin unangetastet zur Mid-Task-Eskalation an
+        einen Menschen führen (core/agent_toolbox.py.ask_human_for_clarification, siehe
+        tests/test_clarification_escalation.py) - sonst würde diese Funktion genau die
+        Eskalation unterlaufen, die sie eigentlich ergänzen soll.
+
+        Gibt (all_results, summary, budget_aborted, manually_cancelled) zurück - summary ist ""
+        bei nichts zu tun (kein Rauschen im Normalfall, in dem gar keine Rückfrage offen ist).
+        """
+        remaining: list[tuple[str, str, AgentResult]] = []
+        for res in all_results:
+            if not res.clarification_questions:
+                continue
+            in_scope = set(find_structural_scope_questions(res.clarification_questions))
+            for q in res.clarification_questions:
+                if q in in_scope:
+                    remaining.append((res.agent_id, q, res))
+
+        if not remaining:
+            return all_results, "", False, False
+
+        if run_start_tokens is not None and (
+            self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+        ):
+            notify("  🚫 [bold red]Budget erreicht[/bold red] – Auto-Entscheid für offene Rückfragen übersprungen.")
+            return all_results, "", True, False
+        if cancel_requested and cancel_requested():
+            notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – Auto-Entscheid für offene Rückfragen übersprungen.")
+            return all_results, "", False, True
+
+        # Je fragendem Agent EINE Sammel-Aufgabe (nicht pro Frage einzeln) - dieselbe Bündelung
+        # wie route_findings_to_owners() bei Governance-Funden.
+        by_agent: dict[str, list[str]] = {}
+        for agent_id, q, _res in remaining:
+            if agent_id in self._agents or agent_id in self._dept_leads:
+                by_agent.setdefault(agent_id, []).append(q.strip())
+
+        if not by_agent:
+            return all_results, "", False, False
+
+        fix_tasks = [
+            AgentTask(
+                task_id=f"scope_clarification_autofix_{agent_id}",
+                agent_id=agent_id,
+                description=(
+                    "Du hast zuvor eine offene fachliche Rückfrage gestellt, statt direkt "
+                    "weiterzuarbeiten. Es ist KEIN Mensch verfügbar, der diese Rückfrage in "
+                    "Echtzeit beantworten kann - das Team arbeitet autonom. Triff selbst die "
+                    "naheliegendste, sinnvollste Annahme (z.B.: fehlende Grundstruktur/Dateien "
+                    "einfach selbst anlegen, statt zu fragen, ob du das darfst) und setze die "
+                    "Aufgabe VOLLSTÄNDIG um. Dokumentiere die getroffene Annahme kurz als "
+                    "Kommentar im Code oder in einer README-Sektion.\n\n"
+                    "Deine offene(n) Rückfrage(n):\n" + "\n".join(f"- {q}" for q in questions)
+                ),
+                context="", project_dir=project_dir,
+            )
+            for agent_id, questions in by_agent.items()
+        ]
+
+        notify(
+            f"  🧭 [bold yellow]Offene Scope-Rückfrage(n):[/bold yellow] Kein Mensch verfügbar – "
+            f"{', '.join(by_agent.keys())} entscheidet/entscheiden autonom und baut/bauen weiter..."
+        )
+        log_decision(
+            project_dir, "scope_clarification_autofix_dispatched",
+            f"{len(remaining)} offene Rückfrage(n) → {', '.join(by_agent.keys())}",
+        )
+        fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+        self._update_file_owners(file_owners, fix_results)
+        all_results.extend(fix_results)
+
+        # Beantwortete Rückfragen aus dem ursprünglichen Ergebnis entfernen, damit sie nicht
+        # trotz Auto-Entscheid weiterhin als unbeantwortet im Abschlussbericht/PROJECT_STATE.md
+        # auftauchen - dieselbe Bereinigung wie in _run_permission_blocked_clarification_fix.
+        resolved_agent_ids = set(by_agent.keys())
+        for agent_id, q, res in remaining:
+            if agent_id in resolved_agent_ids and q in res.clarification_questions:
+                res.clarification_questions.remove(q)
+
+        summary = (
+            "### 🧭 Auto-Entscheid-Protokoll (offene Scope-Rückfragen ohne verfügbaren Menschen)\n"
+            f"- 🧭 {len(remaining)} offene fachliche Rückfrage(n) von {', '.join(sorted(resolved_agent_ids))} "
+            f"autonom mit der naheliegendsten Annahme weiterbearbeitet, statt den Lauf unbeantwortet enden zu lassen."
+        )
+        return all_results, summary, False, False
+
     async def _run_verification_loop(
         self,
         project_dir: str,
@@ -544,6 +661,10 @@ class VerificationMixin:
         # durchläuft - der Coverage-Check danach prüft explizit auf None, statt sich auf eine
         # garantierte Zuweisung zu verlassen.
         report: VerificationReport | None = None
+        # Höchstens EIN automatischer Nachbeauftragungs-Versuch für "keine Tests gefunden" (siehe
+        # unten) - verhindert eine Endlosschleife, falls der tester-Agent wiederholt keine
+        # echte Testdatei anlegt.
+        no_tests_fix_attempted = False
 
         notify("🧪 [bold cyan]Verifikation:[/bold cyan] Installiere Abhängigkeiten in isolierter Umgebung...")
         install_log = await asyncio.to_thread(verifier.ensure_environment)
@@ -581,9 +702,33 @@ class VerificationMixin:
                 # Bewusst ⚠️ statt ℹ️: "keine Tests gefunden" bedeutet, dass generierter Code
                 # UNGEPRÜFT ausgeliefert wird – real beobachtet an einem Taschenrechner-Projekt
                 # ohne jeden Test, dessen "+"-Button sofort mit TypeError abstürzte (Add.execute()
-                # verlangte zwei Argumente, die GUI übergab nur eines). Reine Sichtbarkeit, kein
-                # automatischer Abbruch – DECOMPOSE_SYSTEM_PROMPT (core/task_manager.py) weist das
-                # Modell inzwischen an, den tester-Agenten bei echter Programmlogik einzubeziehen.
+                # verlangte zwei Argumente, die GUI übergab nur eines). DECOMPOSE_SYSTEM_PROMPT
+                # (core/task_manager.py) weist das Modell inzwischen an, den tester-Agenten bei
+                # echter Programmlogik einzubeziehen - reicht aber nicht immer (real beobachtet
+                # am incidentpilot-Projekt: tester blieb ganz ohne Testdatei, statt hier nur
+                # sichtbar zu bleiben, wird jetzt EIN gezielter Nachbeauftragungs-Versuch
+                # unternommen, bevor endgültig aufgegeben wird.
+                if not no_tests_fix_attempted and "tester" in self._agents:
+                    no_tests_fix_attempted = True
+                    notify(f"  🧪 [yellow]{report.reason_skipped}[/yellow] – beauftrage tester mit einer echten Testsuite...")
+                    summary_lines.append(f"- 🧪 {report.reason_skipped} → tester beauftragt, eine echte Testsuite nachzuliefern.")
+                    log_decision(project_dir, "missing_tests_fix_dispatched", report.reason_skipped)
+                    fix_task = AgentTask(
+                        task_id=f"missing_tests_fix_{attempt}",
+                        agent_id="tester",
+                        description=(
+                            "Für dieses Projekt existiert noch KEINE echte, automatisch ausführbare "
+                            "Testsuite (kein test_*.py, kein npm-Testskript gefunden) - der bereits "
+                            "geschriebene Code wird dadurch komplett ungeprüft ausgeliefert. Schreibe "
+                            "jetzt eine vollständige, lauffähige Testsuite (pytest bzw. das für dieses "
+                            "Projekt passende Framework) für den vorhandenen Code."
+                        ),
+                        context="", project_dir=project_dir,
+                    )
+                    fix_results = await self._run_agents_parallel([fix_task], notify=notify)
+                    self._update_file_owners(file_owners, fix_results)
+                    all_results.extend(fix_results)
+                    continue
                 notify(f"  ⚠️ [yellow]{report.reason_skipped}[/yellow]")
                 summary_lines.append(f"- ⚠️ {report.reason_skipped} Generierter Code wurde NICHT automatisch verifiziert.")
                 break
@@ -655,6 +800,12 @@ class VerificationMixin:
                 else:
                     notify("  🐳 [bold red]Docker-Build fehlgeschlagen.[/bold red]")
                     summary_lines.append(f"- 🐳 ❌ Docker-Build fehlgeschlagen: {docker_report.output[:500]}")
+            elif docker_report.reason_skipped and "Daemon" in docker_report.reason_skipped:
+                # Sichtbar (anders als "kein Dockerfile"/"Docker nicht installiert"), weil diese
+                # Ursache sonst leicht mit einem echten, im Dockerfile liegenden Fehler verwechselt
+                # wird - siehe _DOCKER_DAEMON_UNAVAILABLE_RE (core/verifier/models.py).
+                notify(f"  🐳 [dim yellow]{docker_report.reason_skipped}[/dim yellow]")
+                summary_lines.append(f"- 🐳 ⏭️ {docker_report.reason_skipped}")
 
         # Ersetzt die rein LLM-basierte Einschätzung des security-Agenten zu Abhängigkeits-
         # Risiken durch einen echten Abgleich gegen eine öffentliche Advisory-Datenbank

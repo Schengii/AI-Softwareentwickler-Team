@@ -254,6 +254,39 @@ def find_permission_blocked_questions(questions: list[str]) -> list[str]:
     return [q for q in questions if q.strip() and _PERMISSION_BLOCKED_RE.search(q)]
 
 
+# Realer Fund (incidentpilot-Projekt): der tester-Agent stellte die Rückfrage "Soll ich die
+# Grundstruktur der Anwendung ... von Grund auf neu erstellen ...? Ich benötige Informationen,
+# ob ich die Backend-Struktur selbst initialisieren soll" - eine reine Ausführungs-/Scope-Frage
+# ("darf ich die fehlende Struktur selbst bauen?"), auf die es für ein autonom arbeitendes Team
+# ohne anwesenden Menschen nur eine sinnvolle Antwort gibt ("ja"). Diese Frage blieb bisher
+# unbeantwortet stehen, der Lauf endete ohne die eigentliche Kernfunktion.
+#
+# WICHTIG, bewusst als ALLOWLIST (Gegenteil von _PERMISSION_BLOCKED_RE oben) statt als "alles
+# außer Schreibrechte-Fragen" umgesetzt: eine echte fachliche Unklarheit, die nur ein Mensch
+# beantworten kann (z.B. "Welche Zahlungsanbieter sollen unterstützt werden?", siehe
+# tests/test_clarification_escalation.py), darf NIEMALS automatisch "beantwortet" werden - das
+# würde die bewusste Mid-Task-Eskalation an einen Menschen (core/agent_toolbox.py.
+# ask_human_for_clarification) unterlaufen. Nur Rückfragen, die eindeutig danach fragen, ob der
+# Agent selbst fehlende Struktur/Dateien anlegen darf, werden erfasst - alles andere bleibt
+# unangetastet offen für einen Menschen.
+_STRUCTURAL_SCOPE_RE = re.compile(
+    r"von\s+grund\s+auf\s+neu\s+erstellen"
+    r"|soll\s+ich.{0,80}(selbst\s+)?(anlegen|erstellen|initialisieren|aufbauen)"
+    r"|grundstruktur.{0,60}(erstellen|anlegen|aufbauen|initialisieren)",
+    re.IGNORECASE,
+)
+
+
+def find_structural_scope_questions(questions: list[str]) -> list[str]:
+    """
+    Filtert `questions` auf jene, die laut `_STRUCTURAL_SCOPE_RE` eindeutig danach fragen, ob
+    der Agent selbst fehlende Grundstruktur/Dateien anlegen darf - NICHT auf jede Rückfrage, die
+    keine Schreibrechte-Frage ist (siehe Kommentar oberhalb von `_STRUCTURAL_SCOPE_RE` für den
+    Sicherheitsgrund dieser bewussten Allowlist-Enge).
+    """
+    return [q for q in questions if q.strip() and _STRUCTURAL_SCOPE_RE.search(q)]
+
+
 def route_findings_to_owners(
     findings: list[tuple[str, str]], file_owners: dict[str, str],
 ) -> tuple[dict[str, list[str]], list[str]]:

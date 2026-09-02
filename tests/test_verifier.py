@@ -147,6 +147,29 @@ class TestProjectVerifier(unittest.TestCase):
         self.assertFalse(report.success)
         self.assertIn("pull access denied", report.output)
 
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/docker")
+    def test_docker_build_daemon_unavailable_is_not_a_failure(self, mock_which, mock_run):
+        # Realer Fund (incidentpilot-Projekt): Docker war installiert, aber der Daemon (Docker
+        # Desktop) lief lokal nicht - der Build schlägt dann fehl, obwohl das nichts über die
+        # Codequalität aussagt. Muss wie ein fehlendes Dockerfile/nicht installiertes Docker als
+        # attempted=False (nur nicht prüfbar), NICHT als echter Fehlschlag gemeldet werden.
+        (self.project_dir / "Dockerfile").write_text("FROM python:3.12\n")
+        mock_run.return_value = ExecutionResult(
+            exit_code=1, stdout="", stderr=(
+                "error during connect: this error may indicate that the docker daemon is not "
+                "running: Get \"http://%2F%2F.%2Fpipe%2Fdocker_engine/v1.24/...\""
+            ),
+            duration_seconds=1.0,
+        )
+
+        verifier = ProjectVerifier(self.project_dir)
+        report = verifier.check_docker_build()
+
+        self.assertFalse(report.attempted)
+        self.assertTrue(report.success)
+        self.assertIn("Daemon", report.reason_skipped)
+
 
 if __name__ == "__main__":
     unittest.main()

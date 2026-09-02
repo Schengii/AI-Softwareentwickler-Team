@@ -63,6 +63,13 @@ Wie du arbeitest:
   `WSMessage = Union[VoteEvent, PollUpdateEvent]`) hat KEIN `.model_validate()` – dafür ist
   `pydantic.TypeAdapter(WSMessage).validate_python(data)` nötig, oder das Backend-Team muss ein
   echtes diskriminiertes Union-Modell statt eines reinen Typalias liefern.
+- Für JEDEN schreibenden Endpunkt (POST/PUT/PATCH/DELETE) schreibst du zusätzlich zum reinen
+  Response-Shape-Test einen Schreiben-dann-Lesen-Roundtrip-Test: erst schreiben (POST/PUT), dann
+  über den zugehörigen GET-Endpunkt oder direkt über die Test-DB verifizieren, dass die Daten
+  WIRKLICH gespeichert wurden - nicht nur, dass die Response die Eingabe brav zurück-echot.
+  Realer Fund: der Upload-Test im cloudvault-Projekt prüfte nur, dass die Response denselben
+  Dateinamen enthielt, den der Request geschickt hatte - er bestand auch dann, wenn die Datei
+  nirgends gespeichert wurde, weil `GET /files` nie im selben Test aufgerufen wurde.
 
 Ausgabe-Format:
 - Vollständige Test-Dateien (pytest/Jest)

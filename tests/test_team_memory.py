@@ -51,6 +51,28 @@ class TestTeamMemory(unittest.TestCase):
                 self.assertIn("cors_bug_proj", text)
                 self.assertIn("CORS wiederholt vergessen.", text)
 
+    def test_record_lesson_dedups_near_identical_entries(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            fake_file = Path(d) / "team_lessons.jsonl"
+            with self._use_temp_file(fake_file):
+                team_memory.record_lesson("project_a", "recurring_failure", "CORS wiederholt vergessen.")
+                team_memory.record_lesson("project_b", "recurring_failure", "cors WIEDERHOLT vergessen!!")
+                lessons = team_memory.read_team_lessons()
+                self.assertEqual(len(lessons), 1)
+                self.assertEqual(lessons[0]["project_slug"], "project_a")
+
+    def test_record_lesson_same_detail_different_category_not_deduped(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            fake_file = Path(d) / "team_lessons.jsonl"
+            with self._use_temp_file(fake_file):
+                team_memory.record_lesson("project_a", "recurring_failure", "Gleicher Text.")
+                team_memory.record_lesson("project_b", "governance_escalation", "Gleicher Text.")
+                self.assertEqual(len(team_memory.read_team_lessons()), 2)
+
     def test_record_lesson_never_raises_on_unwritable_path(self):
         from pathlib import Path
         # Ein Pfad, dessen Elternverzeichnis nicht angelegt werden kann (ungültiges Laufwerk) -

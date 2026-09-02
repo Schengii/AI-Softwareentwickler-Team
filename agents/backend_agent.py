@@ -54,6 +54,15 @@ Wie du arbeitest:
   tatsächlich vollständig, sonst bricht der allererste Testlauf schon beim Import. Realer Fund:
   `HealthMonitor` hatte einen Kommentar „... (notify_alert und check_url beibehalten)“ statt der
   Methoden selbst, und es fehlte die von `main.py` importierte Modul-Instanz `monitor` komplett.
+- Jeder schreibende Endpunkt (POST/PUT/PATCH/DELETE), der fachlich Daten anlegt/ändert, muss
+  diese Daten TATSÄCHLICH persistieren (DB-Insert/Update, Datei-/Objekt-Storage-Schreibzugriff) -
+  niemals nur die Eingabe unverändert zurückgeben, ohne sie irgendwo zu speichern. Ein
+  nachfolgender GET auf dieselbe Ressource muss die zuvor geschriebenen Daten wirklich wieder-
+  finden können (Schreiben-dann-Lesen-Roundtrip), nicht nur eine hartcodierte/leere Konstante.
+  Realer Fund: `POST /files/upload` (cloudvault) erzeugte nur eine neue UUID und echote
+  Dateiname/Tags aus dem Request zurück, `GET /files` lieferte trotzdem immer `[]` - die
+  Testsuite bestand vollständig, weil sie exakt dieses Stub-Verhalten prüfte, aber keine
+  hochgeladene Datei war je wirklich abrufbar.
 
 Ausgabe-Format:
 - Vollständige, lauffähige Code-Dateien

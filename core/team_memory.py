@@ -14,25 +14,49 @@ direkt mitgegeben werden, statt dass jedes Projekt bei null anfängt.
 """
 
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
 TEAM_MEMORY_FILE = Path(__file__).resolve().parent.parent / "memory" / "team_lessons.jsonl"
 MAX_LESSONS_SHOWN = 5
 
+# Wie viele der zuletzt aufgezeichneten Lektionen beim Schreiben auf ein Beinahe-Duplikat
+# geprüft werden - bewusst klein und nur die jüngste Vergangenheit, kein voller Datei-Scan bei
+# jedem Aufruf (die Datei kann über viele Läufe/Projekte hinweg beliebig wachsen).
+_DEDUP_LOOKBACK = 50
+_NORMALIZE_RE = re.compile(r"[^\w]+")
+
+
+def _normalize(detail: str) -> str:
+    """Grobe Normalisierung für den Ähnlichkeitsvergleich - Groß/Kleinschreibung und
+    Interpunktion ignorieren, nur die ersten ~80 Zeichen (der fachliche Kern einer Lektion
+    steht praktisch immer am Anfang, Variationen meist erst danach)."""
+    return _NORMALIZE_RE.sub(" ", detail.lower()).strip()[:80]
+
 
 def record_lesson(project_slug: str, category: str, detail: str) -> None:
     """Hängt eine neue Lektion an - append-only, keine Bearbeitung/Löschung bestehender
     Einträge (dieselbe Nachvollziehbarkeits-Überlegung wie bei core/project_status.py's
     Lauf-Historie). Best-Effort: ein Schreibfehler hier darf niemals einen laufenden
-    Team-Lauf zum Absturz bringen, deshalb wird jede OSError-Ausnahme verschluckt."""
+    Team-Lauf zum Absturz bringen, deshalb wird jede OSError-Ausnahme verschluckt.
+
+    Überspringt (fast-)identische Lektionen derselben Kategorie, die unter den zuletzt
+    aufgezeichneten `_DEDUP_LOOKBACK` Einträgen schon vorkommen - eine wiederkehrende Regel
+    (z.B. "vergisst CORS-Header bei FastAPI") soll das Muster bestätigen, nicht bei jedem
+    weiteren Fund denselben Prompt-Text erneut in format_team_lessons_for_agents() aufblähen."""
+    detail = detail[:400]
+    normalized = _normalize(detail)
+    for recent in read_team_lessons(limit=_DEDUP_LOOKBACK):
+        if recent.get("category") == category and _normalize(recent.get("detail", "")) == normalized:
+            return
     try:
         TEAM_MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
         entry = {
             "timestamp": datetime.now(UTC).isoformat(),
             "project_slug": project_slug,
             "category": category,
-            "detail": detail[:400],
+            "detail": detail,
         }
         with open(TEAM_MEMORY_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")

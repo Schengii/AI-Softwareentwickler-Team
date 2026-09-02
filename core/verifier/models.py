@@ -10,6 +10,7 @@ coverage.py, runtime.py).
 """
 
 import re
+import sys
 from dataclasses import dataclass, field
 
 VENV_DIRNAME = ".ai_team_venv"
@@ -360,6 +361,75 @@ _README_FILE_REF_RE = re.compile(
     r"(?:-r|--requirement|-f|--file)\s+([./\w-]+\.(?:txt|sql|ya?ml|json|env))",
     re.IGNORECASE,
 )
+
+# Zweiter realer Fund im selben cloudvault-Projekt, den die reine Stub-Kommentar-Suche NICHT
+# erfasst hätte: `list_files()` gab hart `return []` zurück und `get_tags()` eine hartcodierte
+# Konstantenliste - kein "Hier würde..."-Kommentar, trotzdem keine echte Persistenz/Anbindung.
+# Erkennt Python-Routen-Handler (FastAPI/Flask-Dekoratoren für schreibende Verben, wo eine
+# fehlende Anbindung am schwersten wiegt - GET wird bewusst ausgenommen, um Health-/Status-
+# Endpunkte ohne I/O nicht fälschlich zu melden) und prüft den Funktionskörper auf mindestens
+# einen erkennbaren I/O-Aufruf (DB/Storage/HTTP-Client).
+_PY_WRITE_ROUTE_DECORATOR_RE = re.compile(
+    r"@(?:app|router|blueprint|bp|api)\.(?:post|put|patch|delete)\(",
+    re.IGNORECASE,
+)
+_PY_ROUTE_DEF_RE = re.compile(r"^\s*(?:async\s+)?def\s+(\w+)")
+_IO_CALL_MARKERS = (
+    "session", "db.", "db_", "cursor", "execute(", "query(", ".save(", "insert(",
+    "update(", "delete(", "open(", "s3", "boto3", "redis", "requests.", "httpx.",
+    "aiofiles", "read_text(", "write_text(", "read_bytes(", "write_bytes(",
+    ".find(", ".find_one(", "select(", "commit(", "flush(", "orm", "prisma",
+    "os.remove", "shutil.", "upload_fileobj",
+)
+# Zweite, eigene Markergruppe für die verbreitete In-Memory-Store-Persistenz kleiner Demo-Apps
+# (z.B. `notes_db[note_id] = note`, `monitor.checks.pop(id, None)`, `monitor.add_check(check)`)
+# - real beobachtet als Falsch-Positiv-Quelle beim ersten Entwurf dieses Checks: ein `dict` als
+# Store ist keine Stub-Implementierung, nur kein DB-/Storage-Framework. Separates Muster statt
+# Teil von _IO_CALL_MARKERS, weil es strukturell (Subscript-Zuweisung/Methodenaufruf) statt rein
+# textuell erkannt wird.
+_IO_MUTATION_RE = re.compile(
+    r"\w+\[[^\]\n]+\]\s*="  # z.B. notes_db[note_id] = ...
+    r"|\bdel\s+\w+\["  # z.B. del notes_db[note_id]
+    r"|\.pop\("
+    r"|\.add\w*\("
+    r"|\.create\w*\("
+    r"|\.save\w*\("
+    r"|\.store\w*\("
+    r"|\.append\("
+    r"|\.update\w*\("
+    r"|\.remove\("
+    r"|\.insert\w*\(",
+)
+# Endpunktnamen, bei denen eine fehlende I/O-Anbindung erwartbar/legitim ist (z.B. ein reiner
+# Logout, der nur ein Cookie löscht) - bewusst kurz gehalten, kein Anspruch auf Vollständigkeit.
+_ROUTE_IO_EXEMPT_NAME_RE = re.compile(r"health|ping|version|logout|status", re.IGNORECASE)
+
+# Dritter realer Fund: `src/components/Dashboard.js` zeigte hartcodierte Fake-Werte
+# ("1.2 GB", "42 Dateien") statt Daten über einen API-Aufruf zu laden - eine React-Komponente,
+# deren Name auf Datenanzeige hindeutet (Dashboard/List/Table/...), aber weder Props entgegen-
+# nimmt noch selbst einen API-Aufruf macht, zeigt fast immer nur Platzhalterdaten.
+_COMPONENT_FILENAME_RE = re.compile(r"(?:Dashboard|List|Table|Overview|Panel|Widget)\.(?:jsx?|tsx?)$")
+_JSX_RETURN_RE = re.compile(r"return\s*\(")
+_API_CALL_MARKER_RE = re.compile(
+    r"(?i:fetch\(|axios\.|useeffect|\.get\(|\.post\(|usequery|useswr|graphql|usecontext)"
+    # Eigener React-Hook (Konvention: "use" + Großbuchstabe, z.B. `useTaskWebSocket(...)`) -
+    # kapselt Datenanbindung (WebSocket/REST/Redux/...) fast immer selbst, auch ohne dass die
+    # Komponente die darunterliegenden Primitiven (fetch/axios/useEffect) direkt aufruft. Real
+    # beobachtet als Falsch-Positiv-Quelle beim ersten Entwurf: `useTaskWebSocket(...)`. Bewusst
+    # GROSS-/Kleinschreibungs-sensitiv (anders als die übrigen Marker oben), sonst würde z.B.
+    # `user(...)` fälschlich als Hook-Aufruf zählen.
+    r"|\buse[A-Z]\w*\(",
+)
+_COMPONENT_TAKES_PROPS_RE = re.compile(r"\(\s*\{|\(\s*props\b")
+
+# Vierter realer Fund: cloudvault importierte `fastapi`/`pydantic` (Drittanbieter-Pakete),
+# lieferte aber nie eine requirements.txt - der bisherige README-Referenz-Check erfasst das nur,
+# wenn das README diese Datei überhaupt erwähnt. Nutzt sys.stdlib_module_names (Python 3.10+)
+# statt einer gepflegten Liste, um Standardbibliotheks-Importe von echten Drittanbieter-Paketen
+# zu unterscheiden.
+_STDLIB_MODULES = frozenset(getattr(sys, "stdlib_module_names", ())) | {"__future__"}
+_MANIFEST_FILENAMES = ("requirements.txt", "pyproject.toml", "Pipfile", "setup.py", "poetry.lock")
+_PY_IMPORT_RE = re.compile(r"^\s*(?:import|from)\s+([a-zA-Z0-9_]+)", re.MULTILINE)
 
 
 @dataclass

@@ -1,0 +1,9 @@
+{"timestamp": "2026-09-02T09:44:39.505883+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 1: 1 kritische(r) Befund(e) → devops"}
+{"timestamp": "2026-09-02T10:39:10.301309+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 1: 1 kritische(r) Befund(e) → api_integration"}
+{"timestamp": "2026-09-02T10:40:32.817640+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 2: 1 kritische(r) Befund(e) → api_integration"}
+{"timestamp": "2026-09-02T10:41:55.556519+00:00", "event": "unresolved_governance_critical_ticket_opened", "detail": "🔴 Kritische Probleme\n1. **Fehlende Persistenz in `webhooks.py`**: Der Endpunkt `/webhooks/receive` akzeptiert zwar Daten, verarbeitet sie aber nicht (auskommentierter Task) und speichert sie nicht in der Datenbank.\n   - *Fix*: Implementierung eines Modells für eingehende Webhook-Events und Speicheru"}
+{"timestamp": "2026-09-02T11:03:39.754977+00:00", "event": "architect_forced_reescalation", "detail": "2 Läufe in Folge ohne bestandene Verifikation – architect zusätzlich eingeplant."}
+{"timestamp": "2026-09-02T11:11:43.047920+00:00", "event": "architect_forced_reescalation", "detail": "3 Läufe in Folge ohne bestandene Verifikation – architect zusätzlich eingeplant."}
+{"timestamp": "2026-09-02T11:17:33.703038+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 1: 2 kritische(r) Befund(e) → security"}
+{"timestamp": "2026-09-02T11:21:43.068200+00:00", "event": "architect_forced_reescalation", "detail": "4 Läufe in Folge ohne bestandene Verifikation – architect zusätzlich eingeplant."}
+{"timestamp": "2026-09-02T11:26:02.011705+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 1: 1 kritische(r) Befund(e) → governance_lead"}

@@ -21,6 +21,7 @@ from config import (
     GEMINI_STANDARD_MODEL,
     GROQ_API_KEY,
     GROQ_HEAVY_MODEL,
+    HUGGINGFACE_API_KEY,
     MAX_OUTPUT_TOKENS,
     OPENROUTER_API_KEY,
     TEMPERATURE,
@@ -77,6 +78,36 @@ MODEL_FALLBACKS = {
     # Ältere/abweichende Konfigurationswerte (falls per .env manuell gesetzt) ebenfalls abdecken.
     "gemini-3.5-flash":     ["claude-sonnet-5", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
 }
+
+def _provider_available(model_name: str) -> bool:
+    """
+    Realer Fund aus echten Läufen (siehe ZWISCHENSTAND_KI_TEAM_PROJEKT.md, wiederholt
+    aufgetreten: `Claude innerhalb einer Fallback-Kette nicht verfügbar (kein
+    ANTHROPIC_API_KEY)`): MODEL_FALLBACKS listet Claude als ERSTEN Fallback-Kandidaten für
+    jede Gemini-Stufe, obwohl in diesem Setup nie ein ANTHROPIC_API_KEY konfiguriert war. Die
+    Fallback-Schleifen unten versuchten den Hop trotzdem jedes Mal - Client instanziieren,
+    Anfrage starten, `RuntimeError` fangen, zum nächsten Kandidaten weiterziehen -, bevor sie
+    beim tatsächlich funktionierenden Groq-Fallback landeten. Der Lauf scheiterte dadurch
+    nicht (die Kette lief ja weiter), aber jeder betroffene Agent-Aufruf erzeugte unnötige
+    Latenz UND eine irreführende ❌-Zeile im Report, die wie ein echter Ausfall aussah statt
+    wie eine von vornherein bekannte Konfigurationslücke.
+    Filtert Kandidaten OHNE konfigurierten API-Key bereits VOR dem Versuch heraus, statt sie
+    zu versuchen und den Fehler abzufangen. Gemini selbst ist hier immer verfügbar (sonst
+    würde diese Methode gar nicht erst aufgerufen, siehe GEMINI_API_KEY-Check am Modulanfang).
+    """
+    name = model_name.lower()
+    if "claude" in name:
+        return bool(ANTHROPIC_API_KEY)
+    if name.startswith("groq:") or "gpt-oss" in name or "qwen" in name:
+        return bool(GROQ_API_KEY)
+    if name.startswith("deepseek:") or "deepseek" in name:
+        return bool(DEEPSEEK_API_KEY)
+    if name.startswith("openrouter:") or "openrouter" in name:
+        return bool(OPENROUTER_API_KEY)
+    if name.startswith("huggingface:") or "huggingface" in name:
+        return bool(HUGGINGFACE_API_KEY)
+    return True
+
 
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 1.5
@@ -614,15 +645,17 @@ class GeminiClient:
         )
 
         all_candidates = [self.model_name] + MODEL_FALLBACKS.get(self.model_name, [])
-        models_to_try = [m for m in all_candidates if not token_guard.is_model_exhausted(m)]
+        models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)]
         if not models_to_try:
             # Komplette Kette gerade erschöpft (siehe MAX_EXHAUSTION_WAIT_SECONDS oben) -
             # kurz auf den kürzesten bekannten Cooldown warten statt sofort denselben
-            # Fehler erneut zu kassieren.
+            # Fehler erneut zu kassieren. Kandidaten ohne konfigurierten Key (siehe
+            # _provider_available()) bleiben auch nach dem Warten aussortiert - ein
+            # Cooldown behebt keinen fehlenden API-Key.
             wait_s = min(token_guard.seconds_until_available(all_candidates), MAX_EXHAUSTION_WAIT_SECONDS)
             if wait_s > 0:
                 await asyncio.sleep(wait_s)
-            models_to_try = [m for m in all_candidates if not token_guard.is_model_exhausted(m)] or [self.model_name]
+            models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)] or [self.model_name]
 
         last_error: Exception | None = None
         for model in models_to_try:
@@ -749,14 +782,16 @@ class GeminiClient:
 
         start_model = self.model_name
         all_candidates = [start_model] + MODEL_FALLBACKS.get(start_model, [])
-        models_to_try = [m for m in all_candidates if not token_guard.is_model_exhausted(m)]
+        models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)]
         if not models_to_try:
             # Siehe generate_with_tools() weiter oben: kurz auf den kürzesten bekannten
-            # Cooldown warten, statt sofort denselben Fehler erneut zu kassieren.
+            # Cooldown warten, statt sofort denselben Fehler erneut zu kassieren. Kandidaten
+            # ohne konfigurierten Key bleiben auch danach aussortiert (siehe
+            # _provider_available()).
             wait_s = min(token_guard.seconds_until_available(all_candidates), MAX_EXHAUSTION_WAIT_SECONDS)
             if wait_s > 0:
                 await asyncio.sleep(wait_s)
-            models_to_try = [m for m in all_candidates if not token_guard.is_model_exhausted(m)] or [start_model]
+            models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)] or [start_model]
 
         last_error: Exception | None = None
         for model in models_to_try:

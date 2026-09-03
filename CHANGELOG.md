@@ -7,6 +7,31 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## ⚡ Fallback-Kette überspringt Provider ohne konfigurierten API-Key statt sie erfolglos zu versuchen
+
+Wiederkehrender Fund aus mehreren echten Läufen (`ZWISCHENSTAND_KI_TEAM_PROJEKT.md`): `MODEL_
+FALLBACKS` listet `claude-sonnet-5`/`claude-opus-5`/`claude-haiku-4-5` als ERSTEN Fallback-
+Kandidaten für jede Gemini-Stufe – in Setups ohne `ANTHROPIC_API_KEY` scheiterte dieser Hop
+jedes Mal mit `Claude innerhalb einer Fallback-Kette nicht verfügbar (kein ANTHROPIC_API_KEY)`,
+bevor die Kette beim tatsächlich funktionierenden nächsten Kandidaten (kleinere Gemini-Stufe
+oder Groq) ankam. Der Lauf scheiterte dadurch nicht final, aber jeder betroffene Agenten-Aufruf
+verschwendete einen kompletten Hop (Client instanziieren, Anfrage starten, Fehler fangen) UND
+erzeugte im Report eine irreführende ❌-Zeile, die wie ein echter Ausfall aussah statt wie eine
+von vornherein bekannte Konfigurationslücke.
+
+- `core/llm_factory.py._provider_available()`: neue, zentrale Prüfung, ob für einen
+  Fallback-Kandidaten überhaupt ein API-Key konfiguriert ist (Claude → `ANTHROPIC_API_KEY`,
+  Groq → `GROQ_API_KEY`, DeepSeek/OpenRouter/HuggingFace analog). Beide `models_to_try`-
+  Konstruktionen (`generate_with_tools()` und `_call_with_retry_and_usage()`, inkl. der
+  Cooldown-Wartelogik bei komplett erschöpfter Kette) filtern Kandidaten ohne Key jetzt VOR
+  dem Versuch heraus, statt sie zu versuchen und den Fehler abzufangen.
+- Neuer Test in `tests/test_llm_routing.py`
+  (`test_claude_candidate_is_skipped_entirely_without_anthropic_api_key`): stellt sicher, dass
+  `LLMFactory.create_for_model()` für Claude ohne `ANTHROPIC_API_KEY` gar nicht erst
+  aufgerufen wird und die Kette direkt zur nächsten Gemini-Stufe springt.
+
+---
+
 ## 🎨 Automatischer Safe-Fix für Lint-Funde statt liegenbleibender Warnungen
 
 Zweiter Fund derselben cloudvault-Bestandsaufnahme: 13 ruff-Lint-Funde standen im

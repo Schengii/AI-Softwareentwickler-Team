@@ -208,6 +208,40 @@ class TestLLMRouting(unittest.TestCase):
         self.assertEqual(result.text, "von Groq gerettet")
         fake_groq_client.generate_with_usage.assert_called_once()
 
+    @patch("core.llm_factory.ANTHROPIC_API_KEY", "")
+    @patch("core.llm_factory.LLMFactory.create_for_model")
+    @patch("core.llm_factory._gemini_client")
+    def test_claude_candidate_is_skipped_entirely_without_anthropic_api_key(
+        self, mock_gemini_client, mock_create_for_model,
+    ):
+        """
+        Realer Fund aus mehreren echten Läufen (siehe ZWISCHENSTAND_KI_TEAM_PROJEKT.md):
+        ohne ANTHROPIC_API_KEY versuchte die Fallback-Kette 'claude-sonnet-5' trotzdem bei
+        JEDEM erschöpften/gescheiterten Gemini-Aufruf - unnötiger Hop (Client instanziieren,
+        RuntimeError fangen, weiterziehen) UND eine irreführende ❌-Zeile im Report, die wie
+        ein echter Ausfall aussah statt wie eine von vornherein bekannte Konfigurationslücke.
+        _provider_available() filtert Claude jetzt VOR dem Versuch aus der Kette heraus, wenn
+        kein Key konfiguriert ist - LLMFactory.create_for_model() darf für 'claude-sonnet-5'
+        also gar nicht erst aufgerufen werden, die Kette muss direkt zur nächsten Gemini-Stufe
+        springen.
+        """
+        def fake_generate_content(model, contents, config):
+            if model == "gemini-3.6-flash":
+                raise RuntimeError("simulierter Gemini-Fehler")
+            return _FakeGenAIResponse(text="von gemini-3.8-flash gerettet")
+        mock_gemini_client.models.generate_content = fake_generate_content
+
+        client = GeminiClient(model_name="gemini-3.6-flash")
+
+        async def run():
+            return await client.generate_with_usage("Sag nur 'ok'.", None)
+
+        import asyncio
+        result = asyncio.run(run())
+
+        self.assertEqual(result.text, "von gemini-3.8-flash gerettet")
+        mock_create_for_model.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

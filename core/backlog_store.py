@@ -82,12 +82,33 @@ def _now() -> str:
 
 
 def _load_raw() -> list[dict]:
+    """
+    Realer Fund (Testflake beim Verifizieren des _save_raw()-Torn-Read-Fixes, siehe dort):
+    os.replace() dort ist zwar atomar, aber auf Windows kann ein GLEICHZEITIGER read_text()
+    hier mit einem transienten PermissionError scheitern, wenn genau in diesem Moment der
+    Rename der Zieldatei passiert (kurze Sharing-Violation, kein echter Dauerzustand - exakt
+    dasselbe Phänomen wie beim Writer, nur diesmal auf der Leseseite). Das ursprüngliche
+    `except (..., OSError): return []` fing diesen transienten Fehler mit ab und lieferte
+    STILLSCHWEIGEND eine leere Liste zurück - derselbe "keine Tickets vorgetäuscht"-Bug wie
+    beim torn read, nur über einen anderen Auslöser. Kurzer Retry für PermissionError
+    unterscheidet das vom echten "Datei fehlt"-Fall (der weiterhin sofort [] liefert) und vom
+    echten JSONDecodeError (korrupte Datei, kein Race - kein Retry sinnvoll).
+    """
     if not BACKLOG_FILE.exists():
         return []
-    try:
-        return json.loads(BACKLOG_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return []
+    max_attempts = 10
+    for attempt in range(max_attempts):
+        try:
+            return json.loads(BACKLOG_FILE.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return []
+        except PermissionError:
+            if attempt == max_attempts - 1:
+                return []
+            time.sleep(0.05 * (attempt + 1))
+        except OSError:
+            return []
+    return []
 
 
 def _save_raw(tickets: list[dict]) -> None:

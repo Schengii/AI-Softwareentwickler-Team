@@ -55,6 +55,33 @@ class QuotaEstimator:
     """Berechnet Verbrauchs- und Rest-Kontingent-Übersichten."""
 
     @staticmethod
+    def get_agent_availability() -> list[dict[str, Any]]:
+        """
+        Realer Fund: `/tokens` zeigte bisher nur Verbrauch PRO MODELL, nie, welcher AGENT
+        (`agents/*_agent.py`, je über `config.AGENT_MODELS` fest einem Modell zugeordnet)
+        davon gerade betroffen ist - eine Nutzerin sah z.B. "claude-sonnet-5: 🚨 Cooldown",
+        musste aber selbst wissen/nachschlagen, dass das u.a. `security`, `code_reviewer` und
+        `architect` betrifft. Ordnet jeden konfigurierten Agenten seinem aktuellen Modell
+        (inkl. Fachbereichs-/Env-Overrides, siehe `config.get_model_for_agent()`) und dessen
+        Live-Verfügbarkeit zu.
+        """
+        from config import AGENT_MODELS, get_model_for_agent
+        exhausted_by_model = {d["model_name"]: d for d in token_guard.get_exhausted_details()}
+
+        rows = []
+        for agent_id in sorted(AGENT_MODELS):
+            model_name = get_model_for_agent(agent_id)
+            exhaustion = exhausted_by_model.get(model_name)
+            rows.append({
+                "agent_id": agent_id,
+                "model_name": model_name,
+                "available": exhaustion is None,
+                "available_at": exhaustion["available_at"] if exhaustion else None,
+                "reason": exhaustion["reason"] if exhaustion else None,
+            })
+        return rows
+
+    @staticmethod
     def get_detailed_report() -> dict[str, Any]:
         summary = token_guard.get_summary()
         models = summary.get("models", {})
@@ -128,6 +155,25 @@ class QuotaEstimator:
                 lines.append(f"| **{info['name']}** | `{used:,}` Tokens | {status_badge} | {info['limit_desc']} |")
             else:
                 lines.append(f"| **{info['name']}** | `{used:,}` Tokens | {status_badge} | ca. `{remaining:,}` Tokens übrig ({info['limit_desc']}) |")
+
+        exhausted_details = token_guard.get_exhausted_details()
+        if exhausted_details:
+            lines.append("\n### 🚨 Aktuell erschöpfte Modelle (Cooldown):")
+            lines.append("| Modell | Grund | Verfügbar ab | Verbleibend |")
+            lines.append("|---|---|---|---|")
+            for d in sorted(exhausted_details, key=lambda x: x["remaining_seconds"]):
+                lines.append(
+                    f"| `{d['model_name']}` | {d['reason']} | {d['available_at']} Uhr | ca. {d['remaining_seconds']:.0f}s |"
+                )
+
+        agent_rows = QuotaEstimator.get_agent_availability()
+        if agent_rows:
+            lines.append("\n### 👥 Agenten → Modell-Zuordnung & Verfügbarkeit:")
+            lines.append("| Agent | Modell | Status |")
+            lines.append("|---|---|---|")
+            for row in agent_rows:
+                status = "🟢 Verfügbar" if row["available"] else f"🚨 Cooldown bis {row['available_at']} Uhr"
+                lines.append(f"| `{row['agent_id']}` | `{row['model_name']}` | {status} |")
 
         if report["models_detail"]:
             lines.append("\n### 📊 Detail-Verbrauch nach Modell (diese Sitzung):")

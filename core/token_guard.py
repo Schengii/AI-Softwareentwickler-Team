@@ -10,6 +10,7 @@ core/token_guard.py – Token Guard & Intelligentes Quota-Lifecycle-Management
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 
 @dataclass
@@ -154,6 +155,31 @@ class TokenGuard:
                 return 0.0
             waits.append(remaining)
         return min(waits) if waits else 0.0
+
+    def get_exhausted_details(self) -> list[dict]:
+        """
+        Für jedes aktuell erschöpfte Modell: Grund, verbleibende Cooldown-Sekunden und ein
+        für Menschen lesbarer Wanduhr-Zeitpunkt, ab dem es voraussichtlich wieder verfügbar
+        ist. Reine Sekundenzahlen (wie sie `_exhausted_models` intern über `time.monotonic()`
+        führt) beantworten in einer Status-Übersicht nicht die eigentliche Frage "wann genau
+        wieder?" - Menschen vergleichen mit der Uhr, nicht mit einem Monotonic-Zähler seit
+        Prozessstart. Nutzt `is_model_exhausted()` je Modell (statt direkt auf
+        `_exhausted_models` zuzugreifen), damit inzwischen abgelaufene Cooldowns hier
+        automatisch bereinigt werden statt fälschlich noch als erschöpft zu erscheinen.
+        """
+        details = []
+        for name in list(self._exhausted_models.keys()):
+            if not self.is_model_exhausted(name):
+                continue
+            info = self._exhausted_models[name]
+            remaining = max(info.cooldown_seconds - (time.monotonic() - info.exhausted_at), 0.0)
+            details.append({
+                "model_name": name,
+                "reason": info.reason,
+                "remaining_seconds": remaining,
+                "available_at": (datetime.now() + timedelta(seconds=remaining)).strftime("%H:%M:%S"),
+            })
+        return details
 
     def get_summary(self) -> dict:
         """

@@ -7,6 +7,29 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🚦 `/tokens` zeigt jetzt Agent→Modell-Zuordnung & Wanduhr-ETA erschöpfter Modelle
+
+Nutzeranfrage: eine Übersicht des Token-Status pro AGENT und Modell – welche Modelle gerade
+verfügbar sind, welche das Kontingent aufgebraucht haben und WANN sie wieder verfügbar sind.
+Der bisherige `/tokens`-Report (`core/quota_estimator.py`) zeigte Verbrauch nur pro Provider/
+Modell, mit einem binären "🚨 Cooldown / Limit"-Badge ohne Zeitangabe – und keinen Bezug
+dazu, welche der 38 Agenten-Rollen (`config.AGENT_MODELS`) davon überhaupt betroffen sind.
+
+- `core/token_guard.py.get_exhausted_details()`: neue Methode, die für jedes aktuell
+  erschöpfte Modell Grund, verbleibende Sekunden UND einen für Menschen lesbaren
+  Wanduhr-Zeitpunkt (`HH:MM:SS`) liefert, ab dem es voraussichtlich wieder verfügbar ist –
+  der interne Cooldown-Zähler läuft über `time.monotonic()` (nicht direkt mit einer Uhrzeit
+  vergleichbar).
+- `core/quota_estimator.py.get_agent_availability()`: ordnet jeden konfigurierten Agenten
+  seinem aktuellen Modell (inkl. Fachbereichs-/Env-Overrides über `get_model_for_agent()`)
+  und dessen Live-Verfügbarkeit zu.
+- `format_markdown_table()` (angezeigt über `/tokens`) ergänzt zwei neue Abschnitte: eine
+  Tabelle erschöpfter Modelle mit Grund + ETA + verbleibender Zeit, und eine
+  Agent→Modell→Status-Tabelle (🟢 Verfügbar / 🚨 Cooldown bis HH:MM:SS Uhr).
+- 3 neue Tests in `tests/test_quota_estimator.py`.
+
+---
+
 ## ⚡ Fallback-Kette überspringt Provider ohne konfigurierten API-Key statt sie erfolglos zu versuchen
 
 Wiederkehrender Fund aus mehreren echten Läufen (`ZWISCHENSTAND_KI_TEAM_PROJEKT.md`): `MODEL_

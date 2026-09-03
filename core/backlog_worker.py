@@ -41,6 +41,7 @@ Details und die Abgrenzung zu einer echten Endlosschleife.
 """
 
 import asyncio
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -52,6 +53,7 @@ from config import (
     BASE_DIR,
     GIT_PROTECTED_BRANCHES,
     MAX_GOVERNANCE_TICKET_RETRIES,
+    WORKSPACE_DIR,
 )
 from core.backlog_store import Ticket, count_by_status, is_ticket_ready, list_tickets, upsert_ticket
 from core.git_isolation import copy_worktree_changes_to_target, remove_worktree
@@ -279,6 +281,21 @@ async def _process_single_ticket(
             ticket.id, ticket.title, "blocked_secret",
             "Mögliche Secrets in den Änderungen gefunden und den Push abgebrochen - bitte manuell prüfen.",
         )
+
+    # Bugfix (Team-Optimierung, real beobachtet im mockforge-Governance-Retry): base_branch
+    # wurde oben rein statisch bestimmt (original_branch, falls dieser bereits ein Hauptbranch
+    # ist, sonst blind GIT_PROTECTED_BRANCHES[0]) - existiert das bearbeitete Projekt aber NUR
+    # auf original_branch (noch nicht nach main gemerged, ein bei diesem Team etablierter,
+    # bewusster Arbeitsmodus für langlebige Feature-Branches), scheiterte `git checkout -b
+    # <feature> main` real mit "Your local changes ... would be overwritten by checkout" -
+    # main kennt die soeben geänderten Projektdateien schlicht nicht. Siehe
+    # agents/github_agent.py.path_exists_in_branch()-Docstring für die volle Herleitung.
+    if base_branch != original_branch:
+        slug = getattr(orchestrator, "last_project_slug", None) or ticket.project_slug
+        if slug:
+            project_rel_path = f"{os.path.relpath(WORKSPACE_DIR, BASE_DIR)}/{slug}"
+            if not github_agent.path_exists_in_branch(base_branch, project_rel_path):
+                base_branch = original_branch
 
     feature_branch = github_agent.build_feature_branch_name(ticket.title)
     success_b, out_b = github_agent.create_branch(feature_branch, base=base_branch)

@@ -168,6 +168,19 @@ class TestIssueWatcherOrchestration(unittest.TestCase):
         mock_copy.assert_not_called()
         mock_remove.assert_not_called()
 
+    def test_falls_back_to_current_branch_when_project_missing_from_protected_branch(self):
+        """Bugfix, dieselbe Ursache wie in tests/test_backlog_worker.py.
+        test_falls_back_to_current_branch_when_project_missing_from_protected_branch."""
+        self.fake_github.get_current_branch.return_value = "feat/some-long-lived-branch"
+        self.fake_github.path_exists_in_branch.return_value = False
+        self.fake_orchestrator.last_project_slug = "mockforge"
+
+        asyncio.run(run_issue_poll_cycle())
+
+        self.fake_github.create_branch.assert_called_once_with(
+            "feat/health-check-endpoint-abc123", base="feat/some-long-lived-branch",
+        )
+
     def test_no_file_changes_skips_branch_creation_and_comments(self):
         self.fake_github.get_status.return_value = ""
         report = asyncio.run(run_issue_poll_cycle())

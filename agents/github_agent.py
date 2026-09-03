@@ -118,6 +118,29 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
         """Gibt den Namen des aktuell ausgecheckten Branches zurück."""
         return self._run_git("rev-parse", "--abbrev-ref", "HEAD")
 
+    def path_exists_in_branch(self, branch: str, relative_path: str) -> bool:
+        """
+        Prüft per `git ls-tree`, ob `relative_path` (Datei ODER Verzeichnis) im angegebenen
+        Branch existiert - OHNE ihn auszuchecken.
+
+        Bugfix (Team-Optimierung, real beobachtet im mockforge-Governance-Retry): core/
+        backlog_worker.py und core/issue_watcher.py wählten als Basis für einen neuen
+        Feature-Branch bisher blind den ersten konfigurierten Hauptbranch (GIT_PROTECTED_
+        BRANCHES[0], typischerweise "main"), sobald der aktuell ausgecheckte Branch selbst
+        keiner davon war. Existiert das bearbeitete Projekt aber NUR auf dem aktuellen,
+        langlebigen Feature-Branch (noch nicht nach main gemerged - ein bei diesem Team
+        etablierter, bewusster Arbeitsmodus), scheiterte `git checkout -b <feature> main`
+        real mit "Your local changes ... would be overwritten by checkout": main kennt die
+        soeben (durch den Governance-Fix bzw. den zurückgemergten isolierten Worktree, siehe
+        core/git_isolation.py.copy_worktree_changes_to_target()) geänderten Projektdateien
+        gar nicht, ein Checkout dorthin hätte sie kommentarlos verworfen.
+
+        Rein lesend (kein Checkout, kein Working-Tree-Zugriff) - sicher auch bei einem
+        aktuell "dirty" Arbeitsverzeichnis aufrufbar.
+        """
+        result = self._run_git("ls-tree", "--name-only", branch, "--", relative_path)
+        return bool(result.strip())
+
     def push(self, remote: str = "origin", branch: str | None = None) -> tuple[bool, str]:
         """
         Pusht den aktuellen Branch zum Remote.

@@ -297,6 +297,41 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
         mock_copy.assert_not_called()
         mock_remove.assert_not_called()
 
+    def test_falls_back_to_current_branch_when_project_missing_from_protected_branch(self):
+        """
+        Realer Fund: `git checkout -b <feature> main` scheiterte real mit "Your local changes
+        ... would be overwritten by checkout", weil das mockforge-Projekt nur auf dem aktuell
+        ausgecheckten (langlebigen Feature-)Branch existierte, nicht auf main. Ein Fallback
+        auf original_branch als Basis vermeidet den Konflikt strukturell.
+        """
+        self.fake_github.get_current_branch.return_value = "feat/some-long-lived-branch"
+        self.fake_github.path_exists_in_branch.return_value = False  # existiert NICHT auf main
+        self.fake_orchestrator.last_project_slug = "mockforge"
+        backlog_store.upsert_ticket(
+            "unresolved-governance-critical-mockforge", "Ungelöster kritischer Governance-Befund",
+            "orchestrator", "blocked", project_slug="mockforge", detail="...",
+        )
+
+        asyncio.run(run_backlog_poll_cycle())
+
+        self.fake_github.path_exists_in_branch.assert_called_once_with("main", "workspace/mockforge")
+        self.fake_github.create_branch.assert_called_once_with(
+            "feat/backlog-ticket-abc123", base="feat/some-long-lived-branch",
+        )
+
+    def test_keeps_protected_branch_as_base_when_project_exists_there_too(self):
+        self.fake_github.get_current_branch.return_value = "feat/some-long-lived-branch"
+        self.fake_github.path_exists_in_branch.return_value = True  # existiert auch auf main
+        self.fake_orchestrator.last_project_slug = "mockforge"
+        backlog_store.upsert_ticket(
+            "unresolved-governance-critical-mockforge", "Ungelöster kritischer Governance-Befund",
+            "orchestrator", "blocked", project_slug="mockforge", detail="...",
+        )
+
+        asyncio.run(run_backlog_poll_cycle())
+
+        self.fake_github.create_branch.assert_called_once_with("feat/backlog-ticket-abc123", base="main")
+
     def test_project_slug_survives_across_two_poll_cycles_of_the_same_governance_ticket(self):
         # Regressionstest für den realen mockforge-Fund: der ERSTE Zyklus scheitert (kein
         # Diff -> "no_changes"/"blocked"), project_slug MUSS trotzdem für den ZWEITEN Zyklus

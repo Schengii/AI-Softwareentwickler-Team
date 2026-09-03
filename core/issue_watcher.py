@@ -31,6 +31,7 @@ Bestätigung verfügbar ist):
 """
 
 import asyncio
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -44,6 +45,7 @@ from config import (
     ISSUE_IN_PROGRESS_LABEL,
     ISSUE_POLL_MAX_PER_CYCLE,
     ISSUE_TRIGGER_LABEL,
+    WORKSPACE_DIR,
 )
 from core.backlog_store import upsert_ticket
 from core.git_isolation import copy_worktree_changes_to_target, remove_worktree
@@ -213,6 +215,18 @@ async def _process_single_issue(
             "gefunden und den Push abgebrochen – bitte manuell prüfen.",
         )
         return IssueRunResult(issue_number, title, "blocked_secret")
+
+    # Bugfix (Team-Optimierung, dieselbe Ursache wie in core/backlog_worker.py._process_
+    # single_ticket() - siehe dort und agents/github_agent.py.path_exists_in_branch() für die
+    # volle Herleitung): existiert das bearbeitete Projekt nur auf original_branch (noch nicht
+    # nach main gemerged), scheitert `git checkout -b <feature> main` real, weil main die
+    # soeben geänderten Projektdateien nicht kennt.
+    if base_branch != original_branch:
+        slug = getattr(orchestrator, "last_project_slug", None)
+        if slug:
+            project_rel_path = f"{os.path.relpath(WORKSPACE_DIR, BASE_DIR)}/{slug}"
+            if not github_agent.path_exists_in_branch(base_branch, project_rel_path):
+                base_branch = original_branch
 
     feature_branch = github_agent.build_feature_branch_name(title)
     success_b, out_b = github_agent.create_branch(feature_branch, base=base_branch)

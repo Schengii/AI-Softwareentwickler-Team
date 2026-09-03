@@ -12,6 +12,7 @@ NIEMALS ein Nicht-Gemini-Modellname an den echten Gemini-Client geht.
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from config import GEMINI_STANDARD_MODEL
 from core.llm_factory import GeminiClient, LLMResponse
 from core.token_guard import token_guard
 
@@ -24,7 +25,7 @@ class _FakeGenAIResponse:
 class TestLLMRouting(unittest.TestCase):
     def tearDown(self):
         # Global geteilten TokenGuard-Zustand nicht in andere Tests durchsickern lassen.
-        for model in ("gemini-3.6-flash", "gemini-3.1-flash-lite", "claude-sonnet-5", "groq:openai/gpt-oss-120b"):
+        for model in ("gemini-3.6-flash", GEMINI_STANDARD_MODEL, "gemini-3.1-flash-lite", "claude-sonnet-5", "groq:openai/gpt-oss-120b"):
             token_guard._exhausted_models.pop(model, None)
 
     @patch("core.llm_factory._gemini_client")
@@ -73,8 +74,14 @@ class TestLLMRouting(unittest.TestCase):
         """
         # Die GESAMTE Kette von gemini-3.6-flash (sich selbst + claude-sonnet-5 +
         # gemini-3.1-flash-lite + groq, siehe MODEL_FALLBACKS) muss als erschöpft markiert
-        # sein, damit die Wartelogik greift - nicht nur ein einzelnes Glied.
+        # sein, damit die Wartelogik greift - nicht nur ein einzelnes Glied. Realer Fund (Team-
+        # Retrospektive nach dem taskpulse-Lauf): als MODEL_FALLBACKS um "gemini-3.8-flash" als
+        # zusätzlichen Hop erweitert wurde (siehe core/llm_factory.py), fehlte dieser Test hier
+        # in der Liste - die Kette fand dadurch einen freien Hop und die Wartelogik griff nie
+        # (mock_sleep wurde 0x statt 1x aufgerufen), obwohl das GETESTETE Verhalten selbst
+        # unverändert korrekt war.
         token_guard.mark_model_exhausted("gemini-3.6-flash", "Test", cooldown_seconds=3.0)
+        token_guard.mark_model_exhausted(GEMINI_STANDARD_MODEL, "Test", cooldown_seconds=3.0)
         token_guard.mark_model_exhausted("claude-sonnet-5", "Test", cooldown_seconds=3.0)
         token_guard.mark_model_exhausted("gemini-3.1-flash-lite", "Test", cooldown_seconds=3.0)
         token_guard.mark_model_exhausted("groq:openai/gpt-oss-120b", "Test", cooldown_seconds=3.0)

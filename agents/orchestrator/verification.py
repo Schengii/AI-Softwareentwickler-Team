@@ -190,6 +190,13 @@ class VerificationMixin:
         summary_lines: list[str] = []
         budget_aborted = False
         manually_cancelled = False
+        # Derselbe Zirkuit-Breaker wie in _run_verification_loop (Team-Retrospektive nach dem
+        # taskpulse-Lauf): identische kritische Befunde nach einem Fixversuch bedeuten fast
+        # immer, dass der Agent das Problem nicht lösen konnte - ein zweiter Fix-Dispatch UND
+        # der anschließende verpflichtende Re-Review (siehe unten, "attempt ==
+        # MAX_REVIEW_ITERATIONS") wären dann reine Tokens/Zeit-Verschwendung. Bricht in diesem
+        # Fall direkt zur Ticket-Eröffnung durch, ohne den zweiten Fix-Dispatch zu versuchen.
+        previous_findings_signature: frozenset[tuple[str, str]] | None = None
 
         def _latest_review_results() -> list[AgentResult]:
             # Neuestes Ergebnis JE Rolle - bei einem Re-Check ab Versuch 2 überschreibt das
@@ -251,6 +258,32 @@ class VerificationMixin:
                     f"{f' (Versuch {attempt})' if attempt > 1 else ''}."
                 )
                 break
+
+            current_findings_signature = frozenset((agent_id, block[:300]) for agent_id, block in findings)
+            if previous_findings_signature is not None and current_findings_signature == previous_findings_signature:
+                notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische kritische Befunde wie vor dem letzten Fixversuch – überspringe weiteren Fixversuch, eröffne direkt ein Ticket.")
+                summary_lines.append(
+                    f"- 🛑 Versuch {attempt}: dieselben {len(findings)} kritische(n) Befund(e) wie nach dem vorherigen "
+                    "Fixversuch (keine Veränderung) – weiterer Fix-Dispatch übersprungen, Backlog-Ticket direkt eröffnet."
+                )
+                try:
+                    upsert_ticket(
+                        ticket_id=f"unresolved-governance-critical-{getattr(self, 'last_project_slug', 'project')}",
+                        title=f"Ungelöster kritischer Governance-Befund: {getattr(self, 'last_project_slug', 'project')}",
+                        source="orchestrator", status="blocked",
+                        project_slug=getattr(self, "last_project_slug", "project"),
+                        detail="\n\n".join(block for _agent_id, block in findings)[:300],
+                    )
+                except Exception as e:
+                    notify(f"⚠️ [dim yellow]Ticket für ungelösten Governance-Befund konnte nicht angelegt werden: {e}[/dim yellow]")
+                record_lesson(
+                    project_slug=getattr(self, "last_project_slug", "project"),
+                    category="unresolved_governance_critical",
+                    detail="\n\n".join(block for _agent_id, block in findings)[:300],
+                )
+                log_decision(project_dir, "unresolved_governance_critical_ticket_opened", "\n\n".join(block for _agent_id, block in findings)[:300])
+                break
+            previous_findings_signature = current_findings_signature
 
             agents_to_fix, unrouted = route_findings_to_owners(findings, file_owners)
 
@@ -733,6 +766,10 @@ class VerificationMixin:
         # den frischen Testlauf mitprüft), maximal MAX_VERIFICATION_ITERATIONS Versuche wie jede
         # andere Fix-Schleife hier.
         if ENABLE_COMPLETENESS_CHECK and not (budget_aborted or manually_cancelled):
+            # Derselbe Zirkuit-Breaker wie in den übrigen Fix-Schleifen dieser Datei (Team-
+            # Retrospektive nach dem taskpulse-Lauf) - identische Import-Funde nach einem
+            # Fixversuch bedeuten fast immer, dass der Agent das Problem nicht lösen konnte.
+            previous_preimport_signature: frozenset[tuple[str, str]] | None = None
             for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
                 if run_start_tokens is not None and (
                     self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
@@ -759,6 +796,17 @@ class VerificationMixin:
                         notify(f"  🧩 [bold green]Vorab-Import-Check nach Fix (Versuch {attempt}) bestanden.[/bold green]")
                         summary_lines.append(f"- 🧩 Vorab-Import-Check (statisch, vor der Testsuite): nach {attempt} Durchlauf/Durchläufen bestanden.")
                     break
+
+                current_preimport_signature = frozenset((i.file_path, i.message[:300]) for i in import_issues)
+                if previous_preimport_signature is not None and current_preimport_signature == previous_preimport_signature:
+                    notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Import-Funde wie vor dem letzten Fixversuch – breche Vorab-Import-Check ab, weiter mit der regulären Testsuite.")
+                    summary_lines.append(
+                        f"- 🧩 🛑 Vorab-Import-Check, Versuch {attempt}: dieselben {len(import_issues)} Fund(e) wie nach dem "
+                        "vorherigen Fixversuch (keine Veränderung) – Schleife abgebrochen statt einen wirkungslosen weiteren "
+                        "Versuch zu verbrauchen (bleibt im regulären Testlauf danach erneut sichtbar)."
+                    )
+                    break
+                previous_preimport_signature = current_preimport_signature
 
                 top = "; ".join(f"{i.file_path}:{i.line_number} – {i.message}" for i in import_issues[:5])
                 notify(f"  🧩 [bold red]Vorab-Import-Check: {len(import_issues)} fehlende(s) lokale(s) Modul/Symbol VOR jedem Testlauf gefunden.[/bold red]")
@@ -1087,6 +1135,11 @@ class VerificationMixin:
         # Anforderung ist, kein Stil-Hinweis - deshalb dieselbe gezielte Fix-Schleife wie beim
         # echten Testfehler oben, statt nur eine informative Zeile im Protokoll.
         if ENABLE_COMPLETENESS_CHECK and not (budget_aborted or manually_cancelled):
+            # Derselbe Zirkuit-Breaker wie in der Test-Fix- und der Governance-Fix-Schleife
+            # (Team-Retrospektive nach dem taskpulse-Lauf): identische Vollständigkeits-Funde
+            # nach einem Fixversuch bedeuten fast immer, dass der Agent das Problem nicht lösen
+            # konnte - ein zweiter, identischer Fix-Dispatch wäre reine Verschwendung.
+            previous_completeness_signature: frozenset[tuple[str, str]] | None = None
             for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
                 if run_start_tokens is not None and (
                     self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
@@ -1112,6 +1165,20 @@ class VerificationMixin:
                         notify(f"  🧩 [bold green]Vollständigkeits-Check nach Fix (Versuch {attempt}) bestanden.[/bold green]")
                         summary_lines.append(f"- 🧩 Vollständigkeits-Check nach {attempt} Durchlauf/Durchläufen bestanden.")
                     break
+
+                current_completeness_signature = frozenset(
+                    (i.file_path, i.message[:300]) for i in completeness_report.issues
+                )
+                if previous_completeness_signature is not None and current_completeness_signature == previous_completeness_signature:
+                    notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Vollständigkeits-Funde wie vor dem letzten Fixversuch – breche Schleife ab.")
+                    summary_lines.append(
+                        f"- 🧩 🛑 Versuch {attempt}: dieselben {len(completeness_report.issues)} Vollständigkeits-Fund(e) wie nach "
+                        "dem vorherigen Fixversuch (keine Veränderung) – Schleife abgebrochen statt einen wirkungslosen weiteren "
+                        "Versuch zu verbrauchen."
+                    )
+                    verification_ok = False
+                    break
+                previous_completeness_signature = current_completeness_signature
 
                 top = "; ".join(
                     f"{i.file_path}" + (f":{i.line_number}" if i.line_number else "") + f" – {i.message}"

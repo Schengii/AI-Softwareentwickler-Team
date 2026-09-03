@@ -449,6 +449,27 @@ _STDLIB_MODULES = frozenset(getattr(sys, "stdlib_module_names", ())) | {"__futur
 _MANIFEST_FILENAMES = ("requirements.txt", "pyproject.toml", "Pipfile", "setup.py", "poetry.lock")
 _PY_IMPORT_RE = re.compile(r"^\s*(?:import|from)\s+([a-zA-Z0-9_]+)", re.MULTILINE)
 
+# Fünfter realer Fund (Team-Retrospektive, taskpulse-Projekt): _missing_local_python_imports()
+# (siehe completeness.py) prüfte bisher NUR Python - dieselbe Fehlerklasse ("lokaler Import
+# verweist auf eine nie erzeugte Datei") passiert genauso in JS/TS-Frontend-Projekten, z.B.
+# `import { formatDate } from './utils/date'`, wenn `utils/date.js` nie angelegt wurde. Erkennt
+# relative ES-Modul-Importe (`import ... from './x'`, `export ... from './x'`), dynamische
+# Importe (`import('./x')`) und CommonJS-`require('./x')` - bewusst NUR relative Pfade
+# (beginnend mit "." oder "/"), damit npm-Paket-Importe ("from 'react'") nie fälschlich als
+# lokale Datei geprüft werden (dieselbe konservative Abgrenzung wie local_top_level bei Python).
+_JS_RELATIVE_ES_IMPORT_RE = re.compile(
+    r"(?:import|export)(?:[^'\";\n]*?\bfrom\s*)?\s*['\"](\.[^'\"]+)['\"]"
+)
+_JS_RELATIVE_REQUIRE_RE = re.compile(r"require\(\s*['\"](\.[^'\"]+)['\"]\s*\)")
+_JS_RELATIVE_DYNAMIC_IMPORT_RE = re.compile(r"import\(\s*['\"](\.[^'\"]+)['\"]\s*\)")
+# Endungen, die _missing_local_js_imports() als "eigenständig lauffähige JS/TS-Quelldatei"
+# behandelt - ein Import OHNE Endung (z.B. "./utils/date") wird gegen JEDE dieser Endungen
+# UND gegen "<pfad>/index.<endung>" (Verzeichnis-Import) geprüft. Ein Import MIT einer anderen
+# Endung (z.B. "./logo.svg", "./styles.css", "./data.json") wird NICHT geprüft - solche Importe
+# hängen von der jeweiligen Bundler-Konfiguration ab (Asset-/CSS-/JSON-Loader), die dieses
+# Framework nicht kennt; ein Fehlalarm dort wäre schlimmer als eine übersehene fehlende Datei.
+_JS_MODULE_EXTENSIONS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+
 
 @dataclass
 class CompletenessIssue:

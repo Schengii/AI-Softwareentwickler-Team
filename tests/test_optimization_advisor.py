@@ -19,6 +19,7 @@ import memory.run_history as run_history_module
 from core.optimization_advisor import (
     MIN_SAMPLE_SIZE,
     MIN_SUCCESS_RATE_GAP,
+    MIN_VERIFICATION_SAMPLE_SIZE,
     analyze,
     format_report_for_humans,
 )
@@ -115,6 +116,39 @@ class TestOptimizationAdvisor(unittest.TestCase):
         self.assertIn("keine automatische Änderung", text)
         self.assertIn("backend", text)
         self.assertIn("model-b", text)
+
+    def test_verification_trend_flagged_when_persistently_low(self):
+        # Team-Retrospektive nach dem taskpulse-Lauf: mehrere aufeinanderfolgende Läufe mit
+        # verification_ok=False (unabhängig vom einzelnen Agenten-Erfolg) müssen als
+        # anhaltendes Muster erkannt werden.
+        for _ in range(MIN_VERIFICATION_SAMPLE_SIZE):
+            record_run(project_slug="p", task_summary="x", verification_ok=False, total_tokens=1, duration_seconds=1, agent_results=[])
+
+        report = analyze()
+
+        self.assertIsNotNone(report.verification_trend)
+        self.assertEqual(report.verification_trend.rate, 0.0)
+        self.assertFalse(report.is_empty())
+        text = format_report_for_humans(report)
+        self.assertIn("Verifikations-Trend", text)
+
+    def test_verification_trend_not_flagged_when_healthy(self):
+        for _ in range(MIN_VERIFICATION_SAMPLE_SIZE):
+            record_run(project_slug="p", task_summary="x", verification_ok=True, total_tokens=1, duration_seconds=1, agent_results=[])
+
+        report = analyze()
+
+        self.assertIsNone(report.verification_trend)
+
+    def test_verification_trend_not_flagged_below_min_sample(self):
+        # Nur MIN_VERIFICATION_SAMPLE_SIZE - 1 Läufe - zu wenig Stichprobe für eine Aussage.
+        for _ in range(MIN_VERIFICATION_SAMPLE_SIZE - 1):
+            record_run(project_slug="p", task_summary="x", verification_ok=False, total_tokens=1, duration_seconds=1, agent_results=[])
+
+        report = analyze()
+
+        self.assertIsNone(report.verification_trend)
+        self.assertTrue(report.is_empty())
 
 
 if __name__ == "__main__":

@@ -316,6 +316,82 @@ class TestCompletenessCheck(unittest.TestCase):
             self.assertFalse(report.passed)
             self.assertTrue(any("run.py" == i.file_path for i in report.issues))
 
+    def test_detects_missing_relative_js_import(self):
+        # JS/TS-Pendant zum taskpulse-Fund: `import { formatDate } from './utils/date'`, aber
+        # utils/date.js wurde nie angelegt.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app.js").write_text(
+                "import { formatDate } from './utils/date';\nconsole.log(formatDate());\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any("utils/date" in i.message and i.file_path == "app.js" for i in report.issues))
+
+    def test_existing_relative_js_import_with_extension_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            utils_dir = project_dir / "utils"
+            utils_dir.mkdir()
+            (utils_dir / "date.js").write_text("export function formatDate() { return '2026'; }\n", encoding="utf-8")
+            (project_dir / "app.js").write_text(
+                "import { formatDate } from './utils/date';\nconsole.log(formatDate());\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_existing_relative_js_index_import_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            utils_dir = project_dir / "utils"
+            utils_dir.mkdir()
+            (utils_dir / "index.ts").write_text("export const x = 1;\n", encoding="utf-8")
+            (project_dir / "app.ts").write_text(
+                "import { x } from './utils';\nconsole.log(x);\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_missing_js_require_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "server.js").write_text(
+                "const db = require('./db/connection');\nmodule.exports = db;\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any("db/connection" in i.message for i in report.issues))
+
+    def test_non_js_extension_relative_import_not_flagged(self):
+        # Asset-/CSS-/JSON-Importe hängen von der Bundler-Konfiguration ab - bewusst NICHT
+        # geprüft (siehe _JS_MODULE_EXTENSIONS-Docstring in core/verifier/models.py).
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "App.jsx").write_text(
+                "import './styles.css';\nimport logo from './logo.svg';\n"
+                "export default function App() { return null; }\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_npm_package_import_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app.js").write_text(
+                "import React from 'react';\nimport { useState } from 'react';\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
     def test_ignores_venv_and_node_modules(self):
         with tempfile.TemporaryDirectory() as tmp:
             project_dir = Path(tmp)

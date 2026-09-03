@@ -20,7 +20,11 @@ umzusetzen.
 
 from dataclasses import dataclass, field
 
-from memory.run_history import get_agent_model_performance, get_agent_success_rates
+from memory.run_history import (
+    get_agent_model_performance,
+    get_agent_success_rates,
+    get_verification_success_rate,
+)
 
 # Ab dieser Mindest-Anzahl an Aufrufen gilt eine Erfolgsquote als statistisch aussagekräftig
 # genug für einen Vorschlag - sonst zu viel Rauschen durch einzelne Zufallsausreißer bei z.B.
@@ -29,6 +33,13 @@ MIN_SAMPLE_SIZE = 5
 # Ab diesem Unterschied in Prozentpunkten gilt eine Abweichung als meldenswert, kein triviales
 # Rauschen (z.B. 88% vs. 90% wäre kein echter Hinweis, nur statistisches Rauschen).
 MIN_SUCCESS_RATE_GAP = 15.0
+# Team-Retrospektive nach dem taskpulse-Lauf: kleinere Stichprobe als MIN_SAMPLE_SIZE, weil ein
+# GANZER Lauf (nicht ein einzelner Agenten-Aufruf) die Beobachtungseinheit ist - bei nur 1-2
+# aufgezeichneten Läufen wäre jede Quote (0% oder 100%) noch reines Rauschen, ab 3 wird ein
+# durchgehendes Scheitern aussagekräftig genug für einen Hinweis.
+MIN_VERIFICATION_SAMPLE_SIZE = 3
+VERIFICATION_SUCCESS_RATE_THRESHOLD = 50.0
+VERIFICATION_TREND_WINDOW = 10
 
 
 @dataclass
@@ -53,15 +64,27 @@ class LowPerformingAgent:
 
 
 @dataclass
+class VerificationTrend:
+    """Anhaltend niedrige `verification_ok`-Erfolgsquote über die letzten Läufe hinweg - anders
+    als LowPerformingAgent (EIN Agent scheitert auffällig oft) geht es hier um den gesamten
+    LAUF: mehrere aufeinanderfolgende Projekte, die trotz vollständiger Fix-/Governance-Kaskade
+    nicht grün werden (siehe MIN_VERIFICATION_SAMPLE_SIZE-Docstring)."""
+    runs: int
+    passed: int
+    rate: float
+
+
+@dataclass
 class OptimizationReport:
     """Ergebnis der datenbasierten Selbstoptimierungs-Analyse – reine Empfehlungen, keine
     automatisch angewandten Änderungen an config.py."""
     model_suggestions: list[ModelSuggestion] = field(default_factory=list)
     low_performing_agents: list[LowPerformingAgent] = field(default_factory=list)
+    verification_trend: VerificationTrend | None = None
     sample_runs: int = 0
 
     def is_empty(self) -> bool:
-        return not self.model_suggestions and not self.low_performing_agents
+        return not self.model_suggestions and not self.low_performing_agents and self.verification_trend is None
 
 
 def analyze(limit_runs: int = 100) -> OptimizationReport:
@@ -113,6 +136,12 @@ def analyze(limit_runs: int = 100) -> OptimizationReport:
                     team_average=round(team_average, 1),
                 ))
 
+    verification = get_verification_success_rate(VERIFICATION_TREND_WINDOW)
+    if verification["runs"] >= MIN_VERIFICATION_SAMPLE_SIZE and verification["rate"] < VERIFICATION_SUCCESS_RATE_THRESHOLD:
+        report.verification_trend = VerificationTrend(
+            runs=verification["runs"], passed=verification["passed"], rate=verification["rate"],
+        )
+
     return report
 
 
@@ -140,5 +169,13 @@ def format_report_for_humans(report: OptimizationReport) -> str:
         lines.append(
             f"- **{a.agent_id}**: Erfolgsquote {a.success_rate}% über {a.calls} Aufrufe, "
             f"deutlich unter dem Team-Durchschnitt ({a.team_average}%) – Prompt/Aufgabenzuschnitt prüfen."
+        )
+    if report.verification_trend is not None:
+        v = report.verification_trend
+        lines.append(
+            f"- ⚠️ **Verifikations-Trend**: nur {v.passed}/{v.runs} der letzten Läufe (projektübergreifend) "
+            f"endeten mit `verification_ok=True` ({v.rate}%) – ein anhaltendes, nicht nur einmaliges Muster. "
+            "Deutet eher auf ein strukturelles Problem hin (z.B. zu ambitionierte Aufgaben, ein "
+            "systematisch fehlender Agenten-Fähigkeitsbereich) als auf einzelne Projekt-Ausreißer."
         )
     return "\n".join(lines)

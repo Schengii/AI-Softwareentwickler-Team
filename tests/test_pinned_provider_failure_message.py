@@ -15,6 +15,7 @@ die Fehlermeldung selbst war unnötig kryptisch für den Nutzer.
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from config import GEMINI_STANDARD_MODEL
 from core.llm_factory import ClaudeClient, GroqClient
 from core.token_guard import token_guard
 
@@ -77,7 +78,13 @@ class TestPinnedGroqFailureMessage(unittest.TestCase):
             import asyncio
             result = asyncio.run(client.generate_with_tools([], None, [], _allow_self_fallback=True))
 
-        self.assertEqual(result.model_name, "gemini-3.6-flash")
+        # Realer Fund (Team-Retrospektive nach dem taskpulse-Lauf): dieser Test hatte den
+        # Rettungs-Hop-Zielmodellnamen bisher als Literal ("gemini-3.6-flash") hartcodiert -
+        # als GEMINI_STANDARD_MODEL (config.py) auf "gemini-3.8-flash" angehoben wurde, brach
+        # der Test, obwohl das GETESTETE Verhalten (Fallback landet beim jeweils aktuellen
+        # Gemini-Standardmodell) unverändert korrekt war. Der Vergleich gegen die Konstante
+        # statt eines Literals hält den Test robust gegen zukünftige Modell-Updates.
+        self.assertEqual(result.model_name, GEMINI_STANDARD_MODEL)
 
 
 class TestPinnedClaudeFailureMessage(unittest.TestCase):

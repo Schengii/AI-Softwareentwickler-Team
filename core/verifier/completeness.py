@@ -34,6 +34,10 @@ from core.verifier.models import (
     _IGNORED_DIRS,
     _IO_CALL_MARKERS,
     _IO_MUTATION_RE,
+    _JS_MODULE_EXTENSIONS,
+    _JS_RELATIVE_DYNAMIC_IMPORT_RE,
+    _JS_RELATIVE_ES_IMPORT_RE,
+    _JS_RELATIVE_REQUIRE_RE,
     _JSX_RETURN_RE,
     _MANIFEST_FILENAMES,
     _PY_IMPORT_RE,
@@ -79,6 +83,7 @@ class CompletenessMixin:
                 issues.extend(self._missing_local_python_imports(rel, f, text, local_top_level))
             elif f.suffix in (".js", ".jsx", ".ts", ".tsx"):
                 issues.extend(self._scan_component_missing_api(rel, text))
+                issues.extend(self._missing_local_js_imports(rel, f, text))
 
         issues.extend(self._missing_readme_referenced_files())
         issues.extend(self._missing_dependency_manifest(py_import_names))
@@ -153,6 +158,49 @@ class CompletenessMixin:
                     f"selbst Daten (kein fetch/axios/useEffect) - wirkt an keine echte "
                     f"Datenquelle angebunden, evtl. rein hartcodierte Anzeigedaten.",
         )]
+
+    def _missing_local_js_imports(self, rel: str, file: Path, text: str) -> list[CompletenessIssue]:
+        """JS/TS-Pendant zu _missing_local_python_imports(): prüft relative Importe
+        (`import ... from './x'`, `export ... from './x'`, `import('./x')`, `require('./x')`)
+        gegen das Dateisystem. Bewusst NUR relative Pfade (beginnend mit "." oder "/") - ein
+        npm-Paket-Import ("from 'react'") wird nie geprüft, da dieser Check keine
+        node_modules-Auflösung/package.json-Analyse betreibt (siehe _JS_RELATIVE_ES_IMPORT_RE-
+        Docstring in core/verifier/models.py für die vollständige Abgrenzung)."""
+        specifiers = {
+            m.group(1) for pattern in (
+                _JS_RELATIVE_ES_IMPORT_RE, _JS_RELATIVE_REQUIRE_RE, _JS_RELATIVE_DYNAMIC_IMPORT_RE,
+            )
+            for m in pattern.finditer(text)
+        }
+        issues: list[CompletenessIssue] = []
+        for spec in sorted(specifiers):
+            candidate = file.parent / spec
+            if self._js_module_resolves(candidate):
+                continue
+            issues.append(CompletenessIssue(
+                file_path=rel,
+                message=f"Relativer Import „{spec}“ verweist auf keine existierende JS/TS-Datei "
+                        f"(geprüft: `{self._relative_or_raw(candidate)}"
+                        f"{{{','.join(_JS_MODULE_EXTENSIONS)}}}` bzw. "
+                        f"`{self._relative_or_raw(candidate)}/index{{{','.join(_JS_MODULE_EXTENSIONS)}}}`) "
+                        f"- der Import schlägt beim Bundling/Ausführen fehl.",
+            ))
+        return issues
+
+    def _js_module_resolves(self, candidate: Path) -> bool:
+        """Node/Bundler-typische Modulauflösung, best-effort: exakter Pfad (falls der Import
+        bereits eine Endung trägt), sonst `<pfad>.<ext>` für jede _JS_MODULE_EXTENSIONS-Endung,
+        sonst `<pfad>/index.<ext>` (Verzeichnis-Import) - dieselbe Reihenfolge, in der Node/
+        Bundler ein extensionsloses Modul auflösen. Ein Import mit einer NICHT-JS-Endung (z.B.
+        `.css`, `.svg`, `.json`) gilt IMMER als aufgelöst (siehe _JS_MODULE_EXTENSIONS-Docstring
+        - Bundler-Loader-abhängig, nicht zuverlässig ohne Bundler-Konfiguration prüfbar)."""
+        if candidate.suffix:
+            if candidate.suffix not in _JS_MODULE_EXTENSIONS:
+                return True
+            return candidate.exists()
+        if any(candidate.with_suffix(ext).exists() for ext in _JS_MODULE_EXTENSIONS):
+            return True
+        return any((candidate / f"index{ext}").exists() for ext in _JS_MODULE_EXTENSIONS)
 
     def _collect_third_party_imports(self, text: str) -> set[str]:
         names: set[str] = set()

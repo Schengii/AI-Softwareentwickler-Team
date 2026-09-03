@@ -123,6 +123,70 @@ def find_near_duplicate_adr(project_dir: str | Path, title: str) -> AdrRecord | 
     return best_match if best_ratio >= DUPLICATE_TITLE_SIMILARITY_THRESHOLD else None
 
 
+def export_adr_to_obsidian(
+    project_dir: str | Path,
+    title: str,
+    context: str,
+    decision: str,
+    consequences: str,
+    status: str = "Angenommen",
+    vault_path: str | Path | None = None,
+) -> Path | None:
+    """Exportiert eine ADR als formatierte Zettelkasten Permanent Note nach Obsidian."""
+    from datetime import datetime
+
+    try:
+        if vault_path is None:
+            try:
+                from config import OBSIDIAN_AUTO_SYNC, OBSIDIAN_VAULT_PATH
+                if not OBSIDIAN_AUTO_SYNC:
+                    return None
+                vault_path = OBSIDIAN_VAULT_PATH
+            except ImportError:
+                return None
+
+        vault = Path(vault_path)
+        if not vault.exists():
+            return None
+
+        perm_notes_dir = vault / "03 Resources" / "Permanent Notes"
+        perm_notes_dir.mkdir(parents=True, exist_ok=True)
+
+        proj_name = Path(project_dir).name
+        today = datetime.now().strftime("%Y-%m-%d")
+        safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
+        filename = f"ADR - {proj_name} - {safe_title}.md"
+        target_file = perm_notes_dir / filename
+
+        content = (
+            "---\n"
+            "type: permanent-note\n"
+            "category: adr\n"
+            f"project: \"{proj_name}\"\n"
+            f"status: \"{status}\"\n"
+            f"date: {today}\n"
+            "tags:\n"
+            "  - adr\n"
+            "  - architecture\n"
+            "  - permanent-note\n"
+            "  - zettelkasten\n"
+            "---\n\n"
+            f"# 🏛️ ADR: {title}\n\n"
+            f"> [!info] Architektur-Entscheidung aus dem Projekt `[[{proj_name}]]`\n"
+            f"> Dokumentiert am {today} | Status: **{status}**\n\n"
+            f"## Kontext\n\n{context.strip()}\n\n"
+            f"## Entscheidung\n\n{decision.strip()}\n\n"
+            f"## Konsequenzen\n\n{consequences.strip()}\n\n"
+            "---\n"
+            "*Verknüpft mit Projekt-Gedächtnis: [[00_PROJEKT_GEDAECHTNIS]]*\n"
+        )
+
+        target_file.write_text(content, encoding="utf-8")
+        return target_file
+    except Exception:
+        return None
+
+
 def write_adr(
     project_dir: str | Path, title: str, context: str, decision: str,
     consequences: str, status: str = "Angenommen",
@@ -147,7 +211,12 @@ def write_adr(
         f"## Konsequenzen\n\n{consequences.strip()}\n"
     )
     path.write_text(content, encoding="utf-8")
+
+    # Automatischer Zettelkasten-Export nach Obsidian
+    export_adr_to_obsidian(project_dir, title, context, decision, consequences, status)
+
     return path
+
 
 
 def find_existing_near_duplicate_adr_pairs(project_dir: str | Path) -> list[tuple[AdrRecord, AdrRecord]]:

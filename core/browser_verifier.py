@@ -37,9 +37,12 @@ class BrowserVerificationReport:
     # frisch erzeugten LEEREN Canvas gleicher Größe ist - ein starkes Indiz für genau dieses
     # Muster, das reine Konsolen-/404-Checks nicht erkennen (siehe _run_playwright_check()).
     blank_canvases: list[str] = field(default_factory=list)
+    visual_overflows: list[str] = field(default_factory=list)
+    screenshot_path: str = ""
     warnings: list[str] = field(default_factory=list)
     tested_url: str = ""
     reason_skipped: str = ""
+
 
 
 @dataclass
@@ -127,11 +130,38 @@ try:
             ''')
         except Exception:
             blank_canvases = []
+        # Visual Overflow Check (Layout-Inspektion)
+        try:
+            visual_overflows = page.evaluate('''
+                () => {
+                    const overflows = [];
+                    const docWidth = document.documentElement.clientWidth;
+                    document.querySelectorAll('*').forEach((el, i) => {
+                        if (el.scrollWidth > docWidth + 4 && el.offsetWidth > docWidth) {
+                            const sel = el.tagName.toLowerCase() + (el.id ? '#' + el.id : (el.className && typeof el.className === 'string' ? '.' + el.className.split(' ')[0] : ''));
+                            overflows.push(sel || ('el[' + i + ']'));
+                        }
+                    });
+                    return Array.from(new Set(overflows)).slice(0, 10);
+                }
+            ''')
+        except Exception:
+            visual_overflows = []
+
+        # Headless Screenshot für Visual Feedback
+        screenshot_target = '__SCREENSHOT_PATH__'
+        if screenshot_target and screenshot_target != 'NONE':
+            try:
+                page.screenshot(path=screenshot_target, full_page=True)
+            except Exception:
+                pass
+
         browser.close()
-    print(json.dumps({'success': True, 'errors': console_errors, 'missing': missing_assets, 'title': title, 'blank_canvases': blank_canvases}))
+    print(json.dumps({'success': True, 'errors': console_errors, 'missing': missing_assets, 'title': title, 'blank_canvases': blank_canvases, 'visual_overflows': visual_overflows, 'screenshot': screenshot_target}))
 except Exception as e:
     print(json.dumps({'success': False, 'error': str(e)}))
 """
+
 
 
 # Extrahiert den Datei-Referenz-Anteil aus einer "Fehlendes Asset: 'REF' in DATEI.html"-
@@ -402,10 +432,13 @@ class BrowserVerifier:
 
         # Führe Playwright Test in Subprozess aus (isoliert gegen Crashes). Bewusst KEIN
         # f-String für dieses Template mehr (siehe _RUNNER_CODE_TEMPLATE-Docstring dort): die
-        # neue Blank-Canvas-Prüfung unten braucht echte JS-Objektliteral-Klammern, die in einem
-        # f-String alle verdoppelt werden müssten - Platzhalter + .replace() ist robuster.
-        runner_code = _RUNNER_CODE_TEMPLATE.replace("__TARGET_URL__", target_url).replace(
-            "__TIMEOUT_MS__", str(int(timeout * 1000)),
+        screenshot_file = self.project_dir / "ui_screenshot.png"
+        screenshot_target = str(screenshot_file).replace("\\", "/")
+
+        runner_code = (
+            _RUNNER_CODE_TEMPLATE.replace("__TARGET_URL__", target_url)
+            .replace("__TIMEOUT_MS__", str(int(timeout * 1000)))
+            .replace("__SCREENSHOT_PATH__", screenshot_target)
         )
         try:
             proc = subprocess.run(
@@ -422,6 +455,13 @@ class BrowserVerifier:
             errors = data.get("errors", [])
             missing = data.get("missing", [])
             blank_canvases = data.get("blank_canvases", [])
+            visual_overflows = data.get("visual_overflows", [])
+            actual_screenshot = str(screenshot_file) if screenshot_file.exists() else ""
+
+            warnings = []
+            if visual_overflows:
+                warnings.append(f"Visual Overflow erkannt in: {', '.join(visual_overflows)}")
+
             passed = len(errors) == 0 and len(missing) == 0 and len(blank_canvases) == 0
 
             return BrowserVerificationReport(
@@ -431,8 +471,12 @@ class BrowserVerifier:
                 console_errors=errors,
                 missing_assets=missing,
                 blank_canvases=blank_canvases,
+                visual_overflows=visual_overflows,
+                screenshot_path=actual_screenshot,
+                warnings=warnings,
                 tested_url=target_url,
             )
+
         except Exception:
             return None
         finally:

@@ -70,6 +70,19 @@ TOOL_SPECS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "patch_file",
+        "description": "Wendet einen Unified-Diff (@@ ... @@) oder SEARCH/REPLACE-Patch chirurgisch auf eine bestehende Datei an. Ideal für Refactorings und Erweiterungen (spart bis zu 70% Tokens).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relativer Pfad zur bestehenden Datei"},
+                "patch": {"type": "string", "description": "Unified-Diff oder SEARCH/REPLACE Block"},
+            },
+            "required": ["path", "patch"],
+        },
+    },
+
+    {
         "name": "search_code",
         "description": "Durchsucht den Code des aktuellen Projekts per BM25-Relevanz nach einem Suchbegriff (Funktions-/Klassennamen, Konzepte). Hilfreich, um relevante Stellen zu finden, ohne jede Datei einzeln zu lesen.",
         "parameters": {
@@ -380,7 +393,40 @@ class AgentToolbox:
         self.files_written.add(clean_rel)
         return {"path": clean_rel, "status": "ok"}
 
+    async def _tool_patch_file(self, path: str, patch: str) -> dict:
+        from core.diff_patcher import patch_content
+
+        target = self._resolve(path)
+        if not target.exists():
+            return {"error": f"Datei '{path}' existiert nicht."}
+        if not target.is_file():
+            return {"error": f"'{path}' ist keine reguläre Datei."}
+
+        try:
+            current_content = target.read_text(encoding="utf-8")
+        except Exception as e:
+            return {"error": f"Konnte '{path}' nicht lesen: {e}"}
+
+        success, new_content, msg = patch_content(current_content, patch)
+        if not success:
+            return {"error": f"Patch fehlgeschlagen: {msg}"}
+
+        # Syntax-Validierung für Python
+        py_err = self._reject_if_invalid_python(path, new_content)
+        if py_err:
+            return {"error": py_err}
+
+        try:
+            target.write_text(new_content, encoding="utf-8")
+        except Exception as e:
+            return {"error": f"Konnte '{path}' nicht schreiben: {e}"}
+
+        clean_rel = str(target.relative_to(self.project_dir)).replace("\\", "/")
+        self.files_written.add(clean_rel)
+        return {"path": clean_rel, "status": "ok", "message": msg}
+
     # ── Such-Werkzeug ────────────────────────────────────────────────
+
 
     async def _tool_search_code(self, query: str, top_k: int = 5) -> dict:
         import asyncio

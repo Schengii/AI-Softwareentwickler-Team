@@ -80,6 +80,7 @@ import urllib.request  # noqa: F401 - re-exportiert für Tests, die core.verifie
 from core.code_sandbox import (
     CodeSandbox,  # noqa: F401 - re-exportiert für Tests, die core.verifier.CodeSandbox.run_command patchen
 )
+from core.contract_verifier import ContractMismatch, ContractReport, verify_api_contracts
 from core.verifier.completeness import CompletenessMixin
 from core.verifier.coverage import CoverageMixin
 from core.verifier.environment import EnvironmentMixin
@@ -126,6 +127,9 @@ __all__ = [
     "PerfCheckReport",
     "CompletenessIssue",
     "CompletenessReport",
+    "ContractReport",
+    "ContractMismatch",
+    "verify_api_contracts",
     "VENV_DIRNAME",
     "LOAD_TEST_DIRNAME",
 ]
@@ -141,3 +145,8 @@ class ProjectVerifier(
     EnvironmentMixin,
 ):
     """Installiert Abhängigkeiten isoliert und führt die reale Testsuite eines Projekts aus."""
+
+    def check_api_contracts(self) -> ContractReport:
+        """Gleicht Backend-Endpunkte statisch mit Frontend-API-Aufrufen ab."""
+        return verify_api_contracts(self.project_dir)
+

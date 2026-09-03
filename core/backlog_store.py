@@ -155,7 +155,7 @@ def new_ticket_id(source: str) -> str:
 
 
 def upsert_ticket(
-    ticket_id: str, title: str, source: str, status: str, detail: str = "", project_slug: str = "",
+    ticket_id: str, title: str, source: str, status: str, detail: str = "", project_slug: str | None = None,
     priority: int | None = None, estimate: str | None = None,
     epic: str | None = None, depends_on: list[str] | None = None,
     retries: int | None = None,
@@ -180,6 +180,18 @@ def upsert_ticket(
     tickets = _load_raw()
     existing = next((t for t in tickets if t["id"] == ticket_id), None)
     created_at = existing["created_at"] if existing else _now()
+    # Bugfix (Team-Optimierung, real beobachtet im mockforge-Governance-Retry): project_slug
+    # hatte bisher einen blanken Default ("", KEIN Sentinel wie priority/estimate/epic/retries
+    # unten) - core/backlog_worker.py._process_single_ticket() aktualisiert denselben Ticket
+    # aber MEHRFACH über seinen Lebenszyklus hinweg (Aufgreifen, Retry-Zähler, finaler Status),
+    # ohne project_slug bei jedem Aufruf erneut mitzugeben. Der finale Status-Update-Aufruf
+    # (nach dem Orchestrator-Lauf) überschrieb project_slug dadurch STILLSCHWEIGEND mit "" -
+    # beim nächsten automatischen Retry desselben Governance-Tickets (core/backlog_worker.py.
+    # _governance_retry_pool()) fand `if ticket.project_slug:` dadurch nichts mehr, der
+    # Orchestrator legte statt einer Fortsetzung des BESTEHENDEN Projekts ein komplett neues,
+    # leeres Projekt an. Jetzt derselbe Sentinel wie bei priority/estimate/epic/retries: None
+    # (Standard) übernimmt den vorhandenen Wert unverändert, nur ein EXPLIZITES "" löscht ihn.
+    resolved_project_slug = project_slug if project_slug is not None else (existing.get("project_slug", "") if existing else "")
     resolved_priority = priority if priority is not None else (existing.get("priority", 2) if existing else 2)
     resolved_estimate = estimate if estimate is not None else (existing.get("estimate", "") if existing else "")
     resolved_epic = epic if epic is not None else (existing.get("epic", "") if existing else "")
@@ -191,7 +203,7 @@ def upsert_ticket(
     tickets = [t for t in tickets if t["id"] != ticket_id]
     result = Ticket(
         id=ticket_id, title=title, source=source, status=status,
-        created_at=created_at, updated_at=_now(), detail=detail, project_slug=project_slug,
+        created_at=created_at, updated_at=_now(), detail=detail, project_slug=resolved_project_slug,
         priority=resolved_priority, estimate=resolved_estimate,
         epic=resolved_epic, depends_on=list(resolved_depends_on), retries=resolved_retries,
     )

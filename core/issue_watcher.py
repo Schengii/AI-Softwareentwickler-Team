@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from agents.github_agent import GitHubAgent
 from agents.orchestrator import Orchestrator
 from config import (
+    BASE_DIR,
     GIT_PROTECTED_BRANCHES,
     ISSUE_BLOCKED_LABEL,
     ISSUE_DONE_LABEL,
@@ -45,6 +46,7 @@ from config import (
     ISSUE_TRIGGER_LABEL,
 )
 from core.backlog_store import upsert_ticket
+from core.git_isolation import copy_worktree_changes_to_target, remove_worktree
 from core.merge_watcher import check_merged_tickets
 from core.notifier import notify_external
 
@@ -177,6 +179,18 @@ async def _process_single_issue(
             f"(unerwarteter Fehler): {e}",
         )
         return IssueRunResult(issue_number, title, "error", str(e))
+
+    # Bugfix (Team-Optimierung, dieselbe Ursache wie in core/backlog_worker.py._process_
+    # single_ticket() - siehe dort und core/git_isolation.py.copy_worktree_changes_to_target()
+    # für die volle Herleitung): der Orchestrator isoliert JEDEN Lauf gegen ein bereits
+    # bestehendes /load-fähiges Projekt in einem separaten Git-Worktree - ohne diese
+    # Übertragung sah github_agent.get_status() (läuft immer gegen BASE_DIR) davon nie etwas.
+    worktree = getattr(orchestrator, "last_isolated_worktree", None)
+    if worktree is not None:
+        try:
+            copy_worktree_changes_to_target(worktree, BASE_DIR)
+        finally:
+            remove_worktree(worktree, force=True)
 
     diff_status = github_agent.get_status()
     if not diff_status:

@@ -36,6 +36,11 @@ class TestBacklogWorkerOrchestration(unittest.TestCase):
         self.fake_orchestrator.last_verification_ok = True
         self.fake_orchestrator.last_needs_human_input = False
         self.fake_orchestrator.last_clarification_questions = []
+        # Dasselbe MagicMock-Fallstrick wie bei last_needs_human_input: ohne diese explizite
+        # Zuweisung würde core/backlog_worker.py's
+        # `getattr(orchestrator, "last_isolated_worktree", None)` ein truthy Mock-Objekt statt
+        # None liefern und fälschlich einen (nicht existierenden) Worktree-Merge auslösen.
+        self.fake_orchestrator.last_isolated_worktree = None
 
         self._gh_patcher = patch("core.backlog_worker.GitHubAgent", return_value=self.fake_github)
         self._orch_patcher = patch("core.backlog_worker.Orchestrator", return_value=self.fake_orchestrator)
@@ -177,6 +182,11 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
         self.fake_orchestrator.last_verification_ok = True
         self.fake_orchestrator.last_needs_human_input = False
         self.fake_orchestrator.last_clarification_questions = []
+        # Dasselbe MagicMock-Fallstrick wie bei last_needs_human_input: ohne diese explizite
+        # Zuweisung würde core/backlog_worker.py's
+        # `getattr(orchestrator, "last_isolated_worktree", None)` ein truthy Mock-Objekt statt
+        # None liefern und fälschlich einen (nicht existierenden) Worktree-Merge auslösen.
+        self.fake_orchestrator.last_isolated_worktree = None
 
         self._gh_patcher = patch("core.backlog_worker.GitHubAgent", return_value=self.fake_github)
         self._orch_patcher = patch("core.backlog_worker.Orchestrator", return_value=self.fake_orchestrator)
@@ -249,6 +259,62 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
 
         self.assertEqual(report.results, [])
         self.fake_orchestrator.process.assert_not_called()
+
+    def test_isolated_worktree_changes_are_merged_back_before_diff_check(self):
+        """
+        Bugfix (Team-Optimierung, real beobachtet in einem echten mockforge-Governance-Retry-
+        Lauf): der Orchestrator isoliert JEDEN Lauf gegen ein bereits bestehendes Workspace-
+        Projekt in einem separaten Git-Worktree (agents/orchestrator/__init__.py.
+        _resolve_project_isolation) - ohne die Übertragung in core/backlog_worker.py sah
+        github_agent.get_status() (läuft immer gegen BASE_DIR) das NIE, selbst wenn der
+        Fix-Agent die Datei nachweislich korrekt bearbeitet hatte (echtes Ergebnis: "no_changes"
+        trotz erfolgter Arbeit). Siehe core/git_isolation.py.copy_worktree_changes_to_target().
+        """
+        fake_worktree = MagicMock(path="/fake/worktree/path", branch="ai-team/fix-abc123")
+        self.fake_orchestrator.last_isolated_worktree = fake_worktree
+        backlog_store.upsert_ticket(
+            "unresolved-governance-critical-mockforge", "Ungelöster kritischer Governance-Befund",
+            "orchestrator", "blocked", project_slug="mockforge", detail="DB-Session pro Request",
+        )
+
+        with patch("core.backlog_worker.copy_worktree_changes_to_target", return_value=["app/middleware.py"]) as mock_copy, \
+             patch("core.backlog_worker.remove_worktree") as mock_remove:
+            report = asyncio.run(run_backlog_poll_cycle())
+
+        mock_copy.assert_called_once()
+        self.assertIs(mock_copy.call_args.args[0], fake_worktree)
+        mock_remove.assert_called_once_with(fake_worktree, force=True)
+        self.assertEqual(len(report.results), 1)
+        self.assertEqual(report.results[0].outcome, "pr_opened")
+
+    def test_no_isolated_worktree_skips_merge_step(self):
+        backlog_store.upsert_ticket("cli-1", "Login-Seite bauen", "cli", "todo")
+
+        with patch("core.backlog_worker.copy_worktree_changes_to_target") as mock_copy, \
+             patch("core.backlog_worker.remove_worktree") as mock_remove:
+            asyncio.run(run_backlog_poll_cycle())
+
+        mock_copy.assert_not_called()
+        mock_remove.assert_not_called()
+
+    def test_project_slug_survives_across_two_poll_cycles_of_the_same_governance_ticket(self):
+        # Regressionstest für den realen mockforge-Fund: der ERSTE Zyklus scheitert (kein
+        # Diff -> "no_changes"/"blocked"), project_slug MUSS trotzdem für den ZWEITEN Zyklus
+        # erhalten bleiben, sonst würde forced_project_dir in _process_single_ticket() beim
+        # zweiten Versuch nicht mehr greifen (siehe core/backlog_store.py-Bugfix).
+        self.fake_github.get_status.return_value = ""  # -> "no_changes" im 1. Zyklus
+        backlog_store.upsert_ticket(
+            "unresolved-governance-critical-mockforge", "Ungelöster kritischer Governance-Befund",
+            "orchestrator", "blocked", project_slug="mockforge", detail="...",
+        )
+        asyncio.run(run_backlog_poll_cycle())
+        ticket_after_first_cycle = backlog_store.get_ticket("unresolved-governance-critical-mockforge")
+        self.assertEqual(ticket_after_first_cycle.project_slug, "mockforge")
+
+        asyncio.run(run_backlog_poll_cycle())
+        ticket_after_second_cycle = backlog_store.get_ticket("unresolved-governance-critical-mockforge")
+        self.assertEqual(ticket_after_second_cycle.project_slug, "mockforge")
+        self.assertEqual(ticket_after_second_cycle.retries, 2)
 
     def test_regular_todo_ticket_is_preferred_over_governance_retry_at_equal_priority(self):
         backlog_store.upsert_ticket(

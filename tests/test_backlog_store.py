@@ -100,6 +100,24 @@ class TestBacklogStore(unittest.TestCase):
         self.assertEqual(updated.priority, 3)
         self.assertEqual(updated.estimate, "S")
 
+    def test_project_slug_survives_a_status_update_without_being_passed_again(self):
+        # Bugfix (Team-Optimierung, real beobachtet im mockforge-Governance-Retry): anders als
+        # priority/estimate/epic/retries hatte project_slug bisher KEINEN Sentinel-Default -
+        # core/backlog_worker.py._process_single_ticket() aktualisiert ein Ticket mehrfach über
+        # seinen Lebenszyklus (Aufgreifen, Retry-Zähler, finaler Status), der finale
+        # Status-Update-Aufruf gab project_slug bisher nicht erneut mit und löschte es dadurch
+        # STILLSCHWEIGEND - ein nachfolgender automatischer Retry (core/backlog_worker.py.
+        # _governance_retry_pool()) fand dadurch kein project_slug mehr und legte fälschlich
+        # ein komplett neues Projekt an, statt das bestehende fortzusetzen.
+        backlog_store.upsert_ticket("t1", "A", "orchestrator", "blocked", project_slug="mockforge")
+        updated = backlog_store.upsert_ticket("t1", "A", "orchestrator", "blocked", detail="erneut versucht")
+        self.assertEqual(updated.project_slug, "mockforge")
+
+    def test_project_slug_can_be_explicitly_cleared_on_update(self):
+        backlog_store.upsert_ticket("t1", "A", "orchestrator", "blocked", project_slug="mockforge")
+        updated = backlog_store.upsert_ticket("t1", "A", "orchestrator", "blocked", project_slug="")
+        self.assertEqual(updated.project_slug, "")
+
     def test_count_by_status(self):
         backlog_store.upsert_ticket("t1", "A", "cli", "in_progress")
         backlog_store.upsert_ticket("t2", "B", "cli", "in_progress")

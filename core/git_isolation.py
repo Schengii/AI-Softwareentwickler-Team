@@ -16,6 +16,7 @@ zum bestehenden Git-Push-Bestätigungs-Gate in interface/cli.py).
 """
 
 import re
+import shutil
 import subprocess
 import uuid
 from dataclasses import dataclass
@@ -154,6 +155,69 @@ def create_isolated_worktree(base_dir: str, task_summary: str) -> IsolatedWorktr
         )
 
     return IsolatedWorktree(path=worktree_dir, branch=branch, base_dir=base_dir)
+
+
+def copy_worktree_changes_to_target(worktree: IsolatedWorktree, target_git_root: str) -> list[str]:
+    """
+    Team-Optimierung (Retrospektive 2026-09-03, real beobachtet im mockforge-Governance-Retry):
+    _resolve_project_isolation() in agents/orchestrator/__init__.py isoliert JEDEN Lauf gegen
+    bereits vorhandenen Inhalt (nicht nur Selbstverbesserungsläufe) - für den interaktiven
+    CLI-Pfad genau richtig (ein Mensch prüft/merged die Änderungen bewusst selbst, siehe
+    Moduldocstring oben). core/backlog_worker.py und core/issue_watcher.py haben aber KEINEN
+    Menschen, der das tun könnte: sie prüfen direkt nach orchestrator.process() per
+    `github_agent.get_status()`, ob sich am ECHTEN Arbeitsverzeichnis etwas geändert hat - bei
+    einem bereits bestehenden Workspace-Projekt lag die tatsächlich geleistete Arbeit aber
+    NUR im isolierten Worktree, niemals im echten Arbeitsverzeichnis. Das Ergebnis war ein
+    irreführendes "no_changes", obwohl das Team das Problem nachweislich bearbeitet hatte -
+    kein Commit, kein Push, kein PR, und (bei einem Governance-Retry-Ticket, siehe
+    core/backlog_worker.py) ein für immer "blocked" bleibendes Ticket trotz echter Arbeit.
+
+    Überträgt deshalb die (im Normalfall unkommittierten - die Agenten committen im Worktree
+    selbst nichts, sie schreiben nur Dateien) Änderungen aus dem Worktree 1:1 als reine
+    Dateikopie/-löschung in `target_git_root` zurück, OHNE selbst zu committen - das macht sie
+    für ein anschließendes `git status`/`git add`/`git commit` im echten Arbeitsverzeichnis
+    sichtbar, exakt wie bei einem nicht-isolierten Lauf. Gibt die betroffenen, relativ zu
+    `target_git_root` normierten Pfade zurück (leer, wenn der Worktree sauber war/nichts zu
+    übertragen gab) - der Aufrufer kann sie z.B. loggen.
+    """
+    try:
+        result = _run_git(["status", "--porcelain"], cwd=worktree.path, timeout=30.0)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+
+    target_root = Path(target_git_root).resolve()
+    worktree_root = Path(worktree.path).resolve()
+    changed: list[str] = []
+
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        status_code = line[:2]
+        rel_path = line[3:].strip()
+
+        # Eine Umbenennung ("R  alter/pfad -> neuer/pfad") - `git status --porcelain` trennt
+        # beide Seiten per " -> "; der alte Pfad gilt im Ziel als gelöscht, nur der neue wird
+        # unten wie ein normaler Fund kopiert.
+        if " -> " in rel_path:
+            old_rel, rel_path = rel_path.split(" -> ", 1)
+            old_target = target_root / old_rel
+            if old_target.exists():
+                old_target.unlink()
+            changed.append(old_rel)
+
+        src = worktree_root / rel_path
+        dst = target_root / rel_path
+        if status_code.strip().startswith("D") or not src.exists():
+            if dst.exists():
+                dst.unlink()
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+        changed.append(rel_path)
+
+    return changed
 
 
 def remove_worktree(worktree: IsolatedWorktree, force: bool = False) -> tuple[bool, str]:

@@ -49,10 +49,12 @@ from agents.orchestrator import Orchestrator
 from config import (
     BACKLOG_WORKER_MAX_PER_CYCLE,
     BACKLOG_WORKER_WIP_LIMIT,
+    BASE_DIR,
     GIT_PROTECTED_BRANCHES,
     MAX_GOVERNANCE_TICKET_RETRIES,
 )
 from core.backlog_store import Ticket, count_by_status, is_ticket_ready, list_tickets, upsert_ticket
+from core.git_isolation import copy_worktree_changes_to_target, remove_worktree
 from core.merge_watcher import check_merged_tickets
 from core.notifier import notify_external
 from core.workspace import WorkspaceManager
@@ -239,6 +241,28 @@ async def _process_single_ticket(
         )
     except Exception as e:
         return BacklogRunResult(ticket.id, ticket.title, "error", str(e))
+
+    # Bugfix (Team-Optimierung, real beobachtet im mockforge-Governance-Retry): der
+    # Orchestrator isoliert JEDEN Lauf gegen bereits vorhandenen Inhalt (siehe
+    # agents/orchestrator/__init__.py._resolve_project_isolation) in einem separaten
+    # Git-Worktree - ohne diese Übertragung sah github_agent.get_status() (läuft immer gegen
+    # BASE_DIR, siehe agents/github_agent.py) nie etwas davon, selbst wenn das Team das
+    # Ticket nachweislich korrekt bearbeitet hatte. Siehe core/git_isolation.py.
+    # copy_worktree_changes_to_target()-Docstring für die volle Herleitung.
+    worktree = getattr(orchestrator, "last_isolated_worktree", None)
+    if worktree is not None:
+        try:
+            copied = copy_worktree_changes_to_target(worktree, BASE_DIR)
+            if status_callback and copied:
+                status_callback(
+                    f"🌳 {len(copied)} Datei(en) aus isoliertem Worktree `{worktree.branch}` "
+                    "ins echte Arbeitsverzeichnis übernommen."
+                )
+        finally:
+            # Worktree danach immer aufräumen (force=True, da die soeben übertragenen
+            # Änderungen dort absichtlich als "unkommittiert" zurückbleiben) - ein
+            # vollautomatischer Aufrufer hat keinen Menschen, der ihn später manuell prüft.
+            remove_worktree(worktree, force=True)
 
     diff_status = github_agent.get_status()
     if not diff_status:

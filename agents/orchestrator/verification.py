@@ -17,7 +17,8 @@ einen gezielten Korrekturauftrag auslöst statt nur verification_ok zurückzuset
 
 import asyncio
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from typing import TypeVar
 
 from agents.orchestrator.constants import REVIEW_ONLY_AGENT_IDS
 from config import (
@@ -31,7 +32,7 @@ from config import (
     MAX_VERIFICATION_ITERATIONS,
     MIN_TEST_COVERAGE,
 )
-from core.backlog_store import upsert_ticket
+from core.backlog_store import get_ticket, upsert_ticket
 from core.decision_log import log_decision
 from core.message_bus import AgentResult, AgentTask
 from core.review_gate import (
@@ -81,6 +82,56 @@ def _diagnose_import_failure(message: str) -> str | None:
             f"Variable) in genau dieser Datei, statt nur die importierende Datei zu ändern."
         )
     return None
+
+
+_T = TypeVar("_T")
+
+# Vier der Fix-Schleifen unten (Test-, Governance-, Vorab-Import-, Vollständigkeits-Schleife)
+# teilten bisher dieselbe, viermal wortgleich kopierte "identische Funde wie beim letzten
+# Versuch? -> abbrechen"-Logik (Team-Retrospektive nach dem taskpulse-Lauf, zweite Runde).
+# _issue_signature()/_no_progress() bündeln NUR die reine Signatur-Bildung/den -Vergleich -
+# bewusst NICHT das Abbrechen/Notify/Ticket-Öffnen selbst, das unterscheidet sich je Schleife
+# (unterschiedliche Ticket-IDs, Log-Texte, Nebeneffekte wie verification_ok=False) zu sehr, um
+# es ohne Klarheitsverlust in eine gemeinsame Funktion zu zwingen - dieselbe Abwägung wie an
+# anderer Stelle in dieser Datei (explizite, kommentierte Einzel-Schleifen statt einer
+# generischen "Fix-Loop-Engine").
+def _issue_signature(items: Iterable[_T], key_fn: Callable[[_T], tuple[str, str]]) -> frozenset[tuple[str, str]]:
+    """Baut eine vergleichbare, auf 300 Zeichen gekappte Signatur aus einer Liste von Funden
+    (Testfehlern/Governance-Befunden/Vollständigkeits-Issues) - zwei aufeinanderfolgende
+    Aufrufe mit ergebnisgleichem `items` liefern dieselbe Signatur, unabhängig von der
+    Reihenfolge (frozenset)."""
+    return frozenset(key_fn(item) for item in items)
+
+
+def _no_progress(previous: frozenset[tuple[str, str]] | None, current: frozenset[tuple[str, str]]) -> bool:
+    """True, wenn `current` (der frische Fund-Stand) exakt der Signatur des VORHERIGEN
+    Fixversuchs entspricht - der Fixversuch hat dann erkennbar nichts verändert. `previous is
+    None` (erster Versuch, noch kein Vergleich möglich) zählt bewusst NICHT als "kein
+    Fortschritt"."""
+    return previous is not None and current == previous
+
+
+def _prior_run_context(ticket_id: str) -> str:
+    """Team-Retrospektive nach dem taskpulse-Lauf, zweite Runde: bisher startete JEDER neue
+    Lauf bei Null, selbst wenn ein VORHERIGER Lauf desselben Projekts bereits an genau diesem
+    Problem gescheitert war und dafür ein Ticket eröffnet hatte (siehe
+    core/backlog_store.get_ticket()-Docstring). Liefert - falls ein offenes ("blocked") Ticket
+    mit dieser ID existiert - einen kurzen Kontext-Satz für den ERSTEN Fix-Auftrag dieses Laufs,
+    sonst einen leeren String. Ein Lookup-Fehler (z.B. eine kaputte memory/backlog.json) darf
+    diesen rein informativen Hinweis nie zum Absturz des Laufs machen - dieselbe defensive
+    Haltung wie bei den upsert_ticket()-Aufrufen in dieser Datei."""
+    try:
+        ticket = get_ticket(ticket_id)
+    except Exception:
+        return ""
+    if ticket is None or ticket.status != "blocked":
+        return ""
+    return (
+        f"\n\n⚠️ HINWEIS: Ein VORHERIGER Lauf dieses Projekts ist bereits an einem ähnlichen "
+        f"Problem gescheitert und blieb ungelöst (Ticket `{ticket_id}`): {ticket.detail[:300]}\n"
+        "Prüfe, ob dein Fix diesmal WIRKLICH an der Ursache ansetzt, statt denselben "
+        "erfolglosen Ansatz zu wiederholen."
+    )
 
 
 class VerificationMixin:
@@ -197,6 +248,13 @@ class VerificationMixin:
         # MAX_REVIEW_ITERATIONS") wären dann reine Tokens/Zeit-Verschwendung. Bricht in diesem
         # Fall direkt zur Ticket-Eröffnung durch, ohne den zweiten Fix-Dispatch zu versuchen.
         previous_findings_signature: frozenset[tuple[str, str]] | None = None
+        # Dasselbe Cross-Run-Gedächtnis wie in _run_verification_loop (Team-Retrospektive nach
+        # dem taskpulse-Lauf, zweite Runde).
+        governance_ticket_id = f"unresolved-governance-critical-{self.last_project_slug}" if self.last_project_slug else None
+        try:
+            had_prior_governance_ticket = bool(governance_ticket_id and get_ticket(governance_ticket_id) is not None)
+        except Exception:
+            had_prior_governance_ticket = False
 
         def _latest_review_results() -> list[AgentResult]:
             # Neuestes Ergebnis JE Rolle - bei einem Re-Check ab Versuch 2 überschreibt das
@@ -257,10 +315,21 @@ class VerificationMixin:
                     f"- ✅ Keine kritischen Befunde in den Governance-Reports"
                     f"{f' (Versuch {attempt})' if attempt > 1 else ''}."
                 )
+                if had_prior_governance_ticket and governance_ticket_id:
+                    try:
+                        upsert_ticket(
+                            ticket_id=governance_ticket_id,
+                            title=f"Ungelöster kritischer Governance-Befund: {self.last_project_slug}",
+                            source="orchestrator", status="done", project_slug=self.last_project_slug,
+                            detail="In einem späteren Lauf behoben - keine kritischen Befunde mehr.",
+                        )
+                        notify("  🎫 [dim]Ticket für vorherigen Governance-Befund als gelöst geschlossen.[/dim]")
+                    except Exception as e:
+                        notify(f"⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
                 break
 
-            current_findings_signature = frozenset((agent_id, block[:300]) for agent_id, block in findings)
-            if previous_findings_signature is not None and current_findings_signature == previous_findings_signature:
+            current_findings_signature = _issue_signature(findings, lambda f: (f[0], f[1][:300]))
+            if _no_progress(previous_findings_signature, current_findings_signature):
                 notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische kritische Befunde wie vor dem letzten Fixversuch – überspringe weiteren Fixversuch, eröffne direkt ein Ticket.")
                 summary_lines.append(
                     f"- 🛑 Versuch {attempt}: dieselben {len(findings)} kritische(n) Befund(e) wie nach dem vorherigen "
@@ -310,6 +379,7 @@ class VerificationMixin:
                         f"KRITISCHES Problem in deinem Code gefunden. Nutze read_file, um die "
                         f"betroffene(n) Datei(en) zu prüfen, und edit_file/write_file, um das "
                         f"Problem zu beheben.\n\n{finding_text}"
+                        + (_prior_run_context(governance_ticket_id) if attempt == 1 and governance_ticket_id else "")
                     ),
                     context="", project_dir=project_dir,
                 ))
@@ -747,6 +817,16 @@ class VerificationMixin:
         # SOFORT ab (spart einen kompletten, meist wirkungslosen Agenten-Durchlauf) statt den
         # letzten erlaubten Versuch trotzdem zu verbrauchen.
         previous_failure_signature: frozenset[tuple[str, str]] | None = None
+        # Cross-Run-Gedächtnis (Team-Retrospektive nach dem taskpulse-Lauf, zweite Runde): ein
+        # offenes Ticket aus einem VORHERIGEN Lauf desselben Projekts fließt als Kontext in den
+        # ERSTEN Fix-Auftrag dieses Laufs ein (siehe _prior_run_context()) - und wird, sobald
+        # die Testsuite in DIESEM Lauf tatsächlich grün wird, als gelöst geschlossen, statt als
+        # "blocked" liegen zu bleiben, obwohl das Problem längst behoben ist.
+        test_ticket_id = f"recurring-failure-{self.last_project_slug}" if self.last_project_slug else None
+        try:
+            had_prior_test_ticket = bool(test_ticket_id and get_ticket(test_ticket_id) is not None)
+        except Exception:
+            had_prior_test_ticket = False
 
         notify("🧪 [bold cyan]Verifikation:[/bold cyan] Installiere Abhängigkeiten in isolierter Umgebung...")
         install_log = await asyncio.to_thread(verifier.ensure_environment)
@@ -797,8 +877,8 @@ class VerificationMixin:
                         summary_lines.append(f"- 🧩 Vorab-Import-Check (statisch, vor der Testsuite): nach {attempt} Durchlauf/Durchläufen bestanden.")
                     break
 
-                current_preimport_signature = frozenset((i.file_path, i.message[:300]) for i in import_issues)
-                if previous_preimport_signature is not None and current_preimport_signature == previous_preimport_signature:
+                current_preimport_signature = _issue_signature(import_issues, lambda i: (i.file_path, i.message[:300]))
+                if _no_progress(previous_preimport_signature, current_preimport_signature):
                     notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Import-Funde wie vor dem letzten Fixversuch – breche Vorab-Import-Check ab, weiter mit der regulären Testsuite.")
                     summary_lines.append(
                         f"- 🧩 🛑 Vorab-Import-Check, Versuch {attempt}: dieselben {len(import_issues)} Fund(e) wie nach dem "
@@ -913,12 +993,23 @@ class VerificationMixin:
                 notify(f"  ✅ [bold green]Alle Tests bestanden[/bold green] (Versuch {attempt}, {report.duration_seconds:.1f}s).")
                 summary_lines.append(f"- ✅ Echte Testsuite bestanden nach {attempt} Durchlauf/Durchläufen ({report.duration_seconds:.1f}s).")
                 verification_ok = True
+                if had_prior_test_ticket and test_ticket_id:
+                    try:
+                        upsert_ticket(
+                            ticket_id=test_ticket_id,
+                            title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                            source="orchestrator", status="done", project_slug=self.last_project_slug,
+                            detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
+                        )
+                        notify("  🎫 [dim]Ticket für vorherigen Testfehlschlag als gelöst geschlossen.[/dim]")
+                    except Exception as e:
+                        notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
                 break
 
             notify(f"  ❌ [bold red]{len(report.failures)} Testfehler[/bold red] – ermittle betroffene Agenten aus dem echten Traceback...")
 
-            current_signature = frozenset((f.test_id, f.message[:300]) for f in report.failures)
-            if previous_failure_signature is not None and current_signature == previous_failure_signature:
+            current_signature = _issue_signature(report.failures, lambda f: (f.test_id, f.message[:300]))
+            if _no_progress(previous_failure_signature, current_signature):
                 notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Testfehler wie vor dem letzten Fixversuch – breche Verifikations-Schleife ab statt unverändert zu wiederholen.")
                 summary_lines.append(
                     f"- 🛑 Versuch {attempt}: dieselben {len(report.failures)} Testfehler wie nach dem vorherigen "
@@ -968,6 +1059,7 @@ class VerificationMixin:
                         f"pytest/unittest-Output). Nutze read_file, um die betroffene(n) Datei(en) zu prüfen, und "
                         f"edit_file/write_file, um den Fehler zu beheben. Verifiziere deinen Fix danach mit run_tests.\n\n"
                         f"{failure_text}"
+                        + (_prior_run_context(test_ticket_id) if attempt == 1 and test_ticket_id else "")
                     ),
                     context="",
                     project_dir=project_dir,
@@ -1166,10 +1258,10 @@ class VerificationMixin:
                         summary_lines.append(f"- 🧩 Vollständigkeits-Check nach {attempt} Durchlauf/Durchläufen bestanden.")
                     break
 
-                current_completeness_signature = frozenset(
-                    (i.file_path, i.message[:300]) for i in completeness_report.issues
+                current_completeness_signature = _issue_signature(
+                    completeness_report.issues, lambda i: (i.file_path, i.message[:300]),
                 )
-                if previous_completeness_signature is not None and current_completeness_signature == previous_completeness_signature:
+                if _no_progress(previous_completeness_signature, current_completeness_signature):
                     notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Vollständigkeits-Funde wie vor dem letzten Fixversuch – breche Schleife ab.")
                     summary_lines.append(
                         f"- 🧩 🛑 Versuch {attempt}: dieselben {len(completeness_report.issues)} Vollständigkeits-Fund(e) wie nach "

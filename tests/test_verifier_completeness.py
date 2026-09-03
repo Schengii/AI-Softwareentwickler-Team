@@ -392,6 +392,67 @@ class TestCompletenessCheck(unittest.TestCase):
             report = verifier.check_completeness()
             self.assertTrue(report.passed)
 
+    def test_detects_js_write_route_without_io(self):
+        # JS/TS-Pendant zum cloudvault-Fund: ein Express-Handler mit hartcodierter
+        # Literal-Rückgabe statt echter Persistenz.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "server.js").write_text(
+                "const express = require('express');\nconst app = express();\n\n"
+                "app.post('/api/v1/files/upload', (req, res) => {\n"
+                "  res.json({ id: 1, filename: req.body.filename });\n"
+                "});\n",
+                encoding="utf-8",
+            )
+            (project_dir / "package.json").write_text("{}\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any("I/O" in i.message and i.file_path == "server.js" for i in report.issues))
+
+    def test_js_write_route_with_io_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "server.js").write_text(
+                "app.post('/api/v1/files/upload', async (req, res) => {\n"
+                "  const result = await db.collection('files').insertOne(req.body);\n"
+                "  res.json({ id: result.insertedId });\n"
+                "});\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_js_write_route_exempt_path_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "server.js").write_text(
+                "app.post('/api/v1/logout', (req, res) => {\n"
+                "  res.clearCookie('session');\n"
+                "  res.json({ ok: true });\n"
+                "});\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_js_write_route_named_handler_reference_not_flagged(self):
+        # "app.post('/x', createUser)" referenziert eine BENANNTE Funktion (kein Inline-Handler
+        # an dieser Stelle) - bewusst nicht geprüft, siehe Docstring von
+        # _scan_js_write_routes_missing_io() in core/verifier/completeness.py.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "server.js").write_text(
+                "function createUser(req, res) {\n  res.json({ id: 1 });\n}\n\n"
+                "app.post('/api/v1/users', createUser);\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
     def test_ignores_venv_and_node_modules(self):
         with tempfile.TemporaryDirectory() as tmp:
             project_dir = Path(tmp)

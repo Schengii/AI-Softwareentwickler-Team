@@ -34,10 +34,13 @@ from core.verifier.models import (
     _IGNORED_DIRS,
     _IO_CALL_MARKERS,
     _IO_MUTATION_RE,
+    _JS_IO_CALL_MARKERS,
+    _JS_IO_MUTATION_RE,
     _JS_MODULE_EXTENSIONS,
     _JS_RELATIVE_DYNAMIC_IMPORT_RE,
     _JS_RELATIVE_ES_IMPORT_RE,
     _JS_RELATIVE_REQUIRE_RE,
+    _JS_WRITE_ROUTE_CALL_RE,
     _JSX_RETURN_RE,
     _MANIFEST_FILENAMES,
     _PY_IMPORT_RE,
@@ -84,6 +87,7 @@ class CompletenessMixin:
             elif f.suffix in (".js", ".jsx", ".ts", ".tsx"):
                 issues.extend(self._scan_component_missing_api(rel, text))
                 issues.extend(self._missing_local_js_imports(rel, f, text))
+                issues.extend(self._scan_js_write_routes_missing_io(rel, text))
 
         issues.extend(self._missing_readme_referenced_files())
         issues.extend(self._missing_dependency_manifest(py_import_names))
@@ -186,6 +190,70 @@ class CompletenessMixin:
                         f"- der Import schlägt beim Bundling/Ausführen fehl.",
             ))
         return issues
+
+    def _scan_js_write_routes_missing_io(self, rel: str, text: str) -> list[CompletenessIssue]:
+        """JS/TS-Pendant zu _scan_write_routes_missing_io() (Python, siehe oben): findet
+        schreibende Express/Fastify/Koa-artige Routen-Registrierungen (`app.post(...)`/
+        `router.put(...)`/...) MIT INLINE-Handler-Funktion, deren Body keinen erkennbaren
+        I/O-Aufruf enthält (DB/Storage/HTTP-Client) - derselbe cloudvault-Fund wie bei Python
+        (`return []`/hartcodierte Literale statt echter Persistenz), nur im Node-Backend.
+
+        Bewusst NUR Inline-Handler geprüft: `app.post('/x', createUser)` referenziert eine
+        BENANNTE Funktion, deren Body nicht am Fundort steht - eine echte Prüfung bräuchte
+        eine zweite Suche nach `function createUser` bzw. `const createUser =` an anderer
+        Stelle der Datei, was das Risiko von Fehlzuordnungen deutlich erhöht. Erkennungsregel:
+        endet die Registrierung (Semikolon) VOR der nächsten `{`, ist es kein Inline-Handler -
+        wird übersprungen statt geraten (dieselbe konservative Grundhaltung wie überall in
+        dieser Datei: eine übersehene fehlende I/O-Anbindung ist besser als ein Fehlalarm).
+
+        Endpunkte, deren Pfad eines der exempt-Schlüsselwörter enthält (health/ping/version/
+        logout/status, siehe _ROUTE_IO_EXEMPT_NAME_RE), werden wie beim Python-Pendant
+        ausgenommen - JS-Handler sind in dieser Konvention oft anonyme Arrow-Functions ohne
+        eigenen Funktionsnamen, deshalb wird hier der Routen-PFAD statt eines Funktionsnamens
+        geprüft."""
+        issues: list[CompletenessIssue] = []
+        for m in _JS_WRITE_ROUTE_CALL_RE.finditer(text):
+            route_path = m.group(2)
+            if _ROUTE_IO_EXEMPT_NAME_RE.search(route_path):
+                continue
+
+            semi_idx = text.find(";", m.end())
+            brace_idx = text.find("{", m.end())
+            if brace_idx == -1 or (semi_idx != -1 and semi_idx < brace_idx):
+                continue  # kein Inline-Handler an dieser Stelle - siehe Docstring
+
+            close_idx = self._find_matching_js_brace(text, brace_idx)
+            if close_idx is None:
+                continue  # unausgewogene Klammern (z.B. String mit "{" drin) - nicht sicher prüfbar
+            body = text[brace_idx:close_idx + 1]
+
+            has_io = any(marker in body for marker in _JS_IO_CALL_MARKERS) or _JS_IO_MUTATION_RE.search(body)
+            if not has_io:
+                line_no = text.count("\n", 0, m.start()) + 1
+                issues.append(CompletenessIssue(
+                    file_path=rel, line_number=line_no,
+                    message=f"Schreibender Routen-Handler „{route_path}“ ohne erkennbaren I/O-"
+                            f"Aufruf (DB/Storage/HTTP-Client) - evtl. nur eine Literal-Rückgabe "
+                            f"statt echter Persistenz.",
+                ))
+        return issues
+
+    def _find_matching_js_brace(self, text: str, open_idx: int) -> int | None:
+        """Findet die zu `text[open_idx]` (muss "{" sein) passende schließende Klammer per
+        einfacher Tiefenzählung - bewusst kein echter JS-Parser (String-/Kommentar-Inhalte mit
+        "{"/"}" können die Zählung verfälschen), aber für die kurzen, unverschachtelten
+        Route-Handler-Bodies dieses Checks ausreichend robust; ein Fehlschlag (None) führt nur
+        dazu, dass DIESER eine Fund übersprungen wird, kein Crash."""
+        depth = 0
+        for i in range(open_idx, len(text)):
+            ch = text[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return i
+        return None
 
     def _js_module_resolves(self, candidate: Path) -> bool:
         """Node/Bundler-typische Modulauflösung, best-effort: exakter Pfad (falls der Import

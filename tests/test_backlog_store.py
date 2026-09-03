@@ -217,6 +217,18 @@ class TestTicketReadiness(unittest.TestCase):
 
         self.assertFalse(saw_empty.is_set(), "list_tickets() sah während gleichzeitiger Writes eine leere/kaputte Datei")
 
+    def test_get_ticket_returns_matching_ticket(self):
+        backlog_store.upsert_ticket("recurring-failure-proj", "X", "orchestrator", "blocked", detail="y")
+
+        ticket = backlog_store.get_ticket("recurring-failure-proj")
+
+        self.assertIsNotNone(ticket)
+        self.assertEqual(ticket.id, "recurring-failure-proj")
+        self.assertEqual(ticket.detail, "y")
+
+    def test_get_ticket_returns_none_when_missing(self):
+        self.assertIsNone(backlog_store.get_ticket("does-not-exist"))
+
 
 if __name__ == "__main__":
     unittest.main()

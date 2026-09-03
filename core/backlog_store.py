@@ -128,6 +128,16 @@ def list_tickets(status: str | None = None) -> list[Ticket]:
     return list(reversed(tickets))  # Listenreihenfolge = Aktualisierungsreihenfolge, siehe _save_raw()
 
 
+def get_ticket(ticket_id: str) -> Ticket | None:
+    """Ein einzelnes Ticket anhand seiner ID, oder None, wenn es nicht existiert. Team-
+    Retrospektive nach dem taskpulse-Lauf: Fix-Schleifen (agents/orchestrator/verification.py)
+    öffnen bereits Tickets für ungelöste Funde NACH einem Lauf, prüften aber bisher nie VOR
+    einem neuen Lauf, ob für dasselbe Projekt schon ein offenes Ticket zu genau diesem Problem
+    existiert - ein neuer Lauf startete jedes Mal bei Null, ohne zu wissen, dass ein Fixversuch
+    für ein ähnliches Problem im letzten Lauf bereits gescheitert war."""
+    return next((t for t in list_tickets() if t.id == ticket_id), None)
+
+
 def new_ticket_id(source: str) -> str:
     return f"{source}-{uuid.uuid4().hex[:8]}"
 

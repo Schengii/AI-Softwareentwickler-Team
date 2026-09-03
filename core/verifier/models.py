@@ -470,6 +470,33 @@ _JS_RELATIVE_DYNAMIC_IMPORT_RE = re.compile(r"import\(\s*['\"](\.[^'\"]+)['\"]\s
 # Framework nicht kennt; ein Fehlalarm dort wäre schlimmer als eine übersehene fehlende Datei.
 _JS_MODULE_EXTENSIONS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
 
+# Sechster realer Fund (Team-Retrospektive, zweite Runde): _scan_write_routes_missing_io()
+# (Python, siehe oben) hat kein JS/TS-Pendant - ein Express/Fastify/Koa-Handler mit hartcodierter
+# Literal-Rückgabe statt echter Persistenz (derselbe cloudvault-Fund wie bei Python, nur im
+# Node-Backend) blieb bisher unentdeckt. Erkennt schreibende Routen-Registrierungen
+# (`app.post(...)`/`router.put(...)`/...) mit INLINE-Handler-Funktion - eine Referenz auf eine
+# benannte Funktion (`app.post('/x', createUser)`) wird bewusst NICHT geprüft, weil deren Body
+# nicht in derselben Zeile/demselben Ausdruck steht (siehe _scan_js_write_routes_missing_io()-
+# Docstring in completeness.py für die genaue Abgrenzung).
+_JS_WRITE_ROUTE_CALL_RE = re.compile(
+    r"\b(?:app|router)\.(?:post|put|patch|delete)\(\s*(['\"])([^'\"]*)\1", re.IGNORECASE,
+)
+_JS_IO_CALL_MARKERS = (
+    "session", "db.", "db_", "cursor", ".execute(", ".query(", ".save(", ".insert(",
+    ".update(", ".delete(", ".find(", ".findOne(", ".findById(", ".findByIdAndUpdate(",
+    ".findByIdAndDelete(", "prisma.", "knex(", "mongoose", "redis", "s3", "fetch(",
+    "axios.", "fs.write", "fs.append", "writeFile", "readFile", "INSERT INTO", "UPDATE ",
+    "DELETE FROM",
+)
+_JS_IO_MUTATION_RE = re.compile(
+    r"\w+\[[^\]\n]+\]\s*="  # z.B. notesById[id] = ...
+    r"|\.push\("
+    r"|\.splice\("
+    r"|\.set\("
+    r"|\.delete\("
+    r"|\.pop\("
+)
+
 
 @dataclass
 class CompletenessIssue:

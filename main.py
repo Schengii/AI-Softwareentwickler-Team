@@ -43,7 +43,20 @@ def main():
     einem echten Fehlschlag ein Backlog-Ticket öffnet (siehe core/workspace_audit.py) – dasselbe
     On-Call-Prinzip wie `--check-dependencies`, nur für Verifikations-Drift statt neuer CVEs.
     """
+    if "--sync-obsidian" in sys.argv:
+        from core.obsidian_sync import sync_project_to_obsidian
+        force = "--force" in sys.argv
+        res = sync_project_to_obsidian(force=force)
+        print(res.format_summary())
+        return
+
+    if "--watch-obsidian" in sys.argv:
+        from scripts.watch_obsidian_sync import run_watcher
+        run_watcher()
+        return
+
     if "--list-evals" in sys.argv:
+
         from evals.tasks import list_tasks
         print("🎯 Verfügbare Benchmark-Aufgaben:")
         for t in list_tasks():

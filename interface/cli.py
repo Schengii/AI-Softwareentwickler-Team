@@ -103,6 +103,7 @@ HELP_TEXT = """
 | `/protect-branch [branch]` | Aktiviert echte GitHub-Branch-Protection (Pflicht-Reviews, kein Force-Push) für den Hauptbranch – mit Vorschau & Bestätigung |
 | `/state [projekt]` | Zeigt den aktuellen State-Checkpoint (PROJECT_STATE.md) und nächste Schritte für ein Projekt an |
 | `/goal [max] <ziel>` | Startet den autonomen Ziel-Loop: arbeitet selbstständig in Feedback-Schleifen weiter, bis das Projektziel erreicht und verifiziert ist |
+| `/sync-obsidian` | Synchronisiert wichtige Projektdateien (.env, README.md, Zwischenstand etc.) nach Obsidian als Claude-Gedächtnis |
 | `/verlauf` | Zeigt den bisherigen Gesprächsverlauf |
 | `/neu` | Startet eine neue Konversation (löscht Verlauf) |
 | `/hilfe` | Zeigt diese Hilfe an |
@@ -346,7 +347,17 @@ class CLIInterface:
         # zurück auf user_input, falls aus irgendeinem Grund keine Zusammenfassung vorliegt.
         await self._ask_for_git_push(self._orchestrator.last_task_summary or user_input, ticket_id=ticket_id)
 
+        # Automatischer Obsidian-Gedächtnis-Sync (falls aktiviert)
+        try:
+            from core.obsidian_sync import auto_sync_if_enabled
+            obs_res = auto_sync_if_enabled()
+            if obs_res and obs_res.synced_files:
+                console.print(f"🧠 [dim]Obsidian-Gedächtnis aktualisiert: {', '.join(obs_res.synced_files)}[/dim]")
+        except Exception as e:
+            console.print(f"⚠️ [dim]Obsidian-Sync fehlgeschlagen: {e}[/dim]")
+
         # Regelmäßige Erinnerung an die Projekt-Hygiene (kein Auto-Löschen – nur ein Hinweis).
+
         self._tasks_since_audit_reminder += 1
         if self._tasks_since_audit_reminder >= self.AUDIT_REMINDER_INTERVAL:
             self._tasks_since_audit_reminder = 0
@@ -1549,6 +1560,14 @@ class CLIInterface:
 
         elif cmd in ("/team-health", "/teamgesundheit", "/rollup"):
             self._show_team_health()
+
+        elif cmd in ("/sync-obsidian", "/obsidian-sync", "/obsidian"):
+            from core.obsidian_sync import sync_project_to_obsidian
+            force = "--force" in args
+            console.print("🔄 [bold cyan]Synchronisiere Projektdateien in den Obsidian-Vault...[/bold cyan]")
+            res = sync_project_to_obsidian(force=force)
+            console.print(Panel(Markdown(res.format_summary()), title="🧠 Obsidian-Sync", border_style="cyan" if res.success else "red"))
+
 
         elif cmd in ("/load", "/laden", "/open", "/oeffnen", "/import"):
             if not args:

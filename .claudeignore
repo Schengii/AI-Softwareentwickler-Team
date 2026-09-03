@@ -1,0 +1,29 @@
+# .claudeignore – Token-Schutz & Ausschlussregeln für Claude Code
+# Verhindert, dass riesige Log-Dateien, Caches oder generierte Subprojekte
+# das Context-Window von Claude Code unnötig füllen.
+
+# 1. Übergroße Dokumentations- & Log-Dateien (1.8 MB+, 46.000+ Zeilen)
+# Für historischen Kontext stattdessen CHANGELOG.md oder Obsidian-Gedächtnis nutzen!
+ZWISCHENSTAND_KI_TEAM_PROJEKT.md
+
+# 2. Generierte Zielprojekte im Workspace (22+ separate Codebases)
+# Nur bei expliziter Aufforderung gezielt öffnen, nicht bei globalen Repo-Suchen!
+workspace/
+
+# 3. Temporäre Skripte, Logs und Caches
+scratch/
+logs/
+*.log
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+*.pyo
+
+# 4. Git-Worktrees und Locks
+.claude/worktrees/
+.claude/scheduled_tasks.lock
+
+# 5. OS & Umgebung
+.DS_Store
+Thumbs.db

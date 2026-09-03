@@ -529,6 +529,24 @@ MEMORY_DIR: str = os.path.join(BASE_DIR, "memory")
 WORKSPACE_DIR: str = os.path.join(BASE_DIR, "workspace")
 
 # ──────────────────────────────────────────
+# Obsidian Vault & Gedächtnis-Synchronisation (core/obsidian_sync.py)
+# ──────────────────────────────────────────
+OBSIDIAN_VAULT_PATH: str = os.getenv("OBSIDIAN_VAULT_PATH", r"C:\Users\sche-\Desktop\Obsidian")
+OBSIDIAN_TARGET_DIR: str = os.getenv("OBSIDIAN_TARGET_DIR", r"02 Areas\Lernprojekte\AI-Softwareentwickler-Team")
+OBSIDIAN_AUTO_SYNC: bool = os.getenv("OBSIDIAN_AUTO_SYNC", "true").strip().lower() in ("true", "1", "yes")
+OBSIDIAN_SYNC_FILES: list[str] = [
+    f.strip()
+    for f in os.getenv(
+        "OBSIDIAN_SYNC_FILES",
+        ".env,README.md,ZWISCHENSTAND_KI_TEAM_PROJEKT.md,.gitignore,ARCHITECTURE.md,CHANGELOG.md,CLAUDE.md,.claudeignore",
+    ).split(",")
+    if f.strip()
+]
+
+
+
+
+# ──────────────────────────────────────────
 # Validierung
 # ──────────────────────────────────────────
 def validate_config() -> list[str]:

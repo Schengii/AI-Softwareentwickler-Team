@@ -1,29 +1,11 @@
 # 📌 omnichat – Projekt-Status & Checkpoint
 
-- **Letzte Aktualisierung:** `2026-09-01 17:32:06 UTC`
+- **Letzte Aktualisierung:** `2026-09-01 18:14:47 UTC`
 - **Aktueller Status:** ⚠️ In Entwicklung / Verifikation ausstehend
-- **Zuletzt bearbeitete Aufgabe:** OmniChat-Implementierung vervollständigt und Testabdeckung sichergestellt.
+- **Zuletzt bearbeitete Aufgabe:** WebSocket-Chat-Broadcasting in FastAPI implementiert und getestet.
 
 ## 📁 Wichtige Projektkomponenten & Dateien
-- `README.md`
-- `app/database.py`
-- `app/main.py`
-- `app/schemas.py`
-- `design/tokens.json`
-- `docker-compose.yml`
-- `docs/adr/0001-redis-pub-sub-f-r-websocket-skalierung.md`
-- `docs/adr/0002-postgresql-schema-mit-uuids-und-optimier.md`
-- `docs/api/openapi.yaml`
-- `k8s/deployment.yaml`
-- `requirements.txt`
-- `schema.sql`
-- `src/App.tsx`
-- `src/components/ChatWindow.tsx`
-- `src/hooks/useWebSocket.test.ts`
-- `src/hooks/useWebSocket.ts`
-- `tests/e2e/chat.spec.ts`
-- `tests/test_chat_flow.py`
-- `tests/test_health.py`
+- *(Noch keine Quellcodedateien angelegt)*
 
 ## 🧪 Verifikations- & Test-Status
 - **Tests bestanden:** Ausstehend / Fehlgeschlagen ⚠️

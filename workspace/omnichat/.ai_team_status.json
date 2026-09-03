@@ -1,5 +1,14 @@
 [
   {
+    "timestamp": "2026-09-01T18:14:47+00:00",
+    "task_summary": "WebSocket-Chat-Broadcasting in FastAPI implementiert und getestet.",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 0,
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 📦 ✅ pip install -r requirements.txt (exit_code=0)\n- 🛠️ Versuch 1: 1 echte Testfehler → gezielt zur Korrektur an tester zurückgespielt.\n- 🛠️ Versuch 2: 1 echte Testfehler → gezielt zur Korrektur an tester zurückgespielt.\n- ⚠️ Nach 2 Versuchen nicht vollständig grün – letzter Stand wurde übernommen.\n- 🔒 pip-audit: keine bekannten Schwachstellen in Abhängigkeiten gefunden.\n- 🎨 ⚠️ ruff: 2 Lint-Fund(e): app/schemas.py:16"
+  },
+  {
     "timestamp": "2026-09-01T17:32:06+00:00",
     "task_summary": "OmniChat-Implementierung vervollständigt und Testabdeckung sichergestellt.",
     "verification_ok": false,

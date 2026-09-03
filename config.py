@@ -329,6 +329,18 @@ ENABLE_TASK_COMPLEXITY_SCALING: bool = os.getenv("ENABLE_TASK_COMPLEXITY_SCALING
 # zu lassen (die bis dahin erarbeiteten Ergebnisse werden trotzdem synthetisiert).
 MAX_RUN_TOKENS: int = int(os.getenv("MAX_RUN_TOKENS", "0"))
 
+# Team-Retrospektive (Verbesserungsvorschlag "Budget-Reserve für Verifikation"): mehrere reale
+# Läufe (u.a. incidentpilot) erschöpften MAX_RUN_TOKENS bereits in der Code-Generierungsphase
+# ("🚫 Lauf-Budget erreicht – Verifikation nach Versuch 0 abgebrochen") - der Teil, der Tests
+# tatsächlich ausführt und echte Fehler zurückspielt (also Autonomie überhaupt erst beweist),
+# bekam dadurch nie eine Chance zu laufen. VERIFICATION_TOKEN_RESERVE_RATIO reserviert einen
+# Anteil von MAX_RUN_TOKENS exklusiv für die Verifikations-/Fix-Phasen: die Generierungsphase
+# (agents/orchestrator/department.py._run_department_hierarchy) bricht bereits bei
+# MAX_RUN_TOKENS * (1 - RESERVE) ab, während die Verifikations-/Governance-Fix-Schleifen
+# (agents/orchestrator/verification.py) weiterhin gegen das volle MAX_RUN_TOKENS prüfen. 0.0
+# deaktiviert die Reserve (früheres Verhalten, gesamtes Budget für Generierung verfügbar).
+VERIFICATION_TOKEN_RESERVE_RATIO: float = float(os.getenv("VERIFICATION_TOKEN_RESERVE_RATIO", "0.15"))
+
 # ──────────────────────────────────────────
 # Plan-Freigabe-Gate (Vorschau + Bestätigung VOR Tokenverbrauch)
 # ──────────────────────────────────────────

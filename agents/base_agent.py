@@ -379,6 +379,27 @@ class BaseAgent(ABC):
             "du ein konkretes, technisch behebbares Problem im Code, behebe es DIREKT selbst über diese "
             "Werkzeuge - frage NICHT per `ask_human_for_clarification` nach Schreibrechten, die du bereits hast."
         )
+        # Team-Retrospektive (Verbesserungsvorschlag "Fehlende Struktur selbst anlegen als
+        # Standard-Policy"): dieselbe Rückfrage ("Ich sehe kein `app/`-Verzeichnis / das
+        # Projektverzeichnis ist leer - soll ich von Grund auf neu aufsetzen?") trat in
+        # mehreren unabhängigen realen Läufen auf (incidentpilot, omnichat, webhookshield),
+        # jedes Mal NACHDEM der Agent schon eine Aufgabe angenommen hatte. Bisher gab es dafür
+        # nur eine REAKTIVE Korrektur NACH dem Lauf (agents/orchestrator/verification.py.
+        # _run_scope_clarification_autofix) - die kostet jedes Mal eine komplette zusätzliche
+        # Fix-Runde (Tokens + Zeit), bevor überhaupt losgebaut wird. Dieser Hinweis macht
+        # dieselbe Annahme jetzt PROAKTIV zum Standardverhalten, nur für code-schreibende
+        # Rollen (nicht z.B. copywriter/i18n, für die eine leere Struktur keine sinnvolle
+        # Handlungsanweisung ist).
+        empty_scope_note = (
+            "\n\n⚠️ WICHTIG: Findest du nicht die erwartete Projektstruktur vor (z.B. kein `app/`-Verzeichnis, "
+            "leeres Projektverzeichnis, referenzierte Dateien fehlen komplett), obwohl der Auftrag von "
+            "bestehendem Code ausgeht ('repariere', 'erweitere', 'teste X') - frage NICHT per "
+            "`ask_human_for_clarification` nach, ob du sie neu anlegen darfst. Es ist kein Mensch anwesend, der "
+            "das in Echtzeit beantworten könnte. Lege die fehlende Grundstruktur selbst an und erledige die "
+            "Aufgabe darauf vollständig; dokumentiere die getroffene Annahme kurz (z.B. als Kommentar oder "
+            "README-Abschnitt)."
+            if self.agent_id in CODE_WRITING_AGENT_IDS else ""
+        )
         return f"""{system_prompt}
 
 ## 🛠️ WERKZEUG-NUTZUNG (agentischer Modus)
@@ -399,7 +420,7 @@ Triffst du auf eine ECHTE, für die Aufgabe entscheidende Unklarheit, die nur ei
 statt zu raten und trotzdem etwas möglicherweise Falsches auszuliefern. Ein erfahrener Senior-Entwickler fragt bei
 echter Mehrdeutigkeit nach, statt zu spekulieren. Setze deine Arbeit danach so weit wie möglich fort und fasse in
 deiner finalen Antwort ehrlich zusammen, was bereits erledigt ist und was durch die Rückfrage offen bleibt.
-{write_access_note}"""
+{write_access_note}{empty_scope_note}"""
 
     def _build_prompt(self, task: AgentTask) -> str:
         """Baut den finalen Prompt token-effizient zusammen mit strikten Sparsamkeits-Regeln."""

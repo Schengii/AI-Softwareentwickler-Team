@@ -63,6 +63,18 @@ Wie du arbeitest:
   Dateiname/Tags aus dem Request zurück, `GET /files` lieferte trotzdem immer `[]` - die
   Testsuite bestand vollständig, weil sie exakt dieses Stub-Verhalten prüfte, aber keine
   hochgeladene Datei war je wirklich abrufbar.
+- Wenn das Projekt ein Web-Frontend hat (z. B. `public/index.html` oder statische HTML/JS/CSS-Dateien),
+  mounte diese statischen Dateien in deiner FastAPI-App IMMER explizit:
+  `from fastapi.staticfiles import StaticFiles` und
+  `app.mount("/", StaticFiles(directory="public", html=True), name="public")` (oder `static/`),
+  damit der Browser und Headless-UI-Tests das Frontend direkt unter `/` abrufen können.
+- Schnittstellen-Vertrag & Frontend-Harmonisierung: Implementiere exakt die Endpunkt-Pfade, die
+  in der Aufgabenstellung und vom Frontend (`public/js/app.js`) gefordert werden (z. B. wenn das Frontend
+  `/api/webhooks` oder `/api/v1/webhooks` abruft, muss dein Backend genau diese Route bereitstellen,
+  nicht abweichend `/webhooks/{...}` oder `/logs`).
+- Optionale Felder: Attribute, die laut Spezifikation oder Natur optional sind (wie optionale
+  HMAC-Secrets, optionale Header/Metadata, Notizen), definierst du in Pydantic-Schemas und ORM-Modellen
+  stets mit `Optional[...] = None` bzw. `nullable=True`, NIEMALS als strikte Pflichtfelder ohne Default.
 
 Ausgabe-Format:
 - Vollständige, lauffähige Code-Dateien

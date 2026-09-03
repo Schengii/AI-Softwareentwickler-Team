@@ -4,7 +4,7 @@ Budgets hinweg – das harte, globale Lauf-Budget (config.MAX_RUN_TOKENS) und da
 projektspezifische Kostenbudget aus `/constitution` (self._project_token_budget).
 """
 
-from config import MAX_RUN_TOKENS
+from config import MAX_RUN_TOKENS, VERIFICATION_TOKEN_RESERVE_RATIO
 from core.token_guard import token_guard
 
 
@@ -50,6 +50,25 @@ class BudgetMixin:
         if MAX_RUN_TOKENS <= 0:
             return False
         return cls._tokens_used_since(start_tokens) >= MAX_RUN_TOKENS
+
+    @classmethod
+    def _generation_budget_exceeded(cls, start_tokens: int) -> bool:
+        """
+        Wie `_run_budget_exceeded`, aber für die Code-GENERIERUNGSPHASE
+        (agents/orchestrator/department.py._run_department_hierarchy): prüft gegen ein um
+        VERIFICATION_TOKEN_RESERVE_RATIO reduziertes Kontingent, damit die anschließende
+        Verifikations-/Fix-Phase (die Autonomie erst beweist, siehe
+        agents/orchestrator/verification.py) garantiert noch Budget übrig hat, statt dass ein
+        einzelner Lauf sein komplettes MAX_RUN_TOKENS bereits beim Codeschreiben verbraucht
+        (realer Fund: incidentpilot-Projekt, "Verifikation nach Versuch 0 abgebrochen"). Die
+        Verifikations-/Fix-Schleifen selbst rufen weiterhin `_run_budget_exceeded` (volles
+        Budget) auf, nicht diese Methode.
+        """
+        if MAX_RUN_TOKENS <= 0:
+            return False
+        reserve_ratio = min(max(VERIFICATION_TOKEN_RESERVE_RATIO, 0.0), 0.9)
+        generation_ceiling = MAX_RUN_TOKENS * (1.0 - reserve_ratio)
+        return cls._tokens_used_since(start_tokens) >= generation_ceiling
 
     def _project_budget_exceeded(self, start_tokens: int) -> bool:
         """

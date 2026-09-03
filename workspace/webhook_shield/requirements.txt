@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+sqlalchemy
+httpx
+pydantic-settings
+python-dotenv
+tenacity
+pybreaker
+slowapi
+tenacity
+cryptography

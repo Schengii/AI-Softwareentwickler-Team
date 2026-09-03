@@ -269,10 +269,25 @@ def find_permission_blocked_questions(questions: list[str]) -> list[str]:
 # ask_human_for_clarification) unterlaufen. Nur Rückfragen, die eindeutig danach fragen, ob der
 # Agent selbst fehlende Struktur/Dateien anlegen darf, werden erfasst - alles andere bleibt
 # unangetastet offen für einen Menschen.
+# Erweiterung (Team-Retrospektive, webhookshield-Projekt): die ursprüngliche Fassung erfasste
+# nur "von Grund auf neu ERSTELLEN" und eine enge Verb-Liste nach "soll ich" - drei reale
+# Rückfragen in ein und demselben Lauf ("... neu AUFSETZEN?", "Können Sie die Dateien
+# bereitstellen ... in welchem Verzeichnis ich arbeiten soll?", "Projektverzeichnis ist komplett
+# LEER ... kann ich keine Reparatur ...") rutschten alle drei durch dieses engere Muster und
+# blieben unbeantwortet liegen, obwohl sie inhaltlich dieselbe Klasse Frage sind ("es existiert
+# kein Code - darf ich ihn selbst anlegen?"). Ergänzt um weitere Verben (aufsetzen, aufbauen,
+# reparieren, wiederherstellen, bereitstellen) und einen zweiten Zweig, der direkt auf die
+# Feststellung "Verzeichnis/Ordner ist leer/nicht vorhanden" abzielt, unabhängig vom Verb danach
+# - bleibt bewusst weiterhin eine ALLOWLIST (siehe Docstring unten), kein "alles außer
+# Schreibrechte-Fragen".
 _STRUCTURAL_SCOPE_RE = re.compile(
-    r"von\s+grund\s+auf\s+neu\s+erstellen"
-    r"|soll\s+ich.{0,80}(selbst\s+)?(anlegen|erstellen|initialisieren|aufbauen)"
-    r"|grundstruktur.{0,60}(erstellen|anlegen|aufbauen|initialisieren)",
+    r"von\s+grund\s+auf\s+neu\s+(erstellen|aufsetzen|aufbauen|initialisieren)"
+    r"|soll\s+ich.{0,80}(selbst\s+)?(anlegen|erstellen|initialisieren|aufbauen|aufsetzen|reparieren)"
+    r"|grundstruktur.{0,60}(erstellen|anlegen|aufbauen|initialisieren|aufsetzen)"
+    r"|(projekt(verzeichnis)?|ordner|verzeichnis).{0,40}(ist|sind)?.{0,10}(komplett\s+)?leer"
+    r"|kein(e)?\s+(bestehende|vorhandene)?\s*(codebasis|app.?verzeichnis|projektstruktur)"
+    r"|(dateien|code)\s+(bereitstellen|zur\s+verf[üu]gung\s+stellen)"
+    r"|neues?\s+projekt\s+von\s+grund\s+auf\s+neu\s+aufsetzen",
     re.IGNORECASE,
 )
 

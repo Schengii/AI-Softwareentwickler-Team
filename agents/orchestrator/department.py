@@ -65,15 +65,20 @@ class DepartmentMixin:
         task_is_micro = ENABLE_TASK_COMPLEXITY_SCALING and is_micro_task(agent_tasks)
 
         for dept_id, phase_label, icon, run_mode in PHASE_ORDER:
+            # _generation_budget_exceeded statt _run_budget_exceeded: reserviert einen Anteil
+            # von MAX_RUN_TOKENS (VERIFICATION_TOKEN_RESERVE_RATIO, config.py) exklusiv für die
+            # spätere Verifikations-/Fix-Phase, die Autonomie erst beweist - siehe deren
+            # Docstring (agents/orchestrator/budget.py) für den realen Fund (incidentpilot), der
+            # das motiviert hat.
             if run_start_tokens is not None and (
-                self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                self._generation_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
             ):
                 budget_aborted = True
                 notify(
                     f"🚫 [bold red]{self._budget_exceeded_label(run_start_tokens)} erreicht:[/bold red] "
                     f"{self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf verbraucht – "
                     f"überspringe verbleibende Fachbereiche ab '{phase_label}' und liefere die bisherigen "
-                    "Ergebnisse aus."
+                    "Ergebnisse aus (Rest-Budget bleibt für die Verifikation reserviert)."
                 )
                 break
             if cancel_requested and cancel_requested():
@@ -178,14 +183,14 @@ class DepartmentMixin:
                     # ab, die äußere Schleife überspringt beim nächsten Phasenkopf dann wie gehabt
                     # alle verbleibenden Fachbereiche.
                     if run_start_tokens is not None and (
-                        self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                        self._generation_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
                     ):
                         budget_aborted = True
                         notify(
                             f"🚫 [bold red]{self._budget_exceeded_label(run_start_tokens)} erreicht:[/bold red] "
                             f"{self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf verbraucht – "
                             f"überspringe verbleibende Mitglieder in '{phase_label}' und liefere die bisherigen "
-                            "Ergebnisse aus."
+                            "Ergebnisse aus (Rest-Budget bleibt für die Verifikation reserviert)."
                         )
                         break
 

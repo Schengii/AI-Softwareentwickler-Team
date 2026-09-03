@@ -643,18 +643,29 @@ class GeminiClient:
                     last_error = e
                     continue
 
-            try:
-                await _gemini_rate_limiter.acquire()
-                response = await asyncio.to_thread(
-                    _gemini_client.models.generate_content, model=model, contents=contents, config=config,
-                )
-                return self._parse_gemini_tool_response(response, model)
-            except Exception as e:
-                last_error = e
-                err_str = str(e)
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota" in err_str:
-                    token_guard.mark_model_exhausted(model, "429 Quota Exceeded")
-                continue
+            for attempt in range(MAX_RETRIES):
+                try:
+                    await _gemini_rate_limiter.acquire()
+                    response = await asyncio.to_thread(
+                        _gemini_client.models.generate_content, model=model, contents=contents, config=config,
+                    )
+                    return self._parse_gemini_tool_response(response, model)
+                except Exception as e:
+                    last_error = e
+                    err_str = str(e)
+                    is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower()
+                    is_unavailable = "503" in err_str or "UNAVAILABLE" in err_str or "high demand" in err_str.lower()
+
+                    if (is_rate_limit or is_unavailable) and attempt < MAX_RETRIES - 1:
+                        wait = RETRY_DELAY_SECONDS * (attempt + 1) * 1.5
+                        await asyncio.sleep(wait)
+                        continue
+
+                    if is_rate_limit:
+                        token_guard.mark_model_exhausted(model, "429 Quota Exceeded")
+                    elif is_unavailable:
+                        token_guard.mark_model_exhausted(model, "503 High Demand", cooldown_seconds=20.0)
+                    break
 
         raise RuntimeError(f"Gemini Function-Calling Fehler nach allen Fallback-Modellen ({self.model_name}): {last_error}") from last_error
 
@@ -803,15 +814,19 @@ class GeminiClient:
                 except Exception as e:
                     last_error = e
                     err_str = str(e)
-                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota" in err_str:
-                        token_guard.mark_model_exhausted(model, "429 Quota Exceeded")
-                        break
-                    elif "503" in err_str or "UNAVAILABLE" in err_str:
-                        wait = RETRY_DELAY_SECONDS * (attempt + 1)
+                    is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower()
+                    is_unavailable = "503" in err_str or "UNAVAILABLE" in err_str or "high demand" in err_str.lower()
+
+                    if (is_rate_limit or is_unavailable) and attempt < MAX_RETRIES - 1:
+                        wait = RETRY_DELAY_SECONDS * (attempt + 1) * 1.5
                         await asyncio.sleep(wait)
                         continue
-                    else:
-                        break
+
+                    if is_rate_limit:
+                        token_guard.mark_model_exhausted(model, "429 Quota Exceeded")
+                    elif is_unavailable:
+                        token_guard.mark_model_exhausted(model, "503 High Demand", cooldown_seconds=20.0)
+                    break
 
         raise RuntimeError(
             f"Gemini API Fehler nach allen Versuchen ({self.model_name}): {last_error}"

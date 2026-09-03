@@ -20,6 +20,7 @@ import re
 from collections.abc import Callable, Iterable
 from typing import TypeVar
 
+from agents.department_lead_agent import DEPARTMENT_DEFINITIONS
 from agents.orchestrator.constants import REVIEW_ONLY_AGENT_IDS
 from config import (
     ENABLE_COMPLETENESS_CHECK,
@@ -817,6 +818,17 @@ class VerificationMixin:
         # SOFORT ab (spart einen kompletten, meist wirkungslosen Agenten-Durchlauf) statt den
         # letzten erlaubten Versuch trotzdem zu verbrauchen.
         previous_failure_signature: frozenset[tuple[str, str]] | None = None
+        # Team-Retrospektive (Verbesserungsvorschlag "Strategiewechsel statt Wiederholung"):
+        # bisher bedeutete der obige Zirkuit-Breaker nur "aufgeben" - derselbe Agent bekam
+        # denselben Fehler zweimal exakt gleich beschrieben und scheiterte beide Male gleich,
+        # das Ergebnis wurde dann trotzdem als "letzter Stand" übernommen (real beobachtet in
+        # mehreren Läufen: sentinelproxy, incidentpilot, omnichat - "Nach 2 Versuchen nicht
+        # vollständig grün"). EIN zusätzlicher Eskalations-Versuch (nicht mehr, um die Schleife
+        # nicht doch wieder unbegrenzt zu verlängern) holt bei "kein Fortschritt" den
+        # zuständigen Fachbereichsleiter (falls vorhanden) statt denselben Mitarbeiter erneut
+        # gegen dasselbe Problem laufen zu lassen - eine andere Perspektive/Instruktion statt
+        # exakter Wiederholung.
+        escalation_attempted = False
         # Cross-Run-Gedächtnis (Team-Retrospektive nach dem taskpulse-Lauf, zweite Runde): ein
         # offenes Ticket aus einem VORHERIGEN Lauf desselben Projekts fließt als Kontext in den
         # ERSTEN Fix-Auftrag dieses Laufs ein (siehe _prior_run_context()) - und wird, sobald
@@ -1010,11 +1022,89 @@ class VerificationMixin:
 
             current_signature = _issue_signature(report.failures, lambda f: (f.test_id, f.message[:300]))
             if _no_progress(previous_failure_signature, current_signature):
-                notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Testfehler wie vor dem letzten Fixversuch – breche Verifikations-Schleife ab statt unverändert zu wiederholen.")
+                escalated_and_resolved = False
+                if not escalation_attempted and not (
+                    run_start_tokens is not None and (
+                        self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                    )
+                ):
+                    escalation_attempted = True
+                    stuck_owners = {
+                        file_owners[f] for failure in report.failures for f in failure.files if f in file_owners
+                    } & set(self._agents.keys())
+                    lead_targets = {
+                        dept_id for dept_id, defn in DEPARTMENT_DEFINITIONS.items()
+                        if stuck_owners & set(defn["members"]) and dept_id in self._dept_leads
+                    }
+                    if lead_targets:
+                        notify(
+                            f"  🔀 [bold yellow]Strategiewechsel (Eskalation):[/bold yellow] Derselbe Fehler nach "
+                            f"einem wirkungslosen Fixversuch – ziehe Fachbereichsleiter "
+                            f"({', '.join(sorted(lead_targets))}) statt derselben Wiederholung hinzu..."
+                        )
+                        top_failures = "\n\n".join(
+                            f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(f.files) or 'unbekannt'}"
+                            for f in report.failures[:5]
+                        )
+                        escalation_tasks = [
+                            AgentTask(
+                                task_id=f"verify_escalation_{dept_id}_{attempt}",
+                                agent_id=dept_id,
+                                description=(
+                                    "Ein vorheriger, gezielter Fixversuch deines Fachbereichs hat den folgenden "
+                                    "echten Testfehler NICHT behoben (identisch vor und nach dem Versuch) - "
+                                    "derselbe Ansatz hat also erkennbar nicht funktioniert. Analysiere das Problem "
+                                    "aus einer anderen Perspektive (z.B. falsche Grundannahme, fehlende "
+                                    "Abhängigkeit zwischen Dateien, falscher zuständiger Agent) und weise dein "
+                                    f"Team mit einer GEÄNDERTEN Strategie an, statt denselben Fix zu wiederholen.\n\n{top_failures}"
+                                ),
+                                context="", project_dir=project_dir,
+                            )
+                            for dept_id in lead_targets
+                        ]
+                        fix_results = await self._run_agents_parallel(escalation_tasks, notify=notify)
+                        self._update_file_owners(file_owners, fix_results)
+                        all_results.extend(fix_results)
+                        summary_lines.append(
+                            f"- 🔀 Versuch {attempt}: kein Fortschritt beim vorherigen Fix → Eskalation an "
+                            f"Fachbereichsleiter ({', '.join(sorted(lead_targets))}) mit geänderter Strategie."
+                        )
+                        # WICHTIG: das Ergebnis der Eskalation wird HIER SOFORT per echtem
+                        # Testlauf geprüft (nicht über `continue` in die äußere Schleife
+                        # zurückgereicht) - ein `continue` würde einen der ohnehin knappen
+                        # MAX_VERIFICATION_ITERATIONS-Versuche für die Eskalation selbst
+                        # verbrauchen und im letzten erlaubten Versuch dazu führen, dass die
+                        # Schleife nach der Eskalation kommentarlos endet, OHNE das Scheitern
+                        # zu melden oder ein Ticket zu eröffnen (so beim ersten Implementierungs-
+                        # versuch real per Test aufgedeckt, siehe
+                        # tests/test_verification_no_progress_breaker.py).
+                        report = await asyncio.to_thread(verifier.run_tests)
+                        if report.passed:
+                            notify(f"  ✅ [bold green]Eskalation erfolgreich:[/bold green] Alle Tests bestanden (Versuch {attempt}, {report.duration_seconds:.1f}s).")
+                            summary_lines.append("- ✅ Eskalation an Fachbereichsleiter behob den Fehler – Testsuite bestanden.")
+                            verification_ok = True
+                            if had_prior_test_ticket and test_ticket_id:
+                                try:
+                                    upsert_ticket(
+                                        ticket_id=test_ticket_id,
+                                        title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                                        source="orchestrator", status="done", project_slug=self.last_project_slug,
+                                        detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
+                                    )
+                                except Exception as e:
+                                    notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
+                            break
+                        escalated_and_resolved = True  # Eskalation lief, aber weiterhin rot - unten normal abbrechen.
+
+                notify(
+                    "  🛑 [bold red]Kein Fortschritt:[/bold red] identische Testfehler wie vor dem letzten "
+                    f"Fixversuch{' (auch nach Eskalation an den Fachbereichsleiter)' if escalated_and_resolved else ''} "
+                    "– breche Verifikations-Schleife ab statt unverändert zu wiederholen."
+                )
                 summary_lines.append(
                     f"- 🛑 Versuch {attempt}: dieselben {len(report.failures)} Testfehler wie nach dem vorherigen "
-                    "Fixversuch (keine Veränderung) – Schleife abgebrochen statt einen wirkungslosen weiteren "
-                    "Versuch zu verbrauchen."
+                    "Fixversuch (keine Veränderung)" + (" - auch nach Eskalation" if escalated_and_resolved else "") +
+                    " – Schleife abgebrochen statt einen wirkungslosen weiteren Versuch zu verbrauchen."
                 )
                 if self.last_project_slug:
                     try:

@@ -1,0 +1,2 @@
+{"timestamp": "2026-09-03T11:39:34.712793+00:00", "event": "scope_clarification_autofix_dispatched", "detail": "1 offene Rückfrage(n) → tester"}
+{"timestamp": "2026-09-03T11:40:35.609177+00:00", "event": "missing_tests_fix_dispatched", "detail": "Keine Testdateien (test_*.py), kein npm-Test-Skript und kein Rust/Go-Projekt gefunden – Verifikation übersprungen."}

@@ -70,6 +70,18 @@ Wie du arbeitest:
   Realer Fund: der Upload-Test im cloudvault-Projekt prüfte nur, dass die Response denselben
   Dateinamen enthielt, den der Request geschickt hatte - er bestand auch dann, wenn die Datei
   nirgends gespeichert wurde, weil `GET /files` nie im selben Test aufgerufen wurde.
+- `pytest.ini`-Konfiguration: Setze in `pytest.ini` zwingend IMMER:
+  ```ini
+  [pytest]
+  asyncio_mode = auto
+  pythonpath = .
+  ```
+  Ohne `pythonpath = .` scheitert pytest bei Testmodulen mit `ModuleNotFoundError: No module named 'app'`.
+- Datenbank-Modelle in Test-Fixtures: Prüfe vor dem Anlegen von DB-Einträgen in Tests (z. B.
+  `db.add(Webhook(...))`) exakt, welche Spalten im Modell `nullable=False` haben. Übergib für ALLE
+  Pflichtfelder valide Testwerte (z. B. `hmac_secret="test-secret"`), um `IntegrityError: NOT NULL
+  constraint failed` zu verhindern. Wird dir ein solcher Fehler im Auto-Fix-Loop zurückgespielt,
+  ergänze die fehlenden Testwerte oder passe das Modell auf `nullable=True` an.
 
 Ausgabe-Format:
 - Vollständige Test-Dateien (pytest/Jest)

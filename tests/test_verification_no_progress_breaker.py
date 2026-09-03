@@ -111,15 +111,19 @@ class TestVerificationNoProgressBreaker(unittest.TestCase):
 
     def test_identical_failures_after_fix_stop_loop_early(self):
         # MAX_VERIFICATION_ITERATIONS ist standardmäßig 2 - ohne Zirkuit-Breaker würde die
-        # Schleife TROTZDEM beide Versuche ausschöpfen. Ein dritter Eintrag im side_effect
-        # (der nie erreicht werden darf) macht das messbar: würde er konsumiert, wäre
-        # run_tests.call_count > 2.
+        # Schleife TROTZDEM beide regulären Versuche ausschöpfen. Seit dem Eskalations-
+        # Strategiewechsel (Team-Retrospektive: "letzter Stand wurde übernommen" statt eine
+        # andere Strategie zu versuchen) folgt auf "kein Fortschritt" GENAU EIN zusätzlicher,
+        # sofort geprüfter Eskalationsversuch an den Fachbereichsleiter - macht 3 echte
+        # run_tests-Aufrufe insgesamt (2 reguläre + 1 Eskalations-Recheck). Ein vierter Eintrag
+        # im side_effect (der nie erreicht werden darf) macht das weiterhin messbar.
         result, logs, mock_verifier, mock_upsert_ticket = self._run(
-            [FAILING_REPORT, FAILING_REPORT, FAILING_REPORT],
+            [FAILING_REPORT, FAILING_REPORT, FAILING_REPORT, FAILING_REPORT],
         )
 
-        self.assertEqual(mock_verifier.run_tests.call_count, 2)
+        self.assertEqual(mock_verifier.run_tests.call_count, 3)
         self.assertFalse(self.orchestrator.last_verification_ok)
+        self.assertTrue(any("Strategiewechsel" in line for line in logs))
         self.assertTrue(any("Kein Fortschritt" in line for line in logs))
         mock_upsert_ticket.assert_called()
 

@@ -150,5 +150,117 @@ class TestBacklogWorkerOrchestration(unittest.TestCase):
         self.assertEqual(len(report.results), 1)
 
 
+class TestGovernanceTicketRetryPool(unittest.TestCase):
+    """
+    Team-Optimierung (Retrospektive 2026-09-03): ein von agents/orchestrator/verification.py
+    für einen ungelösten kritischen Befund eröffnetes "blocked"-Ticket (source="orchestrator")
+    fiel bisher durch JEDES Filter dieses Pollers - `_governance_retry_pool()` macht es bis zu
+    MAX_GOVERNANCE_TICKET_RETRIES-mal wieder aufgreifbar. Dasselbe Mock-Setup wie
+    TestBacklogWorkerOrchestration oben.
+    """
+
+    def setUp(self):
+        self.fake_github = MagicMock()
+        self.fake_github.gh_ready.return_value = True
+        self.fake_github.get_current_branch.return_value = "main"
+        self.fake_github.get_status.return_value = "M app/middleware.py"
+        self.fake_github.scan_for_secrets.return_value = []
+        self.fake_github.build_feature_branch_name.return_value = "feat/backlog-ticket-abc123"
+        self.fake_github.create_branch.return_value = (True, "branch ok")
+        self.fake_github.commit.return_value = (True, "commit ok")
+        self.fake_github.push.return_value = (True, "push ok")
+        self.fake_github.create_pull_request.return_value = (True, "https://github.com/x/y/pull/9")
+        self.fake_github.wait_for_ci_status = AsyncMock(return_value=("no_run", "kein CI im Test"))
+
+        self.fake_orchestrator = MagicMock()
+        self.fake_orchestrator.process = AsyncMock(return_value="### Fertig\nBehoben.")
+        self.fake_orchestrator.last_verification_ok = True
+        self.fake_orchestrator.last_needs_human_input = False
+        self.fake_orchestrator.last_clarification_questions = []
+
+        self._gh_patcher = patch("core.backlog_worker.GitHubAgent", return_value=self.fake_github)
+        self._orch_patcher = patch("core.backlog_worker.Orchestrator", return_value=self.fake_orchestrator)
+        self._merge_patcher = patch("core.backlog_worker.check_merged_tickets", return_value=[])
+        self._gh_patcher.start()
+        self._orch_patcher.start()
+        self._merge_patcher.start()
+        self.addCleanup(self._gh_patcher.stop)
+        self.addCleanup(self._orch_patcher.stop)
+        self.addCleanup(self._merge_patcher.stop)
+
+        self.temp_dir = tempfile.mkdtemp()
+        self._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(self.temp_dir) / "backlog.json")
+        self._backlog_patcher.start()
+        self.addCleanup(self._backlog_patcher.stop)
+
+    def test_blocked_governance_ticket_is_picked_up_and_retries_incremented(self):
+        backlog_store.upsert_ticket(
+            "unresolved-governance-critical-mockforge", "Ungelöster kritischer Governance-Befund",
+            "orchestrator", "blocked", project_slug="mockforge", detail="DB-Session pro Request",
+        )
+        report = asyncio.run(run_backlog_poll_cycle())
+
+        self.assertEqual(len(report.results), 1)
+        self.fake_orchestrator.process.assert_awaited_once()
+        ticket = backlog_store.get_ticket("unresolved-governance-critical-mockforge")
+        self.assertEqual(ticket.retries, 1)
+
+    def test_governance_ticket_detail_is_forwarded_to_orchestrator_as_task_text(self):
+        backlog_store.upsert_ticket(
+            "unresolved-governance-critical-mockforge", "Ungelöster kritischer Governance-Befund",
+            "orchestrator", "blocked", project_slug="mockforge", detail="DB-Session pro Request in ProxyMiddleware",
+        )
+        asyncio.run(run_backlog_poll_cycle())
+
+        task_text = self.fake_orchestrator.process.call_args.args[0]
+        self.assertIn("DB-Session pro Request in ProxyMiddleware", task_text)
+
+    def test_blocked_governance_ticket_still_blocked_keeps_retry_count_after_failed_retry(self):
+        self.fake_github.get_status.return_value = ""  # keine Änderung -> "no_changes" -> bleibt "blocked"
+        backlog_store.upsert_ticket(
+            "unresolved-governance-critical-mockforge", "Ungelöster kritischer Governance-Befund",
+            "orchestrator", "blocked", project_slug="mockforge", detail="...",
+        )
+        asyncio.run(run_backlog_poll_cycle())
+        ticket = backlog_store.get_ticket("unresolved-governance-critical-mockforge")
+        self.assertEqual(ticket.status, "blocked")
+        self.assertEqual(ticket.retries, 1)
+
+    def test_governance_ticket_exhausted_after_max_retries_is_no_longer_picked_up(self):
+        from config import MAX_GOVERNANCE_TICKET_RETRIES
+        backlog_store.upsert_ticket(
+            "unresolved-governance-critical-mockforge", "Ungelöster kritischer Governance-Befund",
+            "orchestrator", "blocked", project_slug="mockforge", detail="...",
+            retries=MAX_GOVERNANCE_TICKET_RETRIES,
+        )
+        report = asyncio.run(run_backlog_poll_cycle())
+
+        self.assertEqual(report.results, [])
+        self.fake_orchestrator.process.assert_not_called()
+        ticket = backlog_store.get_ticket("unresolved-governance-critical-mockforge")
+        self.assertEqual(ticket.retries, MAX_GOVERNANCE_TICKET_RETRIES)  # unverändert
+
+    def test_manually_blocked_non_governance_ticket_is_not_touched(self):
+        # Ein Ticket, das ein MENSCH bewusst als "blocked" markiert hat (z.B. wartet auf eine
+        # externe Entscheidung) - source/ID passen nicht auf das Governance-Retry-Muster und
+        # dürfen deshalb NICHT automatisch erneut aufgegriffen werden.
+        backlog_store.upsert_ticket("cli-42", "Wartet auf Kundenentscheidung", "cli", "blocked")
+        report = asyncio.run(run_backlog_poll_cycle())
+
+        self.assertEqual(report.results, [])
+        self.fake_orchestrator.process.assert_not_called()
+
+    def test_regular_todo_ticket_is_preferred_over_governance_retry_at_equal_priority(self):
+        backlog_store.upsert_ticket(
+            "unresolved-governance-critical-mockforge", "Ungelöster kritischer Governance-Befund",
+            "orchestrator", "blocked", project_slug="mockforge", detail="...",
+        )
+        backlog_store.upsert_ticket("cli-1", "Reguläres Ticket", "cli", "todo")
+        report = asyncio.run(run_backlog_poll_cycle(max_tickets=1))
+
+        self.assertEqual(len(report.results), 1)
+        self.assertEqual(report.results[0].ticket_id, "cli-1")
+
+
 if __name__ == "__main__":
     unittest.main()

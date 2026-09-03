@@ -117,6 +117,7 @@ from core.project_status import (
     MAX_FAILURE_DETAIL_CHARS,
     count_consecutive_failed_runs,
     format_context_for_agents,
+    has_open_blocker_ticket,
     has_repeated_failure,
     has_repeated_lint_finding,
     read_status,
@@ -994,10 +995,28 @@ class Orchestrator(
         # des Verifikations-Protokolls weiter oben. manually_cancelled bekommt einen eigenen,
         # dritten Status statt in "NICHT verifiziert" mitzulaufen – der Nutzer hat den Lauf
         # bewusst gestoppt, das ist etwas anderes als ein fehlgeschlagener Test.
+        # Team-Optimierung (Retrospektive 2026-09-03): ein offenes Governance-/Verifikations-
+        # Ticket (siehe core/project_status.py._BLOCKER_TICKET_PREFIXES) durfte bisher trotzdem
+        # zu einem uneingeschränkten "✅ Fertig!" führen, sobald die reine Testsuite bestand -
+        # genau der reale mockforge-Fund aus der Bestandsaufnahme, der zu dieser Änderung
+        # führte. Geprüft VOR verification_ok, weil ein ungelöster kritischer Befund schwerer
+        # wiegt als eine grüne Testsuite.
+        try:
+            open_blocker = has_open_blocker_ticket(project_dir)
+        except Exception:
+            open_blocker = False
+
         if manually_cancelled:
             notify(
                 "⏹️ [bold yellow]Manuell abgebrochen.[/bold yellow] Die bis dahin erarbeiteten Ergebnisse "
                 "wurden zusammengefasst – prüfe das Ergebnis, es ist mit hoher Wahrscheinlichkeit unvollständig."
+            )
+        elif open_blocker:
+            notify(
+                "🔴 [bold red]Fertig, aber NICHT einsatzbereit![/bold red] Ein kritischer Governance-/"
+                "Verifikations-Befund blieb trotz Fixversuchen ungelöst und liegt als offenes Backlog-"
+                "Ticket vor (siehe PROJECT_STATE.md) – das gilt unabhängig davon, ob die Testsuite "
+                "bestanden hat."
             )
         elif self.last_needs_human_input:
             # Eigener, vierter Status statt nur unter "NICHT verifiziert" mitzulaufen: eine

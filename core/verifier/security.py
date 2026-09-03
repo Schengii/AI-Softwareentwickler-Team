@@ -39,9 +39,15 @@ class SecurityMixin:
 
     def check_dependency_vulnerabilities(self, timeout_seconds: float = 120.0) -> list[DependencyAuditReport]:
         reports: list[DependencyAuditReport] = []
-        req_file = self._requirements_file()
-        if req_file:
-            reports.append(self._audit_python_dependencies(req_file, timeout_seconds))
+        # Bugfix: core/verifier/environment.py stellt seit der Unterstützung von
+        # requirements-dev.txt _requirements_files() (Mehrzahl, Liste) bereit - der Aufruf
+        # hier war noch auf die alte Einzahl-Methode ausgerichtet, die es nicht mehr gibt
+        # (AttributeError bei JEDEM Projekt mit requirements.txt, brach die komplette
+        # Verifikations-Schleife). pip-audit prüft alle gefundenen Requirements-Dateien
+        # gemeinsam gegen dieselbe Umgebung, ein einzelner Aufruf mit der ersten Datei reicht.
+        req_files = self._requirements_files()
+        if req_files:
+            reports.append(self._audit_python_dependencies(req_files[0], timeout_seconds))
         for node_dir in self._find_node_projects():
             reports.append(self._audit_node_dependencies(node_dir, timeout_seconds))
         if self._has_rust_project():
@@ -122,7 +128,7 @@ class SecurityMixin:
 
     def check_licenses(self, timeout_seconds: float = 60.0) -> list[LicenseAuditReport]:
         reports: list[LicenseAuditReport] = []
-        if self._requirements_file():
+        if self._requirements_files():
             reports.append(self._license_audit_python(timeout_seconds))
         return reports
 

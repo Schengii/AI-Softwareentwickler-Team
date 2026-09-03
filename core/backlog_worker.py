@@ -29,6 +29,15 @@ Bestätigung verfügbar, deshalb harter Secret-Block, immer Feature-Branch+PR st
 und ein Fehlschlag der Verifikation ODER eine offene Rückfrage (core/agent_toolbox.py.
 ask_human_for_clarification) öffnen trotzdem einen (dann als Draft markierten) PR statt
 bereits geleistete Arbeit stillschweigend zu verwerfen.
+
+Team-Optimierung (Retrospektive 2026-09-03): "blocked"-Tickets, die agents/orchestrator/
+verification.py für einen ungelösten KRITISCHEN Governance-/Verifikations-Befund eröffnet
+(unresolved-governance-critical-<slug>, unresolved-permission-blocked-<slug>), landeten bisher
+in einer Sackgasse - source="orchestrator" und status="blocked" fielen durch JEDES Filter
+unten, kein Poll-Zyklus griff sie je wieder auf, selbst wenn ein späterer, unabhängiger Versuch
+das Problem durchaus hätte lösen können. _governance_retry_pool() macht genau diese Tickets
+(bis zu MAX_GOVERNANCE_TICKET_RETRIES-mal) wieder zu aufgreifbarer Arbeit - siehe dort für die
+Details und die Abgrenzung zu einer echten Endlosschleife.
 """
 
 import asyncio
@@ -37,7 +46,12 @@ from dataclasses import dataclass, field
 
 from agents.github_agent import GitHubAgent
 from agents.orchestrator import Orchestrator
-from config import BACKLOG_WORKER_MAX_PER_CYCLE, BACKLOG_WORKER_WIP_LIMIT, GIT_PROTECTED_BRANCHES
+from config import (
+    BACKLOG_WORKER_MAX_PER_CYCLE,
+    BACKLOG_WORKER_WIP_LIMIT,
+    GIT_PROTECTED_BRANCHES,
+    MAX_GOVERNANCE_TICKET_RETRIES,
+)
 from core.backlog_store import Ticket, count_by_status, is_ticket_ready, list_tickets, upsert_ticket
 from core.merge_watcher import check_merged_tickets
 from core.notifier import notify_external
@@ -46,6 +60,32 @@ from core.workspace import WorkspaceManager
 StatusCallback = Callable[[str], None]
 
 _AUTONOMOUS_SOURCES = ("cli", "dashboard")
+
+# ID-Präfixe, unter denen agents/orchestrator/verification.py ungelöste kritische Befunde als
+# "blocked"-Ticket eröffnet (siehe dort: upsert_ticket(ticket_id=f"unresolved-...-{slug}", ...)).
+# NUR diese beiden - ein generisches "jedes blocked-Ticket erneut versuchen" würde auch ein
+# Ticket wieder aufgreifen, das ein MENSCH bewusst als "blocked" markiert hat (z.B. wartet auf
+# eine externe Entscheidung), was hier ausdrücklich nicht gewollt ist.
+_GOVERNANCE_RETRY_PREFIXES = ("unresolved-governance-critical-", "unresolved-permission-blocked-")
+
+
+def _governance_retry_pool(all_tickets: list[Ticket]) -> list[Ticket]:
+    """
+    Liefert die "blocked"-Governance-/Verifikations-Tickets, die noch nicht
+    MAX_GOVERNANCE_TICKET_RETRIES automatische Wiederholungsversuche hinter sich haben - genau
+    die Tickets, die ohne diese Funktion für immer unangetastet im Backlog liegen blieben (siehe
+    Modul-Docstring). Ein Ticket, das die Grenze bereits erreicht hat, bleibt bewusst "blocked"
+    liegen (sichtbar für eine menschliche Prüfung), statt endlos denselben erfolglosen Ansatz zu
+    wiederholen.
+    """
+    return [
+        t for t in all_tickets
+        if t.status == "blocked"
+        and t.source == "orchestrator"
+        and t.id.startswith(_GOVERNANCE_RETRY_PREFIXES)
+        and t.retries < MAX_GOVERNANCE_TICKET_RETRIES
+        and is_ticket_ready(t, all_tickets)[0]
+    ]
 
 # Dieselbe Terminal-Status-Zuordnung wie core/issue_watcher.py._OUTCOME_TO_TICKET_STATUS -
 # siehe dort für die Begründung je Ausgang.
@@ -108,19 +148,43 @@ async def run_backlog_poll_cycle(
         t for t in all_tickets
         if t.status == "todo" and t.source in _AUTONOMOUS_SOURCES and is_ticket_ready(t, all_tickets)[0]
     ]
-    if not ready_todo:
-        report.skipped_reason = "Kein abhängigkeitsfreies 'todo'-Ticket aus cli/dashboard im Backlog gefunden."
+    # Governance-/Verifikations-Tickets NACH den regulären "todo"-Tickets (niedrigere
+    # effektive Priorität als jede echte Priorität 1-3, siehe Sortierung unten) - ein
+    # bewusst vom Nutzer/Dashboard eingereichtes Ticket soll nicht hinter einem
+    # automatischen Wiederholungsversuch zurückstehen müssen.
+    retry_pool = _governance_retry_pool(all_tickets)
+    combined = ready_todo + retry_pool
+    if not combined:
+        report.skipped_reason = "Kein abhängigkeitsfreies 'todo'-Ticket aus cli/dashboard und kein wiederholbares Governance-Ticket im Backlog gefunden."
         return report
-    ready_todo.sort(key=lambda t: t.priority)  # 1=hoch zuerst
+    combined.sort(key=lambda t: (t.priority, t.id in {rt.id for rt in retry_pool}))  # 1=hoch zuerst, Retries zuletzt bei gleicher Priorität
 
     limit = max_tickets if max_tickets is not None else BACKLOG_WORKER_MAX_PER_CYCLE
-    for ticket in ready_todo[:limit]:
-        if status_callback:
+    for ticket in combined[:limit]:
+        is_retry = ticket in retry_pool
+        if is_retry:
+            if status_callback:
+                status_callback(
+                    f"🎫 Governance-Ticket `{ticket.id}` wird erneut aufgegriffen "
+                    f"(Versuch {ticket.retries + 1}/{MAX_GOVERNANCE_TICKET_RETRIES})..."
+                )
+            # Zähler VOR dem eigentlichen Versuch erhöhen (nicht erst danach) - ein Absturz
+            # mitten im Versuch (siehe try/except in _process_single_ticket) darf nicht dazu
+            # führen, dass derselbe Befund unbegrenzt oft ohne Fortschritt erneut versucht wird.
+            upsert_ticket(
+                ticket_id=ticket.id, title=ticket.title, source=ticket.source,
+                status=ticket.status, detail=ticket.detail, project_slug=ticket.project_slug,
+                retries=ticket.retries + 1,
+            )
+        elif status_callback:
             status_callback(f"🎫 Backlog-Ticket `{ticket.id}` '{ticket.title}' wird eigenständig aufgegriffen...")
         result = await _process_single_ticket(github_agent, ticket, status_callback)
         # Terminal-Status im Backlog nachziehen (der "in_progress"-Stand wurde bereits beim
         # Aufgreifen geschrieben, siehe _process_single_ticket()) - EIN Mapping-Ort statt an
-        # jedem der mehreren Rückgabepunkte dort.
+        # jedem der mehreren Rückgabepunkte dort. Ein Governance-Retry, der erneut nicht
+        # "pr_opened" erreicht, bleibt "blocked" (Default von .get() unten) - der bereits oben
+        # erhöhte retries-Zähler bleibt dabei erhalten (kein retries=... hier, siehe
+        # core/backlog_store.py.upsert_ticket()-Sentinel-Verhalten).
         upsert_ticket(
             ticket_id=ticket.id, title=ticket.title, source=ticket.source,
             status=_OUTCOME_TO_TICKET_STATUS.get(result.outcome, "blocked"), detail=result.detail,
@@ -156,10 +220,22 @@ async def _process_single_ticket(
         if candidate.exists():
             forced_project_dir = str(candidate)
 
+    # Ein Governance-/Verifikations-Retry-Ticket trägt im Titel nur eine generische
+    # Zusammenfassung ("Ungelöster kritischer Governance-Befund: <slug>") - der eigentliche,
+    # für einen Fix-Agenten verwertbare Befundtext steckt in `detail` (siehe
+    # agents/orchestrator/verification.py: upsert_ticket(..., detail=finding_text)). Ohne diese
+    # Ergänzung bekäme der Orchestrator bei einem Retry nur den generischen Titel und müsste
+    # den konkreten Fehler erneut selbst herausfinden, obwohl er bereits bekannt ist.
+    task_text = (
+        f"{ticket.title}\n\nKonkreter, bereits bekannter Befund (aus einem vorherigen Lauf):\n{ticket.detail}"
+        if ticket.id.startswith(_GOVERNANCE_RETRY_PREFIXES) and ticket.detail
+        else ticket.title
+    )
+
     try:
         orchestrator = Orchestrator()
         final_report = await orchestrator.process(
-            ticket.title, status_callback=status_callback, forced_project_dir=forced_project_dir,
+            task_text, status_callback=status_callback, forced_project_dir=forced_project_dir,
         )
     except Exception as e:
         return BacklogRunResult(ticket.id, ticket.title, "error", str(e))

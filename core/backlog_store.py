@@ -63,6 +63,18 @@ class Ticket:
     # Tickets, die zuerst status="done" erreichen müssen - siehe is_ticket_ready() unten.
     epic: str = ""
     depends_on: list[str] = field(default_factory=list)
+    # Team-Optimierung (Retrospektive 2026-09-03): ein von der Governance-/Verifikations-
+    # Fix-Schleife (agents/orchestrator/verification.py) als "blocked" eröffnetes Ticket zu
+    # einem ungelösten kritischen Befund wurde bisher NIRGENDS mehr aufgegriffen - core/
+    # backlog_worker.py betrachtete nur status="todo" aus den Quellen "cli"/"dashboard", ein
+    # "blocked"-Ticket mit source="orchestrator" blieb für immer liegen, selbst wenn ein
+    # späterer, unabhängiger Poll-Zyklus das Problem durchaus hätte angehen können. `retries`
+    # zählt, wie oft core/backlog_worker.py ein SOLCHES Ticket bereits eigenständig erneut
+    # aufgegriffen hat (siehe dort, GOVERNANCE_TICKET_RETRY_PREFIXES) - begrenzt auf
+    # MAX_GOVERNANCE_TICKET_RETRIES, damit ein Befund, den das Team nachweislich nicht lösen
+    # kann, nicht endlos Budget in identischen Fehlversuchen verbrennt, sondern nach Erreichen
+    # der Grenze sichtbar für eine menschliche Prüfung liegen bleibt.
+    retries: int = 0
 
 
 def _now() -> str:
@@ -146,6 +158,7 @@ def upsert_ticket(
     ticket_id: str, title: str, source: str, status: str, detail: str = "", project_slug: str = "",
     priority: int | None = None, estimate: str | None = None,
     epic: str | None = None, depends_on: list[str] | None = None,
+    retries: int | None = None,
 ) -> Ticket:
     """
     Legt ein Ticket an ODER aktualisiert ein bestehendes (anhand `ticket_id`) – ein einziger
@@ -171,6 +184,7 @@ def upsert_ticket(
     resolved_estimate = estimate if estimate is not None else (existing.get("estimate", "") if existing else "")
     resolved_epic = epic if epic is not None else (existing.get("epic", "") if existing else "")
     resolved_depends_on = depends_on if depends_on is not None else (existing.get("depends_on", []) if existing else [])
+    resolved_retries = retries if retries is not None else (existing.get("retries", 0) if existing else 0)
     # Alte Position entfernen (falls vorhanden) - das aktualisierte Ticket wird unten ans
     # ENDE angehängt, damit die Listenreihenfolge selbst die Aktualisierungsreihenfolge
     # abbildet (siehe list_tickets()/_save_raw()).
@@ -179,7 +193,7 @@ def upsert_ticket(
         id=ticket_id, title=title, source=source, status=status,
         created_at=created_at, updated_at=_now(), detail=detail, project_slug=project_slug,
         priority=resolved_priority, estimate=resolved_estimate,
-        epic=resolved_epic, depends_on=list(resolved_depends_on),
+        epic=resolved_epic, depends_on=list(resolved_depends_on), retries=resolved_retries,
     )
     tickets.append(asdict(result))
     _save_raw(tickets)

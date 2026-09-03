@@ -11,12 +11,16 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import core.backlog_store as backlog_store
 import core.project_status as project_status
 from core.project_status import (
     FULL_LOG_FILENAME,
     count_consecutive_failed_runs,
     format_context_for_agents,
+    generate_project_state_md,
+    has_open_blocker_ticket,
     has_repeated_lint_finding,
     read_status,
     record_run,
@@ -188,6 +192,74 @@ class TestProjectStatus(unittest.TestCase):
         record_run(self.temp_dir, "Lauf 2", verification_ok=False, budget_aborted=False,
                    files_written_count=1, lint_signature=["ruff:b.py:UP007", "ruff:a.py:F841"])
         self.assertTrue(has_repeated_lint_finding(self.temp_dir))
+
+
+class TestOpenBlockerTicketOverridesEinsatzbereitStatus(unittest.TestCase):
+    """
+    Realer Fund (mockforge-Projekt, Team-Bestandsaufnahme 2026-09-03): PROJECT_STATE.md wies
+    "✅ Vollständig verifiziert & einsatzbereit" aus, obwohl ein Backlog-Ticket zu einem
+    ungelösten kritischen Governance-Befund (ProxyMiddleware-Deadlock-Risiko) für exakt dieses
+    Projekt offen ("blocked") war - verification_ok und der offene kritische Befund waren
+    komplett entkoppelt. Diese Tests decken die Kopplung ab.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_slug = Path(self.temp_dir).name
+        self._backlog_patcher = patch.object(
+            backlog_store, "BACKLOG_FILE", Path(self.temp_dir).parent / f"{self.project_slug}-backlog.json",
+        )
+        self._backlog_patcher.start()
+        self.addCleanup(self._backlog_patcher.stop)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_no_open_ticket_means_no_blocker(self):
+        self.assertFalse(has_open_blocker_ticket(self.temp_dir))
+
+    def test_open_governance_ticket_is_detected_as_blocker(self):
+        backlog_store.upsert_ticket(
+            ticket_id=f"unresolved-governance-critical-{self.project_slug}",
+            title="Ungelöster kritischer Governance-Befund", source="orchestrator",
+            status="blocked", project_slug=self.project_slug, detail="DB-Session pro Request",
+        )
+        self.assertTrue(has_open_blocker_ticket(self.temp_dir))
+
+    def test_ticket_for_a_different_project_is_not_a_blocker(self):
+        backlog_store.upsert_ticket(
+            ticket_id="unresolved-governance-critical-other-project",
+            title="Anderes Projekt", source="orchestrator",
+            status="blocked", project_slug="other-project", detail="...",
+        )
+        self.assertFalse(has_open_blocker_ticket(self.temp_dir))
+
+    def test_resolved_ticket_no_longer_blocks(self):
+        ticket_id = f"unresolved-governance-critical-{self.project_slug}"
+        backlog_store.upsert_ticket(
+            ticket_id=ticket_id, title="...", source="orchestrator",
+            status="blocked", project_slug=self.project_slug, detail="...",
+        )
+        backlog_store.upsert_ticket(
+            ticket_id=ticket_id, title="...", source="orchestrator",
+            status="done", project_slug=self.project_slug, detail="behoben",
+        )
+        self.assertFalse(has_open_blocker_ticket(self.temp_dir))
+
+    def test_state_md_shows_not_einsatzbereit_despite_passing_verification(self):
+        backlog_store.upsert_ticket(
+            ticket_id=f"unresolved-governance-critical-{self.project_slug}",
+            title="Ungelöster kritischer Governance-Befund", source="orchestrator",
+            status="blocked", project_slug=self.project_slug, detail="DB-Session pro Request",
+        )
+        state_md = generate_project_state_md(self.temp_dir, verification_ok=True)
+        self.assertIn("NICHT einsatzbereit", state_md)
+        self.assertNotIn("Vollständig verifiziert & einsatzbereit", state_md)
+        self.assertIn("Offener kritischer Befund", state_md)
+
+    def test_state_md_shows_einsatzbereit_when_no_blocker(self):
+        state_md = generate_project_state_md(self.temp_dir, verification_ok=True)
+        self.assertIn("Vollständig verifiziert & einsatzbereit", state_md)
 
 
 if __name__ == "__main__":

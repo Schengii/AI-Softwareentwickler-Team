@@ -451,6 +451,17 @@ BACKLOG_WORKER_MAX_PER_CYCLE: int = int(os.getenv("BACKLOG_WORKER_MAX_PER_CYCLE"
 # könnte - ein erreichtes WIP-Limit blockiert den autonomen Worker deshalb hart, bis laufende
 # Arbeit abgeschlossen ist. 0 (Standard) = deaktiviert, dieselbe Konvention wie oben.
 BACKLOG_WORKER_WIP_LIMIT: int = int(os.getenv("BACKLOG_WORKER_WIP_LIMIT", "0"))
+# Team-Optimierung (Retrospektive 2026-09-03): ein von der Governance-/Verifikations-Fix-
+# Schleife (agents/orchestrator/verification.py) eröffnetes "blocked"-Ticket zu einem
+# ungelösten kritischen Befund (z.B. unresolved-governance-critical-<slug>) blieb bisher für
+# immer liegen - core/backlog_worker.py griff nur "todo"-Tickets aus den Quellen "cli"/
+# "dashboard" auf. Ein solches Ticket wird jetzt selbst als eigenständig aufgreifbare Arbeit
+# behandelt (siehe core/backlog_worker.py._governance_retry_pool()), aber begrenzt auf
+# MAX_GOVERNANCE_TICKET_RETRIES automatische Wiederholungsversuche - ein Befund, den das Team
+# nachweislich wiederholt nicht lösen kann, soll nicht endlos Budget in identischen
+# Fehlversuchen verbrennen, sondern nach Erreichen der Grenze sichtbar für eine menschliche
+# Prüfung liegen bleiben (retries auf dem Ticket selbst, siehe core/backlog_store.py.Ticket).
+MAX_GOVERNANCE_TICKET_RETRIES: int = int(os.getenv("MAX_GOVERNANCE_TICKET_RETRIES", "2"))
 
 # ──────────────────────────────────────────
 # Produktions-Monitoring nach dem Deploy (core/production_monitor.py)

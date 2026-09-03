@@ -57,6 +57,35 @@ MAX_FAILURE_DETAIL_CHARS = 500
 # aussagekräftigen Fingerabdruck, ohne die Historie-Datei unnötig aufzublähen.
 MAX_LINT_SIGNATURE_ITEMS = 20
 
+# Team-Optimierung (Retrospektive 2026-09-03): ein Projekt (mockforge) wurde in
+# PROJECT_STATE.md als "✅ Vollständig verifiziert & einsatzbereit" ausgewiesen, obwohl
+# agents/orchestrator/verification.py für genau dieses Projekt kurz zuvor ein "blocked"-Ticket
+# zu einem NICHT behobenen kritischen Befund eröffnet hatte (die reale Testsuite bestand zwar,
+# das kritische Architektur-/Sicherheitsproblem aus dem Governance-Review blieb aber im Code
+# bestehen) - verification_ok (nur "laufen die Tests?") und der offene kritische Befund
+# (core/backlog_store.py-Ticket) waren bisher komplett entkoppelt. _open_blocker_ticket()
+# schließt diese Lücke: der Status-Badge berücksichtigt jetzt BEIDES.
+_BLOCKER_TICKET_PREFIXES = ("unresolved-governance-critical-", "unresolved-permission-blocked-")
+
+
+def _open_blocker_ticket(project_dir: str):
+    """Gibt das offene ("blocked") Governance-/Verifikations-Ticket dieses Projekts zurück,
+    falls eines existiert - None sonst. Ein Lookup-Fehler (z.B. eine kaputte
+    memory/backlog.json) darf die Checkpoint-Erstellung nie zum Absturz bringen, dieselbe
+    defensive Haltung wie bei _prior_run_context() in agents/orchestrator/verification.py."""
+    try:
+        from core.backlog_store import list_tickets
+    except Exception:
+        return None
+    slug = Path(project_dir).name
+    try:
+        for t in list_tickets(status="blocked"):
+            if t.project_slug == slug and t.id.startswith(_BLOCKER_TICKET_PREFIXES):
+                return t
+    except Exception:
+        return None
+    return None
+
 
 def _status_path(project_dir: str) -> Path:
     return Path(project_dir) / STATUS_FILENAME
@@ -167,8 +196,15 @@ def generate_project_state_md(
     p_path = Path(project_dir)
     project_name = p_path.name or "Projekt"
 
-    # Status-Badge
-    if verification_ok:
+    blocker_ticket = _open_blocker_ticket(project_dir)
+
+    # Status-Badge. Ein offenes Governance-/Verifikations-Ticket überschreibt JEDEN anderen
+    # Status inkl. einer bestandenen Testsuite (verification_ok=True) - ein kritischer,
+    # nachweislich ungelöster Befund macht ein Projekt nicht "einsatzbereit", nur weil die
+    # Tests grün sind (siehe Modul-Kommentar zu _BLOCKER_TICKET_PREFIXES oben).
+    if blocker_ticket:
+        status_label = "🔴 Kritischer Befund ungelöst – NICHT einsatzbereit (Backlog-Ticket offen)"
+    elif verification_ok:
         status_label = "✅ Vollständig verifiziert & einsatzbereit"
     elif cancelled:
         status_label = "⏹️ Lauf manuell pausiert"
@@ -214,6 +250,20 @@ def generate_project_state_md(
         f"- **Tests bestanden:** {'Ja ✅' if verification_ok else 'Ausstehend / Fehlgeschlagen ⚠️'}",
     ]
 
+    if blocker_ticket:
+        lines += [
+            "",
+            "## 🔴 Offener kritischer Befund (Backlog-Ticket)",
+            f"- **Ticket:** `{blocker_ticket.id}` (Status: `{blocker_ticket.status}`, "
+            f"bisherige Wiederholungsversuche: {blocker_ticket.retries})",
+            "- **Befund:**",
+            f"  > {blocker_ticket.detail[:400] or '(kein Detailtext hinterlegt)'}",
+            "- Dieses Projekt gilt trotz einer eventuell bestandenen Testsuite NICHT als "
+            "einsatzbereit, solange dieses Ticket offen ist. `python main.py --work-backlog` "
+            "greift es automatisch erneut auf (begrenzte Anzahl Versuche, siehe "
+            "config.MAX_GOVERNANCE_TICKET_RETRIES).",
+        ]
+
     lines += [
         "",
         "## 🎯 Nächste empfohlene Schritte (Next Actions)",
@@ -222,6 +272,9 @@ def generate_project_state_md(
     if next_steps:
         for i, step in enumerate(next_steps, start=1):
             lines.append(f"{i}. {step}")
+    elif blocker_ticket:
+        lines.append(f"1. Offenen kritischen Befund aus Ticket `{blocker_ticket.id}` beheben (siehe oben).")
+        lines.append("2. Danach `/run-tests` bzw. einen neuen Lauf anstoßen, um das Ticket zu schließen.")
     else:
         if not verification_ok:
             lines.append("1. Testsuite ausführen und offene Fehler beheben (`/run-tests`).")
@@ -420,6 +473,14 @@ def format_context_for_agents(project_dir: str, max_entries: int = 3) -> str:
             )
 
     return "\n\n".join(sections)
+
+
+def has_open_blocker_ticket(project_dir: str) -> bool:
+    """Öffentlicher Wrapper um _open_blocker_ticket() für Aufrufer außerhalb dieses Moduls
+    (agents/orchestrator/__init__.py nutzt dies, um den allerletzten Lauf-Status im Chat
+    ebenfalls konsistent mit dem PROJECT_STATE.md-Badge zu halten, statt "✅ Fertig!" trotz
+    eines offenen kritischen Befunds anzuzeigen)."""
+    return _open_blocker_ticket(project_dir) is not None
 
 
 def has_repeated_failure(project_dir: str, streak: int = 2) -> bool:

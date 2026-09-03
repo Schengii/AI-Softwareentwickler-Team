@@ -51,7 +51,7 @@ _ACCEPTANCE_CRITERIA_SOURCE_AGENT_IDS = {"product_owner", "business_analyst"}
 class ResultAggregator:
     """Kombiniert Agenten-Ergebnisse zu einer einheitlichen Antwort."""
 
-    def __init__(self, model_name: str = "gemini-3.6-flash"):
+    def __init__(self, model_name: str = "gemini-3.8-flash"):
         self._llm = LLMFactory.create_for_model(model_name)
 
     async def synthesize(

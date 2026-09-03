@@ -16,6 +16,7 @@ einen gezielten Korrekturauftrag auslöst statt nur verification_ok zurückzuset
 """
 
 import asyncio
+import re
 from collections.abc import Callable
 
 from agents.orchestrator.constants import REVIEW_ONLY_AGENT_IDS
@@ -41,6 +42,45 @@ from core.review_gate import (
 )
 from core.team_memory import record_lesson
 from core.verifier import ProjectVerifier, VerificationReport
+
+# Realer Fund (taskpulse-Projekt, 2026-09-03): eine fehlende `app/models.py` (referenziert per
+# `from . import database, models, schemas`) führte zu einem ModuleNotFoundError/ImportError,
+# der als ganz normaler Testfehlschlag durch die Fix-Schleife unten lief - die generische
+# Fix-Beschreibung ("Nutze read_file, um die betroffene(n) Datei(en) zu prüfen...") nannte NIE
+# konkret, WELCHE Datei fehlt, nur den vollen Traceback-Text. Der beauftragte Agent musste sich
+# das selbst erschließen und tat es über mehrere Versuche hinweg nicht zuverlässig (33
+# Agenten-Durchläufe, 714k Tokens, am Ende trotzdem verification_ok=False). Diese Muster
+# erkennen die beiden häufigsten Python-Fehlerklassen für "referenziertes Modul/Symbol
+# existiert nicht" und machen die fehlende Datei/das fehlende Symbol im Fix-Auftrag EXPLIZIT,
+# statt es implizit im Traceback zu verstecken.
+_MODULE_NOT_FOUND_RE = re.compile(r"ModuleNotFoundError: No module named ['\"]([\w.]+)['\"]")
+_IMPORT_NAME_ERROR_RE = re.compile(r"ImportError: cannot import name ['\"](\w+)['\"] from ['\"]([\w.]+)['\"]")
+
+
+def _diagnose_import_failure(message: str) -> str | None:
+    """Extrahiert aus einer Python-Fehlermeldung, FALLS es sich um eine der beiden häufigsten
+    'Modul/Symbol existiert nicht'-Fehlerklassen handelt, eine konkrete, an den Fix-Agenten
+    adressierbare Diagnosezeile - None, wenn keines der beiden Muster passt (dann bleibt der
+    generische Fix-Auftrag unverändert, siehe Aufrufer)."""
+    m = _MODULE_NOT_FOUND_RE.search(message)
+    if m:
+        module = m.group(1)
+        as_path = module.replace(".", "/")
+        return (
+            f"⚠️ KONKRETE URSACHE: Das Modul `{module}` existiert nicht (fehlende Datei "
+            f"`{as_path}.py` oder fehlendes Paket-Verzeichnis `{as_path}/__init__.py`). Lege "
+            f"GENAU DIESE Datei mit echtem Inhalt an, statt nur die importierende Datei zu ändern."
+        )
+    m = _IMPORT_NAME_ERROR_RE.search(message)
+    if m:
+        name, module = m.group(1), m.group(2)
+        as_path = module.replace(".", "/")
+        return (
+            f"⚠️ KONKRETE URSACHE: `{name}` existiert nicht in `{as_path}.py` (Modul selbst ist "
+            f"vorhanden, das importierte Symbol fehlt darin). Ergänze `{name}` (Klasse/Funktion/"
+            f"Variable) in genau dieser Datei, statt nur die importierende Datei zu ändern."
+        )
+    return None
 
 
 class VerificationMixin:
@@ -665,12 +705,100 @@ class VerificationMixin:
         # unten) - verhindert eine Endlosschleife, falls der tester-Agent wiederholt keine
         # echte Testdatei anlegt.
         no_tests_fix_attempted = False
+        # Zirkuit-Breaker gegen wirkungslose Wiederholungen (Team-Retrospektive nach dem
+        # taskpulse-Lauf): bisher wurde ein zweiter Fixversuch immer unternommen, selbst wenn
+        # der erste erkennbar NICHTS verändert hat - derselbe Satz Testfehler (gleiche
+        # test_id+Fehlermeldung) nach einem Fixversuch bedeutet fast immer, dass der
+        # beauftragte Agent das Problem nicht lösen konnte, nicht dass ein zweiter,
+        # identischer Auftrag beim nächsten Versuch anders ausgeht. Bricht die Schleife dann
+        # SOFORT ab (spart einen kompletten, meist wirkungslosen Agenten-Durchlauf) statt den
+        # letzten erlaubten Versuch trotzdem zu verbrauchen.
+        previous_failure_signature: frozenset[tuple[str, str]] | None = None
 
         notify("🧪 [bold cyan]Verifikation:[/bold cyan] Installiere Abhängigkeiten in isolierter Umgebung...")
         install_log = await asyncio.to_thread(verifier.ensure_environment)
         if install_log:
             notify(f"  📦 {install_log.splitlines()[0]}")
             summary_lines.append(f"- 📦 {install_log.splitlines()[0]}")
+
+        # Vorab-Check (statt Vollständigkeits-Check erst NACH der teuren Testsuite/Governance-
+        # Schleife, siehe unten): ein fehlendes lokales Python-Modul (z.B. `app/models.py`, das
+        # per `from . import database, models, schemas` referenziert wird) ist rein statisch,
+        # ohne jeden Testlauf, in Millisekunden erkennbar (core/verifier/completeness.py.
+        # _missing_local_python_imports) - beim taskpulse-Lauf wurde genau dieser Fund erst nach
+        # der vollständigen Test-/Governance-/Review-Kaskade sichtbar (33 Agenten-Durchläufe,
+        # 714k Tokens, 23 Minuten), obwohl er von Anfang an feststand. Läuft NUR gegen
+        # Import-Auflösungs-Funde (nicht den vollen Vollständigkeits-Check inkl. Stub-Marker/
+        # fehlender I/O - die bleiben bewusst beim regulären, späteren Durchlauf, der zusätzlich
+        # den frischen Testlauf mitprüft), maximal MAX_VERIFICATION_ITERATIONS Versuche wie jede
+        # andere Fix-Schleife hier.
+        if ENABLE_COMPLETENESS_CHECK and not (budget_aborted or manually_cancelled):
+            for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
+                if run_start_tokens is not None and (
+                    self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                ):
+                    budget_aborted = True
+                    notify("  🚫 [bold red]Budget erreicht[/bold red] – Vorab-Import-Check übersprungen.")
+                    break
+                if cancel_requested and cancel_requested():
+                    manually_cancelled = True
+                    notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – Vorab-Import-Check übersprungen.")
+                    break
+
+                pre_report = await asyncio.to_thread(verifier.check_completeness)
+                # Dieselbe Reihenfolge (erst .attempted, DANN .passed, bevor .issues überhaupt
+                # angefasst wird) wie der bestehende Vollständigkeits-Check weiter unten - hält
+                # Tests, die ProjectVerifier komplett mocken, ohne check_completeness() explizit
+                # zu konfigurieren, unverändert lauffähig (ein MagicMock().passed ist truthy,
+                # ein MagicMock().issues wäre dagegen nicht iterierbar und würde crashen).
+                if not pre_report.attempted or pre_report.passed:
+                    break
+                import_issues = [i for i in pre_report.issues if "existierendes lokales" in i.message]
+                if not import_issues:
+                    if attempt > 1:
+                        notify(f"  🧩 [bold green]Vorab-Import-Check nach Fix (Versuch {attempt}) bestanden.[/bold green]")
+                        summary_lines.append(f"- 🧩 Vorab-Import-Check (statisch, vor der Testsuite): nach {attempt} Durchlauf/Durchläufen bestanden.")
+                    break
+
+                top = "; ".join(f"{i.file_path}:{i.line_number} – {i.message}" for i in import_issues[:5])
+                notify(f"  🧩 [bold red]Vorab-Import-Check: {len(import_issues)} fehlende(s) lokale(s) Modul/Symbol VOR jedem Testlauf gefunden.[/bold red]")
+
+                agents_to_fix: dict[str, list] = {}
+                for issue in import_issues:
+                    owner = file_owners.get(issue.file_path)
+                    if owner and owner in self._agents:
+                        agents_to_fix.setdefault(owner, []).append(issue)
+
+                if not agents_to_fix:
+                    summary_lines.append(f"- 🧩 ❌ Vorab-Import-Check: {len(import_issues)} Fund(e) blieben ungelöst (keinem Agenten eindeutig zuordenbar): {top}")
+                    break
+
+                fix_tasks = []
+                for agent_id, agent_issues in agents_to_fix.items():
+                    issue_text = "\n".join(f"- {i.file_path}:{i.line_number} – {i.message}" for i in agent_issues)
+                    fix_tasks.append(AgentTask(
+                        task_id=f"verify_fix_preimport_{agent_id}_{attempt}",
+                        agent_id=agent_id,
+                        description=(
+                            "Ein statischer Vorab-Check (VOR jedem Testlauf) hat lokale Python-Importe "
+                            "gefunden, die auf nicht existierende Dateien/Symbole verweisen - der Code kann "
+                            "dadurch nicht einmal importiert werden. Lege die fehlende(n) Datei(en) mit "
+                            "echtem Inhalt an bzw. ergänze das fehlende Symbol in der genannten Datei.\n\n"
+                            f"{issue_text}"
+                        ),
+                        context="",
+                        project_dir=project_dir,
+                    ))
+
+                notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix (Vorab-Import-Check):[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())}...")
+                fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+                self._update_file_owners(file_owners, fix_results)
+                all_results.extend(fix_results)
+                summary_lines.append(f"- 🧩 Vorab-Import-Check, Versuch {attempt}: {len(import_issues)} Fund(e) → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt: {top}")
+
+                if attempt == MAX_VERIFICATION_ITERATIONS:
+                    notify("  ⚠️ [yellow]Maximale Vorab-Import-Fixversuche erreicht – weiter mit der regulären Testsuite.[/yellow]")
+                    summary_lines.append(f"- 🧩 ⚠️ Vorab-Import-Check nach {MAX_VERIFICATION_ITERATIONS} Versuchen weiterhin mit Funden – weiter mit der regulären Testsuite (dort erneut sichtbar).")
 
         for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
             if run_start_tokens is not None and (
@@ -741,6 +869,28 @@ class VerificationMixin:
 
             notify(f"  ❌ [bold red]{len(report.failures)} Testfehler[/bold red] – ermittle betroffene Agenten aus dem echten Traceback...")
 
+            current_signature = frozenset((f.test_id, f.message[:300]) for f in report.failures)
+            if previous_failure_signature is not None and current_signature == previous_failure_signature:
+                notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Testfehler wie vor dem letzten Fixversuch – breche Verifikations-Schleife ab statt unverändert zu wiederholen.")
+                summary_lines.append(
+                    f"- 🛑 Versuch {attempt}: dieselben {len(report.failures)} Testfehler wie nach dem vorherigen "
+                    "Fixversuch (keine Veränderung) – Schleife abgebrochen statt einen wirkungslosen weiteren "
+                    "Versuch zu verbrauchen."
+                )
+                if self.last_project_slug:
+                    try:
+                        upsert_ticket(
+                            ticket_id=f"recurring-failure-{self.last_project_slug}",
+                            title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                            source="orchestrator", status="blocked", project_slug=self.last_project_slug,
+                            detail=f"Fixversuch änderte nichts an {len(report.failures)} Testfehler(n) – "
+                                   "vermutlich falscher/unzureichend instruierter Agent."[:300],
+                        )
+                    except Exception as e:
+                        notify(f"  ⚠️ [dim yellow]Ticket für ungelösten Testfehler konnte nicht angelegt werden: {e}[/dim yellow]")
+                break
+            previous_failure_signature = current_signature
+
             agents_to_fix: dict[str, list] = {}
             for failure in report.failures:
                 owners = {file_owners[f] for f in failure.files if f in file_owners}
@@ -759,6 +909,7 @@ class VerificationMixin:
             for agent_id, fails in agents_to_fix.items():
                 failure_text = "\n\n".join(
                     f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(f.files) or 'unbekannt'}"
+                    + (f"\n{diag}" if (diag := _diagnose_import_failure(f.message)) else "")
                     for f in fails
                 )
                 fix_tasks.append(AgentTask(

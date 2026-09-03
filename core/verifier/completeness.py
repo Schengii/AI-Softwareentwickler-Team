@@ -10,8 +10,21 @@ bisherigen Checks (Testsuite, Lint, SAST, Coverage) erkennt einen absichtlich un
 gelassenen Codepfad, nur einen tatsächlich FALSCHEN. Zusätzlich verwies das README-generierte
 `pip install -r requirements.txt` auf eine Datei, die nie erzeugt wurde - ebenfalls von keinem
 bisherigen Check erfasst.
+
+Fünfter realer Fund (taskpulse-Projekt, 2026-09-03): `app/main.py` enthielt `from . import
+database, models, schemas`, aber `app/models.py` wurde nie angelegt - die App konnte dadurch
+gar nicht importiert werden. Der Fund blieb 33 Agenten-Durchläufe (714k Tokens, 23 Minuten) lang
+ungelöst, weil KEIN bisheriger Check das prüft: Lint/SAST/Coverage laufen gegen vorhandene
+Dateien, die echte Testsuite bricht zwar mit ImportError ab, aber ihr Traceback zeigt oft nur
+die importierende Datei (main.py), nicht die fehlende (models.py) - der gezielte Fix-Loop
+(agents/orchestrator/verification.py._run_verification_loop) beauftragte deshalb wiederholt den
+falschen bzw. einen zu vage instruierten Agenten. _missing_local_python_imports() prüft JEDEN
+lokalen Python-Import direkt statisch gegen das Dateisystem, unabhängig davon, ob die Testsuite
+je läuft - dieselbe Kategorie wie die fehlende requirements.txt oben, nur für Code-interne statt
+externe Referenzen.
 """
 
+import ast
 from pathlib import Path
 
 from core.verifier.models import (
@@ -51,6 +64,8 @@ class CompletenessMixin:
 
         issues: list[CompletenessIssue] = []
         py_import_names: set[str] = set()
+        py_files = [f for f in source_files if f.suffix == ".py"]
+        local_top_level = self._local_top_level_names() if py_files else set()
         for f in source_files:
             try:
                 text = f.read_text(encoding="utf-8", errors="ignore")
@@ -61,6 +76,7 @@ class CompletenessMixin:
             if f.suffix == ".py":
                 issues.extend(self._scan_write_routes_missing_io(rel, text))
                 py_import_names.update(self._collect_third_party_imports(text))
+                issues.extend(self._missing_local_python_imports(rel, f, text, local_top_level))
             elif f.suffix in (".js", ".jsx", ".ts", ".tsx"):
                 issues.extend(self._scan_component_missing_api(rel, text))
 
@@ -145,6 +161,146 @@ class CompletenessMixin:
             if mod not in _STDLIB_MODULES:
                 names.add(mod)
         return names
+
+    def _local_top_level_names(self) -> set[str]:
+        """Namen der im Projekt selbst definierten Top-Level-Python-Module/-Pakete (z.B. "app"
+        für ein Projekt mit app/main.py) - dieselbe Bestimmung wie in
+        _missing_dependency_manifest(), hier als eigene Methode, weil auch
+        _missing_local_python_imports() sie braucht, um ABSOLUTE lokale Importe (`from app
+        import models`, im Gegensatz zu relativen `from . import models`) von echten
+        Drittanbieter-Paketen zu unterscheiden."""
+        try:
+            return {
+                p.stem for p in self.project_dir.iterdir() if p.is_file() and p.suffix == ".py"
+            } | {
+                p.name for p in self.project_dir.iterdir() if p.is_dir() and p.name not in _IGNORED_DIRS
+            }
+        except OSError:
+            return set()
+
+    def _local_module_exists(self, module_path: Path) -> bool:
+        """Prüft, ob `module_path` (ohne Endung) als Python-Modul (`<pfad>.py`) oder als Paket
+        (`<pfad>/__init__.py` ODER ein reines Namespace-Package-Verzeichnis ohne __init__.py,
+        PEP 420) existiert."""
+        return module_path.with_suffix(".py").exists() or module_path.is_dir()
+
+    def _missing_local_python_imports(
+        self, rel: str, file: Path, text: str, local_top_level: set[str],
+    ) -> list[CompletenessIssue]:
+        """Prüft JEDEN lokalen Python-Import statisch gegen das Dateisystem - unabhängig davon,
+        ob/wann die echte Testsuite läuft und ob ihr Traceback die tatsächlich fehlende Datei
+        überhaupt nennt (siehe Docstring oben, taskpulse-Fund: `from . import database, models,
+        schemas` bei fehlender `models.py`). Nutzt `ast.parse()` statt Regex für die
+        Import-Extraktion (anders als die übrigen, bewusst regex-basierten Checks in dieser
+        Datei) - Import-Syntax hat zu viele Formen (Mehrfach-Importe, `as`-Aliase, verschachtelte
+        Klammern), um sie robust per Regex zu erfassen, und `ast.parse()` ist für eine einzelne
+        Quelldatei günstig genug, um sie für jede .py-Datei im Projekt aufzurufen. Best-effort
+        wie der Rest dieser Datei: ein SyntaxError-Fund (kaputte Datei) wird hier NICHT erneut
+        gemeldet - das übernimmt bereits ein separater Check (Testsuite/Lint), doppelte Meldung
+        wäre nur Rauschen.
+        """
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            return []
+
+        issues: list[CompletenessIssue] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.level >= 1:
+                    # Relativer Import ("from . import X" / "from .core.config import Y") -
+                    # level=1 ist das Paket der aktuellen Datei selbst, jede weitere Ebene geht
+                    # ein Verzeichnis höher (PEP 328-Semantik).
+                    base = file.parent
+                    for _ in range(node.level - 1):
+                        base = base.parent
+                    issues.extend(self._check_import_from(node, base, rel))
+                elif node.module and node.module.split(".")[0] in local_top_level:
+                    # Absoluter Import eines projekteigenen Top-Level-Pakets ("from app import
+                    # models") - nur geprüft, wenn der Name bereits als lokales Modul/Paket
+                    # bekannt ist (siehe local_top_level), sonst wäre jeder normale
+                    # Drittanbieter-Import ("from fastapi import ...") ein Fehlalarm.
+                    issues.extend(self._check_import_from(node, self.project_dir, rel))
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    top = alias.name.split(".")[0]
+                    if top not in local_top_level:
+                        continue
+                    module_path = self.project_dir / Path(*alias.name.split("."))
+                    if not self._local_module_exists(module_path):
+                        issues.append(CompletenessIssue(
+                            file_path=rel, line_number=node.lineno,
+                            message=f"Import „import {alias.name}“ verweist auf ein nicht "
+                                    f"existierendes lokales Modul (`{alias.name.replace('.', '/')}"
+                                    f".py`) - der Import schlägt beim Start fehl.",
+                        ))
+        return issues
+
+    def _check_import_from(self, node: ast.ImportFrom, base: Path, rel: str) -> list[CompletenessIssue]:
+        """Prüft eine einzelne `from <base+module> import <names>`-Anweisung: zuerst, ob das
+        Zwischenmodul selbst existiert (z.B. `core.config` in `from .core.config import
+        settings`) - fehlt es komplett, ist das der einzige Fund. Existiert es als PAKET
+        (Verzeichnis, z.B. `app` in `from app import models` oder das implizite Basisverzeichnis
+        bei `from . import models`), prüft _check_ambiguous_names() zusätzlich jeden importierten
+        Namen einzeln, weil er dort entweder ein Submodul (models.py) oder ein in __init__.py
+        (re-)exportiertes Symbol sein könnte. Löst sich `module_path` dagegen zu einer einzelnen
+        .py-DATEI auf (kein Paket), bleiben die importierten Namen unbeprüft - eine
+        verlässliche Symbol-in-Datei-Prüfung bräuchte eine zweite AST-Analyse dieser Datei und
+        wäre wegen dynamischer Attribute/Re-Exporte fehlalarmanfällig."""
+        dotted = "." * node.level + (node.module or "")
+        if node.module:
+            module_path = base / Path(*node.module.split("."))
+            if not self._local_module_exists(module_path):
+                return [CompletenessIssue(
+                    file_path=rel, line_number=node.lineno,
+                    message=f"Import „from {dotted} import ...“ verweist auf ein nicht "
+                            f"existierendes lokales Modul/Paket "
+                            f"(`{self._relative_or_raw(module_path)}.py`) - der Import schlägt "
+                            f"beim Start fehl.",
+                )]
+            if not module_path.is_dir():
+                return []  # einzelne .py-Datei, keine Namens-Ambiguität - siehe Docstring
+            base = module_path
+
+        return self._check_ambiguous_names(node, base, dotted, rel)
+
+    def _check_ambiguous_names(self, node: ast.ImportFrom, base: Path, dotted: str, rel: str) -> list[CompletenessIssue]:
+        """Prüft jeden importierten Namen bei "from <paket> import X, Y, Z" einzeln: X/Y/Z
+        KÖNNTEN Submodule sein (dann muss z.B. models.py existieren) ODER ganz normale, in
+        `__init__.py` (re-)exportierte Symbole (Funktionen/Variablen/Klassen) - letzteres ist
+        KEIN Fehler. Bewusst konservativ: nur melden, wenn der Name im Verzeichnis WEDER als
+        Submodul existiert NOCH (falls ein __init__.py vorhanden ist) dort textuell auftaucht -
+        dieselbe tolerante, auf Vermeidung von Fehlalarmen bedachte Haltung wie beim
+        Stub-Marker-Scan."""
+        init_file = base / "__init__.py"
+        init_text = ""
+        if init_file.exists():
+            try:
+                init_text = init_file.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                pass
+        issues: list[CompletenessIssue] = []
+        for alias in node.names:
+            if alias.name == "*":
+                continue
+            if self._local_module_exists(base / alias.name):
+                continue
+            if init_text and alias.name in init_text:
+                continue
+            issues.append(CompletenessIssue(
+                file_path=rel, line_number=node.lineno,
+                message=f"Import „from {dotted} import {alias.name}“ verweist auf kein "
+                        f"existierendes lokales Submodul (`{self._relative_or_raw(base / alias.name)}.py`) "
+                        f"und wird auch nicht in `{self._relative_or_raw(init_file)}` (re-)exportiert - "
+                        f"der Import schlägt vermutlich beim Start fehl.",
+            ))
+        return issues
+
+    def _relative_or_raw(self, path: Path) -> str:
+        try:
+            return str(path.relative_to(self.project_dir)).replace("\\", "/")
+        except ValueError:
+            return str(path).replace("\\", "/")
 
     def _missing_dependency_manifest(self, third_party_imports: set[str]) -> list[CompletenessIssue]:
         """Prüft, ob ein Projekt mit erkennbaren Drittanbieter-Python-Importen (z.B. `fastapi`,

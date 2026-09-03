@@ -232,6 +232,90 @@ class TestCompletenessCheck(unittest.TestCase):
             report = verifier.check_completeness()
             self.assertTrue(report.passed)
 
+    def test_detects_missing_relative_import_sibling(self):
+        # Realer Fund (taskpulse-Projekt): `from . import database, models, schemas` in
+        # app/main.py, aber app/models.py wurde nie angelegt.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            (app_dir / "database.py").write_text("engine = None\n", encoding="utf-8")
+            (app_dir / "schemas.py").write_text("class Task: pass\n", encoding="utf-8")
+            (app_dir / "main.py").write_text(
+                "from . import database, models, schemas\n\napp = object()\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any("models" in i.message and "app/main.py" == i.file_path for i in report.issues))
+
+    def test_detects_missing_relative_submodule_import(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            (app_dir / "main.py").write_text(
+                "from .core.config import settings\n\napp = object()\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any("core/config" in i.message for i in report.issues))
+
+    def test_existing_relative_imports_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            (app_dir / "database.py").write_text("engine = None\n", encoding="utf-8")
+            (app_dir / "models.py").write_text("class Task: pass\n", encoding="utf-8")
+            (app_dir / "schemas.py").write_text("class TaskSchema: pass\n", encoding="utf-8")
+            core_dir = app_dir / "core"
+            core_dir.mkdir()
+            (core_dir / "__init__.py").write_text("", encoding="utf-8")
+            (core_dir / "config.py").write_text("settings = object()\n", encoding="utf-8")
+            (app_dir / "main.py").write_text(
+                "from . import database, models, schemas\n"
+                "from .core.config import settings\n\napp = object()\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_reexported_symbol_via_init_not_flagged(self):
+        # "from . import X" ist mehrdeutig: X kann ein Submodul ODER ein in __init__.py
+        # (re-)exportiertes Symbol sein - Letzteres ist kein Fehler.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("CONFIG_VALUE = 42\n", encoding="utf-8")
+            (app_dir / "main.py").write_text(
+                "from . import CONFIG_VALUE\n\napp = object()\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_missing_absolute_local_package_import_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            (app_dir / "main.py").write_text("app = object()\n", encoding="utf-8")
+            (project_dir / "run.py").write_text(
+                "from app import models\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any("run.py" == i.file_path for i in report.issues))
+
     def test_ignores_venv_and_node_modules(self):
         with tempfile.TemporaryDirectory() as tmp:
             project_dir = Path(tmp)

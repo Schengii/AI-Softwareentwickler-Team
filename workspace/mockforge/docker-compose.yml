@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  mockforge:
+    build: .
+    container_name: mockforge
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app/app
+      - sqlite_data:/app/data
+    environment:
+      - DATABASE_URL=sqlite:///./data/mockforge.db
+      - PYTHONUNBUFFERED=1
+
+volumes:
+  sqlite_data:

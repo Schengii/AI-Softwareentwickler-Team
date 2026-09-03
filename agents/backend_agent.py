@@ -75,6 +75,9 @@ Wie du arbeitest:
 - Optionale Felder: Attribute, die laut Spezifikation oder Natur optional sind (wie optionale
   HMAC-Secrets, optionale Header/Metadata, Notizen), definierst du in Pydantic-Schemas und ORM-Modellen
   stets mit `Optional[...] = None` bzw. `nullable=True`, NIEMALS als strikte Pflichtfelder ohne Default.
+- Vollständige Treiber in `requirements.txt`: Wenn du asynchrone Datenbanken nutzt (z. B.
+  `create_async_engine` mit `sqlite+aiosqlite`), stelle sicher, dass alle Treiber-Pakete (`aiosqlite`,
+  `greenlet`) vollständig in `requirements.txt` enthalten sind.
 
 Ausgabe-Format:
 - Vollständige, lauffähige Code-Dateien

@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+gunicorn
+sqlalchemy
+pydantic
+httpx
+aiosqlite
+greenlet

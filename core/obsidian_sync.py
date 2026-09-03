@@ -96,7 +96,7 @@ def _get_current_git_info(base_dir: Path) -> dict[str, str]:
 
 
 def _create_markdown_wrapper(file_name: str, content: str, timestamp: str) -> str:
-    """Erstellt für Nicht-Markdown-Dateien (.env, .gitignore) ein lesbares .md Pendant."""
+    """Erstellt für Nicht-Markdown-Dateien (.env.example, .gitignore) ein lesbares .md Pendant."""
     syntax = "ini" if "env" in file_name.lower() else "gitignore" if "gitignore" in file_name.lower() else "text"
 
     return f"""---
@@ -172,7 +172,7 @@ tags:
 - **Architektur & Agenten-Hierarchie:** [[ARCHITECTURE.md]] (Erklärt die 6 Fachbereiche & 33 Rollen)
 - **Letzter Entwicklungs- & Teststand:** [[ZWISCHENSTAND_KI_TEAM_PROJEKT.md]] (Detaillierter Lauf-Status)
 - **Projekt-Handbuch & CLI-Befehle:** [[README.md]]
-- **Aktuelle Umgebung & API-Konfiguration:** [[.env.md]]
+- **Umgebungsvariablen-Vorlage (KEINE echten Secrets):** [[.env.example.md]]
 - **Changelog & Historie realer Bugfixes:** [[CHANGELOG.md]]
 - **Übergeordnete Lernprojekt-Notiz:** [[AI-Softwareentwickler-Team - Übersicht]]
 
@@ -216,6 +216,20 @@ def sync_project_to_obsidian(
     git_info = _get_current_git_info(src_base)
 
     for file_name in file_list:
+        # Realer Fund: OBSIDIAN_SYNC_FILES enthielt ".env" als Standardwert - der Sync kopiert
+        # Dateien unredigiert, dadurch landeten ECHTE, aktive API-Keys im Vault, außerhalb des
+        # durch dieses Repo kontrollierten .gitignore-Schutzes (ein Obsidian-Vault wird
+        # typischerweise über einen eigenen, hier nicht kontrollierten Dienst verteilt -
+        # Obsidian Sync, iCloud, Dropbox, Plugins). Der Konfigurations-Default wurde auf
+        # ".env.example" umgestellt, aber ein zusätzlicher harter Guard HIER schützt auch
+        # gegen eine künftige Fehlkonfiguration (z.B. OBSIDIAN_SYNC_FILES per .env versehentlich
+        # wieder auf ".env" gesetzt) - Secrets gehören NIE in ein Sync-Ziel, das dieses Projekt
+        # nicht kontrolliert, unabhängig davon, was konfiguriert wurde. Bewusst exakter
+        # Dateiname-Vergleich (keine Endung/Substring-Prüfung): ".env.example" bleibt erlaubt.
+        if file_name == ".env":
+            result.failed_files[file_name] = "Sicherheitssperre: '.env' enthält echte Secrets und wird NIE synchronisiert (siehe '.env.example')."
+            continue
+
         src_file = src_base / file_name
         if not src_file.exists():
             continue
@@ -236,7 +250,7 @@ def sync_project_to_obsidian(
                 result.skipped_files.append(file_name)
                 status_label = "Aktuell"
 
-            # Falls keine Markdown-Datei (.env, .gitignore, ...): Erzeuge zusätzlich .md Pendant
+            # Falls keine Markdown-Datei (.env.example, .gitignore, ...): Erzeuge zusätzlich .md Pendant
             is_markdown = file_name.lower().endswith(".md")
             target_display_name = file_name
             if not is_markdown:

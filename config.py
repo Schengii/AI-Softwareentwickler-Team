@@ -537,8 +537,16 @@ OBSIDIAN_AUTO_SYNC: bool = os.getenv("OBSIDIAN_AUTO_SYNC", "true").strip().lower
 OBSIDIAN_SYNC_FILES: list[str] = [
     f.strip()
     for f in os.getenv(
+        # Realer Fund: ".env" stand hier bisher als Klartext-Sync-Ziel drin - core/
+        # obsidian_sync.py kopiert Dateien unredigiert, dadurch landeten ECHTE, aktive
+        # API-Keys (Gemini/Groq/DeepSeek/Tavily/OpenRouter/HuggingFace) im Vault
+        # (".env" + generiertes ".env.md"), außerhalb des durch dieses Repo kontrollierten
+        # .gitignore-Schutzes - ein Obsidian-Vault wird typischerweise über einen eigenen
+        # Sync-Dienst (Obsidian Sync, iCloud, Dropbox, Plugins) verteilt, der von diesem
+        # Projekt nicht kontrolliert wird. ".env.example" enthält dieselbe Struktur/
+        # Dokumentation für das Gedächtnis, aber nie echte Secrets (nur leere Platzhalter).
         "OBSIDIAN_SYNC_FILES",
-        ".env,README.md,ZWISCHENSTAND_KI_TEAM_PROJEKT.md,.gitignore,ARCHITECTURE.md,CHANGELOG.md,CLAUDE.md,.claudeignore",
+        ".env.example,README.md,ZWISCHENSTAND_KI_TEAM_PROJEKT.md,.gitignore,ARCHITECTURE.md,CHANGELOG.md,CLAUDE.md,.claudeignore",
     ).split(",")
     if f.strip()
 ]

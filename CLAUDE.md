@@ -61,7 +61,7 @@ AI-Softwareentwickler-Team/
 Alle wichtigen Projektkonfigurationen, Architekturpläne und Verlaufsdaten werden automatisch mit deinem Obsidian-Vault synchronisiert:
 - **Vault-Pfad:** `C:\Users\sche-\Desktop\Obsidian\02 Areas\Lernprojekte\AI-Softwareentwickler-Team\`
 - **Index-Notiz:** `00_PROJEKT_GEDAECHTNIS.md`
-- **Konfig-Dateien:** `.env.md`, `README.md`, `ARCHITECTURE.md`, `CHANGELOG.md`
+- **Konfig-Dateien:** `.env.example.md` (Vorlage, KEINE echten Secrets), `README.md`, `ARCHITECTURE.md`, `CHANGELOG.md`
 - Wenn du nach bisherigen Entscheidungen oder Setup-Details suchst, ist `00_PROJEKT_GEDAECHTNIS.md` im Vault die schnellste Quelle.
 
 ---

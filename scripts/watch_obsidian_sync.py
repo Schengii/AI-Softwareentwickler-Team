@@ -1,7 +1,7 @@
 """
 scripts/watch_obsidian_sync.py – Hintergrund-Watcher für sofortigen Auto-Sync nach Obsidian
 
-Überwacht die Projektdateien (.env, README.md, ZWISCHENSTAND_KI_TEAM_PROJEKT.md, etc.)
+Überwacht die Projektdateien (.env.example, README.md, ZWISCHENSTAND_KI_TEAM_PROJEKT.md, etc.)
 und spiegelt Änderungen sofort nach Obsidian, sobald sie gespeichert werden.
 
 Verwendung:

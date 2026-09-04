@@ -97,6 +97,36 @@ class TestPythonLintViaRuff(unittest.TestCase):
 
     @patch("core.verifier.CodeSandbox.run_command")
     @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
+    def test_runs_safe_autofix_before_the_actual_check(self, mock_which, mock_run):
+        # Realer Fund (Bestandsaufnahme cloudvault-Projekt): Lint-Funde standen bisher nur im
+        # Protokoll, wurden aber nie behoben. `_lint_python()` führt jetzt VOR dem eigentlichen
+        # Check-Lauf `ruff check --fix` (NUR sichere Autofixes, kein `--unsafe-fixes`) aus.
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="[]", stderr="", duration_seconds=0.1)
+        verifier = ProjectVerifier(self.project_dir)
+
+        verifier.check_lint()
+
+        self.assertEqual(mock_run.call_count, 2)
+        fix_call_args = mock_run.call_args_list[0][0][0]
+        check_call_args = mock_run.call_args_list[1][0][0]
+        self.assertIn("--fix", fix_call_args)
+        self.assertNotIn("--unsafe-fixes", fix_call_args)
+        self.assertNotIn("--fix", check_call_args)
+
+    @patch("core.verifier.lint.ENABLE_AUTO_LINT_FIX", False)
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
+    def test_autofix_disabled_via_config_flag(self, mock_which, mock_run):
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="[]", stderr="", duration_seconds=0.1)
+        verifier = ProjectVerifier(self.project_dir)
+
+        verifier.check_lint()
+
+        self.assertEqual(mock_run.call_count, 1)
+        self.assertNotIn("--fix", mock_run.call_args[0][0])
+
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
     def test_reports_clean_when_no_issues_found(self, mock_which, mock_run):
         mock_run.return_value = ExecutionResult(exit_code=0, stdout="[]", stderr="", duration_seconds=0.1)
         verifier = ProjectVerifier(self.project_dir)
@@ -122,6 +152,34 @@ class TestPythonLintViaRuff(unittest.TestCase):
             self.assertEqual(verifier.check_lint(), [])
         finally:
             shutil.rmtree(empty_project, ignore_errors=True)
+
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
+    def test_b008_ignored_for_detected_fastapi_project(self, mock_which, mock_run):
+        # Team-Optimierung (Retrospektive, zeiterfassung_app-Lauf): B008 ("kein Funktionsaufruf
+        # in Default-Argumenten") schlägt bei JEDEM FastAPI-`Depends()`-Parameter an - dem von
+        # FastAPI selbst vorgeschriebenen Dependency-Injection-Idiom, keine echte Fehlerquelle.
+        # Ein als FastAPI erkanntes Projekt (hier: "fastapi" in requirements.txt) muss die Regel
+        # deshalb per --ignore=B008 ausnehmen.
+        (self.project_dir / "requirements.txt").write_text("fastapi==0.110.2\n", encoding="utf-8")
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="[]", stderr="", duration_seconds=0.1)
+        verifier = ProjectVerifier(self.project_dir)
+
+        verifier.check_lint()
+
+        check_call_args = mock_run.call_args_list[-1][0][0]
+        self.assertIn("--ignore=B008", check_call_args)
+
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
+    def test_b008_not_ignored_for_non_fastapi_project(self, mock_which, mock_run):
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="[]", stderr="", duration_seconds=0.1)
+        verifier = ProjectVerifier(self.project_dir)  # setUp() legt nur ein plain app.py an
+
+        verifier.check_lint()
+
+        check_call_args = mock_run.call_args_list[-1][0][0]
+        self.assertNotIn("--ignore=B008", check_call_args)
 
     @patch("core.verifier.CodeSandbox.run_command")
     @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")

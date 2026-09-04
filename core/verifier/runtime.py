@@ -27,6 +27,7 @@ from pathlib import Path
 
 from core.code_sandbox import CodeSandbox
 from core.verifier.models import (
+    _DOCKER_DAEMON_UNAVAILABLE_RE,
     LOAD_TEST_DIRNAME,
     DockerBuildReport,
     PerfCheckReport,
@@ -63,6 +64,12 @@ class RuntimeMixin:
             timeout_seconds=timeout_seconds,
         )
         output = (result.stdout + result.stderr).strip()[-2000:]
+        if result.exit_code != 0 and _DOCKER_DAEMON_UNAVAILABLE_RE.search(output):
+            return DockerBuildReport(
+                attempted=False, success=True, output=output,
+                reason_skipped="Docker-Daemon lokal nicht erreichbar (z.B. Docker Desktop nicht "
+                               "gestartet) - keine Aussage über die Codequalität, nur nicht prüfbar.",
+            )
         return DockerBuildReport(attempted=True, success=result.exit_code == 0, output=output)
 
     def _find_free_port(self) -> int:

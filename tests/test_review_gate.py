@@ -9,7 +9,11 @@ agents/compliance_agent.py), nicht an einer idealisierten Vereinfachung davon.
 
 import unittest
 
-from core.review_gate import find_critical_findings, route_findings_to_owners
+from core.review_gate import (
+    find_critical_findings,
+    find_permission_blocked_questions,
+    route_findings_to_owners,
+)
 
 CODE_REVIEWER_REPORT_WITH_FINDING = """## Code-Review Report
 
@@ -159,6 +163,33 @@ class TestRouteFindingsToOwners(unittest.TestCase):
 
         self.assertEqual(len(agents_to_fix["backend"]), 2)
         self.assertEqual(unrouted, [])
+
+
+class TestFindPermissionBlockedQuestions(unittest.TestCase):
+    """
+    Realer Fund (omnichat-Projekt): der security-Agent fragte per ask_human_for_clarification
+    "Wie erhalte ich Schreibrechte, um die identifizierten kritischen Sicherheitslücken (CORS)
+    ... in app/main.py zu beheben?" statt einen normalen, per find_critical_findings
+    erkennbaren Kritisch-Befund zu melden - diese Rückfrage blieb bisher unbeantwortet liegen.
+    """
+
+    def test_detects_german_write_access_question(self):
+        questions = [
+            "Wie erhalte ich Schreibrechte, um die kritischen Probleme in `app/main.py` zu "
+            "beheben? Ich habe keine Schreibrechte."
+        ]
+        self.assertEqual(find_permission_blocked_questions(questions), questions)
+
+    def test_detects_english_write_access_question(self):
+        questions = ["I found a critical issue in `app/db.py` but have no write access to fix it."]
+        self.assertEqual(find_permission_blocked_questions(questions), questions)
+
+    def test_ignores_genuine_business_question(self):
+        questions = ["Soll die Registrierung E-Mail-Verifikation erfordern, wie in den Anforderungen impliziert?"]
+        self.assertEqual(find_permission_blocked_questions(questions), [])
+
+    def test_empty_list_returns_empty(self):
+        self.assertEqual(find_permission_blocked_questions([]), [])
 
 
 if __name__ == "__main__":

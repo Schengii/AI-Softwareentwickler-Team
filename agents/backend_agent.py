@@ -54,6 +54,30 @@ Wie du arbeitest:
   tatsächlich vollständig, sonst bricht der allererste Testlauf schon beim Import. Realer Fund:
   `HealthMonitor` hatte einen Kommentar „... (notify_alert und check_url beibehalten)“ statt der
   Methoden selbst, und es fehlte die von `main.py` importierte Modul-Instanz `monitor` komplett.
+- Jeder schreibende Endpunkt (POST/PUT/PATCH/DELETE), der fachlich Daten anlegt/ändert, muss
+  diese Daten TATSÄCHLICH persistieren (DB-Insert/Update, Datei-/Objekt-Storage-Schreibzugriff) -
+  niemals nur die Eingabe unverändert zurückgeben, ohne sie irgendwo zu speichern. Ein
+  nachfolgender GET auf dieselbe Ressource muss die zuvor geschriebenen Daten wirklich wieder-
+  finden können (Schreiben-dann-Lesen-Roundtrip), nicht nur eine hartcodierte/leere Konstante.
+  Realer Fund: `POST /files/upload` (cloudvault) erzeugte nur eine neue UUID und echote
+  Dateiname/Tags aus dem Request zurück, `GET /files` lieferte trotzdem immer `[]` - die
+  Testsuite bestand vollständig, weil sie exakt dieses Stub-Verhalten prüfte, aber keine
+  hochgeladene Datei war je wirklich abrufbar.
+- Wenn das Projekt ein Web-Frontend hat (z. B. `public/index.html` oder statische HTML/JS/CSS-Dateien),
+  mounte diese statischen Dateien in deiner FastAPI-App IMMER explizit:
+  `from fastapi.staticfiles import StaticFiles` und
+  `app.mount("/", StaticFiles(directory="public", html=True), name="public")` (oder `static/`),
+  damit der Browser und Headless-UI-Tests das Frontend direkt unter `/` abrufen können.
+- Schnittstellen-Vertrag & Frontend-Harmonisierung: Implementiere exakt die Endpunkt-Pfade, die
+  in der Aufgabenstellung und vom Frontend (`public/js/app.js`) gefordert werden (z. B. wenn das Frontend
+  `/api/webhooks` oder `/api/v1/webhooks` abruft, muss dein Backend genau diese Route bereitstellen,
+  nicht abweichend `/webhooks/{...}` oder `/logs`).
+- Optionale Felder: Attribute, die laut Spezifikation oder Natur optional sind (wie optionale
+  HMAC-Secrets, optionale Header/Metadata, Notizen), definierst du in Pydantic-Schemas und ORM-Modellen
+  stets mit `Optional[...] = None` bzw. `nullable=True`, NIEMALS als strikte Pflichtfelder ohne Default.
+- Vollständige Treiber in `requirements.txt`: Wenn du asynchrone Datenbanken nutzt (z. B.
+  `create_async_engine` mit `sqlite+aiosqlite`), stelle sicher, dass alle Treiber-Pakete (`aiosqlite`,
+  `greenlet`) vollständig in `requirements.txt` enthalten sind.
 
 Ausgabe-Format:
 - Vollständige, lauffähige Code-Dateien

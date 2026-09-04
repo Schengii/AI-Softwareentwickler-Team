@@ -10,6 +10,7 @@ coverage.py, runtime.py).
 """
 
 import re
+import sys
 from dataclasses import dataclass, field
 
 VENV_DIRNAME = ".ai_team_venv"
@@ -43,6 +44,24 @@ _NODE_ENV_ERROR_PATTERN = re.compile(
 # tsc hat kein natives JSON-Format – `--pretty false` liefert stattdessen dieses stabile,
 # grep-bare Zeilenformat: "pfad(zeile,spalte): error TSxxxx: nachricht".
 _TSC_ERROR_PATTERN = re.compile(r"^(.+?)\((\d+),(\d+)\): (error|warning) (TS\d+): (.+)$", re.MULTILINE)
+
+# Realer Fund (incidentpilot-Projekt): `docker build` schlug mit "failed to connect to the
+# docker API at npipe:////./pipe/dockerDesktopLinuxEngine; ... check if ... the daemon is
+# running" fehl - Docker war lokal installiert (shutil.which("docker") findet die CLI), aber
+# Docker Desktop lief nicht. Das landete bisher als ganz normaler ❌ Build-Fehlschlag im
+# Verifikations-Report, ununterscheidbar von einem echten, im generierten Dockerfile liegenden
+# Fehler - dabei sagt eine fehlende Daemon-Verbindung nichts über die Codequalität aus, genau
+# wie ein fehlendes `docker`-Kommando selbst (siehe reason_skipped-Zweig oben in
+# check_docker_build()). Erkennt die verbreitetsten Docker-/Podman-Daemon-Konnektivitätsfehler.
+_DOCKER_DAEMON_UNAVAILABLE_RE = re.compile(
+    r"cannot connect to the docker daemon"
+    r"|(?:check if|is) the docker daemon is running"
+    r"|failed to connect to the docker api"
+    r"|error during connect.*(?:pipe|socket)"
+    r"|docker daemon is not running"
+    r"|Is the docker daemon running",
+    re.IGNORECASE,
+)
 
 # ESLint-Konfigurationsdateien, deren Vorhandensein signalisiert, dass das Projekt ESLint
 # selbst bewusst eingerichtet hat – nur DANN wird gelintet, um keine ungefragte Meinung
@@ -323,3 +342,183 @@ class PerfCheckReport:
 # api_integration-Agenten: ein fester, dokumentierter Pfad, an dem check_load_test() gezielt
 # suchen kann, statt beliebige Dateinamen im ganzen Projekt erraten zu müssen.
 LOAD_TEST_DIRNAME = "tests/load"
+
+# Realer Fund (Bestandsaufnahme cloudvault-Projekt): "Tests grün" wurde bisher mit "Feature
+# fertig" verwechselt - ein Endpunkt mit dem Kommentar "Hier würde die AES-256-GCM
+# Verschlüsselung ... erfolgen" bestand die Testsuite trotzdem, weil die Tests denselben Stub
+# prüften, den der Code tatsächlich liefert. Diese Marker fangen die verbreitetsten Deutsch-/
+# Englisch-Formulierungen für "hier fehlt die echte Implementierung" ab - bewusst eine Text-
+# Heuristik wie _CRITICAL_RE (core/review_gate.py), kein Anspruch auf Vollständigkeit. Ein
+# einzelner Treffer ist kein Beweis für unfertigen Code (z.B. ein legitimer TODO-Kommentar für
+# spätere Optimierung) - deshalb bleibt check_completeness() informativ genug dokumentiert,
+# aber blockiert verification_ok wie ein echter Testfehler (siehe CompletenessReport).
+_STUB_MARKER_RE = re.compile(
+    r"hier\s+w[üu]rde\b"
+    r"|hier\s+w[äa]re\b"
+    r"|\(simuliert\)"
+    r"|wird\s+simuliert\b"
+    r"|not\s+implemented"
+    r"|notimplementederror"
+    r"|todo\s*:?\s*implement"
+    r"|for\s+demo(nstration)?\s+purposes"
+    r"|placeholder\s+(implementation|for|value)"
+    r"|in\s+(einer\s+)?echten\s+implementierung\s+w[üu]rde",
+    re.IGNORECASE,
+)
+
+# Dateiendungen, die check_completeness() nach Stub-Markern durchsucht - dieselben Sprachen,
+# die auch der echte Lint-/SAST-Check abdeckt (Python/JS/TS immer relevant, Go/Rust/Ruby/Java
+# als verbreitete Backend-Sprachen des Frameworks, siehe agents/backend_agent.py).
+_STUB_SCAN_EXTENSIONS = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".rb", ".java"}
+
+# README-Installationsbefehle, die typischerweise auf eine konkrete Datei verweisen, die dann
+# auch wirklich existieren muss (z.B. "pip install -r requirements.txt", "psql -f schema.sql")
+# - real beobachtet: cloudvault-Projekt verwies auf eine requirements.txt, die nie generiert
+# wurde. Erfasst den Dateinamen als Gruppe 1.
+_README_FILE_REF_RE = re.compile(
+    r"(?:-r|--requirement|-f|--file)\s+([./\w-]+\.(?:txt|sql|ya?ml|json|env))",
+    re.IGNORECASE,
+)
+
+# Zweiter realer Fund im selben cloudvault-Projekt, den die reine Stub-Kommentar-Suche NICHT
+# erfasst hätte: `list_files()` gab hart `return []` zurück und `get_tags()` eine hartcodierte
+# Konstantenliste - kein "Hier würde..."-Kommentar, trotzdem keine echte Persistenz/Anbindung.
+# Erkennt Python-Routen-Handler (FastAPI/Flask-Dekoratoren für schreibende Verben, wo eine
+# fehlende Anbindung am schwersten wiegt - GET wird bewusst ausgenommen, um Health-/Status-
+# Endpunkte ohne I/O nicht fälschlich zu melden) und prüft den Funktionskörper auf mindestens
+# einen erkennbaren I/O-Aufruf (DB/Storage/HTTP-Client).
+_PY_WRITE_ROUTE_DECORATOR_RE = re.compile(
+    r"@(?:app|router|blueprint|bp|api)\.(?:post|put|patch|delete)\(",
+    re.IGNORECASE,
+)
+_PY_ROUTE_DEF_RE = re.compile(r"^\s*(?:async\s+)?def\s+(\w+)")
+_IO_CALL_MARKERS = (
+    "session", "db.", "db_", "cursor", "execute(", "query(", ".save(", "insert(",
+    "update(", "delete(", "open(", "s3", "boto3", "redis", "requests.", "httpx.",
+    "aiofiles", "read_text(", "write_text(", "read_bytes(", "write_bytes(",
+    ".find(", ".find_one(", "select(", "commit(", "flush(", "orm", "prisma",
+    "os.remove", "shutil.", "upload_fileobj",
+)
+# Zweite, eigene Markergruppe für die verbreitete In-Memory-Store-Persistenz kleiner Demo-Apps
+# (z.B. `notes_db[note_id] = note`, `monitor.checks.pop(id, None)`, `monitor.add_check(check)`)
+# - real beobachtet als Falsch-Positiv-Quelle beim ersten Entwurf dieses Checks: ein `dict` als
+# Store ist keine Stub-Implementierung, nur kein DB-/Storage-Framework. Separates Muster statt
+# Teil von _IO_CALL_MARKERS, weil es strukturell (Subscript-Zuweisung/Methodenaufruf) statt rein
+# textuell erkannt wird.
+_IO_MUTATION_RE = re.compile(
+    r"\w+\[[^\]\n]+\]\s*="  # z.B. notes_db[note_id] = ...
+    r"|\bdel\s+\w+\["  # z.B. del notes_db[note_id]
+    r"|\.pop\("
+    r"|\.add\w*\("
+    r"|\.create\w*\("
+    r"|\.save\w*\("
+    r"|\.store\w*\("
+    r"|\.append\("
+    r"|\.update\w*\("
+    r"|\.remove\("
+    r"|\.insert\w*\(",
+)
+# Endpunktnamen, bei denen eine fehlende I/O-Anbindung erwartbar/legitim ist (z.B. ein reiner
+# Logout, der nur ein Cookie löscht) - bewusst kurz gehalten, kein Anspruch auf Vollständigkeit.
+_ROUTE_IO_EXEMPT_NAME_RE = re.compile(r"health|ping|version|logout|status", re.IGNORECASE)
+
+# Dritter realer Fund: `src/components/Dashboard.js` zeigte hartcodierte Fake-Werte
+# ("1.2 GB", "42 Dateien") statt Daten über einen API-Aufruf zu laden - eine React-Komponente,
+# deren Name auf Datenanzeige hindeutet (Dashboard/List/Table/...), aber weder Props entgegen-
+# nimmt noch selbst einen API-Aufruf macht, zeigt fast immer nur Platzhalterdaten.
+_COMPONENT_FILENAME_RE = re.compile(r"(?:Dashboard|List|Table|Overview|Panel|Widget)\.(?:jsx?|tsx?)$")
+_JSX_RETURN_RE = re.compile(r"return\s*\(")
+_API_CALL_MARKER_RE = re.compile(
+    r"(?i:fetch\(|axios\.|useeffect|\.get\(|\.post\(|usequery|useswr|graphql|usecontext)"
+    # Eigener React-Hook (Konvention: "use" + Großbuchstabe, z.B. `useTaskWebSocket(...)`) -
+    # kapselt Datenanbindung (WebSocket/REST/Redux/...) fast immer selbst, auch ohne dass die
+    # Komponente die darunterliegenden Primitiven (fetch/axios/useEffect) direkt aufruft. Real
+    # beobachtet als Falsch-Positiv-Quelle beim ersten Entwurf: `useTaskWebSocket(...)`. Bewusst
+    # GROSS-/Kleinschreibungs-sensitiv (anders als die übrigen Marker oben), sonst würde z.B.
+    # `user(...)` fälschlich als Hook-Aufruf zählen.
+    r"|\buse[A-Z]\w*\(",
+)
+_COMPONENT_TAKES_PROPS_RE = re.compile(r"\(\s*\{|\(\s*props\b")
+
+# Vierter realer Fund: cloudvault importierte `fastapi`/`pydantic` (Drittanbieter-Pakete),
+# lieferte aber nie eine requirements.txt - der bisherige README-Referenz-Check erfasst das nur,
+# wenn das README diese Datei überhaupt erwähnt. Nutzt sys.stdlib_module_names (Python 3.10+)
+# statt einer gepflegten Liste, um Standardbibliotheks-Importe von echten Drittanbieter-Paketen
+# zu unterscheiden.
+_STDLIB_MODULES = frozenset(getattr(sys, "stdlib_module_names", ())) | {"__future__"}
+_MANIFEST_FILENAMES = ("requirements.txt", "pyproject.toml", "Pipfile", "setup.py", "poetry.lock")
+_PY_IMPORT_RE = re.compile(r"^\s*(?:import|from)\s+([a-zA-Z0-9_]+)", re.MULTILINE)
+
+# Fünfter realer Fund (Team-Retrospektive, taskpulse-Projekt): _missing_local_python_imports()
+# (siehe completeness.py) prüfte bisher NUR Python - dieselbe Fehlerklasse ("lokaler Import
+# verweist auf eine nie erzeugte Datei") passiert genauso in JS/TS-Frontend-Projekten, z.B.
+# `import { formatDate } from './utils/date'`, wenn `utils/date.js` nie angelegt wurde. Erkennt
+# relative ES-Modul-Importe (`import ... from './x'`, `export ... from './x'`), dynamische
+# Importe (`import('./x')`) und CommonJS-`require('./x')` - bewusst NUR relative Pfade
+# (beginnend mit "." oder "/"), damit npm-Paket-Importe ("from 'react'") nie fälschlich als
+# lokale Datei geprüft werden (dieselbe konservative Abgrenzung wie local_top_level bei Python).
+_JS_RELATIVE_ES_IMPORT_RE = re.compile(
+    r"(?:import|export)(?:[^'\";\n]*?\bfrom\s*)?\s*['\"](\.[^'\"]+)['\"]"
+)
+_JS_RELATIVE_REQUIRE_RE = re.compile(r"require\(\s*['\"](\.[^'\"]+)['\"]\s*\)")
+_JS_RELATIVE_DYNAMIC_IMPORT_RE = re.compile(r"import\(\s*['\"](\.[^'\"]+)['\"]\s*\)")
+# Endungen, die _missing_local_js_imports() als "eigenständig lauffähige JS/TS-Quelldatei"
+# behandelt - ein Import OHNE Endung (z.B. "./utils/date") wird gegen JEDE dieser Endungen
+# UND gegen "<pfad>/index.<endung>" (Verzeichnis-Import) geprüft. Ein Import MIT einer anderen
+# Endung (z.B. "./logo.svg", "./styles.css", "./data.json") wird NICHT geprüft - solche Importe
+# hängen von der jeweiligen Bundler-Konfiguration ab (Asset-/CSS-/JSON-Loader), die dieses
+# Framework nicht kennt; ein Fehlalarm dort wäre schlimmer als eine übersehene fehlende Datei.
+_JS_MODULE_EXTENSIONS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+
+# Sechster realer Fund (Team-Retrospektive, zweite Runde): _scan_write_routes_missing_io()
+# (Python, siehe oben) hat kein JS/TS-Pendant - ein Express/Fastify/Koa-Handler mit hartcodierter
+# Literal-Rückgabe statt echter Persistenz (derselbe cloudvault-Fund wie bei Python, nur im
+# Node-Backend) blieb bisher unentdeckt. Erkennt schreibende Routen-Registrierungen
+# (`app.post(...)`/`router.put(...)`/...) mit INLINE-Handler-Funktion - eine Referenz auf eine
+# benannte Funktion (`app.post('/x', createUser)`) wird bewusst NICHT geprüft, weil deren Body
+# nicht in derselben Zeile/demselben Ausdruck steht (siehe _scan_js_write_routes_missing_io()-
+# Docstring in completeness.py für die genaue Abgrenzung).
+_JS_WRITE_ROUTE_CALL_RE = re.compile(
+    r"\b(?:app|router)\.(?:post|put|patch|delete)\(\s*(['\"])([^'\"]*)\1", re.IGNORECASE,
+)
+_JS_IO_CALL_MARKERS = (
+    "session", "db.", "db_", "cursor", ".execute(", ".query(", ".save(", ".insert(",
+    ".update(", ".delete(", ".find(", ".findOne(", ".findById(", ".findByIdAndUpdate(",
+    ".findByIdAndDelete(", "prisma.", "knex(", "mongoose", "redis", "s3", "fetch(",
+    "axios.", "fs.write", "fs.append", "writeFile", "readFile", "INSERT INTO", "UPDATE ",
+    "DELETE FROM",
+)
+_JS_IO_MUTATION_RE = re.compile(
+    r"\w+\[[^\]\n]+\]\s*="  # z.B. notesById[id] = ...
+    r"|\.push\("
+    r"|\.splice\("
+    r"|\.set\("
+    r"|\.delete\("
+    r"|\.pop\("
+)
+
+
+@dataclass
+class CompletenessIssue:
+    """Ein einzelner Stub-/Platzhalter-Fund oder ein fehlender, in README referenzierter Pfad."""
+    file_path: str
+    line_number: int = 0
+    message: str = ""
+
+
+@dataclass
+class CompletenessReport:
+    """
+    Ergebnis eines Vollständigkeits-Checks: durchsucht generierten Code nach Platzhalter-/
+    Stub-Markern (z.B. "Hier würde die Verschlüsselung erfolgen") und prüft, ob im README per
+    Installationsbefehl referenzierte Dateien (requirements.txt, schema.sql, ...) tatsächlich
+    existieren. Anders als Lint/SAST rein informativ zu behandeln wäre hier falsch: ein
+    Endpunkt, der nur einen Kommentar statt echter Verschlüsselung liefert, ist keine
+    Stil-Frage, sondern eine nicht erfüllte fachliche Anforderung - deshalb blockiert ein
+    Fund hier verification_ok wie ein echter Testfehler (siehe agents/orchestrator/
+    verification.py._run_verification_loop()).
+    """
+    attempted: bool
+    passed: bool = True
+    issues: list[CompletenessIssue] = field(default_factory=list)
+    reason_skipped: str = ""

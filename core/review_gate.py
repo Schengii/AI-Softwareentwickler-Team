@@ -223,6 +223,85 @@ def find_critical_findings(content: str) -> list[str]:
     return findings
 
 
+# Realer Fund (Bestandsaufnahme eines echten Laufs, omnichat-Projekt): der security-Agent
+# identifizierte ein echtes kritisches Problem (Pydantic-v2-Migration, CORS-Härtung), hatte in
+# diesem konkreten Aufruf aber keine Schreibrechte (z.B. während einer Konsolidierungs-/
+# Delegationsrunde, siehe agents/orchestrator/department.py) und griff statt zu einem Bericht
+# mit "Kritisch"-Markierung (den _CRITICAL_RE/find_critical_findings oben erfassen würden) zu
+# `ask_human_for_clarification` mit der Frage "Wie erhalte ich Schreibrechte...?". Diese Frage
+# landete unbeantwortet in .ai_team_status.json und wurde NIE automatisch an einen
+# schreibberechtigten Agenten weitergeroutet - anders als ein normaler Governance-Fund blieb
+# das Problem so über beliebig viele Läufe hinweg ungelöst liegen. Dieses Muster (Fund
+# vorhanden, aber "ich kann nicht schreiben/habe keine Berechtigung") wird hier erkannt, damit
+# _run_permission_blocked_clarification_fix() (agents/orchestrator/verification.py) dieselbe
+# Fix-Schleife wie für echte Governance-Befunde anstoßen kann, statt auf eine nie kommende
+# menschliche Antwort auf eine rein technische Blockade zu warten.
+_PERMISSION_BLOCKED_RE = re.compile(
+    r"keine\s+schreibrechte|kann\s+(ich\s+)?(selbst\s+)?nicht\s+(schreiben|ändern|korrigieren|beheben)"
+    r"|habe\s+keine\s+(schreib|bearbeitungs)berechtigung|nicht\s+autorisiert.{0,20}(schreiben|ändern)"
+    r"|no\s+write\s+access|not\s+authorized\s+to\s+(write|edit|modify)|read.?only\s+access",
+    re.IGNORECASE,
+)
+
+
+def find_permission_blocked_questions(questions: list[str]) -> list[str]:
+    """
+    Filtert `questions` (z.B. AgentResult.clarification_questions) auf jene, die laut
+    `_PERMISSION_BLOCKED_RE` einen fehlenden Schreibzugriff als Grund für eine Rückfrage
+    nennen, statt eine echte fachliche Unklarheit. Siehe Kommentar oberhalb von
+    `_PERMISSION_BLOCKED_RE` für den realen Fund, der diese Funktion motiviert hat.
+    """
+    return [q for q in questions if q.strip() and _PERMISSION_BLOCKED_RE.search(q)]
+
+
+# Realer Fund (incidentpilot-Projekt): der tester-Agent stellte die Rückfrage "Soll ich die
+# Grundstruktur der Anwendung ... von Grund auf neu erstellen ...? Ich benötige Informationen,
+# ob ich die Backend-Struktur selbst initialisieren soll" - eine reine Ausführungs-/Scope-Frage
+# ("darf ich die fehlende Struktur selbst bauen?"), auf die es für ein autonom arbeitendes Team
+# ohne anwesenden Menschen nur eine sinnvolle Antwort gibt ("ja"). Diese Frage blieb bisher
+# unbeantwortet stehen, der Lauf endete ohne die eigentliche Kernfunktion.
+#
+# WICHTIG, bewusst als ALLOWLIST (Gegenteil von _PERMISSION_BLOCKED_RE oben) statt als "alles
+# außer Schreibrechte-Fragen" umgesetzt: eine echte fachliche Unklarheit, die nur ein Mensch
+# beantworten kann (z.B. "Welche Zahlungsanbieter sollen unterstützt werden?", siehe
+# tests/test_clarification_escalation.py), darf NIEMALS automatisch "beantwortet" werden - das
+# würde die bewusste Mid-Task-Eskalation an einen Menschen (core/agent_toolbox.py.
+# ask_human_for_clarification) unterlaufen. Nur Rückfragen, die eindeutig danach fragen, ob der
+# Agent selbst fehlende Struktur/Dateien anlegen darf, werden erfasst - alles andere bleibt
+# unangetastet offen für einen Menschen.
+# Erweiterung (Team-Retrospektive, webhookshield-Projekt): die ursprüngliche Fassung erfasste
+# nur "von Grund auf neu ERSTELLEN" und eine enge Verb-Liste nach "soll ich" - drei reale
+# Rückfragen in ein und demselben Lauf ("... neu AUFSETZEN?", "Können Sie die Dateien
+# bereitstellen ... in welchem Verzeichnis ich arbeiten soll?", "Projektverzeichnis ist komplett
+# LEER ... kann ich keine Reparatur ...") rutschten alle drei durch dieses engere Muster und
+# blieben unbeantwortet liegen, obwohl sie inhaltlich dieselbe Klasse Frage sind ("es existiert
+# kein Code - darf ich ihn selbst anlegen?"). Ergänzt um weitere Verben (aufsetzen, aufbauen,
+# reparieren, wiederherstellen, bereitstellen) und einen zweiten Zweig, der direkt auf die
+# Feststellung "Verzeichnis/Ordner ist leer/nicht vorhanden" abzielt, unabhängig vom Verb danach
+# - bleibt bewusst weiterhin eine ALLOWLIST (siehe Docstring unten), kein "alles außer
+# Schreibrechte-Fragen".
+_STRUCTURAL_SCOPE_RE = re.compile(
+    r"von\s+grund\s+auf\s+neu\s+(erstellen|aufsetzen|aufbauen|initialisieren)"
+    r"|soll\s+ich.{0,80}(selbst\s+)?(anlegen|erstellen|initialisieren|aufbauen|aufsetzen|reparieren)"
+    r"|grundstruktur.{0,60}(erstellen|anlegen|aufbauen|initialisieren|aufsetzen)"
+    r"|(projekt(verzeichnis)?|ordner|verzeichnis).{0,40}(ist|sind)?.{0,10}(komplett\s+)?leer"
+    r"|kein(e)?\s+(bestehende|vorhandene)?\s*(codebasis|app.?verzeichnis|projektstruktur)"
+    r"|(dateien|code)\s+(bereitstellen|zur\s+verf[üu]gung\s+stellen)"
+    r"|neues?\s+projekt\s+von\s+grund\s+auf\s+neu\s+aufsetzen",
+    re.IGNORECASE,
+)
+
+
+def find_structural_scope_questions(questions: list[str]) -> list[str]:
+    """
+    Filtert `questions` auf jene, die laut `_STRUCTURAL_SCOPE_RE` eindeutig danach fragen, ob
+    der Agent selbst fehlende Grundstruktur/Dateien anlegen darf - NICHT auf jede Rückfrage, die
+    keine Schreibrechte-Frage ist (siehe Kommentar oberhalb von `_STRUCTURAL_SCOPE_RE` für den
+    Sicherheitsgrund dieser bewussten Allowlist-Enge).
+    """
+    return [q for q in questions if q.strip() and _STRUCTURAL_SCOPE_RE.search(q)]
+
+
 def route_findings_to_owners(
     findings: list[tuple[str, str]], file_owners: dict[str, str],
 ) -> tuple[dict[str, list[str]], list[str]]:

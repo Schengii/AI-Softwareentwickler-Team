@@ -1,0 +1,10 @@
+fastapi
+httpx
+tenacity
+circuitbreaker
+uvicorn
+pydantic
+pydantic-settings
+pytest
+pytest-asyncio
+respx

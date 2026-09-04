@@ -1,0 +1,33 @@
+:root {
+    --bg-color: #121212;
+    --text-color: #e0e0e0;
+    --accent-color: #bb86fc;
+    --surface-color: #1e1e1e;
+}
+
+body {
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    font-family: sans-serif;
+    margin: 0;
+    padding: 20px;
+}
+
+header { border-bottom: 1px solid var(--surface-color); padding-bottom: 10px; }
+
+section { margin-top: 20px; background: var(--surface-color); padding: 15px; border-radius: 8px; }
+
+table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+th, td { padding: 10px; border: 1px solid #333; text-align: left; }
+
+input, textarea, button {
+    display: block;
+    width: 100%;
+    margin-bottom: 10px;
+    padding: 8px;
+    background: #2c2c2c;
+    color: white;
+    border: 1px solid #444;
+}
+
+button { background: var(--accent-color); color: black; cursor: pointer; border: none; }

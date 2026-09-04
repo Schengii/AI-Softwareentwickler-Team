@@ -1,4 +1,4 @@
-  # 🤖 KI-Softwareentwickler-Team (v4.3)
+  # 🤖 KI-Softwareentwickler-Team (v4.4)
 
 <div align="center">
 
@@ -7,14 +7,18 @@
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Hierarchy](https://img.shields.io/badge/Fachbereichs--Hierarchie-6_Teamleiter-blue?style=for-the-badge)
 ![Specialists](https://img.shields.io/badge/KI--Spezialisten-33_Agenten-success?style=for-the-badge)
+![API-Contract](https://img.shields.io/badge/API--Contract_Lock-FastAPI_%2B_Frontend-blue?style=for-the-badge)
+![Diff-Patcher](https://img.shields.io/badge/Diff--Patcher-70%25_Token_Saved-success?style=for-the-badge)
+![Venv-Isolation](https://img.shields.io/badge/Sandbox-.venv_Isolation-blueviolet?style=for-the-badge)
+![Obsidian-Sync](https://img.shields.io/badge/Obsidian-Zettelkasten_ADR_Sync-purple?style=for-the-badge)
 ![Resilience-Guard](https://img.shields.io/badge/Resilience--Guard-Fault--Tolerance_&_CircuitBreaker-orange?style=for-the-badge)
 ![RAG](https://img.shields.io/badge/Codebase_RAG-Gemini_Embeddings_%2B_BM25--Fallback-orange?style=for-the-badge)
 ![MCP](https://img.shields.io/badge/MCP_Server-IDE_Ready-6941C6?style=for-the-badge)
 ![Web-UI](https://img.shields.io/badge/Web--Dashboard-Dark_Mode-2ea043?style=for-the-badge)
 ![Persistent-Learning](https://img.shields.io/badge/Persistente_Selbstoptimierung-Aktiv-success?style=for-the-badge)
-![Sandbox-Validation](https://img.shields.io/badge/Sandbox_Auto--Validierung-Aktiv-blueviolet?style=for-the-badge)
 
 **Ein autonomes, hierarchisch strukturiertes KI-Team für vollständige, token-optimierte Softwareentwicklung.**  
+
 33 hochspezialisierte KI-Experten – aufgeteilt in **6 Fachbereiche mit jeweils eigenem Teamleiter**, **Resilience-Guard (Circuit Breakers, Backoff, Graceful Degradation & Chaos Tests)**, **persistentem Langzeit-Gedächtnis & automatischer Selbstoptimierung**, **Prompt-Engineering**, **WCAG 2.2 Barrierefreiheit (a11y)**, **integriertem RAG-Vektorindex**, **Model Context Protocol (MCP)**, **Web-Dashboard**, **Sandbox-Code-Validierung**, **Tavily Live-Web-Recherche**, **DeepSeek Reasoning**, **Groq Turbo Inferenz** und Workspace-Dateisystem.
 
 </div>
@@ -45,12 +49,17 @@ damit dieses README als aktuelle Funktionsübersicht schlank bleibt.
 - [🎭 Headless-Browser & Frontend-UI-Validierung](#browser-ui)
 - [☁️ Cloud-Preview-Deployments (Fly.io, Vercel, Render)](#cloud-deploy)
 - [🔍 Lokales Codebase-RAG & Semantische Suche](#codebase-rag)
+- [🤝 Contract-First API-Lock (Frontend-Backend Abgleich)](#api-contract-lock)
+- [👁️ Multimodal Visual UI-Feedback & Screenshots](#visual-feedback)
+- [✂️ Unified-Diff & Hunk-Patcher Engine](#diff-patcher)
+- [🏛️ Automatischer ADR-Zettelkasten-Sync (Obsidian)](#adr-obsidian-sync)
 - [🧪 Sandbox-Code-Validierung & Multi-Sprachen-Testing](#sandbox-validierung)
 - [🪙 Hartes Lauf-Budget (MAX_RUN_TOKENS)](#lauf-budget)
 - [🧠 Persistente KI-Selbstoptimierung & Langzeitgedächtnis](#persistente-selbstoptimierung)
 - [🎯 Die 33 Spezialisten & Fachbereiche](#die-33-spezialisten)
 - [🚀 Alle CLI-Befehle im Überblick](#cli-befehle)
 - [🧪 Automatisierte Tests](#tests)
+
 
 ---
 
@@ -514,10 +523,58 @@ Playwright ist Laufzeit-Abhängigkeit (`requirements.txt`), nicht nur Dev-Tool -
 - **CLI:** `/deploy-cloud <fly|vercel|render|railway> [projekt] [--real]` – ohne `--real` ein sicherer Dry-Run (nur Manifeste), mit `--real` ein echter Deploy-Versuch mit echter, überwachter (siehe [🤖 Backlog-Worker & Produktions-Monitoring](#selbstgesteuert)) Preview-URL.
 - **Web-Dashboard:** eigene Karte „☁️ Cloud-Deployment" (Provider- und Projekt-Auswahl, Checkbox für `--real` mit zusätzlicher Bestätigung) – ruft `POST /api/deploy-cloud` auf, Fortschritt über `GET /api/deploy-cloud-status/<projekt>` pollbar (gleiches Prinzip wie das lokale Docker-Deployment).
 
+<a id="api-contract-lock"></a>
+## 🤝 Contract-First API-Lock (Frontend-Backend Abgleich)
+
+Multi-Agenten-Teams scheitern in Fullstack-Projekten häufig daran, dass Backend- und Frontend-Agenten aneinander vorbeientwickeln (z. B. ruft das Frontend `/api/v1/notes` auf, während FastAPI nur `/api/notes` deklariert, oder Frontend nutzt `POST` statt `PUT`).
+
+Der [ContractVerifier](core/contract_verifier.py) löst dieses Problem deterministisch und statisch vor jedem Testlauf:
+- **Backend-Routen-Extraktion:** Scannt FastAPI-, Flask-, Express-Routen (`@app.get()`, `@router.post()`, `@app.route()`) und extrahiert Methoden sowie normalisierte Pfad-Parameter (`/api/items/{id}` -> `/api/items/:param`).
+- **Frontend-Call-Analyse:** Scannt alle HTML-, JS- und TS-Dateien nach realen `fetch()`- und `axios`-Aufrufen inklusive Methoden-Erkennung (multiline-fähig).
+- **Automatischer Mismatch-Alarm:** Findet ungematchte Routen (`MISSING_ENDPOINT`) und falsche HTTP-Methoden (`METHOD_MISMATCH`) und schlägt konkrete Fixes vor, bevor der Browser überhaupt gestartet wird.
+
+---
+
+<a id="visual-feedback"></a>
+## 👁️ Multimodal Visual UI-Feedback & Headless Screenshots
+
+Reine Konsolen- und 404-Checks erkennen nicht, ob ein gerendertes Frontend optisch zerschossen, überlappend oder unvollständig ist.
+
+Die erweiterte Browser-Verifikation ([BrowserVerifier](core/browser_verifier.py)) bietet:
+- **Automatische Headless-Screenshots:** Playwright rendert die UI auf einem freien Port und speichert einen hochauflösenden Screenshot (`ui_screenshot.png`) des Projekt-Frontends.
+- **Visuelle Layout-Inspektion:** Erkennt automatisch horizontale Layout-Overflows (`scrollWidth > clientWidth`), geclippte Textblöcke und nie gezeichnete `<canvas>`-Elemente.
+- **Multimodal Feedback:** Liefert Screenshots und visuelle Warnungen direkt an den `ui_ux`- und `frontend`-Agenten, damit Designfehler selbstständig behoben werden.
+
+---
+
+<a id="diff-patcher"></a>
+## ✂️ Unified-Diff & Hunk-Patcher Engine (Bis zu 70 % Token-Ersparnis)
+
+Beim Refactoring bestehender Dateien mit `/load` oder bei Bugfixes neigen LLMs dazu, komplette 400-Zeilen-Dateien neu zu schreiben – das verbraucht tausende Tokens und riskiert den Verlust bestehender Hilfsfunktionen.
+
+Das neue Modul [DiffPatcher](core/diff_patcher.py) und das Agent-Werkzeug `patch_file` ermöglichen:
+- **Unified-Diff Unterstützung:** Wendet standardmäßige Unified Diffs (`@@ -start,len +start,len @@`) mit intelligenter Hunk-Toleranz bei Zeilenverschiebungen an.
+- **SEARCH/REPLACE Blöcke:** Unterstützt präzises Hunk-Patching im Aider-/Claude-Format.
+- **Python Syntax-Schutz:** Prüft gepatchte Dateien sofort statisch per AST auf Syntaxfehler, bevor sie ins Projektverzeichnis geschrieben werden.
+
+---
+
+<a id="adr-obsidian-sync"></a>
+## 🏛️ Automatischer ADR-Zettelkasten-Sync (Obsidian)
+
+Architektur-Entscheidungen (ADRs) dokumentieren das **WARUM** eines Systems (z. B. *"SQLite statt Postgres"*, *"AES-256-GCM"*).
+
+Über [core/adr.py](core/adr.py) und die Obsidian-Integration:
+- Jede vom `architect`-Agenten getroffene Entscheidung wird nicht nur lokal unter `docs/adr/` versioniert, sondern automatisch als permanente Notiz in den Obsidian-Vault synchronisiert:  
+  `03 Resources/Permanent Notes/ADR - <Projekt> - <Titel>.md`.
+- Ausgestattet mit vollständigem Zettelkasten-YAML-Frontmatter (`type: permanent-note`, `category: adr`, `tags: [adr, architecture]`) und bidirektionalen Wikilinks zum `00_PROJEKT_GEDAECHTNIS.md`.
+- Zukünftige Projekte und Claude Code können dadurch nahtlos auf vergangene Architekturentscheidungen zugreifen.
+
 ---
 
 <a id="sandbox-validierung"></a>
 ## 🧪 Sandbox-Code-Validierung & Multi-Sprachen-Testing
+
 
 Zwei unabhängige Prüfebenen, die sich ergänzen:
 

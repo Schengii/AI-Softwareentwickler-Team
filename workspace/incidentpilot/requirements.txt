@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+pydantic
+python-jwt
+redis
+prometheus-client
+pytest
+pytest-asyncio
+pytest-cov
+httpx
+aiosqlite
+tenacity
+tenacity

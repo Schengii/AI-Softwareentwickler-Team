@@ -13,6 +13,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from config import ENABLE_AUTO_LINT_FIX
 from core.code_sandbox import CodeSandbox, ExecutionResult
 from core.verifier.models import _ESLINT_CONFIG_NAMES, _IGNORED_DIRS, _TSC_ERROR_PATTERN, LintIssue, LintReport
 
@@ -53,19 +54,66 @@ class LintMixin:
         result = CodeSandbox.run_command(["go", "vet", "./..."], cwd=self.project_dir, timeout_seconds=timeout_seconds)
         return LintReport(attempted=True, passed=result.exit_code == 0, tool="go vet")
 
+    def _is_fastapi_project(self) -> bool:
+        """Erkennt best-effort, ob dieses Projekt FastAPI nutzt - grobe Textsuche statt eines
+        vollen AST-Scans (reicht hier, siehe _lint_python-Aufrufer für den Zweck: eine bewusste
+        B008-Ausnahme, kein sicherheitskritischer Check)."""
+        requirements = self.project_dir / "requirements.txt"
+        try:
+            if requirements.exists() and "fastapi" in requirements.read_text(encoding="utf-8", errors="ignore").lower():
+                return True
+        except OSError:
+            pass
+        try:
+            for f in self.project_dir.rglob("*.py"):
+                if any(part in _IGNORED_DIRS for part in f.parts):
+                    continue
+                if "fastapi" in f.read_text(encoding="utf-8", errors="ignore").lower():
+                    return True
+        except OSError:
+            pass
+        return False
+
     def _lint_python(self, timeout_seconds: float) -> LintReport:
         if shutil.which("ruff") is None:
             return LintReport(
                 attempted=False, passed=True, tool="ruff",
                 reason_skipped="`ruff` ist auf diesem System nicht installiert/verfügbar (`pip install ruff`).",
             )
+        exclude_flags = [f"--extend-exclude={d}" for d in sorted(_IGNORED_DIRS)]
+        # Team-Optimierung (Retrospektive, mehrere FastAPI-Projekte in Folge: zeiterfassung_app,
+        # taskpulse, ...): ruffs Standardregeln enthalten B008 ("kein Funktionsaufruf in einem
+        # Default-Argument"), das bei JEDEM `def foo(db = Depends(get_db))` anschlägt - genau das
+        # von FastAPI selbst vorgeschriebene Idiom für Dependency Injection (Depends/Query/Body/
+        # Header/...), keine echte Bug-Klasse in diesem Kontext. Ohne Ausnahme meldet praktisch
+        # jedes generierte FastAPI-Backend denselben Fund erneut, ohne dass ihn ein Agent je
+        # sinnvoll "beheben" könnte (die einzige Abhilfe wäre, das FastAPI-Idiom selbst
+        # aufzugeben) - reines, wiederkehrendes Rauschen im Verifikationsprotokoll. Nur für
+        # ERKANNTE FastAPI-Projekte ausgenommen, nicht projektweit - in normalem Python-Code ist
+        # ein Funktionsaufruf als Default-Argument (einmalig bei def-Auswertung statt bei jedem
+        # Aufruf) durchaus eine reale Fehlerquelle, die B008 zu Recht meldet.
+        ignore_flags = ["--ignore=B008"] if self._is_fastapi_project() else []
+
+        # Realer Fund (Bestandsaufnahme cloudvault-Projekt): 13 ruff-Funde standen im
+        # Verifikations-Protokoll, wurden aber nie behoben - Lint ist rein informativ (siehe
+        # LintReport-Docstring), niemand war je beauftragt, sie zu fixen. `--fix` behebt NUR
+        # SICHERE Autofixes (unsortierte Imports, ungenutzte Importe, veraltete Typannotationen,
+        # …) - bewusst OHNE `--unsafe-fixes`, das kann Verhalten ändern und ist der Grund,
+        # warum ruff diese beiden Kategorien überhaupt trennt. Ein automatischer, syntaktisch
+        # zweifelsfreier Aufräumschritt VOR dem eigentlichen Check-Lauf, kein Agenten-Auftrag
+        # nötig - dieselbe Idee wie `black`/`prettier` im Pre-Commit-Hook eines echten Teams.
+        # Fehlschlag (z.B. Syntaxfehler im Projekt) ist hier kein Fehler des Checks selbst -
+        # der nachfolgende reine Check-Lauf liest ohnehin den tatsächlichen Stand danach.
+        if ENABLE_AUTO_LINT_FIX:
+            fix_command = ["ruff", "check", str(self.project_dir), "--isolated", "--fix", "--quiet"] + exclude_flags + ignore_flags
+            CodeSandbox.run_command(fix_command, cwd=self.project_dir, timeout_seconds=timeout_seconds)
+
         # --isolated: ignoriert JEDE gefundene Konfigurationsdatei (auch die eigene
         # ruff.toml des Frameworks, falls das Projekt innerhalb des Repos liegt) und nutzt
         # ruffs neutrale Standardregeln – die eigenen, für den Framework-Code kuratierten
         # Regeln (z. B. E501-Ausnahme für deutschsprachige Docstrings) sollen einem
         # beliebigen generierten Projekt nicht aufgezwungen werden.
-        command = ["ruff", "check", str(self.project_dir), "--isolated", "--output-format=json"]
-        command += [f"--extend-exclude={d}" for d in sorted(_IGNORED_DIRS)]
+        command = ["ruff", "check", str(self.project_dir), "--isolated", "--output-format=json"] + exclude_flags + ignore_flags
         result = CodeSandbox.run_command(command, cwd=self.project_dir, timeout_seconds=timeout_seconds)
         return self._parse_ruff_result(result)
 

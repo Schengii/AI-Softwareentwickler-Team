@@ -48,6 +48,79 @@ MAX_FULL_LOG_BYTES = 5 * 1024 * 1024
 # Injektion in format_context_for_agents).
 MAX_FAILURE_DETAIL_CHARS = 500
 
+# Wie viele Lint-Fund-Signaturen ("tool:datei:regel") pro Lauf in der Historie gespeichert
+# werden - Grundlage für has_repeated_lint_finding() unten. Realer Fund (Team-Retrospektive,
+# omnichat-Projekt): derselbe Lint-Fund (ruff F841) blieb über DREI aufeinanderfolgende volle
+# Läufe unverändert bestehen, weil Lint bewusst rein informativ ist (siehe
+# core/verifier/lint.py) und deshalb NIE verification_ok beeinflusst - has_repeated_failure()
+# griff dadurch nie, egal wie oft sich derselbe Lint-Fund wiederholte. 20 reicht für einen
+# aussagekräftigen Fingerabdruck, ohne die Historie-Datei unnötig aufzublähen.
+MAX_LINT_SIGNATURE_ITEMS = 20
+
+# Team-Optimierung (Retrospektive 2026-09-03): ein Projekt (mockforge) wurde in
+# PROJECT_STATE.md als "✅ Vollständig verifiziert & einsatzbereit" ausgewiesen, obwohl
+# agents/orchestrator/verification.py für genau dieses Projekt kurz zuvor ein "blocked"-Ticket
+# zu einem NICHT behobenen kritischen Befund eröffnet hatte (die reale Testsuite bestand zwar,
+# das kritische Architektur-/Sicherheitsproblem aus dem Governance-Review blieb aber im Code
+# bestehen) - verification_ok (nur "laufen die Tests?") und der offene kritische Befund
+# (core/backlog_store.py-Ticket) waren bisher komplett entkoppelt. _open_blocker_ticket()
+# schließt diese Lücke: der Status-Badge berücksichtigt jetzt BEIDES.
+_BLOCKER_TICKET_PREFIXES = ("unresolved-governance-critical-", "unresolved-permission-blocked-")
+
+
+def _open_blocker_ticket(project_dir: str, verification_ok: bool = False):
+    """Gibt das offene ("blocked") Governance-/Verifikations-Ticket dieses Projekts zurück,
+    falls eines existiert - None sonst. Ein Lookup-Fehler (z.B. eine kaputte
+    memory/backlog.json) darf die Checkpoint-Erstellung nie zum Absturz bringen, dieselbe
+    defensive Haltung wie bei _prior_run_context() in agents/orchestrator/verification.py.
+
+    Team-Optimierung (Retrospektive, zeiterfassung_app-Lauf): ein Ticket wird bisher NUR über
+    agents/orchestrator/verification.py._run_governance_fix_loop() geschlossen - dort ausschließlich
+    durch einen erneuten, expliziten Recheck derselben Governance-Rollen (code_reviewer/security/
+    compliance). Wird das zugrunde liegende Problem stattdessen auf einem anderen Weg behoben
+    (z.B. ein direkt beauftragter Folge-Chat, der die fehlenden Dateien anlegt, ohne dass die
+    Governance-Rollen erneut liefen), bleibt das Ticket ewig "blocked" im Backlog stehen, obwohl
+    das Projekt auf der Platte längst repariert ist - PROJECT_STATE.md zeigte dadurch real
+    "🔴 Kritischer Befund ungelöst", obwohl `app/routers/` und `app/dependencies.py` bereits
+    existierten. Bei jedem Checkpoint mit BESTANDENER Testsuite wird deshalb zusätzlich der
+    günstige, rein statische Vollständigkeits-Check (core/verifier/completeness.py, Millisekunden,
+    kein LLM-Aufruf) als Ground-Truth herangezogen: findet er keine Stub-/Missing-Import-/Manifest-
+    Funde mehr, gilt das Ticket als eigenständig gelöst und wird automatisch geschlossen, statt der
+    reinen Ticket-Statuszeile blind zu vertrauen."""
+    try:
+        from core.backlog_store import list_tickets, upsert_ticket
+    except Exception:
+        return None
+    slug = Path(project_dir).name
+    try:
+        ticket = next(
+            (t for t in list_tickets(status="blocked")
+             if t.project_slug == slug and t.id.startswith(_BLOCKER_TICKET_PREFIXES)),
+            None,
+        )
+    except Exception:
+        return None
+    if ticket is None:
+        return None
+
+    if verification_ok:
+        try:
+            from core.verifier import ProjectVerifier
+            report = ProjectVerifier(project_dir).check_completeness()
+            if report.attempted and report.passed:
+                upsert_ticket(
+                    ticket_id=ticket.id, title=ticket.title, source=ticket.source,
+                    status="done", project_slug=ticket.project_slug,
+                    detail="Eigenständig behoben (statischer Vollständigkeits-Check findet keine "
+                           "offenen Funde mehr) - automatisch beim nächsten Checkpoint erkannt und "
+                           "geschlossen, ohne einen erneuten Governance-Recheck abzuwarten.",
+                )
+                return None
+        except Exception:
+            pass
+
+    return ticket
+
 
 def _status_path(project_dir: str) -> Path:
     return Path(project_dir) / STATUS_FILENAME
@@ -158,8 +231,15 @@ def generate_project_state_md(
     p_path = Path(project_dir)
     project_name = p_path.name or "Projekt"
 
-    # Status-Badge
-    if verification_ok:
+    blocker_ticket = _open_blocker_ticket(project_dir, verification_ok=verification_ok)
+
+    # Status-Badge. Ein offenes Governance-/Verifikations-Ticket überschreibt JEDEN anderen
+    # Status inkl. einer bestandenen Testsuite (verification_ok=True) - ein kritischer,
+    # nachweislich ungelöster Befund macht ein Projekt nicht "einsatzbereit", nur weil die
+    # Tests grün sind (siehe Modul-Kommentar zu _BLOCKER_TICKET_PREFIXES oben).
+    if blocker_ticket:
+        status_label = "🔴 Kritischer Befund ungelöst – NICHT einsatzbereit (Backlog-Ticket offen)"
+    elif verification_ok:
         status_label = "✅ Vollständig verifiziert & einsatzbereit"
     elif cancelled:
         status_label = "⏹️ Lauf manuell pausiert"
@@ -205,6 +285,20 @@ def generate_project_state_md(
         f"- **Tests bestanden:** {'Ja ✅' if verification_ok else 'Ausstehend / Fehlgeschlagen ⚠️'}",
     ]
 
+    if blocker_ticket:
+        lines += [
+            "",
+            "## 🔴 Offener kritischer Befund (Backlog-Ticket)",
+            f"- **Ticket:** `{blocker_ticket.id}` (Status: `{blocker_ticket.status}`, "
+            f"bisherige Wiederholungsversuche: {blocker_ticket.retries})",
+            "- **Befund:**",
+            f"  > {blocker_ticket.detail[:400] or '(kein Detailtext hinterlegt)'}",
+            "- Dieses Projekt gilt trotz einer eventuell bestandenen Testsuite NICHT als "
+            "einsatzbereit, solange dieses Ticket offen ist. `python main.py --work-backlog` "
+            "greift es automatisch erneut auf (begrenzte Anzahl Versuche, siehe "
+            "config.MAX_GOVERNANCE_TICKET_RETRIES).",
+        ]
+
     lines += [
         "",
         "## 🎯 Nächste empfohlene Schritte (Next Actions)",
@@ -213,6 +307,9 @@ def generate_project_state_md(
     if next_steps:
         for i, step in enumerate(next_steps, start=1):
             lines.append(f"{i}. {step}")
+    elif blocker_ticket:
+        lines.append(f"1. Offenen kritischen Befund aus Ticket `{blocker_ticket.id}` beheben (siehe oben).")
+        lines.append("2. Danach `/run-tests` bzw. einen neuen Lauf anstoßen, um das Ticket zu schließen.")
     else:
         if not verification_ok:
             lines.append("1. Testsuite ausführen und offene Fehler beheben (`/run-tests`).")
@@ -235,6 +332,7 @@ def save_project_checkpoint(
     next_steps: list[str] | None = None,
     verification_summary: str = "",
     clarification_questions: list[str] | None = None,
+    lint_signature: list[str] | None = None,
 ) -> None:
     """Speichert sowohl .ai_team_status.json als auch die lesbare PROJECT_STATE.md im Projektordner."""
     # 1. Update .ai_team_status.json
@@ -247,6 +345,7 @@ def save_project_checkpoint(
         cancelled=cancelled,
         verification_summary=verification_summary,
         clarification_questions=clarification_questions,
+        lint_signature=lint_signature,
     )
 
     # 2. Update PROJECT_STATE.md
@@ -275,6 +374,7 @@ def record_run(
     cancelled: bool = False,
     verification_summary: str = "",
     clarification_questions: list[str] | None = None,
+    lint_signature: list[str] | None = None,
 ) -> None:
     """Fügt diesen Lauf vorne in die Historie ein (neueste zuerst), gedeckelt auf
     MAX_HISTORY_ENTRIES."""
@@ -287,6 +387,19 @@ def record_run(
         "cancelled": cancelled,
         "files_written_count": files_written_count,
     }
+    if lint_signature:
+        # Sortiert (nicht Erfassungsreihenfolge) - has_repeated_lint_finding() vergleicht
+        # zwei Läufe als Mengen-Gleichheit, die Reihenfolge, in der ruff Funde ausgibt, ist
+        # dafür irrelevant und soll einen echten Vergleich nicht durch Zufall verfälschen.
+        #
+        # Team-Optimierung (Retrospektive 2026-09-04): `lint_signature` enthält von
+        # agents/orchestrator/verification.py EINEN Eintrag JE FUND-INSTANZ, nicht je
+        # distinkter Regel/Datei-Kombination - dieselbe Regel auf mehreren Zeilen derselben
+        # Datei (real beobachtet: 6x "ruff:tests/test_invoices.py:DTZ001") erzeugte bisher
+        # 6 identische Einträge. Ohne vorherige Deduplizierung konnte das den
+        # MAX_LINT_SIGNATURE_ITEMS-Schnitt dominieren und andere, distinkte Funde verdrängen -
+        # jetzt wird zuerst dedupliziert, dann sortiert/geschnitten.
+        entry["lint_signature"] = sorted(set(lint_signature))[:MAX_LINT_SIGNATURE_ITEMS]
     if verification_summary.strip():
         # Bei Fehlschlag als failure_detail (siehe format_context_for_agents-Eskalation unten),
         # bei Erfolg als success_detail - Punkt 5 einer Team-Retrospektive: bisher wurde ein
@@ -405,6 +518,16 @@ def format_context_for_agents(project_dir: str, max_entries: int = 3) -> str:
     return "\n\n".join(sections)
 
 
+def has_open_blocker_ticket(project_dir: str, verification_ok: bool = False) -> bool:
+    """Öffentlicher Wrapper um _open_blocker_ticket() für Aufrufer außerhalb dieses Moduls
+    (agents/orchestrator/__init__.py nutzt dies, um den allerletzten Lauf-Status im Chat
+    ebenfalls konsistent mit dem PROJECT_STATE.md-Badge zu halten, statt "✅ Fertig!" trotz
+    eines offenen kritischen Befunds anzuzeigen). `verification_ok` durchreichen, wenn die
+    Testsuite dieses Laufs bestanden hat - ermöglicht dieselbe automatische Ticket-Schließung
+    per statischem Vollständigkeits-Check wie generate_project_state_md() oben."""
+    return _open_blocker_ticket(project_dir, verification_ok=verification_ok) is not None
+
+
 def has_repeated_failure(project_dir: str, streak: int = 2) -> bool:
     """True, wenn die letzten `streak` Läufe an diesem Projekt ALLE nicht verifiziert waren -
     dasselbe Kriterium, das format_context_for_agents() für die Eskalations-Warnung nutzt,
@@ -423,5 +546,24 @@ def has_repeated_failure(project_dir: str, streak: int = 2) -> bool:
         not e.get("verification_ok") and not e.get("budget_aborted") and not e.get("cancelled")
         for e in recent
     )
+
+
+def has_repeated_lint_finding(project_dir: str, streak: int = 2) -> bool:
+    """True, wenn die letzten `streak` Läufe ALLE denselben, nicht-leeren Satz an Lint-Fund-
+    Signaturen ("tool:datei:regel") aufweisen - unabhängig von verification_ok, budget_aborted
+    oder cancelled, denn ein Lint-Fund ist bewusst rein informativ (siehe core/verifier/lint.py)
+    und beeinflusst diese Felder NIE. has_repeated_failure() oben griff deshalb nie, egal wie
+    oft sich derselbe Lint-Fund wiederholte (real beobachtet: omnichat, dasselbe ruff-F841 über
+    drei volle Läufe unverändert). `ruff check --fix` behebt inzwischen triviale Fälle bereits
+    vor dem Report (core/verifier/lint.py) - dieser Check fängt die verbleibenden, nicht
+    automatisch behebbaren Funde ab, die sonst weiterhin unbegrenzt wiederkehren könnten."""
+    recent = read_status(project_dir)[:streak]
+    if len(recent) != streak:
+        return False
+    first_signature = recent[0].get("lint_signature")
+    if not first_signature:
+        return False
+    first_set = set(first_signature)
+    return all(set(e.get("lint_signature") or []) == first_set for e in recent[1:])
 
 

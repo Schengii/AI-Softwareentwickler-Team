@@ -101,7 +101,7 @@ class BaseAgent(ABC):
 
             if use_tools:
                 toolbox = AgentToolbox(project_dir=task.project_dir, agent_id=self.agent_id, read_only=task.tools_read_only)
-                effective_system_prompt = self._augment_with_tool_instructions(effective_system_prompt)
+                effective_system_prompt = self._augment_with_tool_instructions(effective_system_prompt, read_only=task.tools_read_only)
                 response, prompt_tokens, completion_tokens = await self._run_agentic_loop(
                     task=task, toolbox=toolbox, system_prompt=effective_system_prompt,
                 )
@@ -338,7 +338,7 @@ class BaseAgent(ABC):
         assert response is not None
         return response, total_prompt_tokens, total_completion_tokens
 
-    def _augment_with_tool_instructions(self, system_prompt: str) -> str:
+    def _augment_with_tool_instructions(self, system_prompt: str, read_only: bool = False) -> str:
         # Realer Fund aus einem echten Lauf: der architect-Agent wird vom Hauptagenten bei
         # kleineren, gut umrissenen Aufgaben oft gar nicht erst eingeplant (siehe
         # core/task_manager.py DECOMPOSE_SYSTEM_PROMPT) - selbst wenn die Aufgabe explizit
@@ -354,6 +354,50 @@ class BaseAgent(ABC):
             "ZUSÄTZLICH über das Werkzeug `record_architecture_decision` – nicht nur in "
             "deiner Zusammenfassung, sonst ist sie beim nächsten Lauf an diesem Projekt "
             "bereits wieder vergessen."
+            if self.agent_id in CODE_WRITING_AGENT_IDS else ""
+        )
+        # Realer Fund (omnichat-Projekt): der security-Agent identifizierte ein echtes
+        # kritisches Problem, hatte aber in diesem Aufruf keine Schreibrechte (`read_only`)
+        # und fragte per `ask_human_for_clarification` "Wie erhalte ich Schreibrechte...?" -
+        # eine Frage, die nie beantwortet wurde, obwohl core/review_gate.py.
+        # find_critical_findings() genau für diesen Fall bereits eine automatische Fix-
+        # Schleife bereitstellt (siehe agents/orchestrator/verification.py.
+        # _run_governance_fix_loop). Der Agent kannte diesen Mechanismus schlicht nicht und
+        # griff zur einzig ihm bekannten Eskalation. Diese Zeile macht den fehlenden
+        # Schreibzugriff für BEIDE Fälle explizit: nutzbar (schreib es einfach) oder wirklich
+        # nicht nutzbar (melde es normal, kein `ask_human_for_clarification` dafür).
+        write_access_note = (
+            "\n\n⚠️ WICHTIG: Du hast in dieser Aufgabe KEINEN Schreibzugriff (nur `list_files`/`read_file`/"
+            "`search_code`). Ein gefundenes Problem, das Code-Änderungen braucht, behebst du NICHT selbst und "
+            "fragst dafür AUCH NICHT über `ask_human_for_clarification` nach Schreibrechten - das ist keine "
+            "echte Unklarheit, sondern eine bewusste Rollentrennung. Melde es stattdessen wie gewohnt in deinem "
+            "Bericht mit klarer Schweregrad-Markierung (z.B. \"Kritisch\"); ein separater, automatischer "
+            "Mechanismus liest kritische Funde aus deinem Bericht und beauftragt gezielt den zuständigen "
+            "schreibberechtigten Agenten mit der Korrektur."
+            if read_only else
+            "\n\n⚠️ WICHTIG: Du hast in dieser Aufgabe vollen Schreibzugriff (`write_file`/`edit_file`). Findest "
+            "du ein konkretes, technisch behebbares Problem im Code, behebe es DIREKT selbst über diese "
+            "Werkzeuge - frage NICHT per `ask_human_for_clarification` nach Schreibrechten, die du bereits hast."
+        )
+        # Team-Retrospektive (Verbesserungsvorschlag "Fehlende Struktur selbst anlegen als
+        # Standard-Policy"): dieselbe Rückfrage ("Ich sehe kein `app/`-Verzeichnis / das
+        # Projektverzeichnis ist leer - soll ich von Grund auf neu aufsetzen?") trat in
+        # mehreren unabhängigen realen Läufen auf (incidentpilot, omnichat, webhookshield),
+        # jedes Mal NACHDEM der Agent schon eine Aufgabe angenommen hatte. Bisher gab es dafür
+        # nur eine REAKTIVE Korrektur NACH dem Lauf (agents/orchestrator/verification.py.
+        # _run_scope_clarification_autofix) - die kostet jedes Mal eine komplette zusätzliche
+        # Fix-Runde (Tokens + Zeit), bevor überhaupt losgebaut wird. Dieser Hinweis macht
+        # dieselbe Annahme jetzt PROAKTIV zum Standardverhalten, nur für code-schreibende
+        # Rollen (nicht z.B. copywriter/i18n, für die eine leere Struktur keine sinnvolle
+        # Handlungsanweisung ist).
+        empty_scope_note = (
+            "\n\n⚠️ WICHTIG: Findest du nicht die erwartete Projektstruktur vor (z.B. kein `app/`-Verzeichnis, "
+            "leeres Projektverzeichnis, referenzierte Dateien fehlen komplett), obwohl der Auftrag von "
+            "bestehendem Code ausgeht ('repariere', 'erweitere', 'teste X') - frage NICHT per "
+            "`ask_human_for_clarification` nach, ob du sie neu anlegen darfst. Es ist kein Mensch anwesend, der "
+            "das in Echtzeit beantworten könnte. Lege die fehlende Grundstruktur selbst an und erledige die "
+            "Aufgabe darauf vollständig; dokumentiere die getroffene Annahme kurz (z.B. als Kommentar oder "
+            "README-Abschnitt)."
             if self.agent_id in CODE_WRITING_AGENT_IDS else ""
         )
         return f"""{system_prompt}
@@ -375,7 +419,8 @@ Triffst du auf eine ECHTE, für die Aufgabe entscheidende Unklarheit, die nur ei
 (nicht: eine übliche technische Entscheidung, die du selbst treffen kannst) – nutze `ask_human_for_clarification`,
 statt zu raten und trotzdem etwas möglicherweise Falsches auszuliefern. Ein erfahrener Senior-Entwickler fragt bei
 echter Mehrdeutigkeit nach, statt zu spekulieren. Setze deine Arbeit danach so weit wie möglich fort und fasse in
-deiner finalen Antwort ehrlich zusammen, was bereits erledigt ist und was durch die Rückfrage offen bleibt."""
+deiner finalen Antwort ehrlich zusammen, was bereits erledigt ist und was durch die Rückfrage offen bleibt.
+{write_access_note}{empty_scope_note}"""
 
     def _build_prompt(self, task: AgentTask) -> str:
         """Baut den finalen Prompt token-effizient zusammen mit strikten Sparsamkeits-Regeln."""

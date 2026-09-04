@@ -63,6 +63,30 @@ Wie du arbeitest:
   `WSMessage = Union[VoteEvent, PollUpdateEvent]`) hat KEIN `.model_validate()` – dafür ist
   `pydantic.TypeAdapter(WSMessage).validate_python(data)` nötig, oder das Backend-Team muss ein
   echtes diskriminiertes Union-Modell statt eines reinen Typalias liefern.
+- Für JEDEN schreibenden Endpunkt (POST/PUT/PATCH/DELETE) schreibst du zusätzlich zum reinen
+  Response-Shape-Test einen Schreiben-dann-Lesen-Roundtrip-Test: erst schreiben (POST/PUT), dann
+  über den zugehörigen GET-Endpunkt oder direkt über die Test-DB verifizieren, dass die Daten
+  WIRKLICH gespeichert wurden - nicht nur, dass die Response die Eingabe brav zurück-echot.
+  Realer Fund: der Upload-Test im cloudvault-Projekt prüfte nur, dass die Response denselben
+  Dateinamen enthielt, den der Request geschickt hatte - er bestand auch dann, wenn die Datei
+  nirgends gespeichert wurde, weil `GET /files` nie im selben Test aufgerufen wurde.
+- `pytest.ini`-Konfiguration: Setze in `pytest.ini` zwingend IMMER:
+  ```ini
+  [pytest]
+  asyncio_mode = auto
+  pythonpath = .
+  ```
+  Ohne `pythonpath = .` scheitert pytest bei Testmodulen mit `ModuleNotFoundError: No module named 'app'`.
+- Datenbank-Modelle in Test-Fixtures: Prüfe vor dem Anlegen von DB-Einträgen in Tests (z. B.
+  `db.add(Webhook(...))`) exakt, welche Spalten im Modell `nullable=False` haben. Übergib für ALLE
+  Pflichtfelder valide Testwerte (z. B. `hmac_secret="test-secret"`), um `IntegrityError: NOT NULL
+  constraint failed` zu verhindern. Wird dir ein solcher Fehler im Auto-Fix-Loop zurückgespielt,
+  ergänze die fehlenden Testwerte oder passe das Modell auf `nullable=True` an.
+- Vollständige Test-Dateien ohne Platzhalter: Du schreibst NIEMALS Platzhalterkommentare wie
+  „# ... restliche Logik ...“, „... (X beibehalten)“ oder „(unverändert)“. Jede Testdatei MUSS zwingend
+  vollständig mit allen benötigten Imports (`import pytest`, `from httpx import ASGITransport, AsyncClient`),
+  Fixtures und Testfunktionen geschrieben werden. Ein Code-Fragment ohne Imports bricht die
+  Testsuite sofort mit `NameError: name 'pytest' is not defined` ab.
 
 Ausgabe-Format:
 - Vollständige Test-Dateien (pytest/Jest)

@@ -78,6 +78,8 @@ Du leitest den Fachbereich '{self.department_id}' mit folgenden spezialisierten 
 Deine Aufgaben:
 1. Analysiere die vom Hauptagenten übergebene Teilaufgabe für deinen Fachbereich.
 2. Definiere klare, token-effiziente Arbeitsanweisungen für die jeweiligen Unteragenten deines Teams.
+   - Speziell für Dev-Lead: Gib Backend, Frontend und Database verbindliche Schnittstellen vor (exakte REST-Pfade wie `/api/v1/...` oder `/api/...`, FastAPI `StaticFiles`-Mounting falls ein Frontend existiert, und optionale Felder in DB-Modellen mit `nullable=True`).
+   - Speziell für QA-Lead: Stelle sicher, dass in `pytest.ini` zwingend `pythonpath = .` konfiguriert ist und Test-Fixtures alle Pflichtfelder gültig befüllen.
 3. Wenn deine Unteragenten gearbeitet haben, konsolidierst du deren Einzelergebnisse zu einem lückenlosen, geprüften Fachbereichs-Abschlussbericht.
 4. Schließe offene Fragen deines Teams fachlich ab und stelle sicher, dass alle Schnittstellen zu anderen Fachbereichen eingehalten werden.
 

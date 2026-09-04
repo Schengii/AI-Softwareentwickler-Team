@@ -28,26 +28,26 @@ class EnvironmentMixin:
             return venv_dir / "Scripts" / "python.exe"
         return venv_dir / "bin" / "python"
 
-    def _requirements_file(self) -> Path | None:
+    def _requirements_files(self) -> list[Path]:
+        files = []
         for name in ("requirements.txt", "requirements-dev.txt"):
             candidate = self.project_dir / name
             if candidate.exists() and candidate.stat().st_size > 0:
-                return candidate
-        return None
+                files.append(candidate)
+        return files
 
     def ensure_environment(self, timeout_seconds: float = 120.0) -> str:
         """
         Installiert echte Abhängigkeiten für JEDEN im Projekt gefundenen Stack:
-        - Python: legt bei vorhandener requirements.txt eine isolierte venv an und
-          installiert per pip.
+        - Python: legt bei vorhandener requirements.txt/requirements-dev.txt eine isolierte venv an und
+          installiert per pip (sowohl Produktiv- als auch Test-Abhängigkeiten).
         - Node: für jedes gefundene package.json mit "test"-Skript per `npm ci`
           (bei vorhandener package-lock.json, deterministisch) oder `npm install`.
         Gibt eine kombinierte Statuszeile zurück (leer, wenn nichts zu tun war, z.B.
         ein reines Textprojekt ohne requirements.txt/package.json).
         """
         logs: list[str] = []
-        req_file = self._requirements_file()
-        if req_file:
+        for req_file in self._requirements_files():
             logs.append(self._ensure_python_environment(req_file, timeout_seconds))
         for node_dir in self._find_node_projects():
             logs.append(self._ensure_node_environment(node_dir, timeout_seconds))

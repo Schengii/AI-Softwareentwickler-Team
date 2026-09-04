@@ -3,7 +3,9 @@ config.py – Zentrale Konfiguration für das KI-Softwareentwickler-Team (30 Spe
 Multi-LLM & Tool Support: Gemini, Groq, DeepSeek, OpenRouter, Tavily, Hugging Face & Claude
 """
 
+import json
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -46,7 +48,7 @@ ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 # großzügigem Rate-Limit – und erst danach auf die Gemini-Standard-Stufe aus, statt
 # sofort auf das schwächste verfügbare Modell abzurutschen.
 GEMINI_LITE_MODEL: str = os.getenv("GEMINI_LITE_MODEL", "gemini-3.1-flash-lite")
-GEMINI_STANDARD_MODEL: str = os.getenv("GEMINI_STANDARD_MODEL", "gemini-3.6-flash")
+GEMINI_STANDARD_MODEL: str = os.getenv("GEMINI_STANDARD_MODEL", "gemini-3.8-flash")
 GEMINI_HEAVY_MODEL: str = os.getenv("GEMINI_HEAVY_MODEL", "gemini-pro-latest")
 
 CLAUDE_LITE_MODEL: str = os.getenv("CLAUDE_LITE_MODEL", "claude-haiku-4-5-20251001")
@@ -169,8 +171,31 @@ def get_model_for_agent(agent_id: str) -> str:
     if agent_id in DEPARTMENT_GOVERNANCE_AGENTS and DEPARTMENT_MODELS["governance"]:
         return DEPARTMENT_MODELS["governance"]
 
-    # 3. Standard-Zuordnung aus AGENT_MODELS oder Fallback
+    # 3. Datenbasierte Selbstoptimierung (opt-in, siehe ENABLE_AUTO_MODEL_TUNING oben) - NUR
+    # wenn weder ein Rollen- noch ein Fachbereichs-Override explizit gesetzt ist, greift eine
+    # zuvor von core/optimization_advisor.py empirisch ermittelte, bessere Modellzuweisung.
+    if ENABLE_AUTO_MODEL_TUNING:
+        auto_tuned = _read_auto_tuned_model(agent_id)
+        if auto_tuned:
+            return auto_tuned
+
+    # 4. Standard-Zuordnung aus AGENT_MODELS oder Fallback
     return AGENT_MODELS.get(agent_id, DEFAULT_AGENT_MODEL)
+
+
+def _read_auto_tuned_model(agent_id: str) -> str:
+    """Liest eine zuvor automatisch vorgeschlagene Modellzuweisung für `agent_id` aus
+    AUTO_TUNED_MODELS_FILE - leerer String, falls keine existiert oder die Datei fehlt/beschädigt
+    ist (nie ein Absturz nur wegen dieser rein optionalen Optimierung)."""
+    path = Path(AUTO_TUNED_MODELS_FILE)
+    if not path.exists():
+        return ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    entry = data.get(agent_id) if isinstance(data, dict) else None
+    return entry.get("model", "") if isinstance(entry, dict) else ""
 
 
 # ──────────────────────────────────────────
@@ -230,6 +255,27 @@ ENABLE_LOAD_TEST_CHECK: bool = os.getenv("ENABLE_LOAD_TEST_CHECK", "true").lower
 LOAD_TEST_DURATION_SECONDS: float = float(os.getenv("LOAD_TEST_DURATION_SECONDS", "5"))
 LOAD_TEST_TIMEOUT_SECONDS: float = float(os.getenv("LOAD_TEST_TIMEOUT_SECONDS", "60"))
 
+# Realer Fund (Bestandsaufnahme cloudvault-Projekt, siehe core/verifier/completeness.py): eine
+# Testsuite kann vollständig grün sein, obwohl der geprüfte Code selbst nur ein Platzhalter ist
+# (z.B. "Hier würde die AES-256-GCM Verschlüsselung ... erfolgen" statt echter Verschlüsselung)
+# - keiner der bisherigen Checks erkennt das, weil sie alle nur prüfen, ob vorhandener Code
+# FUNKTIONIERT, nicht ob er tatsächlich das tut, was die Aufgabe verlangt. ENABLE_COMPLETENESS_
+# CHECK=true (Standard) lässt den Orchestrator nach Stub-/Platzhalter-Markern im generierten
+# Code UND nach im README referenzierten, aber fehlenden Dateien (z.B. requirements.txt) suchen
+# und blockiert verification_ok bei einem Fund - wie ein echter Testfehler, nicht nur informativ
+# wie ein Lint-Fund, weil ein Stub-Kommentar eine nicht erfüllte fachliche Anforderung ist.
+ENABLE_COMPLETENESS_CHECK: bool = os.getenv("ENABLE_COMPLETENESS_CHECK", "true").lower() in ("true", "1", "yes")
+
+# Realer Fund (Bestandsaufnahme cloudvault-Projekt): 13 ruff-Lint-Funde standen im
+# Verifikations-Protokoll, wurden aber nie behoben - Lint ist rein informativ (siehe
+# core/verifier/lint.py.LintReport-Docstring), kein Agent war je beauftragt, sie zu fixen.
+# ENABLE_AUTO_LINT_FIX=true (Standard) lässt core/verifier/lint.py._lint_python() vor dem
+# eigentlichen Check-Lauf `ruff check --fix` (NUR sichere Autofixes, kein `--unsafe-fixes`)
+# ausführen - unsortierte/ungenutzte Importe, veraltete Typannotationen u.Ä. verschwinden so
+# automatisch, ohne einen Agenten-Auftrag zu brauchen, analog zu `black`/`prettier` im
+# Pre-Commit-Hook eines echten Teams.
+ENABLE_AUTO_LINT_FIX: bool = os.getenv("ENABLE_AUTO_LINT_FIX", "true").lower() in ("true", "1", "yes")
+
 # ──────────────────────────────────────────
 # Governance-Kritisch-Fix-Schleife (core/review_gate.py, agents/orchestrator.py._run_governance_fix_loop)
 # ──────────────────────────────────────────
@@ -249,7 +295,25 @@ ENABLE_GOVERNANCE_FIX_LOOP: bool = os.getenv("ENABLE_GOVERNANCE_FIX_LOOP", "true
 # qualitative Review-Aussage selbst). Ein höherer Wert ruft die ursprünglich meldenden
 # Review-Rollen nach jedem Fix-Versuch frisch erneut auf, um zu prüfen, ob noch kritische
 # Befunde bestehen - kostet entsprechend mehr LLM-Aufrufe pro zusätzlicher Runde.
-MAX_REVIEW_ITERATIONS: int = int(os.getenv("MAX_REVIEW_ITERATIONS", "1"))
+# Auf 2 angehoben (vormals 1): ein echter Lauf (omnichat-Projekt) zeigte, dass ein einziger
+# Fix-Dispatch kritische Sicherheits-/Technical-Debt-Funde (Pydantic-v2-Migration, CORS-
+# Härtung) nicht zuverlässig vollständig behebt - der Testverifikations-Loop direkt darunter
+# bekommt bereits standardmäßig 2 Versuche (MAX_VERIFICATION_ITERATIONS), Governance-Funde
+# hatten strukturell schlechtere Chancen auf echte Behebung als ein simpler Testfehler, obwohl
+# ein "Kritisch" im Review potenziell schwerwiegender ist als ein rotes Unit-Test.
+MAX_REVIEW_ITERATIONS: int = int(os.getenv("MAX_REVIEW_ITERATIONS", "2"))
+
+# MAX_TASK_TOKENS: harte Obergrenze für den Token-Verbrauch EINER EINZELNEN Agenten-Teilaufgabe
+# (nicht des gesamten Laufs - siehe MAX_RUN_TOKENS in core/token_guard.py). Bisher gab es nur
+# ein Lauf-weites Budget: ein einzelner hängender/ausufernder Fix-Task (z.B. eine
+# Governance-Fix-Schleife, die an derselben Datei wiederholt viele Tool-Iterationen braucht)
+# konnte dadurch unbemerkt einen unverhältnismäßig großen Teil des GESAMTEN Lauf-Budgets
+# verbrauchen, bevor spätere, u.U. wichtigere Fachbereiche überhaupt an der Reihe waren.
+# 0 = deaktiviert (kein Task-Limit, nur das bestehende Lauf-Budget gilt). Absichtlich nur als
+# Warnsignal in den Fix-Schleifen verdrahtet (agents/orchestrator/verification.py), nicht als
+# harter Abbruch mitten in einem laufenden LLM-Aufruf (technisch nicht sauber möglich) - stoppt
+# aber zuverlässig WEITERE Fix-Versuche für denselben Befund in derselben Schleife.
+MAX_TASK_TOKENS: int = int(os.getenv("MAX_TASK_TOKENS", "40000"))
 
 # ──────────────────────────────────────────
 # Echtes lokales Deployment: Docker Compose (core/deployment.py, manuell per /deploy ausgelöst)
@@ -289,6 +353,18 @@ ENABLE_TASK_COMPLEXITY_SCALING: bool = os.getenv("ENABLE_TASK_COMPLEXITY_SCALING
 # Verifikations-Fixversuche sowie Retrospektive/Selbstoptimierung übersprungen ausliefern
 # zu lassen (die bis dahin erarbeiteten Ergebnisse werden trotzdem synthetisiert).
 MAX_RUN_TOKENS: int = int(os.getenv("MAX_RUN_TOKENS", "0"))
+
+# Team-Retrospektive (Verbesserungsvorschlag "Budget-Reserve für Verifikation"): mehrere reale
+# Läufe (u.a. incidentpilot) erschöpften MAX_RUN_TOKENS bereits in der Code-Generierungsphase
+# ("🚫 Lauf-Budget erreicht – Verifikation nach Versuch 0 abgebrochen") - der Teil, der Tests
+# tatsächlich ausführt und echte Fehler zurückspielt (also Autonomie überhaupt erst beweist),
+# bekam dadurch nie eine Chance zu laufen. VERIFICATION_TOKEN_RESERVE_RATIO reserviert einen
+# Anteil von MAX_RUN_TOKENS exklusiv für die Verifikations-/Fix-Phasen: die Generierungsphase
+# (agents/orchestrator/department.py._run_department_hierarchy) bricht bereits bei
+# MAX_RUN_TOKENS * (1 - RESERVE) ab, während die Verifikations-/Governance-Fix-Schleifen
+# (agents/orchestrator/verification.py) weiterhin gegen das volle MAX_RUN_TOKENS prüfen. 0.0
+# deaktiviert die Reserve (früheres Verhalten, gesamtes Budget für Generierung verfügbar).
+VERIFICATION_TOKEN_RESERVE_RATIO: float = float(os.getenv("VERIFICATION_TOKEN_RESERVE_RATIO", "0.15"))
 
 # ──────────────────────────────────────────
 # Plan-Freigabe-Gate (Vorschau + Bestätigung VOR Tokenverbrauch)
@@ -400,6 +476,17 @@ BACKLOG_WORKER_MAX_PER_CYCLE: int = int(os.getenv("BACKLOG_WORKER_MAX_PER_CYCLE"
 # könnte - ein erreichtes WIP-Limit blockiert den autonomen Worker deshalb hart, bis laufende
 # Arbeit abgeschlossen ist. 0 (Standard) = deaktiviert, dieselbe Konvention wie oben.
 BACKLOG_WORKER_WIP_LIMIT: int = int(os.getenv("BACKLOG_WORKER_WIP_LIMIT", "0"))
+# Team-Optimierung (Retrospektive 2026-09-03): ein von der Governance-/Verifikations-Fix-
+# Schleife (agents/orchestrator/verification.py) eröffnetes "blocked"-Ticket zu einem
+# ungelösten kritischen Befund (z.B. unresolved-governance-critical-<slug>) blieb bisher für
+# immer liegen - core/backlog_worker.py griff nur "todo"-Tickets aus den Quellen "cli"/
+# "dashboard" auf. Ein solches Ticket wird jetzt selbst als eigenständig aufgreifbare Arbeit
+# behandelt (siehe core/backlog_worker.py._governance_retry_pool()), aber begrenzt auf
+# MAX_GOVERNANCE_TICKET_RETRIES automatische Wiederholungsversuche - ein Befund, den das Team
+# nachweislich wiederholt nicht lösen kann, soll nicht endlos Budget in identischen
+# Fehlversuchen verbrennen, sondern nach Erreichen der Grenze sichtbar für eine menschliche
+# Prüfung liegen bleiben (retries auf dem Ticket selbst, siehe core/backlog_store.py.Ticket).
+MAX_GOVERNANCE_TICKET_RETRIES: int = int(os.getenv("MAX_GOVERNANCE_TICKET_RETRIES", "2"))
 
 # ──────────────────────────────────────────
 # Produktions-Monitoring nach dem Deploy (core/production_monitor.py)
@@ -465,6 +552,50 @@ BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))
 PROMPTS_DIR: str = os.path.join(BASE_DIR, "prompts")
 MEMORY_DIR: str = os.path.join(BASE_DIR, "memory")
 WORKSPACE_DIR: str = os.path.join(BASE_DIR, "workspace")
+
+# ──────────────────────────────────────────
+# Datenbasierte Selbstoptimierung (core/optimization_advisor.py)
+# ──────────────────────────────────────────
+# Team-Optimierung (Retrospektive 2026-09-04): core/optimization_advisor.py.analyze() erkennt
+# bereits nach jedem Lauf datenbasiert, ob ein Agent mit einem ANDEREN Modell empirisch
+# erfolgreicher wäre - das Ergebnis landete bisher AUSSCHLIESSLICH als Textabschnitt im
+# Abschlussbericht, nie angewendet, sofern nicht ein Mensch ihn liest und manuell .env/config.py
+# anpasst. Bei autonomen Läufen (--work-backlog, Cron) sieht das niemand. ENABLE_AUTO_MODEL_
+# TUNING schließt diesen Kreislauf: bewusst standardmäßig AUS (Opt-in), damit das Verhalten nie
+# überraschend einsetzt. Ist es aktiv, schreibt core/optimization_advisor.py.apply_auto_tuning()
+# empirisch bessere Modellzuweisungen in AUTO_TUNED_MODELS_FILE - eine reine, jederzeit
+# inspizier-/löschbare JSON-Datei (git-ignored wie jede memory/*.json), NIE eine automatische
+# Änderung an dieser Datei selbst. get_model_for_agent() liest sie unten als NIEDRIGSTE
+# Prioritätsstufe - ein expliziter .env-Rollen- oder Fachbereichs-Override (Schritt 1/2 dort)
+# gewinnt IMMER, ein Mensch, der bewusst ein Modell festlegt, wird also nie überstimmt.
+ENABLE_AUTO_MODEL_TUNING: bool = os.getenv("ENABLE_AUTO_MODEL_TUNING", "false").strip().lower() in ("true", "1", "yes")
+AUTO_TUNED_MODELS_FILE: str = os.path.join(MEMORY_DIR, "auto_tuned_models.json")
+
+# ──────────────────────────────────────────
+# Obsidian Vault & Gedächtnis-Synchronisation (core/obsidian_sync.py)
+# ──────────────────────────────────────────
+OBSIDIAN_VAULT_PATH: str = os.getenv("OBSIDIAN_VAULT_PATH", r"C:\Users\sche-\Desktop\Obsidian")
+OBSIDIAN_TARGET_DIR: str = os.getenv("OBSIDIAN_TARGET_DIR", r"02 Areas\Lernprojekte\AI-Softwareentwickler-Team")
+OBSIDIAN_AUTO_SYNC: bool = os.getenv("OBSIDIAN_AUTO_SYNC", "true").strip().lower() in ("true", "1", "yes")
+OBSIDIAN_SYNC_FILES: list[str] = [
+    f.strip()
+    for f in os.getenv(
+        # Realer Fund: ".env" stand hier bisher als Klartext-Sync-Ziel drin - core/
+        # obsidian_sync.py kopiert Dateien unredigiert, dadurch landeten ECHTE, aktive
+        # API-Keys (Gemini/Groq/DeepSeek/Tavily/OpenRouter/HuggingFace) im Vault
+        # (".env" + generiertes ".env.md"), außerhalb des durch dieses Repo kontrollierten
+        # .gitignore-Schutzes - ein Obsidian-Vault wird typischerweise über einen eigenen
+        # Sync-Dienst (Obsidian Sync, iCloud, Dropbox, Plugins) verteilt, der von diesem
+        # Projekt nicht kontrolliert wird. ".env.example" enthält dieselbe Struktur/
+        # Dokumentation für das Gedächtnis, aber nie echte Secrets (nur leere Platzhalter).
+        "OBSIDIAN_SYNC_FILES",
+        ".env.example,README.md,ZWISCHENSTAND_KI_TEAM_PROJEKT.md,.gitignore,ARCHITECTURE.md,CHANGELOG.md,CLAUDE.md,.claudeignore",
+    ).split(",")
+    if f.strip()
+]
+
+
+
 
 # ──────────────────────────────────────────
 # Validierung

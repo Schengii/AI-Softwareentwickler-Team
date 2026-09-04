@@ -1,0 +1,7 @@
+# Ergänzung für Build-Artefakte und lokale Umgebungen
+/frontend/dist/
+/app/static/
+.env
+.pytest_cache/
+__pycache__/
+*.py[cod]

@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -92,6 +93,36 @@ class CodeSandbox:
         return {k: v for k, v in os.environ.items() if not _SENSITIVE_ENV_NAME_PATTERN.search(k)}
 
     @staticmethod
+    def get_project_venv(project_dir: Path | str | None) -> Path | None:
+        """Sucht nach einer existierenden virtuellen Umgebung im Projektverzeichnis."""
+        if not project_dir:
+            return None
+        pdir = Path(project_dir).resolve()
+        for venv_name in (".venv", ".ai_team_venv", "venv"):
+            candidate = pdir / venv_name
+            if candidate.is_dir():
+                return candidate
+        return None
+
+    @staticmethod
+    def ensure_project_venv(project_dir: Path | str, timeout_seconds: float = 60.0) -> tuple[bool, str]:
+        """Erstellt eine isolierte virtuelle Umgebung im Projektverzeichnis, falls nicht vorhanden."""
+        pdir = Path(project_dir).resolve()
+        target_venv = pdir / ".venv"
+        if target_venv.exists():
+            return True, f"Virtuelle Umgebung existiert bereits: {target_venv}"
+
+        res = CodeSandbox.run_command(
+            [sys.executable, "-m", "venv", str(target_venv)],
+            cwd=pdir,
+            timeout_seconds=timeout_seconds,
+            restrict_env=True,
+        )
+        if res.exit_code == 0:
+            return True, f"Virtuelle Umgebung erfolgreich erstellt: {target_venv}"
+        return False, f"Fehler beim Erstellen der venv: {res.stderr or res.stdout}"
+
+    @staticmethod
     def run_command(
         command: list[str],
         cwd: Path | str | None = None,
@@ -101,35 +132,47 @@ class CodeSandbox:
         """
         Führt ein Terminal-Kommando (z. B. pytest oder python -m unittest) sicher aus.
 
-        restrict_env=True (Standard): der Kindprozess bekommt NICHT die volle Prozessumgebung
-        dieses Frameworks (siehe _restricted_env()) – keiner der bisherigen Aufrufer (Tests,
-        pip/venv-Installation, npm/node) braucht echte API-Keys, um zu funktionieren. Nur für
-        einen bewussten Sonderfall auf False setzen, der die volle Umgebung wirklich benötigt.
-
-        Realer Fund: `npm`/`npx`/`yarn` & Co. sind unter Windows keine echten .exe, sondern
-        .cmd-Batch-Wrapper – `subprocess.run(["npm", ...], shell=False)` scheitert dort IMMER
-        mit `WinError 2` (Datei nicht gefunden), selbst wenn `npm` im PATH steht, weil
-        CreateProcess ohne Shell keine .cmd/.bat-Dateien direkt ausführen kann. Löst command[0]
-        deshalb vorab über shutil.which() auf DEN TATSÄCHLICHEN, vollständigen Pfad (inkl.
-        Endung) auf – unter Linux/macOS bereits ein regulärer Pfad zur echten Binärdatei, daher
-        ein no-op. Kein Treffer (Kommando existiert schlicht nicht) fällt auf den rohen Namen
-        zurück, damit die Fehlermeldung weiterhin "Datei nicht gefunden" statt eines stillen
-        Verhaltensunterschieds bleibt.
+        Priorisiert automatisch projekt-lokale virtuelle Umgebungen (.venv, .ai_team_venv),
+        sodass pip-Installationen und Testläufe das Host-System nicht verunreinigen.
         """
         import time
-        # Bugfix (Ultrareview-Fund): vorher ein Nested-Ternary mit unerreichbarem "else None"-Zweig
-        # (im äußeren else ist restrict_env bereits False, also war "if not restrict_env" dort
-        # immer True) - das täuschte einen nie eintretenden env=None-Fallback vor. Vor diesem PR
-        # wurde bei restrict_env=False bewusst env=None übergeben (natürliche Vererbung der
-        # Elternumgebung); jetzt wird IMMER ein echtes dict gebaut, damit der PYTHONPATH-Prefix
-        # unten in beiden Modi greift.
+
         env = CodeSandbox._restricted_env() if restrict_env else os.environ.copy()
+        venv_path = CodeSandbox.get_project_venv(cwd)
+
+        # Falls ein lokales .venv existiert: PATH prependen und VIRTUAL_ENV setzen
+        if venv_path and cwd:
+            scripts_dir = venv_path / ("Scripts" if sys.platform == "win32" else "bin")
+            if scripts_dir.exists():
+                existing_path = env.get("PATH", "")
+                env["PATH"] = f"{scripts_dir}{os.pathsep}{existing_path}"
+                env["VIRTUAL_ENV"] = str(venv_path)
+
         if cwd:
             cwd_str = str(Path(cwd).resolve())
             existing_pp = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = f"{cwd_str}{os.pathsep}{existing_pp}" if existing_pp else cwd_str
-        resolved_command = [shutil.which(command[0]) or command[0], *command[1:]] if command else command
+
+        # Befehls-Auflösung: Prüfe zuerst, ob der Befehl in scripts_dir des Projekt-Venvs existiert
+        resolved_bin = None
+        if command:
+            cmd_name = command[0]
+            if venv_path:
+                scripts_dir = venv_path / ("Scripts" if sys.platform == "win32" else "bin")
+                candidates = [scripts_dir / cmd_name]
+                if sys.platform == "win32":
+                    candidates.extend([scripts_dir / f"{cmd_name}.exe", scripts_dir / f"{cmd_name}.cmd", scripts_dir / f"{cmd_name}.bat"])
+                for cand in candidates:
+                    if cand.is_file():
+                        resolved_bin = str(cand)
+                        break
+
+            if not resolved_bin:
+                resolved_bin = shutil.which(cmd_name) or cmd_name
+
+        resolved_command = [resolved_bin, *command[1:]] if command and resolved_bin else command
         start_time = time.monotonic()
+
 
         try:
             process = subprocess.run(

@@ -44,6 +44,7 @@ unverändert nutzbar – siehe Re-Exports unten.
 
 import asyncio
 import time
+import uuid
 from collections.abc import Callable
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -94,11 +95,13 @@ from config import (
     AGENT_MAX_TOOL_ITERATIONS,
     AUTO_SAVE_WORKSPACE,
     BASE_DIR,
+    HEAVY_MODEL,
     ORCHESTRATOR_MODEL,
     PLAN_CONFIRMATION_MIN_TASKS,
 )
 from core.adr import format_adr_summary_for_context
-from core.backlog_store import upsert_ticket
+from core.backlog_store import get_ticket, upsert_ticket
+from core.decision_log import log_decision
 from core.design_system import format_design_system_for_agents
 from core.git_isolation import (
     GitIsolationError,
@@ -106,20 +109,25 @@ from core.git_isolation import (
     find_git_root,
     has_uncommitted_changes,
 )
+from core.message_bus import AgentTask
 from core.notifier import notify_external
 from core.optimization_advisor import analyze as analyze_optimization_potential
+from core.optimization_advisor import apply_auto_tuning
 from core.optimization_advisor import format_report_for_humans as format_optimization_report
 from core.project_constitution import format_constitution_for_agents, get_max_project_tokens
 from core.project_status import (
     MAX_FAILURE_DETAIL_CHARS,
     count_consecutive_failed_runs,
     format_context_for_agents,
+    has_open_blocker_ticket,
     has_repeated_failure,
+    has_repeated_lint_finding,
     read_status,
     save_project_checkpoint,
 )
 from core.result_aggregator import ResultAggregator
 from core.task_manager import TaskManager
+from core.team_memory import format_team_lessons_for_agents, record_lesson
 from core.token_guard import token_guard
 from core.workspace import WorkspaceManager
 from memory.conversation_history import ConversationHistory
@@ -147,7 +155,16 @@ class Orchestrator(
     Hauptagent, der die 6 Fachbereichs-Teamleiter und deren 33 Spezialisten koordiniert.
     """
 
-    def __init__(self):
+    def __init__(self, escalate_models: bool = False):
+        """
+        escalate_models: Team-Optimierung (Retrospektive 2026-09-04) - core/backlog_worker.py
+        setzt dies ab dem ZWEITEN automatischen Versuch eines Governance-/Verifikations-Retry-
+        Tickets (core/backlog_worker.py._governance_retry_pool()). Realer Fund: fast jedes der
+        zuletzt bearbeiteten Projekte (sentinelproxy, taskpulse, webhook_shield, mockforge,
+        zeiterfassung_app) blieb nach den standardmäßigen 2 Fixversuchen (MAX_VERIFICATION_
+        ITERATIONS) rot, der automatische Backlog-Retry griff DANACH mit exakt demselben
+        Agenten/Modell erneut an - ohne jede Eskalation. Siehe _escalate_agent_models().
+        """
         # 1. Fachbereichs-Teamleiter (Department Leads)
         self._dept_leads: dict[str, DepartmentLeadAgent] = {
             dept_id: DepartmentLeadAgent(dept_id) for dept_id in DEPARTMENT_DEFINITIONS
@@ -200,6 +217,8 @@ class Orchestrator(
             "readme":            ReadmeAgent(),
             "github":            GitHubAgent(),
         }
+        if escalate_models:
+            self._escalate_agent_models()
 
         self._task_manager = TaskManager(model_name=ORCHESTRATOR_MODEL)
         self._result_aggregator = ResultAggregator(model_name=ORCHESTRATOR_MODEL)
@@ -256,6 +275,23 @@ class Orchestrator(
         # top über den bestehenden _tokens_used_since()-Mechanismus.
         self._project_token_budget: int = 0
         self._project_tokens_before_run: int = 0
+
+    def _escalate_agent_models(self) -> None:
+        """
+        Stuft jeden Fachagenten, der nicht ohnehin bereits auf HEAVY_MODEL läuft, für DIESEN
+        Lauf auf HEAVY_MODEL hoch (siehe __init__.escalate_models-Docstring für den vollen
+        Kontext). Best-effort: ein einzelner Agent, dessen Modell-Erstellung fehlschlägt (z.B.
+        fehlender API-Key für den Zielprovider), behält sein bisheriges Modell statt den ganzen
+        Lauf zu verhindern - dieselbe Großzügigkeit wie beim Fallback in core/llm_factory.py.
+        """
+        from core.llm_factory import LLMFactory
+        for agent in self._agents.values():
+            if agent._llm.model_name == HEAVY_MODEL:
+                continue
+            try:
+                agent._llm = LLMFactory.create_for_model(HEAVY_MODEL)
+            except Exception:
+                continue
 
     async def process(
         self,
@@ -471,6 +507,41 @@ class Orchestrator(
                 f"Verifikations-Bericht lesen – wiederholt sich derselbe Fehler?"
             )
 
+            # Härteres Gate als der reine Hinweis oben (Punkt 1 einer Team-Retrospektive): eine
+            # Prompt-Warnung allein verhindert nicht zuverlässig, dass derselbe Fachbereich mit
+            # demselben Ansatz einfach nochmal loslegt. Ab 2 Fehlschlägen in Folge wird architect
+            # deshalb DETERMINISTISCH (kein LLM-Entscheid, kein Verlass darauf, dass das Modell
+            # die Prompt-Warnung tatsächlich befolgt) als zusätzliche, erste Teilaufgabe
+            # eingeplant - NUR falls architect nicht ohnehin schon Teil des Plans ist. architect
+            # bekommt den zuletzt dokumentierten Fehler direkt mit, statt ihn erst selbst suchen
+            # zu müssen.
+            if agent_tasks and "architect" not in {t.agent_id for t in agent_tasks}:
+                last_detail = next(
+                    (e.get("failure_detail") for e in read_status(project_dir) if e.get("failure_detail")), ""
+                )
+                notify(
+                    "  🧭 [bold yellow]architect wird zusätzlich eingeplant[/bold yellow] – nach wiederholtem "
+                    "Scheitern reicht ein weiterer Versuch derselben Fachbereiche nicht: architect prüft "
+                    "zuerst gezielt die Ursache, bevor der Rest des Teams erneut denselben Ansatz wiederholt."
+                )
+                agent_tasks.insert(0, AgentTask(
+                    task_id=str(uuid.uuid4())[:8],
+                    agent_id="architect",
+                    description=(
+                        "Wiederholtes Scheitern an diesem Projekt (mindestens 2 Läufe in Folge ohne "
+                        "bestandene Verifikation). Analysiere GEZIELT die Ursache des letzten "
+                        "Fehlschlags und liefere eine konkrete technische Root-Cause-Einschätzung samt "
+                        "empfohlener Architektur-/Vorgehensänderung, BEVOR die übrigen Fachbereiche "
+                        "erneut denselben Ansatz wiederholen."
+                        + (f"\n\nLetzter dokumentierter Fehler:\n```\n{last_detail}\n```" if last_detail else "")
+                    ),
+                    context=user_request[:1500],
+                ))
+                log_decision(
+                    project_dir, "architect_forced_reescalation",
+                    f"{consecutive_failures} Läufe in Folge ohne bestandene Verifikation – architect zusätzlich eingeplant.",
+                )
+
         # Pro-Projekt-Kostenbudget (siehe __init__): MAX_RUN_TOKENS begrenzt nur DIESEN einen
         # Lauf - ein Projekt mit vielen aufeinanderfolgenden Läufen (z.B. für einen externen
         # Auftraggeber mit festem Kostenrahmen) hatte bisher kein Limit über ALLE Läufe hinweg.
@@ -499,6 +570,14 @@ class Orchestrator(
         # dass der letzte Lauf am Lauf-Budget abgebrochen wurde, statt das nur aus den rohen
         # Quelldateien zu erraten. Leer für ein brandneues Projekt (kein unnötiger Prompt-Text).
         project_history_context = format_context_for_agents(project_dir)
+
+        # Team-weites, projektübergreifendes Lessons-Learned-Gedächtnis (core/team_memory.py,
+        # Punkt 3 einer Team-Retrospektive): anders als project_history_context oben (nur DIESES
+        # Projekts Lauf-Historie) fasst dies Muster aus Backlog-Ticket-würdigen Vorfällen AN
+        # BELIEBIGEN Projekten zusammen - ein neues, brandaktuelles Projekt profitiert so direkt
+        # von Fehlern, die frühere, völlig andere Projekte bereits gemacht haben. Leer, solange
+        # noch keine Lektion je aufgezeichnet wurde (kein unnötiger Prompt-Text im Normalfall).
+        team_lessons_context = format_team_lessons_for_agents(prioritize_slug=project_slug)
 
         # Projekt-Konstitution (core/project_constitution.py): feste Tech-Stack-Präferenzen,
         # die der Nutzer einmal per /constitution festlegt (Sprache, Framework, Test-Framework,
@@ -533,6 +612,8 @@ class Orchestrator(
                 t.context += f"\n\n{design_system_context}"
             if project_history_context:
                 t.context += f"\n\n{project_history_context}"
+            if team_lessons_context:
+                t.context += f"\n\n{team_lessons_context}"
             if adr_context:
                 t.context += f"\n\n{adr_context}"
 
@@ -600,6 +681,8 @@ class Orchestrator(
         # bereits während der Fachbereichs-Phasen überschrittenem Lauf-Budget ODER manuellem
         # Abbruch wird sie komplett übersprungen, wie die anschließende Verifikation auch.
         governance_fix_summary = ""
+        permission_blocked_fix_summary = ""
+        scope_clarification_summary = ""
         if budget_aborted or manually_cancelled:
             governance_fix_summary = ""
         else:
@@ -611,6 +694,41 @@ class Orchestrator(
                 notify=notify,
                 cancel_requested=cancel_requested,
             )
+
+            # Rückfragen, in denen ein Agent NICHT ein echtes fachliches Problem hat, sondern
+            # nur fehlende Schreibrechte meldete (siehe core/review_gate.py.
+            # find_permission_blocked_questions für den realen Fund, der das motiviert hat) -
+            # direkt nach der Governance-Fix-Schleife, aus demselben Grund: VOR der echten
+            # Testverifikation, damit die Testsuite den reparierten Stand prüft.
+            if not (budget_aborted or manually_cancelled):
+                results, permission_blocked_fix_summary, budget_aborted, manually_cancelled = (
+                    await self._run_permission_blocked_clarification_fix(
+                        project_dir=project_dir,
+                        all_results=results,
+                        file_owners=file_owners,
+                        run_start_tokens=run_start_tokens,
+                        notify=notify,
+                        cancel_requested=cancel_requested,
+                    )
+                )
+
+            # Verbleibende, ECHTE fachliche Rückfragen (keine Schreibrechte-Frage, siehe oben) -
+            # kein Mensch ist anwesend, um sie zu beantworten, also entscheidet der fragende
+            # Agent selbst mit der naheliegendsten Annahme, statt den Lauf unbeantwortet enden
+            # zu lassen (realer Fund: incidentpilot-Projekt, siehe
+            # _run_scope_clarification_autofix). Aus demselben Grund direkt danach: vor der
+            # echten Testverifikation, damit die Testsuite den vervollständigten Stand prüft.
+            if not (budget_aborted or manually_cancelled):
+                results, scope_clarification_summary, budget_aborted, manually_cancelled = (
+                    await self._run_scope_clarification_autofix(
+                        project_dir=project_dir,
+                        all_results=results,
+                        file_owners=file_owners,
+                        run_start_tokens=run_start_tokens,
+                        notify=notify,
+                        cancel_requested=cancel_requested,
+                    )
+                )
 
         # Echte Verifikation: Abhängigkeiten installieren, Tests wirklich ausführen,
         # bei Fehlschlägen gezielt den verantwortlichen Agenten korrigieren lassen.
@@ -628,6 +746,7 @@ class Orchestrator(
                 f"- 🚫 Übersprungen: {reason}."
             )
             verification_ok = False
+            log_decision(project_dir, "budget_or_cancel_aborted", reason)
         else:
             results, verification_summary, budget_aborted, manually_cancelled, verification_ok = await self._run_verification_loop(
                 project_dir=project_dir,
@@ -682,6 +801,64 @@ class Orchestrator(
                     )
                 except Exception as e:
                     notify(f"⚠️ [dim yellow]Ticket für wiederkehrenden Fehler konnte nicht angelegt werden: {e}[/dim yellow]")
+                # Projektübergreifendes Lessons-Learned-Gedächtnis (Punkt 3 einer Team-
+                # Retrospektive, core/team_memory.py): derselbe Moment, der ein Backlog-Ticket
+                # auslöst, ist ein starkes Signal für ein Muster, das auch AN ANDEREN Projekten
+                # wieder auftreten kann - best-effort, darf den Lauf nie zum Absturz bringen.
+                record_lesson(
+                    project_slug=self.last_project_slug, category="recurring_failure",
+                    detail=verification_summary.strip()[:300],
+                )
+                log_decision(project_dir, "recurring_failure_ticket_opened", verification_summary.strip()[:300])
+
+        # Analog zur "wiederholtes Scheitern"-Eskalation oben, aber für Lint-Funde: ein
+        # Lint-Fund ist bewusst rein informativ und setzt verification_ok NIE zurück (siehe
+        # core/verifier/lint.py) - has_repeated_failure() griff deshalb nie, egal wie oft
+        # sich derselbe Lint-Fund wiederholte. Realer Fund (Team-Retrospektive, omnichat-
+        # Projekt): dasselbe ruff-F841 blieb über drei volle Läufe unverändert bestehen.
+        # `ruff check --fix` behebt inzwischen triviale Fälle bereits vor dem Report - dieser
+        # Check fängt die verbleibenden, nicht automatisch behebbaren Funde ab.
+        lint_signature = getattr(self, "last_lint_signature", [])
+        lint_ticket_id = f"recurring-lint-{self.last_project_slug}" if self.last_project_slug else None
+        if lint_signature and has_repeated_lint_finding(project_dir):
+            notify(
+                "🎨 [bold yellow]Wiederkehrender Lint-Fund erkannt:[/bold yellow] Derselbe Lint-Fund "
+                "besteht unverändert über mehrere Läufe. Ein Backlog-Ticket für menschliche Prüfung "
+                "wurde eröffnet."
+            )
+            try:
+                # Team-Optimierung (Retrospektive 2026-09-04): lint_signature trägt einen
+                # Eintrag JE FUND-INSTANZ (siehe agents/orchestrator/verification.py) - ohne
+                # Deduplizierung listete ein Ticket dieselbe Regel/Datei-Kombination real
+                # mehrfach identisch auf (z.B. 6x "ruff:tests/test_invoices.py:DTZ001") statt
+                # bis zu 10 tatsächlich UNTERSCHIEDLICHE Funde zu zeigen.
+                upsert_ticket(
+                    ticket_id=lint_ticket_id,
+                    title=f"Wiederkehrender Lint-Fund: {self.last_project_slug}",
+                    source="orchestrator", status="blocked", project_slug=self.last_project_slug,
+                    detail="; ".join(sorted(set(lint_signature))[:10]),
+                )
+            except Exception as e:
+                notify(f"⚠️ [dim yellow]Ticket für wiederkehrenden Lint-Fund konnte nicht angelegt werden: {e}[/dim yellow]")
+        elif lint_ticket_id and not lint_signature and getattr(self, "last_lint_attempted", False):
+            # Team-Optimierung (Retrospektive, 2026-09-04): anders als das "recurring-failure-"-
+            # Pendant oben (siehe _run_verification_loop weiter unten: had_prior_test_ticket schließt
+            # es automatisch, sobald die Testsuite wieder grün ist) wurde ein "recurring-lint-"-Ticket
+            # bisher NIE geschlossen, selbst wenn der Lint-Fund in einem späteren Lauf behoben wurde -
+            # es blieb für immer "blocked" im Backlog stehen. Dieser Lauf hatte KEINEN einzigen
+            # Lint-Fund (lint_signature leer) - ein zuvor offenes Ticket für dasselbe Projekt gilt
+            # damit als erledigt.
+            try:
+                existing_lint_ticket = get_ticket(lint_ticket_id)
+                if existing_lint_ticket is not None and existing_lint_ticket.status == "blocked":
+                    upsert_ticket(
+                        ticket_id=lint_ticket_id, title=existing_lint_ticket.title,
+                        source="orchestrator", status="done", project_slug=self.last_project_slug,
+                        detail="In einem späteren Lauf behoben - keine Lint-Funde mehr.",
+                    )
+                    notify("  🎫 [dim]Ticket für wiederkehrenden Lint-Fund als gelöst geschlossen.[/dim]")
+            except Exception as e:
+                notify(f"⚠️ [dim yellow]Ticket für wiederkehrenden Lint-Fund konnte nicht geschlossen werden: {e}[/dim yellow]")
 
         # Projekt-Hygiene: automatisch regenerierbare Caches (__pycache__, .pytest_cache, …),
         # die die echte Testausführung gerade erzeugt hat, physisch entfernen. Bewusst OHNE
@@ -775,10 +952,28 @@ class Orchestrator(
         # Datenbasierte Selbstoptimierungs-Vorschläge (core/optimization_advisor.py) - rein
         # deterministische Auswertung der BEREITS BESTEHENDEN, projektübergreifenden
         # Lauf-Historie (kein zusätzlicher LLM-Aufruf nötig, anders als retrospective/
-        # agent_trainer direkt darunter). Bewusst NUR ein Vorschlag, keine automatische
+        # agent_trainer direkt darunter). Standardmäßig NUR ein Vorschlag, keine automatische
         # Änderung an config.py (siehe Modul-Docstring) - leer für die Mehrheit der Läufe ohne
         # statistisch aussagekräftigen Befund, kein unnötiger Abschnitt im Bericht.
-        optimization_section = format_optimization_report(analyze_optimization_potential())
+        #
+        # Team-Optimierung (Retrospektive 2026-09-04): apply_auto_tuning() schließt den Kreislauf
+        # für Nutzer, die config.ENABLE_AUTO_MODEL_TUNING explizit aktiviert haben - ohne diesen
+        # Aufruf blieb selbst eine glasklare Empfehlung wirkungslos, solange niemand den
+        # Abschlussbericht liest (z.B. bei autonomen --work-backlog/Cron-Läufen). No-Op und []
+        # zurück, solange das Flag aus ist (Standard) - dieselbe Zeile läuft für JEDEN Lauf.
+        optimization_report = analyze_optimization_potential()
+        auto_tuned_agents = apply_auto_tuning(optimization_report)
+        optimization_section = format_optimization_report(optimization_report)
+        if auto_tuned_agents:
+            notify(
+                f"  🔧 [bold cyan]Selbstoptimierung angewendet:[/bold cyan] {', '.join(auto_tuned_agents)} "
+                "auf empirisch besseres Modell umgestellt (memory/auto_tuned_models.json)."
+            )
+            optimization_section += (
+                f"\n\n✅ **Automatisch angewendet** (ENABLE_AUTO_MODEL_TUNING aktiv): "
+                f"{', '.join(auto_tuned_agents)} laufen ab dem nächsten Aufruf mit dem "
+                "empfohlenen Modell."
+            )
 
         final_output = (
             f"{final_solution}\n\n"
@@ -787,6 +982,8 @@ class Orchestrator(
             + (f"{clarification_section}\n\n---\n\n" if clarification_section else "")
             + (f"{collision_section}\n\n---\n\n" if collision_section else "")
             + (f"{governance_fix_summary}\n\n---\n\n" if governance_fix_summary else "")
+            + (f"{permission_blocked_fix_summary}\n\n---\n\n" if permission_blocked_fix_summary else "")
+            + (f"{scope_clarification_summary}\n\n---\n\n" if scope_clarification_summary else "")
             + f"{verification_summary}\n\n"
             f"---\n\n"
             f"{retro_result.content if retro_result else ''}\n\n"
@@ -828,6 +1025,7 @@ class Orchestrator(
                 files_written=all_written_files,
                 verification_summary=verification_summary,
                 clarification_questions=self.last_clarification_questions,
+                lint_signature=getattr(self, "last_lint_signature", []),
             )
         except Exception as e:
             notify(f"⚠️ [dim yellow]Projekt-Historie / State-Checkpoint (save_project_checkpoint) konnte nicht aktualisiert werden: {e}[/dim yellow]")
@@ -870,10 +1068,28 @@ class Orchestrator(
         # des Verifikations-Protokolls weiter oben. manually_cancelled bekommt einen eigenen,
         # dritten Status statt in "NICHT verifiziert" mitzulaufen – der Nutzer hat den Lauf
         # bewusst gestoppt, das ist etwas anderes als ein fehlgeschlagener Test.
+        # Team-Optimierung (Retrospektive 2026-09-03): ein offenes Governance-/Verifikations-
+        # Ticket (siehe core/project_status.py._BLOCKER_TICKET_PREFIXES) durfte bisher trotzdem
+        # zu einem uneingeschränkten "✅ Fertig!" führen, sobald die reine Testsuite bestand -
+        # genau der reale mockforge-Fund aus der Bestandsaufnahme, der zu dieser Änderung
+        # führte. Geprüft VOR verification_ok, weil ein ungelöster kritischer Befund schwerer
+        # wiegt als eine grüne Testsuite.
+        try:
+            open_blocker = has_open_blocker_ticket(project_dir, verification_ok=verification_ok)
+        except Exception:
+            open_blocker = False
+
         if manually_cancelled:
             notify(
                 "⏹️ [bold yellow]Manuell abgebrochen.[/bold yellow] Die bis dahin erarbeiteten Ergebnisse "
                 "wurden zusammengefasst – prüfe das Ergebnis, es ist mit hoher Wahrscheinlichkeit unvollständig."
+            )
+        elif open_blocker:
+            notify(
+                "🔴 [bold red]Fertig, aber NICHT einsatzbereit![/bold red] Ein kritischer Governance-/"
+                "Verifikations-Befund blieb trotz Fixversuchen ungelöst und liegt als offenes Backlog-"
+                "Ticket vor (siehe PROJECT_STATE.md) – das gilt unabhängig davon, ob die Testsuite "
+                "bestanden hat."
             )
         elif self.last_needs_human_input:
             # Eigener, vierter Status statt nur unter "NICHT verifiziert" mitzulaufen: eine

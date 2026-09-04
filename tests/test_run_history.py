@@ -18,6 +18,7 @@ from memory.run_history import (
     get_agent_success_rates,
     get_recent_runs,
     get_total_tokens_for_project,
+    get_verification_success_rate,
     record_run,
 )
 
@@ -160,6 +161,36 @@ class TestRunHistory(unittest.TestCase):
 
     def test_model_performance_empty_without_history(self):
         self.assertEqual(get_agent_model_performance(), [])
+
+    def test_verification_success_rate_mixed_runs(self):
+        # Team-Retrospektive nach dem taskpulse-Lauf: get_verification_success_rate() macht
+        # eine anhaltend niedrige verification_ok-Quote projektübergreifend sichtbar.
+        record_run(project_slug="a", task_summary="x", verification_ok=False, total_tokens=1, duration_seconds=1, agent_results=[])
+        record_run(project_slug="b", task_summary="x", verification_ok=False, total_tokens=1, duration_seconds=1, agent_results=[])
+        record_run(project_slug="c", task_summary="x", verification_ok=True, total_tokens=1, duration_seconds=1, agent_results=[])
+
+        result = get_verification_success_rate(limit_runs=10)
+
+        self.assertEqual(result["runs"], 3)
+        self.assertEqual(result["passed"], 1)
+        self.assertAlmostEqual(result["rate"], 33.3, places=1)
+
+    def test_verification_success_rate_respects_window(self):
+        for _ in range(5):
+            record_run(project_slug="a", task_summary="x", verification_ok=False, total_tokens=1, duration_seconds=1, agent_results=[])
+        for _ in range(5):
+            record_run(project_slug="b", task_summary="x", verification_ok=True, total_tokens=1, duration_seconds=1, agent_results=[])
+
+        result = get_verification_success_rate(limit_runs=5)
+
+        # Nur die letzten 5 (alle verification_ok=True) zählen, nicht die ersten 5 falschen.
+        self.assertEqual(result["runs"], 5)
+        self.assertEqual(result["passed"], 5)
+        self.assertEqual(result["rate"], 100.0)
+
+    def test_verification_success_rate_empty_without_history(self):
+        result = get_verification_success_rate()
+        self.assertEqual(result, {"runs": 0, "passed": 0, "rate": 0.0})
 
 
 if __name__ == "__main__":

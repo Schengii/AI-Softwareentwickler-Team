@@ -16,21 +16,123 @@ einen gezielten Korrekturauftrag auslöst statt nur verification_ok zurückzuset
 """
 
 import asyncio
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Iterable
+from typing import TypeVar
 
+from agents.department_lead_agent import DEPARTMENT_DEFINITIONS
 from agents.orchestrator.constants import REVIEW_ONLY_AGENT_IDS
 from config import (
+    ENABLE_COMPLETENESS_CHECK,
     ENABLE_GOVERNANCE_FIX_LOOP,
     ENABLE_LOAD_TEST_CHECK,
     LOAD_TEST_DURATION_SECONDS,
     LOAD_TEST_TIMEOUT_SECONDS,
     MAX_REVIEW_ITERATIONS,
+    MAX_TASK_TOKENS,
     MAX_VERIFICATION_ITERATIONS,
     MIN_TEST_COVERAGE,
 )
+from core.backlog_store import get_ticket, upsert_ticket
+from core.decision_log import log_decision
 from core.message_bus import AgentResult, AgentTask
-from core.review_gate import find_critical_findings, route_findings_to_owners
+from core.review_gate import (
+    find_critical_findings,
+    find_permission_blocked_questions,
+    find_structural_scope_questions,
+    route_findings_to_owners,
+)
+from core.team_memory import record_lesson
 from core.verifier import ProjectVerifier, VerificationReport
+
+# Realer Fund (taskpulse-Projekt, 2026-09-03): eine fehlende `app/models.py` (referenziert per
+# `from . import database, models, schemas`) führte zu einem ModuleNotFoundError/ImportError,
+# der als ganz normaler Testfehlschlag durch die Fix-Schleife unten lief - die generische
+# Fix-Beschreibung ("Nutze read_file, um die betroffene(n) Datei(en) zu prüfen...") nannte NIE
+# konkret, WELCHE Datei fehlt, nur den vollen Traceback-Text. Der beauftragte Agent musste sich
+# das selbst erschließen und tat es über mehrere Versuche hinweg nicht zuverlässig (33
+# Agenten-Durchläufe, 714k Tokens, am Ende trotzdem verification_ok=False). Diese Muster
+# erkennen die beiden häufigsten Python-Fehlerklassen für "referenziertes Modul/Symbol
+# existiert nicht" und machen die fehlende Datei/das fehlende Symbol im Fix-Auftrag EXPLIZIT,
+# statt es implizit im Traceback zu verstecken.
+_MODULE_NOT_FOUND_RE = re.compile(r"ModuleNotFoundError: No module named ['\"]([\w.]+)['\"]")
+_IMPORT_NAME_ERROR_RE = re.compile(r"ImportError: cannot import name ['\"](\w+)['\"] from ['\"]([\w.]+)['\"]")
+
+
+def _diagnose_import_failure(message: str) -> str | None:
+    """Extrahiert aus einer Python-Fehlermeldung, FALLS es sich um eine der beiden häufigsten
+    'Modul/Symbol existiert nicht'-Fehlerklassen handelt, eine konkrete, an den Fix-Agenten
+    adressierbare Diagnosezeile - None, wenn keines der beiden Muster passt (dann bleibt der
+    generische Fix-Auftrag unverändert, siehe Aufrufer)."""
+    m = _MODULE_NOT_FOUND_RE.search(message)
+    if m:
+        module = m.group(1)
+        as_path = module.replace(".", "/")
+        return (
+            f"⚠️ KONKRETE URSACHE: Das Modul `{module}` existiert nicht (fehlende Datei "
+            f"`{as_path}.py` oder fehlendes Paket-Verzeichnis `{as_path}/__init__.py`). Lege "
+            f"GENAU DIESE Datei mit echtem Inhalt an, statt nur die importierende Datei zu ändern."
+        )
+    m = _IMPORT_NAME_ERROR_RE.search(message)
+    if m:
+        name, module = m.group(1), m.group(2)
+        as_path = module.replace(".", "/")
+        return (
+            f"⚠️ KONKRETE URSACHE: `{name}` existiert nicht in `{as_path}.py` (Modul selbst ist "
+            f"vorhanden, das importierte Symbol fehlt darin). Ergänze `{name}` (Klasse/Funktion/"
+            f"Variable) in genau dieser Datei, statt nur die importierende Datei zu ändern."
+        )
+    return None
+
+
+_T = TypeVar("_T")
+
+# Vier der Fix-Schleifen unten (Test-, Governance-, Vorab-Import-, Vollständigkeits-Schleife)
+# teilten bisher dieselbe, viermal wortgleich kopierte "identische Funde wie beim letzten
+# Versuch? -> abbrechen"-Logik (Team-Retrospektive nach dem taskpulse-Lauf, zweite Runde).
+# _issue_signature()/_no_progress() bündeln NUR die reine Signatur-Bildung/den -Vergleich -
+# bewusst NICHT das Abbrechen/Notify/Ticket-Öffnen selbst, das unterscheidet sich je Schleife
+# (unterschiedliche Ticket-IDs, Log-Texte, Nebeneffekte wie verification_ok=False) zu sehr, um
+# es ohne Klarheitsverlust in eine gemeinsame Funktion zu zwingen - dieselbe Abwägung wie an
+# anderer Stelle in dieser Datei (explizite, kommentierte Einzel-Schleifen statt einer
+# generischen "Fix-Loop-Engine").
+def _issue_signature(items: Iterable[_T], key_fn: Callable[[_T], tuple[str, str]]) -> frozenset[tuple[str, str]]:
+    """Baut eine vergleichbare, auf 300 Zeichen gekappte Signatur aus einer Liste von Funden
+    (Testfehlern/Governance-Befunden/Vollständigkeits-Issues) - zwei aufeinanderfolgende
+    Aufrufe mit ergebnisgleichem `items` liefern dieselbe Signatur, unabhängig von der
+    Reihenfolge (frozenset)."""
+    return frozenset(key_fn(item) for item in items)
+
+
+def _no_progress(previous: frozenset[tuple[str, str]] | None, current: frozenset[tuple[str, str]]) -> bool:
+    """True, wenn `current` (der frische Fund-Stand) exakt der Signatur des VORHERIGEN
+    Fixversuchs entspricht - der Fixversuch hat dann erkennbar nichts verändert. `previous is
+    None` (erster Versuch, noch kein Vergleich möglich) zählt bewusst NICHT als "kein
+    Fortschritt"."""
+    return previous is not None and current == previous
+
+
+def _prior_run_context(ticket_id: str) -> str:
+    """Team-Retrospektive nach dem taskpulse-Lauf, zweite Runde: bisher startete JEDER neue
+    Lauf bei Null, selbst wenn ein VORHERIGER Lauf desselben Projekts bereits an genau diesem
+    Problem gescheitert war und dafür ein Ticket eröffnet hatte (siehe
+    core/backlog_store.get_ticket()-Docstring). Liefert - falls ein offenes ("blocked") Ticket
+    mit dieser ID existiert - einen kurzen Kontext-Satz für den ERSTEN Fix-Auftrag dieses Laufs,
+    sonst einen leeren String. Ein Lookup-Fehler (z.B. eine kaputte memory/backlog.json) darf
+    diesen rein informativen Hinweis nie zum Absturz des Laufs machen - dieselbe defensive
+    Haltung wie bei den upsert_ticket()-Aufrufen in dieser Datei."""
+    try:
+        ticket = get_ticket(ticket_id)
+    except Exception:
+        return ""
+    if ticket is None or ticket.status != "blocked":
+        return ""
+    return (
+        f"\n\n⚠️ HINWEIS: Ein VORHERIGER Lauf dieses Projekts ist bereits an einem ähnlichen "
+        f"Problem gescheitert und blieb ungelöst (Ticket `{ticket_id}`): {ticket.detail[:300]}\n"
+        "Prüfe, ob dein Fix diesmal WIRKLICH an der Ursache ansetzt, statt denselben "
+        "erfolglosen Ansatz zu wiederholen."
+    )
 
 
 class VerificationMixin:
@@ -140,6 +242,20 @@ class VerificationMixin:
         summary_lines: list[str] = []
         budget_aborted = False
         manually_cancelled = False
+        # Derselbe Zirkuit-Breaker wie in _run_verification_loop (Team-Retrospektive nach dem
+        # taskpulse-Lauf): identische kritische Befunde nach einem Fixversuch bedeuten fast
+        # immer, dass der Agent das Problem nicht lösen konnte - ein zweiter Fix-Dispatch UND
+        # der anschließende verpflichtende Re-Review (siehe unten, "attempt ==
+        # MAX_REVIEW_ITERATIONS") wären dann reine Tokens/Zeit-Verschwendung. Bricht in diesem
+        # Fall direkt zur Ticket-Eröffnung durch, ohne den zweiten Fix-Dispatch zu versuchen.
+        previous_findings_signature: frozenset[tuple[str, str]] | None = None
+        # Dasselbe Cross-Run-Gedächtnis wie in _run_verification_loop (Team-Retrospektive nach
+        # dem taskpulse-Lauf, zweite Runde).
+        governance_ticket_id = f"unresolved-governance-critical-{self.last_project_slug}" if self.last_project_slug else None
+        try:
+            had_prior_governance_ticket = bool(governance_ticket_id and get_ticket(governance_ticket_id) is not None)
+        except Exception:
+            had_prior_governance_ticket = False
 
         def _latest_review_results() -> list[AgentResult]:
             # Neuestes Ergebnis JE Rolle - bei einem Re-Check ab Versuch 2 überschreibt das
@@ -200,7 +316,44 @@ class VerificationMixin:
                     f"- ✅ Keine kritischen Befunde in den Governance-Reports"
                     f"{f' (Versuch {attempt})' if attempt > 1 else ''}."
                 )
+                if had_prior_governance_ticket and governance_ticket_id:
+                    try:
+                        upsert_ticket(
+                            ticket_id=governance_ticket_id,
+                            title=f"Ungelöster kritischer Governance-Befund: {self.last_project_slug}",
+                            source="orchestrator", status="done", project_slug=self.last_project_slug,
+                            detail="In einem späteren Lauf behoben - keine kritischen Befunde mehr.",
+                        )
+                        notify("  🎫 [dim]Ticket für vorherigen Governance-Befund als gelöst geschlossen.[/dim]")
+                    except Exception as e:
+                        notify(f"⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
                 break
+
+            current_findings_signature = _issue_signature(findings, lambda f: (f[0], f[1][:300]))
+            if _no_progress(previous_findings_signature, current_findings_signature):
+                notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische kritische Befunde wie vor dem letzten Fixversuch – überspringe weiteren Fixversuch, eröffne direkt ein Ticket.")
+                summary_lines.append(
+                    f"- 🛑 Versuch {attempt}: dieselben {len(findings)} kritische(n) Befund(e) wie nach dem vorherigen "
+                    "Fixversuch (keine Veränderung) – weiterer Fix-Dispatch übersprungen, Backlog-Ticket direkt eröffnet."
+                )
+                try:
+                    upsert_ticket(
+                        ticket_id=f"unresolved-governance-critical-{getattr(self, 'last_project_slug', 'project')}",
+                        title=f"Ungelöster kritischer Governance-Befund: {getattr(self, 'last_project_slug', 'project')}",
+                        source="orchestrator", status="blocked",
+                        project_slug=getattr(self, "last_project_slug", "project"),
+                        detail="\n\n".join(block for _agent_id, block in findings)[:300],
+                    )
+                except Exception as e:
+                    notify(f"⚠️ [dim yellow]Ticket für ungelösten Governance-Befund konnte nicht angelegt werden: {e}[/dim yellow]")
+                record_lesson(
+                    project_slug=getattr(self, "last_project_slug", "project"),
+                    category="unresolved_governance_critical",
+                    detail="\n\n".join(block for _agent_id, block in findings)[:300],
+                )
+                log_decision(project_dir, "unresolved_governance_critical_ticket_opened", "\n\n".join(block for _agent_id, block in findings)[:300])
+                break
+            previous_findings_signature = current_findings_signature
 
             agents_to_fix, unrouted = route_findings_to_owners(findings, file_owners)
 
@@ -216,9 +369,39 @@ class VerificationMixin:
                 notify("  ⚠️ [yellow]Kritische Governance-Befunde konnten keinem Agenten eindeutig zugeordnet werden – Auto-Fix übersprungen.[/yellow]")
                 break
 
+            # Team-Retrospektive nach dem zeiterfassung_app-Lauf: dieselbe Fehlerklasse (fehlendes
+            # lokales Modul/Paket, z.B. `app/routers/`) wurde hier vom LLM-Reviewer als Freitext-
+            # Befund gemeldet UND wenig später vom rein statischen Vorab-Import-Check in
+            # _run_verification_loop erneut gefunden - zwei getrennte, unkoordinierte Fix-Budgets
+            # für denselben Defekt. Reichert den Freitext-Befund hier zusätzlich um die exakte,
+            # dateigenaue Fundliste des statischen Checks an (Datei:Zeile + erwarteter Pfad statt
+            # nur Prosa) - derselbe check_completeness()-Aufruf wie beim Vorab-Import-Check, hier
+            # nur zusätzlich in den Fix-Prompt gemischt, läuft rein lokal (Millisekunden, kein
+            # LLM-Aufruf) und kostet daher kein zusätzliches Budget.
+            try:
+                structural_report = ProjectVerifier(project_dir).check_completeness()
+                structural_import_issues = [
+                    i for i in structural_report.issues if "existierendes lokales" in i.message
+                ] if structural_report.attempted else []
+            except Exception:
+                structural_import_issues = []
+
             fix_tasks = []
             for agent_id, texts in agents_to_fix.items():
                 finding_text = "\n\n".join(texts)[:3000]
+                owned_import_issues = [
+                    i for i in structural_import_issues if file_owners.get(i.file_path) == agent_id
+                ] or structural_import_issues
+                structural_addendum = ""
+                if owned_import_issues:
+                    exact_list = "\n".join(
+                        f"- {i.file_path}:{i.line_number} – {i.message}" for i in owned_import_issues[:10]
+                    )
+                    structural_addendum = (
+                        "\n\nZUSÄTZLICH ein statischer Check derselben Fehlerklasse (fehlendes "
+                        "lokales Modul/Paket) mit der EXAKTEN Datei-Liste - lege GENAU diese "
+                        f"Dateien/Symbole an, nicht nur sinngemäß:\n{exact_list}"
+                    )
                 fix_tasks.append(AgentTask(
                     task_id=f"governance_fix_{agent_id}_{attempt}",
                     agent_id=agent_id,
@@ -226,12 +409,17 @@ class VerificationMixin:
                         f"Das Governance-Review (code_reviewer/security/compliance) hat ein "
                         f"KRITISCHES Problem in deinem Code gefunden. Nutze read_file, um die "
                         f"betroffene(n) Datei(en) zu prüfen, und edit_file/write_file, um das "
-                        f"Problem zu beheben.\n\n{finding_text}"
+                        f"Problem zu beheben.\n\n{finding_text}{structural_addendum}"
+                        + (_prior_run_context(governance_ticket_id) if attempt == 1 and governance_ticket_id else "")
                     ),
                     context="", project_dir=project_dir,
                 ))
 
             notify(f"  🛠️ [bold yellow]Governance-Fix:[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())} mit {len(findings)} kritischem/kritischen Befund(en)...")
+            log_decision(
+                project_dir, "governance_fix_dispatched",
+                f"Versuch {attempt}: {len(findings)} kritische(r) Befund(e) → {', '.join(agents_to_fix.keys())}",
+            )
             fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
             self._update_file_owners(file_owners, fix_results)
             all_results.extend(fix_results)
@@ -242,14 +430,375 @@ class VerificationMixin:
                 f"nur die anschließende echte Testverifikation, nicht die qualitative Review-Aussage selbst)."
             )
 
+            # Proaktives Pro-Task-Budget (Punkt 2 einer Team-Retrospektive): ein einzelner
+            # ausufernder Fix-Task konnte bisher unbemerkt einen unverhältnismäßig großen Teil
+            # des GESAMTEN Lauf-Budgets verbrauchen, bevor spätere Fachbereiche überhaupt an der
+            # Reihe waren. Kein Abbruch mitten im laufenden Aufruf (technisch nicht sauber
+            # möglich), aber ein klares Warnsignal, das WEITERE Versuche für denselben Befund in
+            # dieser Schleife stoppt, statt ungebremst weiterzueskalieren.
+            oversized = [r for r in fix_results if MAX_TASK_TOKENS > 0 and r.total_tokens > MAX_TASK_TOKENS]
+            if oversized:
+                names = ", ".join(sorted({r.agent_id for r in oversized}))
+                notify(f"  🚫 [bold red]Pro-Task-Budget überschritten[/bold red] ({names}) – weitere Governance-Fixversuche für diesen Befund werden übersprungen.")
+                summary_lines.append(
+                    f"- 🚫 Pro-Task-Budget ({MAX_TASK_TOKENS:,} Tokens) von {names} überschritten – "
+                    f"Governance-Fix-Schleife nach Versuch {attempt} beendet, statt unbegrenzt weiter zu eskalieren."
+                )
+                break
+
             if attempt == MAX_REVIEW_ITERATIONS:
-                summary_lines.append(f"- ℹ️ Nach {MAX_REVIEW_ITERATIONS} Versuch(en) letzter Stand übernommen.")
+                # Verpflichtender Re-Review nach dem letzten Fix-Dispatch (Punkt 4 einer
+                # Team-Retrospektive): bisher wurde der Fix im letzten erlaubten Versuch NIE mehr
+                # gegengeprüft (nur Zwischen-Versuche liefen in eine erneute Runde mit Recheck
+                # oben) - ein Fix im finalen Versuch galt damit unbesehen als erledigt, selbst bei
+                # sicherheitskritischen Befunden. Ein einzelner, günstiger Nur-Lese-Recheck
+                # derselben Rollen schließt diese Lücke; bleibt der Befund bestehen, wird ein
+                # Backlog-Ticket für menschliche Prüfung eröffnet statt stillschweigend zu
+                # akzeptieren.
+                notify(f"  🔍 [yellow]Verpflichtender Re-Review nach Versuch {attempt}:[/yellow] prüft, ob der Fix tatsächlich griff...")
+                final_recheck_tasks = [
+                    AgentTask(
+                        task_id=f"governance_final_recheck_{agent_id}",
+                        agent_id=agent_id,
+                        description=(
+                            "Prüfe AUSSCHLIESSLICH, ob das zuvor gemeldete kritische Problem jetzt "
+                            "tatsächlich behoben ist. Melde erneut mit klarer Schweregrad-Markierung "
+                            "(\"Kritisch\"), falls es weiterhin besteht."
+                        ),
+                        context="", project_dir=project_dir, allow_tools=True, tools_read_only=True,
+                    )
+                    for agent_id in sorted(agents_to_fix.keys() & review_agent_ids)
+                ] or [
+                    AgentTask(
+                        task_id=f"governance_final_recheck_{agent_id}",
+                        agent_id=agent_id,
+                        description="Prüfe den aktuellen Stand des Projekts erneut auf kritische Probleme.",
+                        context="", project_dir=project_dir, allow_tools=True, tools_read_only=True,
+                    )
+                    for agent_id in sorted(review_agent_ids)
+                ]
+                final_recheck_results = await self._run_agents_parallel(final_recheck_tasks, notify=notify)
+                all_results.extend(final_recheck_results)
+                still_critical = [
+                    block for res in final_recheck_results if res.success and res.content
+                    for block in find_critical_findings(res.content)
+                ]
+                if still_critical:
+                    notify("  🛑 [bold red]Fix nicht bestätigt:[/bold red] Re-Review meldet weiterhin kritische Befunde – Backlog-Ticket für menschliche Prüfung eröffnet.")
+                    summary_lines.append(
+                        f"- 🛑 Nach {MAX_REVIEW_ITERATIONS} Versuch(en) bestätigt der Re-Review WEITERHIN "
+                        f"{len(still_critical)} kritische(n) Befund(e) – Backlog-Ticket eröffnet statt "
+                        "stillschweigend zu übernehmen."
+                    )
+                    try:
+                        upsert_ticket(
+                            ticket_id=f"unresolved-governance-critical-{getattr(self, 'last_project_slug', 'project')}",
+                            title=f"Ungelöster kritischer Governance-Befund: {getattr(self, 'last_project_slug', 'project')}",
+                            source="orchestrator", status="blocked",
+                            project_slug=getattr(self, "last_project_slug", "project"),
+                            detail="\n\n".join(still_critical)[:300],
+                        )
+                    except Exception as e:
+                        notify(f"⚠️ [dim yellow]Ticket für ungelösten Governance-Befund konnte nicht angelegt werden: {e}[/dim yellow]")
+                    record_lesson(
+                        project_slug=getattr(self, "last_project_slug", "project"),
+                        category="unresolved_governance_critical",
+                        detail="\n\n".join(still_critical)[:300],
+                    )
+                    log_decision(project_dir, "unresolved_governance_critical_ticket_opened", "\n\n".join(still_critical)[:300])
+                else:
+                    summary_lines.append(f"- ✅ Re-Review nach Versuch {attempt} bestätigt: keine kritischen Befunde mehr.")
 
         summary = (
             "### 🔍 Governance-Fix-Protokoll (kritische Review-Befunde)\n" + "\n".join(summary_lines)
             if summary_lines else ""
         )
         return all_results, summary, budget_aborted, manually_cancelled
+
+    async def _run_permission_blocked_clarification_fix(
+        self,
+        project_dir: str,
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        notify: Callable[[str], None],
+        run_start_tokens: int | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> tuple[list[AgentResult], str, bool, bool]:
+        """
+        Realer Fund (omnichat-Projekt): der security-Agent identifizierte ein echtes kritisches
+        Problem (Pydantic-v2-Migration in `app/schemas.py`, CORS-Härtung in `app/main.py`), hatte
+        in diesem Aufruf aber keine Schreibrechte und griff statt zu einem normalen, per
+        `find_critical_findings` erkennbaren "Kritisch"-Bericht zu `ask_human_for_clarification`
+        mit der Frage "Wie erhalte ich Schreibrechte...?". Diese Frage landete unbeantwortet in
+        .ai_team_status.json (open_questions) und wurde NIE an einen schreibberechtigten Agenten
+        weitergeroutet - anders als bei _run_governance_fix_loop oben blieb das Problem so über
+        beliebig viele Läufe hinweg ungelöst liegen, obwohl der Fund selbst konkret und lösbar
+        war. Läuft direkt NACH der Governance-Fix-Schleife (dieselbe Reihenfolge-Logik: vor der
+        echten Testverifikation, damit die Testsuite den reparierten Stand prüft) und nutzt
+        dieselbe core/review_gate.py.route_findings_to_owners()-Zuordnung wie dort - der
+        Fund-Text ist hier die Rückfrage selbst statt eines Review-Abschnitts.
+
+        Gibt (all_results, summary, budget_aborted, manually_cancelled) zurück - summary ist ""
+        bei nichts zu tun (kein Rauschen im Normalfall).
+        """
+        blocked: list[tuple[str, str, AgentResult]] = []
+        for res in all_results:
+            if not res.clarification_questions:
+                continue
+            for q in find_permission_blocked_questions(res.clarification_questions):
+                blocked.append((res.agent_id, q, res))
+
+        if not blocked:
+            return all_results, "", False, False
+
+        if run_start_tokens is not None and (
+            self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+        ):
+            notify("  🚫 [bold red]Budget erreicht[/bold red] – Fix für schreibgeschützt blockierte Rückfragen übersprungen.")
+            return all_results, "", True, False
+        if cancel_requested and cancel_requested():
+            notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – Fix für schreibgeschützt blockierte Rückfragen übersprungen.")
+            return all_results, "", False, True
+
+        findings = [(agent_id, q) for agent_id, q, _res in blocked]
+        agents_to_fix, unrouted = route_findings_to_owners(findings, file_owners)
+
+        summary_lines: list[str] = []
+        if unrouted:
+            shown = "; ".join(u[:150] for u in unrouted[:3])
+            more = f" … und {len(unrouted) - 3} weitere" if len(unrouted) > 3 else ""
+            summary_lines.append(
+                f"- ⚠️ {len(unrouted)} schreibgeschützt blockierte Rückfrage(n) ohne eindeutigen "
+                f"Datei-Bezug – braucht manuelle Prüfung: {shown}{more}"
+            )
+
+        if agents_to_fix:
+            fix_tasks = []
+            for agent_id, texts in agents_to_fix.items():
+                finding_text = "\n\n".join(texts)[:3000]
+                fix_tasks.append(AgentTask(
+                    task_id=f"permission_blocked_fix_{agent_id}",
+                    agent_id=agent_id,
+                    description=(
+                        f"Ein anderer Agent hat ein konkretes Problem identifiziert, konnte es aber wegen "
+                        f"fehlender Schreibrechte NICHT selbst beheben. Nutze read_file, um die betroffene(n) "
+                        f"Datei(en) zu prüfen, und edit_file/write_file, um das Problem wirklich zu "
+                        f"beheben.\n\n{finding_text}"
+                    ),
+                    context="", project_dir=project_dir,
+                ))
+            notify(f"  🛠️ [bold yellow]Schreibgeschützt blockierte Rückfrage(n):[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())} mit {len(agents_to_fix)} Fund(en)...")
+            log_decision(
+                project_dir, "permission_blocked_fix_dispatched",
+                f"{len(agents_to_fix)} blockierte Rückfrage(n) → {', '.join(agents_to_fix.keys())}",
+            )
+            fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+            self._update_file_owners(file_owners, fix_results)
+            all_results.extend(fix_results)
+            summary_lines.append(
+                f"- 🛠️ {len(blocked) - len(unrouted)} schreibgeschützt blockierte Rückfrage(n) → gezielt "
+                f"zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt (keine unbeantwortete "
+                f"Rückfrage mehr im Abschlussbericht)."
+            )
+
+            # Dasselbe Pro-Task-Budget-Warnsignal wie in _run_governance_fix_loop oben (Punkt 2
+            # einer Team-Retrospektive) - auch hier kann ein einzelner Fix-Task ausufern.
+            oversized = [r for r in fix_results if MAX_TASK_TOKENS > 0 and r.total_tokens > MAX_TASK_TOKENS]
+            if oversized:
+                names = ", ".join(sorted({r.agent_id for r in oversized}))
+                notify(f"  🚫 [bold red]Pro-Task-Budget überschritten[/bold red] ({names}).")
+                summary_lines.append(f"- 🚫 Pro-Task-Budget ({MAX_TASK_TOKENS:,} Tokens) von {names} überschritten.")
+
+            # Behobene Fragen aus dem Abschlussbericht entfernen (open_questions), damit sie nicht
+            # trotz erfolgtem Fix als unbeantwortet im Status/PROJECT_STATE.md landen - eine echte
+            # fachliche Rückfrage im selben Ergebnis (falls vorhanden) bleibt davon unberührt.
+            # `unrouted`-Einträge tragen dasselbe "[agent_id] text"-Format wie
+            # route_findings_to_owners() sie selbst erzeugt (core/review_gate.py) - so lässt sich
+            # ohne eigene Owner-Neuberechnung feststellen, welche der ursprünglichen Fragen
+            # tatsächlich geroutet (= gerade gefixt) statt unrouted geblieben sind.
+            unrouted_set = set(unrouted)
+            fixed_raiser_ids: set[str] = set()
+            for agent_id, q, res in blocked:
+                if f"[{agent_id}] {q.strip()}" in unrouted_set:
+                    continue
+                if q in res.clarification_questions:
+                    res.clarification_questions.remove(q)
+                    fixed_raiser_ids.add(res.agent_id)
+
+            # Verpflichtender Re-Review (Punkt 4 einer Team-Retrospektive, analog zum finalen
+            # Recheck in _run_governance_fix_loop): der ursprünglich blockierte Agent (z.B.
+            # security) prüft den nun schreibbaren Fix noch einmal read-only nach, statt den
+            # Fix-Dispatch ungeprüft als erledigt zu behandeln - genau die Lücke, die im echten
+            # omnichat-Fund dazu führte, dass niemand je bestätigte, ob CORS/Pydantic-v2
+            # tatsächlich behoben wurden.
+            if fixed_raiser_ids and not oversized:
+                notify(f"  🔍 [yellow]Verpflichtender Re-Review:[/yellow] {', '.join(sorted(fixed_raiser_ids))} prüft den Fix nach...")
+                recheck_tasks = [
+                    AgentTask(
+                        task_id=f"permission_blocked_recheck_{raiser_id}",
+                        agent_id=raiser_id,
+                        description=(
+                            "Prüfe, ob das von dir zuvor gemeldete Problem (das du mangels "
+                            "Schreibrechten nicht selbst beheben konntest) jetzt tatsächlich behoben "
+                            "ist. Melde mit klarer Schweregrad-Markierung (\"Kritisch\"), falls nicht."
+                        ),
+                        context="", project_dir=project_dir, allow_tools=True, tools_read_only=True,
+                    )
+                    for raiser_id in sorted(fixed_raiser_ids)
+                    if raiser_id in self._agents or raiser_id in self._dept_leads
+                ]
+                recheck_results = await self._run_agents_parallel(recheck_tasks, notify=notify)
+                all_results.extend(recheck_results)
+                still_critical = [
+                    block for res in recheck_results if res.success and res.content
+                    for block in find_critical_findings(res.content)
+                ]
+                if still_critical:
+                    notify("  🛑 [bold red]Fix nicht bestätigt:[/bold red] Re-Review meldet weiterhin ein kritisches Problem – Backlog-Ticket eröffnet.")
+                    summary_lines.append(
+                        f"- 🛑 Re-Review bestätigt den Fix NICHT – {len(still_critical)} weiterhin kritische(r) "
+                        "Befund(e). Backlog-Ticket für menschliche Prüfung eröffnet."
+                    )
+                    try:
+                        upsert_ticket(
+                            ticket_id=f"unresolved-permission-blocked-{getattr(self, 'last_project_slug', 'project')}",
+                            title=f"Ungelöster, zuvor schreibgeschützt blockierter Befund: {getattr(self, 'last_project_slug', 'project')}",
+                            source="orchestrator", status="blocked",
+                            project_slug=getattr(self, "last_project_slug", "project"),
+                            detail="\n\n".join(still_critical)[:300],
+                        )
+                    except Exception as e:
+                        notify(f"⚠️ [dim yellow]Ticket konnte nicht angelegt werden: {e}[/dim yellow]")
+                    record_lesson(
+                        project_slug=getattr(self, "last_project_slug", "project"),
+                        category="unresolved_permission_blocked_fix",
+                        detail="\n\n".join(still_critical)[:300],
+                    )
+                    log_decision(project_dir, "unresolved_permission_blocked_fix_ticket_opened", "\n\n".join(still_critical)[:300])
+                else:
+                    summary_lines.append("- ✅ Re-Review bestätigt: Fix erfolgreich.")
+
+        summary = (
+            "### 🔓 Fix-Protokoll (schreibgeschützt blockierte Rückfragen)\n" + "\n".join(summary_lines)
+            if summary_lines else ""
+        )
+        return all_results, summary, False, False
+
+    async def _run_scope_clarification_autofix(
+        self,
+        project_dir: str,
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        notify: Callable[[str], None],
+        run_start_tokens: int | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> tuple[list[AgentResult], str, bool, bool]:
+        """
+        Realer Fund (incidentpilot-Projekt): der tester-Agent stellte eine echte fachliche
+        Scope-Rückfrage ("Soll ich die Grundstruktur der Anwendung ... von Grund auf neu
+        erstellen, da ich kein 'app/'-Verzeichnis sehe?") statt sie autonom zu beantworten und
+        weiterzuarbeiten. Anders als eine Schreibrechte-Rückfrage (siehe
+        _run_permission_blocked_clarification_fix oben) passt hier KEIN Muster von
+        find_permission_blocked_questions() - die Frage blieb deshalb unbeantwortet in
+        .ai_team_status.json (open_questions) stehen, und der Lauf endete mit
+        verification_ok=False, OHNE dass die eigentliche Kernfunktion je gebaut wurde, obwohl
+        Architektur/ADRs/OpenAPI-Spezifikation für das Projekt bereits vollständig vorlagen.
+
+        Das Team hat keinen anwesenden Menschen, der eine solche Rückfrage in Echtzeit
+        beantworten könnte - der einzig sinnvolle Default ist, dass der fragende Agent selbst
+        die naheliegendste Annahme trifft (z.B. "ja, lege die fehlende Struktur selbst an") und
+        die Aufgabe zu Ende bringt, statt den Lauf unbeantwortet stehen zu lassen. Läuft NACH
+        der Schreibrechte-Fix-Schleife (die spezifischere, bereits behandelte Fälle vorher
+        herausfiltert), aus demselben Grund wie dort: vor der echten Testverifikation, damit
+        die Testsuite den vervollständigten Stand prüft.
+
+        Nutzt bewusst find_structural_scope_questions() (eine enge ALLOWLIST, siehe deren
+        Docstring in core/review_gate.py) statt "alles außer Schreibrechte-Fragen" - eine echte
+        fachliche Unklarheit, die nur ein Mensch beantworten kann (z.B. "Welche Zahlungsanbieter
+        sollen unterstützt werden?"), MUSS weiterhin unangetastet zur Mid-Task-Eskalation an
+        einen Menschen führen (core/agent_toolbox.py.ask_human_for_clarification, siehe
+        tests/test_clarification_escalation.py) - sonst würde diese Funktion genau die
+        Eskalation unterlaufen, die sie eigentlich ergänzen soll.
+
+        Gibt (all_results, summary, budget_aborted, manually_cancelled) zurück - summary ist ""
+        bei nichts zu tun (kein Rauschen im Normalfall, in dem gar keine Rückfrage offen ist).
+        """
+        remaining: list[tuple[str, str, AgentResult]] = []
+        for res in all_results:
+            if not res.clarification_questions:
+                continue
+            in_scope = set(find_structural_scope_questions(res.clarification_questions))
+            for q in res.clarification_questions:
+                if q in in_scope:
+                    remaining.append((res.agent_id, q, res))
+
+        if not remaining:
+            return all_results, "", False, False
+
+        if run_start_tokens is not None and (
+            self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+        ):
+            notify("  🚫 [bold red]Budget erreicht[/bold red] – Auto-Entscheid für offene Rückfragen übersprungen.")
+            return all_results, "", True, False
+        if cancel_requested and cancel_requested():
+            notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – Auto-Entscheid für offene Rückfragen übersprungen.")
+            return all_results, "", False, True
+
+        # Je fragendem Agent EINE Sammel-Aufgabe (nicht pro Frage einzeln) - dieselbe Bündelung
+        # wie route_findings_to_owners() bei Governance-Funden.
+        by_agent: dict[str, list[str]] = {}
+        for agent_id, q, _res in remaining:
+            if agent_id in self._agents or agent_id in self._dept_leads:
+                by_agent.setdefault(agent_id, []).append(q.strip())
+
+        if not by_agent:
+            return all_results, "", False, False
+
+        fix_tasks = [
+            AgentTask(
+                task_id=f"scope_clarification_autofix_{agent_id}",
+                agent_id=agent_id,
+                description=(
+                    "Du hast zuvor eine offene fachliche Rückfrage gestellt, statt direkt "
+                    "weiterzuarbeiten. Es ist KEIN Mensch verfügbar, der diese Rückfrage in "
+                    "Echtzeit beantworten kann - das Team arbeitet autonom. Triff selbst die "
+                    "naheliegendste, sinnvollste Annahme (z.B.: fehlende Grundstruktur/Dateien "
+                    "einfach selbst anlegen, statt zu fragen, ob du das darfst) und setze die "
+                    "Aufgabe VOLLSTÄNDIG um. Dokumentiere die getroffene Annahme kurz als "
+                    "Kommentar im Code oder in einer README-Sektion.\n\n"
+                    "Deine offene(n) Rückfrage(n):\n" + "\n".join(f"- {q}" for q in questions)
+                ),
+                context="", project_dir=project_dir,
+            )
+            for agent_id, questions in by_agent.items()
+        ]
+
+        notify(
+            f"  🧭 [bold yellow]Offene Scope-Rückfrage(n):[/bold yellow] Kein Mensch verfügbar – "
+            f"{', '.join(by_agent.keys())} entscheidet/entscheiden autonom und baut/bauen weiter..."
+        )
+        log_decision(
+            project_dir, "scope_clarification_autofix_dispatched",
+            f"{len(remaining)} offene Rückfrage(n) → {', '.join(by_agent.keys())}",
+        )
+        fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+        self._update_file_owners(file_owners, fix_results)
+        all_results.extend(fix_results)
+
+        # Beantwortete Rückfragen aus dem ursprünglichen Ergebnis entfernen, damit sie nicht
+        # trotz Auto-Entscheid weiterhin als unbeantwortet im Abschlussbericht/PROJECT_STATE.md
+        # auftauchen - dieselbe Bereinigung wie in _run_permission_blocked_clarification_fix.
+        resolved_agent_ids = set(by_agent.keys())
+        for agent_id, q, res in remaining:
+            if agent_id in resolved_agent_ids and q in res.clarification_questions:
+                res.clarification_questions.remove(q)
+
+        summary = (
+            "### 🧭 Auto-Entscheid-Protokoll (offene Scope-Rückfragen ohne verfügbaren Menschen)\n"
+            f"- 🧭 {len(remaining)} offene fachliche Rückfrage(n) von {', '.join(sorted(resolved_agent_ids))} "
+            f"autonom mit der naheliegendsten Annahme weiterbearbeitet, statt den Lauf unbeantwortet enden zu lassen."
+        )
+        return all_results, summary, False, False
 
     async def _run_verification_loop(
         self,
@@ -286,12 +835,140 @@ class VerificationMixin:
         # durchläuft - der Coverage-Check danach prüft explizit auf None, statt sich auf eine
         # garantierte Zuweisung zu verlassen.
         report: VerificationReport | None = None
+        # Höchstens EIN automatischer Nachbeauftragungs-Versuch für "keine Tests gefunden" (siehe
+        # unten) - verhindert eine Endlosschleife, falls der tester-Agent wiederholt keine
+        # echte Testdatei anlegt.
+        no_tests_fix_attempted = False
+        # Zirkuit-Breaker gegen wirkungslose Wiederholungen (Team-Retrospektive nach dem
+        # taskpulse-Lauf): bisher wurde ein zweiter Fixversuch immer unternommen, selbst wenn
+        # der erste erkennbar NICHTS verändert hat - derselbe Satz Testfehler (gleiche
+        # test_id+Fehlermeldung) nach einem Fixversuch bedeutet fast immer, dass der
+        # beauftragte Agent das Problem nicht lösen konnte, nicht dass ein zweiter,
+        # identischer Auftrag beim nächsten Versuch anders ausgeht. Bricht die Schleife dann
+        # SOFORT ab (spart einen kompletten, meist wirkungslosen Agenten-Durchlauf) statt den
+        # letzten erlaubten Versuch trotzdem zu verbrauchen.
+        previous_failure_signature: frozenset[tuple[str, str]] | None = None
+        # Team-Retrospektive (Verbesserungsvorschlag "Strategiewechsel statt Wiederholung"):
+        # bisher bedeutete der obige Zirkuit-Breaker nur "aufgeben" - derselbe Agent bekam
+        # denselben Fehler zweimal exakt gleich beschrieben und scheiterte beide Male gleich,
+        # das Ergebnis wurde dann trotzdem als "letzter Stand" übernommen (real beobachtet in
+        # mehreren Läufen: sentinelproxy, incidentpilot, omnichat - "Nach 2 Versuchen nicht
+        # vollständig grün"). EIN zusätzlicher Eskalations-Versuch (nicht mehr, um die Schleife
+        # nicht doch wieder unbegrenzt zu verlängern) holt bei "kein Fortschritt" den
+        # zuständigen Fachbereichsleiter (falls vorhanden) statt denselben Mitarbeiter erneut
+        # gegen dasselbe Problem laufen zu lassen - eine andere Perspektive/Instruktion statt
+        # exakter Wiederholung.
+        escalation_attempted = False
+        # Cross-Run-Gedächtnis (Team-Retrospektive nach dem taskpulse-Lauf, zweite Runde): ein
+        # offenes Ticket aus einem VORHERIGEN Lauf desselben Projekts fließt als Kontext in den
+        # ERSTEN Fix-Auftrag dieses Laufs ein (siehe _prior_run_context()) - und wird, sobald
+        # die Testsuite in DIESEM Lauf tatsächlich grün wird, als gelöst geschlossen, statt als
+        # "blocked" liegen zu bleiben, obwohl das Problem längst behoben ist.
+        test_ticket_id = f"recurring-failure-{self.last_project_slug}" if self.last_project_slug else None
+        try:
+            had_prior_test_ticket = bool(test_ticket_id and get_ticket(test_ticket_id) is not None)
+        except Exception:
+            had_prior_test_ticket = False
 
         notify("🧪 [bold cyan]Verifikation:[/bold cyan] Installiere Abhängigkeiten in isolierter Umgebung...")
         install_log = await asyncio.to_thread(verifier.ensure_environment)
         if install_log:
             notify(f"  📦 {install_log.splitlines()[0]}")
             summary_lines.append(f"- 📦 {install_log.splitlines()[0]}")
+
+        # Vorab-Check (statt Vollständigkeits-Check erst NACH der teuren Testsuite/Governance-
+        # Schleife, siehe unten): ein fehlendes lokales Python-Modul (z.B. `app/models.py`, das
+        # per `from . import database, models, schemas` referenziert wird) ist rein statisch,
+        # ohne jeden Testlauf, in Millisekunden erkennbar (core/verifier/completeness.py.
+        # _missing_local_python_imports) - beim taskpulse-Lauf wurde genau dieser Fund erst nach
+        # der vollständigen Test-/Governance-/Review-Kaskade sichtbar (33 Agenten-Durchläufe,
+        # 714k Tokens, 23 Minuten), obwohl er von Anfang an feststand. Läuft NUR gegen
+        # Import-Auflösungs-Funde (nicht den vollen Vollständigkeits-Check inkl. Stub-Marker/
+        # fehlender I/O - die bleiben bewusst beim regulären, späteren Durchlauf, der zusätzlich
+        # den frischen Testlauf mitprüft), maximal MAX_VERIFICATION_ITERATIONS Versuche wie jede
+        # andere Fix-Schleife hier.
+        if ENABLE_COMPLETENESS_CHECK and not (budget_aborted or manually_cancelled):
+            # Derselbe Zirkuit-Breaker wie in den übrigen Fix-Schleifen dieser Datei (Team-
+            # Retrospektive nach dem taskpulse-Lauf) - identische Import-Funde nach einem
+            # Fixversuch bedeuten fast immer, dass der Agent das Problem nicht lösen konnte.
+            previous_preimport_signature: frozenset[tuple[str, str]] | None = None
+            for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
+                if run_start_tokens is not None and (
+                    self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                ):
+                    budget_aborted = True
+                    notify("  🚫 [bold red]Budget erreicht[/bold red] – Vorab-Import-Check übersprungen.")
+                    break
+                if cancel_requested and cancel_requested():
+                    manually_cancelled = True
+                    notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – Vorab-Import-Check übersprungen.")
+                    break
+
+                pre_report = await asyncio.to_thread(verifier.check_completeness)
+                # Dieselbe Reihenfolge (erst .attempted, DANN .passed, bevor .issues überhaupt
+                # angefasst wird) wie der bestehende Vollständigkeits-Check weiter unten - hält
+                # Tests, die ProjectVerifier komplett mocken, ohne check_completeness() explizit
+                # zu konfigurieren, unverändert lauffähig (ein MagicMock().passed ist truthy,
+                # ein MagicMock().issues wäre dagegen nicht iterierbar und würde crashen).
+                if not pre_report.attempted or pre_report.passed:
+                    break
+                import_issues = [i for i in pre_report.issues if "existierendes lokales" in i.message]
+                if not import_issues:
+                    if attempt > 1:
+                        notify(f"  🧩 [bold green]Vorab-Import-Check nach Fix (Versuch {attempt}) bestanden.[/bold green]")
+                        summary_lines.append(f"- 🧩 Vorab-Import-Check (statisch, vor der Testsuite): nach {attempt} Durchlauf/Durchläufen bestanden.")
+                    break
+
+                current_preimport_signature = _issue_signature(import_issues, lambda i: (i.file_path, i.message[:300]))
+                if _no_progress(previous_preimport_signature, current_preimport_signature):
+                    notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Import-Funde wie vor dem letzten Fixversuch – breche Vorab-Import-Check ab, weiter mit der regulären Testsuite.")
+                    summary_lines.append(
+                        f"- 🧩 🛑 Vorab-Import-Check, Versuch {attempt}: dieselben {len(import_issues)} Fund(e) wie nach dem "
+                        "vorherigen Fixversuch (keine Veränderung) – Schleife abgebrochen statt einen wirkungslosen weiteren "
+                        "Versuch zu verbrauchen (bleibt im regulären Testlauf danach erneut sichtbar)."
+                    )
+                    break
+                previous_preimport_signature = current_preimport_signature
+
+                top = "; ".join(f"{i.file_path}:{i.line_number} – {i.message}" for i in import_issues[:5])
+                notify(f"  🧩 [bold red]Vorab-Import-Check: {len(import_issues)} fehlende(s) lokale(s) Modul/Symbol VOR jedem Testlauf gefunden.[/bold red]")
+
+                agents_to_fix: dict[str, list] = {}
+                for issue in import_issues:
+                    owner = file_owners.get(issue.file_path)
+                    if owner and owner in self._agents:
+                        agents_to_fix.setdefault(owner, []).append(issue)
+
+                if not agents_to_fix:
+                    summary_lines.append(f"- 🧩 ❌ Vorab-Import-Check: {len(import_issues)} Fund(e) blieben ungelöst (keinem Agenten eindeutig zuordenbar): {top}")
+                    break
+
+                fix_tasks = []
+                for agent_id, agent_issues in agents_to_fix.items():
+                    issue_text = "\n".join(f"- {i.file_path}:{i.line_number} – {i.message}" for i in agent_issues)
+                    fix_tasks.append(AgentTask(
+                        task_id=f"verify_fix_preimport_{agent_id}_{attempt}",
+                        agent_id=agent_id,
+                        description=(
+                            "Ein statischer Vorab-Check (VOR jedem Testlauf) hat lokale Python-Importe "
+                            "gefunden, die auf nicht existierende Dateien/Symbole verweisen - der Code kann "
+                            "dadurch nicht einmal importiert werden. Lege die fehlende(n) Datei(en) mit "
+                            "echtem Inhalt an bzw. ergänze das fehlende Symbol in der genannten Datei.\n\n"
+                            f"{issue_text}"
+                        ),
+                        context="",
+                        project_dir=project_dir,
+                    ))
+
+                notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix (Vorab-Import-Check):[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())}...")
+                fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+                self._update_file_owners(file_owners, fix_results)
+                all_results.extend(fix_results)
+                summary_lines.append(f"- 🧩 Vorab-Import-Check, Versuch {attempt}: {len(import_issues)} Fund(e) → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt: {top}")
+
+                if attempt == MAX_VERIFICATION_ITERATIONS:
+                    notify("  ⚠️ [yellow]Maximale Vorab-Import-Fixversuche erreicht – weiter mit der regulären Testsuite.[/yellow]")
+                    summary_lines.append(f"- 🧩 ⚠️ Vorab-Import-Check nach {MAX_VERIFICATION_ITERATIONS} Versuchen weiterhin mit Funden – weiter mit der regulären Testsuite (dort erneut sichtbar).")
 
         for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
             if run_start_tokens is not None and (
@@ -319,13 +996,75 @@ class VerificationMixin:
                     # jetzt als eigenständigen Fehlschlag statt als bloßes "nicht geprüft".
                     notify(f"  ❌ [bold red]{report.reason_skipped}[/bold red]")
                     summary_lines.append(f"- ❌ {report.reason_skipped}")
+
+                    # Team-Optimierung (Retrospektive, zeiterfassung_app-Lauf): "conftest.py ohne
+                    # jede echte Testdatei" wurde bisher zwar korrekt als Fehlschlag ERKANNT, aber
+                    # nie ein Fix dafür ausgelöst - der Zweig endete direkt in `break`, anders als
+                    # der Nachbar-Zweig weiter unten ("keine Tests gefunden" bei report.passed=True),
+                    # der den tester gezielt nachbeauftragt. Ergebnis: das Projekt blieb dauerhaft
+                    # ohne lauffähige Testsuite, obwohl die Ursache (fehlende Testdatei, kein
+                    # fehlender Einstiegspunkt) für den tester-Agenten genauso behebbar gewesen wäre
+                    # wie im Nachbar-Fall. Derselbe EINE Nachbeauftragungs-Versuch (no_tests_fix_
+                    # attempted-Zirkuit-Breaker) wie dort, NUR für die Testdatei-Variante des Befunds
+                    # - eine fehlende Einstiegspunkt-Datei (main.py/app.py/...) ist kein Testsuite-
+                    # Problem und bleibt bewusst unangetastet, damit der tester nicht fälschlich mit
+                    # einer Aufgabe beauftragt wird, die architect/backend lösen müssten.
+                    if (
+                        not no_tests_fix_attempted and "tester" in self._agents
+                        and ("Testdatei" in report.reason_skipped or "Testsuite" in report.reason_skipped)
+                    ):
+                        no_tests_fix_attempted = True
+                        notify(f"  🧪 [yellow]{report.reason_skipped}[/yellow] – beauftrage tester, die fehlende Testsuite nachzuliefern...")
+                        summary_lines.append(f"- 🧪 {report.reason_skipped} → tester beauftragt, eine echte Testsuite nachzuliefern.")
+                        log_decision(project_dir, "missing_tests_fix_dispatched", report.reason_skipped)
+                        fix_task = AgentTask(
+                            task_id=f"incomplete_tests_fix_{attempt}",
+                            agent_id="tester",
+                            description=(
+                                "Für dieses Projekt existiert ein tests/-Verzeichnis (z.B. eine "
+                                "conftest.py), aber KEINE einzige echte Testdatei (test_*.py/"
+                                "*_test.py) - die Testsuite bricht dadurch ab, bevor auch nur ein "
+                                "Test läuft, der vorhandene Code bleibt komplett ungeprüft. Schreibe "
+                                "jetzt vollständige, lauffähige Testdateien (pytest) für den "
+                                f"vorhandenen Code.\n\n{report.reason_skipped}"
+                            ),
+                            context="", project_dir=project_dir,
+                        )
+                        fix_results = await self._run_agents_parallel([fix_task], notify=notify)
+                        self._update_file_owners(file_owners, fix_results)
+                        all_results.extend(fix_results)
+                        continue
                     break
                 # Bewusst ⚠️ statt ℹ️: "keine Tests gefunden" bedeutet, dass generierter Code
                 # UNGEPRÜFT ausgeliefert wird – real beobachtet an einem Taschenrechner-Projekt
                 # ohne jeden Test, dessen "+"-Button sofort mit TypeError abstürzte (Add.execute()
-                # verlangte zwei Argumente, die GUI übergab nur eines). Reine Sichtbarkeit, kein
-                # automatischer Abbruch – DECOMPOSE_SYSTEM_PROMPT (core/task_manager.py) weist das
-                # Modell inzwischen an, den tester-Agenten bei echter Programmlogik einzubeziehen.
+                # verlangte zwei Argumente, die GUI übergab nur eines). DECOMPOSE_SYSTEM_PROMPT
+                # (core/task_manager.py) weist das Modell inzwischen an, den tester-Agenten bei
+                # echter Programmlogik einzubeziehen - reicht aber nicht immer (real beobachtet
+                # am incidentpilot-Projekt: tester blieb ganz ohne Testdatei, statt hier nur
+                # sichtbar zu bleiben, wird jetzt EIN gezielter Nachbeauftragungs-Versuch
+                # unternommen, bevor endgültig aufgegeben wird.
+                if not no_tests_fix_attempted and "tester" in self._agents:
+                    no_tests_fix_attempted = True
+                    notify(f"  🧪 [yellow]{report.reason_skipped}[/yellow] – beauftrage tester mit einer echten Testsuite...")
+                    summary_lines.append(f"- 🧪 {report.reason_skipped} → tester beauftragt, eine echte Testsuite nachzuliefern.")
+                    log_decision(project_dir, "missing_tests_fix_dispatched", report.reason_skipped)
+                    fix_task = AgentTask(
+                        task_id=f"missing_tests_fix_{attempt}",
+                        agent_id="tester",
+                        description=(
+                            "Für dieses Projekt existiert noch KEINE echte, automatisch ausführbare "
+                            "Testsuite (kein test_*.py, kein npm-Testskript gefunden) - der bereits "
+                            "geschriebene Code wird dadurch komplett ungeprüft ausgeliefert. Schreibe "
+                            "jetzt eine vollständige, lauffähige Testsuite (pytest bzw. das für dieses "
+                            "Projekt passende Framework) für den vorhandenen Code."
+                        ),
+                        context="", project_dir=project_dir,
+                    )
+                    fix_results = await self._run_agents_parallel([fix_task], notify=notify)
+                    self._update_file_owners(file_owners, fix_results)
+                    all_results.extend(fix_results)
+                    continue
                 notify(f"  ⚠️ [yellow]{report.reason_skipped}[/yellow]")
                 summary_lines.append(f"- ⚠️ {report.reason_skipped} Generierter Code wurde NICHT automatisch verifiziert.")
                 break
@@ -334,9 +1073,120 @@ class VerificationMixin:
                 notify(f"  ✅ [bold green]Alle Tests bestanden[/bold green] (Versuch {attempt}, {report.duration_seconds:.1f}s).")
                 summary_lines.append(f"- ✅ Echte Testsuite bestanden nach {attempt} Durchlauf/Durchläufen ({report.duration_seconds:.1f}s).")
                 verification_ok = True
+                if had_prior_test_ticket and test_ticket_id:
+                    try:
+                        upsert_ticket(
+                            ticket_id=test_ticket_id,
+                            title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                            source="orchestrator", status="done", project_slug=self.last_project_slug,
+                            detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
+                        )
+                        notify("  🎫 [dim]Ticket für vorherigen Testfehlschlag als gelöst geschlossen.[/dim]")
+                    except Exception as e:
+                        notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
                 break
 
             notify(f"  ❌ [bold red]{len(report.failures)} Testfehler[/bold red] – ermittle betroffene Agenten aus dem echten Traceback...")
+
+            current_signature = _issue_signature(report.failures, lambda f: (f.test_id, f.message[:300]))
+            if _no_progress(previous_failure_signature, current_signature):
+                escalated_and_resolved = False
+                if not escalation_attempted and not (
+                    run_start_tokens is not None and (
+                        self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                    )
+                ):
+                    escalation_attempted = True
+                    stuck_owners = {
+                        file_owners[f] for failure in report.failures for f in failure.files if f in file_owners
+                    } & set(self._agents.keys())
+                    lead_targets = {
+                        dept_id for dept_id, defn in DEPARTMENT_DEFINITIONS.items()
+                        if stuck_owners & set(defn["members"]) and dept_id in self._dept_leads
+                    }
+                    if lead_targets:
+                        notify(
+                            f"  🔀 [bold yellow]Strategiewechsel (Eskalation):[/bold yellow] Derselbe Fehler nach "
+                            f"einem wirkungslosen Fixversuch – ziehe Fachbereichsleiter "
+                            f"({', '.join(sorted(lead_targets))}) statt derselben Wiederholung hinzu..."
+                        )
+                        top_failures = "\n\n".join(
+                            f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(f.files) or 'unbekannt'}"
+                            for f in report.failures[:5]
+                        )
+                        escalation_tasks = [
+                            AgentTask(
+                                task_id=f"verify_escalation_{dept_id}_{attempt}",
+                                agent_id=dept_id,
+                                description=(
+                                    "Ein vorheriger, gezielter Fixversuch deines Fachbereichs hat den folgenden "
+                                    "echten Testfehler NICHT behoben (identisch vor und nach dem Versuch) - "
+                                    "derselbe Ansatz hat also erkennbar nicht funktioniert. Analysiere das Problem "
+                                    "aus einer anderen Perspektive (z.B. falsche Grundannahme, fehlende "
+                                    "Abhängigkeit zwischen Dateien, falscher zuständiger Agent) und weise dein "
+                                    f"Team mit einer GEÄNDERTEN Strategie an, statt denselben Fix zu wiederholen.\n\n{top_failures}"
+                                ),
+                                context="", project_dir=project_dir,
+                            )
+                            for dept_id in lead_targets
+                        ]
+                        fix_results = await self._run_agents_parallel(escalation_tasks, notify=notify)
+                        self._update_file_owners(file_owners, fix_results)
+                        all_results.extend(fix_results)
+                        summary_lines.append(
+                            f"- 🔀 Versuch {attempt}: kein Fortschritt beim vorherigen Fix → Eskalation an "
+                            f"Fachbereichsleiter ({', '.join(sorted(lead_targets))}) mit geänderter Strategie."
+                        )
+                        # WICHTIG: das Ergebnis der Eskalation wird HIER SOFORT per echtem
+                        # Testlauf geprüft (nicht über `continue` in die äußere Schleife
+                        # zurückgereicht) - ein `continue` würde einen der ohnehin knappen
+                        # MAX_VERIFICATION_ITERATIONS-Versuche für die Eskalation selbst
+                        # verbrauchen und im letzten erlaubten Versuch dazu führen, dass die
+                        # Schleife nach der Eskalation kommentarlos endet, OHNE das Scheitern
+                        # zu melden oder ein Ticket zu eröffnen (so beim ersten Implementierungs-
+                        # versuch real per Test aufgedeckt, siehe
+                        # tests/test_verification_no_progress_breaker.py).
+                        report = await asyncio.to_thread(verifier.run_tests)
+                        if report.passed:
+                            notify(f"  ✅ [bold green]Eskalation erfolgreich:[/bold green] Alle Tests bestanden (Versuch {attempt}, {report.duration_seconds:.1f}s).")
+                            summary_lines.append("- ✅ Eskalation an Fachbereichsleiter behob den Fehler – Testsuite bestanden.")
+                            verification_ok = True
+                            if had_prior_test_ticket and test_ticket_id:
+                                try:
+                                    upsert_ticket(
+                                        ticket_id=test_ticket_id,
+                                        title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                                        source="orchestrator", status="done", project_slug=self.last_project_slug,
+                                        detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
+                                    )
+                                except Exception as e:
+                                    notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
+                            break
+                        escalated_and_resolved = True  # Eskalation lief, aber weiterhin rot - unten normal abbrechen.
+
+                notify(
+                    "  🛑 [bold red]Kein Fortschritt:[/bold red] identische Testfehler wie vor dem letzten "
+                    f"Fixversuch{' (auch nach Eskalation an den Fachbereichsleiter)' if escalated_and_resolved else ''} "
+                    "– breche Verifikations-Schleife ab statt unverändert zu wiederholen."
+                )
+                summary_lines.append(
+                    f"- 🛑 Versuch {attempt}: dieselben {len(report.failures)} Testfehler wie nach dem vorherigen "
+                    "Fixversuch (keine Veränderung)" + (" - auch nach Eskalation" if escalated_and_resolved else "") +
+                    " – Schleife abgebrochen statt einen wirkungslosen weiteren Versuch zu verbrauchen."
+                )
+                if self.last_project_slug:
+                    try:
+                        upsert_ticket(
+                            ticket_id=f"recurring-failure-{self.last_project_slug}",
+                            title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                            source="orchestrator", status="blocked", project_slug=self.last_project_slug,
+                            detail=f"Fixversuch änderte nichts an {len(report.failures)} Testfehler(n) – "
+                                   "vermutlich falscher/unzureichend instruierter Agent."[:300],
+                        )
+                    except Exception as e:
+                        notify(f"  ⚠️ [dim yellow]Ticket für ungelösten Testfehler konnte nicht angelegt werden: {e}[/dim yellow]")
+                break
+            previous_failure_signature = current_signature
 
             agents_to_fix: dict[str, list] = {}
             for failure in report.failures:
@@ -356,6 +1206,7 @@ class VerificationMixin:
             for agent_id, fails in agents_to_fix.items():
                 failure_text = "\n\n".join(
                     f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(f.files) or 'unbekannt'}"
+                    + (f"\n{diag}" if (diag := _diagnose_import_failure(f.message)) else "")
                     for f in fails
                 )
                 fix_tasks.append(AgentTask(
@@ -366,6 +1217,7 @@ class VerificationMixin:
                         f"pytest/unittest-Output). Nutze read_file, um die betroffene(n) Datei(en) zu prüfen, und "
                         f"edit_file/write_file, um den Fehler zu beheben. Verifiziere deinen Fix danach mit run_tests.\n\n"
                         f"{failure_text}"
+                        + (_prior_run_context(test_ticket_id) if attempt == 1 and test_ticket_id else "")
                     ),
                     context="",
                     project_dir=project_dir,
@@ -380,6 +1232,27 @@ class VerificationMixin:
             if attempt == MAX_VERIFICATION_ITERATIONS:
                 notify("  ⚠️ [yellow]Maximale Verifikations-Iterationen erreicht – letzter Stand wird übernommen.[/yellow]")
                 summary_lines.append(f"- ⚠️ Nach {MAX_VERIFICATION_ITERATIONS} Versuchen nicht vollständig grün – letzter Stand wurde übernommen.")
+                # Realer Fund (Team-Retrospektive, omnichat-Projekt): bisher wurde ein nach
+                # MAX_VERIFICATION_ITERATIONS aufgegebener Testfehlschlag NUR geloggt - kein
+                # Backlog-Ticket, keine sonstige Eskalation. Die bereits bestehende
+                # `has_repeated_failure`-Eskalation in agents/orchestrator/__init__.py greift
+                # erst NACH zwei aufeinanderfolgenden kompletten Läufen - hier wird bereits
+                # beim ERSTEN Scheitern innerhalb dieses einen Laufs ein Ticket eröffnet
+                # (upsert_ticket, dieselbe Ticket-ID wie ein etwaiges späteres wiederholtes
+                # Scheitern würde erzeugen, damit beide Pfade dasselbe Ticket aktualisieren
+                # statt Duplikate anzulegen), statt auf einen zweiten fehlgeschlagenen Lauf
+                # zu warten, bevor überhaupt ein sichtbares Signal für menschliche Prüfung
+                # entsteht.
+                if self.last_project_slug:
+                    try:
+                        upsert_ticket(
+                            ticket_id=f"recurring-failure-{self.last_project_slug}",
+                            title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                            source="orchestrator", status="blocked", project_slug=self.last_project_slug,
+                            detail="\n".join(summary_lines).strip()[:300],
+                        )
+                    except Exception as e:
+                        notify(f"  ⚠️ [dim yellow]Ticket für ungelösten Testfehler konnte nicht angelegt werden: {e}[/dim yellow]")
 
         # Echtes Deployment beginnt damit, dass das Projekt sich überhaupt containerisieren
         # lässt: ein generiertes Dockerfile, das nie tatsächlich baut, bringt niemanden näher
@@ -397,6 +1270,12 @@ class VerificationMixin:
                 else:
                     notify("  🐳 [bold red]Docker-Build fehlgeschlagen.[/bold red]")
                     summary_lines.append(f"- 🐳 ❌ Docker-Build fehlgeschlagen: {docker_report.output[:500]}")
+            elif docker_report.reason_skipped and "Daemon" in docker_report.reason_skipped:
+                # Sichtbar (anders als "kein Dockerfile"/"Docker nicht installiert"), weil diese
+                # Ursache sonst leicht mit einem echten, im Dockerfile liegenden Fehler verwechselt
+                # wird - siehe _DOCKER_DAEMON_UNAVAILABLE_RE (core/verifier/models.py).
+                notify(f"  🐳 [dim yellow]{docker_report.reason_skipped}[/dim yellow]")
+                summary_lines.append(f"- 🐳 ⏭️ {docker_report.reason_skipped}")
 
         # Ersetzt die rein LLM-basierte Einschätzung des security-Agenten zu Abhängigkeits-
         # Risiken durch einen echten Abgleich gegen eine öffentliche Advisory-Datenbank
@@ -472,11 +1351,28 @@ class VerificationMixin:
         # Meinungsänderung an einem Projekt, das sich nie dafür entschieden hat). Rein
         # informativ, beeinflusst verification_ok nicht - anders als ein Testfehler hat ein
         # Lint-Fund oft keine unmittelbare Ein-Zeilen-Lösung.
+        # Fingerabdruck aller Lint-Funde dieses Laufs ("tool:datei:regel") - dient
+        # core/project_status.py.has_repeated_lint_finding() dazu, denselben, über mehrere
+        # Läufe unverändert bestehen bleibenden Lint-Fund zu erkennen (siehe Kommentar dort).
+        # self.last_lint_signature statt Erweiterung des Rückgabe-Tupels dieser Methode - hält
+        # bestehende Aufrufer/Tests, die die feste Tupel-Länge erwarten, unverändert.
+        self.last_lint_signature: list[str] = []
+        # Team-Optimierung (Retrospektive, 2026-09-04): agents/orchestrator/__init__.py schließt
+        # ein offenes "recurring-lint-"-Ticket automatisch, sobald ein Lauf KEINE Lint-Funde mehr
+        # meldet (last_lint_signature leer) - das darf aber NICHT greifen, wenn Lint in diesem Lauf
+        # gar nicht erst lief (z.B. `ruff` auf diesem System nicht installiert, oder die Schleife
+        # wegen Budget/Abbruch übersprungen wurde). Ohne dieses Flag würde ein übersprungener Check
+        # fälschlich als "Fund behoben" durchgehen.
+        self.last_lint_attempted: bool = False
         if not (budget_aborted or manually_cancelled):
             lint_reports = await asyncio.to_thread(verifier.check_lint)
             for lint in lint_reports:
                 if not lint.attempted:
                     continue
+                self.last_lint_attempted = True
+                self.last_lint_signature.extend(
+                    f"{lint.tool}:{i.file_path}:{i.rule}" for i in lint.issues
+                )
                 if not lint.passed:
                     top = "; ".join(
                         f"{i.file_path}:{i.line_number} [{i.rule}]" for i in lint.issues[:5]
@@ -488,6 +1384,109 @@ class VerificationMixin:
                 else:
                     notify(f"  🎨 [bold green]{lint.tool}: keine Lint-Funde.[/bold green]")
                     summary_lines.append(f"- 🎨 {lint.tool}: keine Lint-Funde.")
+
+        # Vollständigkeits-Check: erkennt Stub-/Platzhalter-Code (z.B. "Hier würde die
+        # Verschlüsselung erfolgen") und im README referenzierte, aber fehlende Dateien (z.B.
+        # requirements.txt) - siehe core/verifier/completeness.py und ENABLE_COMPLETENESS_CHECK
+        # (config.py) für den vollständigen Kontext. Anders als Lint/SAST blockiert ein Fund
+        # hier verification_ok, weil ein Stub-Kommentar eine nicht erfüllte fachliche
+        # Anforderung ist, kein Stil-Hinweis - deshalb dieselbe gezielte Fix-Schleife wie beim
+        # echten Testfehler oben, statt nur eine informative Zeile im Protokoll.
+        if ENABLE_COMPLETENESS_CHECK and not (budget_aborted or manually_cancelled):
+            # Derselbe Zirkuit-Breaker wie in der Test-Fix- und der Governance-Fix-Schleife
+            # (Team-Retrospektive nach dem taskpulse-Lauf): identische Vollständigkeits-Funde
+            # nach einem Fixversuch bedeuten fast immer, dass der Agent das Problem nicht lösen
+            # konnte - ein zweiter, identischer Fix-Dispatch wäre reine Verschwendung.
+            previous_completeness_signature: frozenset[tuple[str, str]] | None = None
+            for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
+                if run_start_tokens is not None and (
+                    self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                ):
+                    budget_aborted = True
+                    notify("  🚫 [bold red]Budget erreicht[/bold red] – weitere Vollständigkeits-Fixversuche werden übersprungen.")
+                    summary_lines.append(f"- 🚫 {self._budget_exceeded_label(run_start_tokens)} erreicht – Vollständigkeits-Check nach Versuch {attempt - 1} abgebrochen.")
+                    break
+                if cancel_requested and cancel_requested():
+                    manually_cancelled = True
+                    notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – weitere Vollständigkeits-Fixversuche werden übersprungen.")
+                    summary_lines.append(f"- ⏹️ Manuell abgebrochen – Vollständigkeits-Check nach Versuch {attempt - 1} beendet.")
+                    break
+
+                completeness_report = await asyncio.to_thread(verifier.check_completeness)
+                if not completeness_report.attempted:
+                    break
+                if completeness_report.passed:
+                    if attempt == 1:
+                        notify("  🧩 [bold green]Vollständigkeits-Check:[/bold green] keine Stub-/Platzhalter-Funde, keine fehlenden README-Referenzen.")
+                        summary_lines.append("- 🧩 Vollständigkeits-Check: keine Stub-/Platzhalter-Funde, keine fehlenden README-referenzierten Dateien.")
+                    else:
+                        notify(f"  🧩 [bold green]Vollständigkeits-Check nach Fix (Versuch {attempt}) bestanden.[/bold green]")
+                        summary_lines.append(f"- 🧩 Vollständigkeits-Check nach {attempt} Durchlauf/Durchläufen bestanden.")
+                    break
+
+                current_completeness_signature = _issue_signature(
+                    completeness_report.issues, lambda i: (i.file_path, i.message[:300]),
+                )
+                if _no_progress(previous_completeness_signature, current_completeness_signature):
+                    notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Vollständigkeits-Funde wie vor dem letzten Fixversuch – breche Schleife ab.")
+                    summary_lines.append(
+                        f"- 🧩 🛑 Versuch {attempt}: dieselben {len(completeness_report.issues)} Vollständigkeits-Fund(e) wie nach "
+                        "dem vorherigen Fixversuch (keine Veränderung) – Schleife abgebrochen statt einen wirkungslosen weiteren "
+                        "Versuch zu verbrauchen."
+                    )
+                    verification_ok = False
+                    break
+                previous_completeness_signature = current_completeness_signature
+
+                top = "; ".join(
+                    f"{i.file_path}" + (f":{i.line_number}" if i.line_number else "") + f" – {i.message}"
+                    for i in completeness_report.issues[:5]
+                )
+                if len(completeness_report.issues) > 5:
+                    top += f" … und {len(completeness_report.issues) - 5} weitere"
+                notify(f"  🧩 [bold red]Vollständigkeits-Check: {len(completeness_report.issues)} Fund(e).[/bold red]")
+                verification_ok = False
+
+                agents_to_fix: dict[str, list] = {}
+                for issue in completeness_report.issues:
+                    owner = file_owners.get(issue.file_path)
+                    if owner and owner in self._agents:
+                        agents_to_fix.setdefault(owner, []).append(issue)
+
+                if not agents_to_fix:
+                    summary_lines.append(f"- 🧩 ❌ {len(completeness_report.issues)} Vollständigkeits-Fund(e) blieben ungelöst (keinem Agenten eindeutig zuordenbar): {top}")
+                    break
+
+                fix_tasks = []
+                for agent_id, agent_issues in agents_to_fix.items():
+                    issue_text = "\n".join(
+                        f"- {i.file_path}" + (f":{i.line_number}" if i.line_number else "") + f" – {i.message}"
+                        for i in agent_issues
+                    )
+                    fix_tasks.append(AgentTask(
+                        task_id=f"verify_fix_completeness_{agent_id}_{attempt}",
+                        agent_id=agent_id,
+                        description=(
+                            f"Der Vollständigkeits-Check hat unfertigen Code gefunden: ein Kommentar/Stub "
+                            f"beschreibt eine Funktionalität, die NICHT wirklich implementiert ist (z.B. "
+                            f"\"Hier würde X erfolgen\"), oder eine im README referenzierte Datei fehlt. "
+                            f"Nutze read_file, um die betroffene(n) Stelle(n) zu prüfen, und implementiere "
+                            f"die fehlende Funktionalität WIRKLICH (nicht nur den Kommentar entfernen) bzw. "
+                            f"lege die fehlende Datei an.\n\n{issue_text}"
+                        ),
+                        context="",
+                        project_dir=project_dir,
+                    ))
+
+                notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix (Vollständigkeit):[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())}...")
+                fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+                self._update_file_owners(file_owners, fix_results)
+                all_results.extend(fix_results)
+                summary_lines.append(f"- 🧩 Versuch {attempt}: {len(completeness_report.issues)} Vollständigkeits-Fund(e) → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt: {top}")
+
+                if attempt == MAX_VERIFICATION_ITERATIONS:
+                    notify("  ⚠️ [yellow]Maximale Vollständigkeits-Fixversuche erreicht – letzter Stand wird übernommen.[/yellow]")
+                    summary_lines.append(f"- 🧩 ⚠️ Nach {MAX_VERIFICATION_ITERATIONS} Versuchen weiterhin Stub-/Platzhalter-Funde – letzter Stand wurde übernommen.")
 
         # Realer Fund bei einer Bestandsaufnahme des eigenen Teams: die Verifikation misst
         # bisher nur Pass/Fail, keine Abdeckung - ein Projekt mit 3 bestandenen Tests bei 500
@@ -510,7 +1509,18 @@ class VerificationMixin:
                     verification_ok = False
 
         # Runtime Smoke-Check: Prüft, ob die generierte App tatsächlich hochfährt / antwortet (Tests grün != App startet)
-        if not (budget_aborted or manually_cancelled) and report is not None and report.ran and report.passed:
+        #
+        # Team-Optimierung (Retrospektive 2026-09-04): bisher lief dieser Check nur bei
+        # report.passed - also GENAU DANN NICHT, wenn die Testsuite nach MAX_VERIFICATION_
+        # ITERATIONS-Versuchen weiterhin rot blieb und "der letzte Stand übernommen" wurde
+        # (siehe Zweig oben, `verify_fix_test`-Schleife). Real beobachtet an `zeiterfassung_
+        # app`: genau in diesem Fall blieb ein simpler ImportError (Klassenname-Mismatch
+        # zwischen main.py-Import und der tatsächlichen Middleware-Klasse) unentdeckt, bis ihn
+        # ein SPÄTERER Governance-Review-Lauf per Code-Lesen fand - der automatisierte Smoke-
+        # Test hätte ihn sofort UND günstiger gefunden. `report.ran` bleibt Voraussetzung (ohne
+        # jeden Testlauf ist z.B. auch keine Dependency-Installation gesichert, gegen die
+        # `check_runtime_smoke()` starten könnte), `report.passed` nicht mehr.
+        if not (budget_aborted or manually_cancelled) and report is not None and report.ran:
             def _build_smoke_fix_task(smoke_report, attempt):
                 owner = file_owners.get(smoke_report.entrypoint) if smoke_report.entrypoint else None
                 agent_id = owner if owner in self._agents else ("backend" if "backend" in self._agents else None)

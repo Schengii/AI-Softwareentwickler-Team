@@ -40,8 +40,33 @@ class WorkspaceManager:
         self.base_dir = Path(base_workspace_dir or WORKSPACE_DIR).resolve()
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    def _canonical_key(name: str) -> str:
+        """
+        Vergleichs-Schlüssel für "meinen zwei Namen dasselbe Projekt?" - NUR zum Vergleichen
+        gedacht, nie als tatsächlicher Ordnername (siehe get_project_dir unten für die
+        sichtbare Normalisierung). Lowercased und entfernt JEDES Nicht-Alphanumerische
+        komplett (statt es wie clean_name in "_" umzuwandeln), damit "WebhookShield",
+        "webhook_shield" und "Webhook Shield" auf denselben Schlüssel abbilden.
+        """
+        return re.sub(r'[^a-z0-9]', '', name.lower())
+
     def get_project_dir(self, project_name: str) -> Path:
-        """Gibt den sicheren Pfad zum Projektverzeichnis zurück (unterstützt auch absolute Pfade)."""
+        """
+        Gibt den sicheren Pfad zum Projektverzeichnis zurück (unterstützt auch absolute Pfade).
+
+        Team-Retrospektive (Verbesserungsvorschlag "Projekt-Namens-Kanonisierung"): ein realer
+        Lauf bekam den Auftrag "WebhookShield reparieren", der Orchestrator legte aber
+        `workspace/webhookshield/` an, weil der eigentliche Code bereits unter
+        `workspace/webhook_shield/` lag (aus einem früheren Lauf mit Leerzeichen im Namen -
+        die alte Normalisierung unten wandelte Leerzeichen in "_", aber unterschied nicht
+        Groß-/Kleinschreibung). Der Agent fand ein leeres Verzeichnis, hielt es für ein
+        gelöschtes/kaputtes Projekt und fragte drei Mal nach, statt zu bauen - ein kompletter
+        Lauf verpuffte fast folgenlos (nur README.md + requirements.txt). Bevor ein NEUES
+        Verzeichnis angelegt wird, prüft diese Methode jetzt per `_canonical_key`, ob unter den
+        bereits vorhandenen `base_dir`-Ordnern einer denselben kanonischen Schlüssel hat - wenn
+        ja, wird DIESER bestehende Ordner zurückgegeben statt ein leerer Zwilling angelegt.
+        """
         # Wenn ein absoluter Pfad (z.B. C:\Projekte\App) übergeben wurde
         if os.path.isabs(project_name):
             path_candidate = Path(project_name).resolve()
@@ -49,7 +74,30 @@ class WorkspaceManager:
             return path_candidate
 
         clean_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', project_name).strip('_') or "default_project"
+        clean_name = clean_name.lower()
         project_path = (self.base_dir / clean_name).resolve()
+
+        if not project_path.exists():
+            target_key = self._canonical_key(project_name)
+            try:
+                existing_dirs = [p for p in self.base_dir.iterdir() if p.is_dir()]
+            except OSError:
+                existing_dirs = []
+            for existing in existing_dirs:
+                if existing.name == clean_name:
+                    continue
+                if self._canonical_key(existing.name) == target_key:
+                    # Bestehendes Projekt mit demselben kanonischen Namen gefunden - dieses
+                    # wiederverwenden statt einen leeren Zwilling anzulegen. Nur, wenn es
+                    # tatsächlich Inhalt hat (ein ebenfalls leerer gleichnamiger Ordner bringt
+                    # keinen Vorteil gegenüber dem neuen clean_name-Pfad).
+                    try:
+                        has_content = any(existing.iterdir())
+                    except OSError:
+                        has_content = False
+                    if has_content:
+                        return existing
+
         project_path.mkdir(parents=True, exist_ok=True)
         return project_path
 
@@ -168,6 +216,13 @@ class WorkspaceManager:
             # unsauber geschlossenen Codeblöcken) - lieber gar nicht speichern als eine Datei mit
             # kaputtem Inhalt zu überschreiben.
             if clean_rel.lower().endswith(".py") and not CodeSandbox.validate_code(content, "py").is_valid:
+                continue
+
+            # Dieselbe Manifest-Korruptions-Prüfung wie core/agent_toolbox.py._tool_write_file():
+            # ein roh übernommener Diff-Hunk statt einer echten requirements.txt/package.json
+            # darf nicht unbemerkt auf die Platte gelangen (siehe core/manifest_guard.py).
+            from core.manifest_guard import detect_corrupted_manifest
+            if detect_corrupted_manifest(clean_rel, content):
                 continue
 
             target_file.parent.mkdir(parents=True, exist_ok=True)

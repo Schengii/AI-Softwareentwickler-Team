@@ -63,6 +63,18 @@ class Ticket:
     # Tickets, die zuerst status="done" erreichen müssen - siehe is_ticket_ready() unten.
     epic: str = ""
     depends_on: list[str] = field(default_factory=list)
+    # Team-Optimierung (Retrospektive 2026-09-03): ein von der Governance-/Verifikations-
+    # Fix-Schleife (agents/orchestrator/verification.py) als "blocked" eröffnetes Ticket zu
+    # einem ungelösten kritischen Befund wurde bisher NIRGENDS mehr aufgegriffen - core/
+    # backlog_worker.py betrachtete nur status="todo" aus den Quellen "cli"/"dashboard", ein
+    # "blocked"-Ticket mit source="orchestrator" blieb für immer liegen, selbst wenn ein
+    # späterer, unabhängiger Poll-Zyklus das Problem durchaus hätte angehen können. `retries`
+    # zählt, wie oft core/backlog_worker.py ein SOLCHES Ticket bereits eigenständig erneut
+    # aufgegriffen hat (siehe dort, GOVERNANCE_TICKET_RETRY_PREFIXES) - begrenzt auf
+    # MAX_GOVERNANCE_TICKET_RETRIES, damit ein Befund, den das Team nachweislich nicht lösen
+    # kann, nicht endlos Budget in identischen Fehlversuchen verbrennt, sondern nach Erreichen
+    # der Grenze sichtbar für eine menschliche Prüfung liegen bleibt.
+    retries: int = 0
 
 
 def _now() -> str:
@@ -70,12 +82,33 @@ def _now() -> str:
 
 
 def _load_raw() -> list[dict]:
+    """
+    Realer Fund (Testflake beim Verifizieren des _save_raw()-Torn-Read-Fixes, siehe dort):
+    os.replace() dort ist zwar atomar, aber auf Windows kann ein GLEICHZEITIGER read_text()
+    hier mit einem transienten PermissionError scheitern, wenn genau in diesem Moment der
+    Rename der Zieldatei passiert (kurze Sharing-Violation, kein echter Dauerzustand - exakt
+    dasselbe Phänomen wie beim Writer, nur diesmal auf der Leseseite). Das ursprüngliche
+    `except (..., OSError): return []` fing diesen transienten Fehler mit ab und lieferte
+    STILLSCHWEIGEND eine leere Liste zurück - derselbe "keine Tickets vorgetäuscht"-Bug wie
+    beim torn read, nur über einen anderen Auslöser. Kurzer Retry für PermissionError
+    unterscheidet das vom echten "Datei fehlt"-Fall (der weiterhin sofort [] liefert) und vom
+    echten JSONDecodeError (korrupte Datei, kein Race - kein Retry sinnvoll).
+    """
     if not BACKLOG_FILE.exists():
         return []
-    try:
-        return json.loads(BACKLOG_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return []
+    max_attempts = 10
+    for attempt in range(max_attempts):
+        try:
+            return json.loads(BACKLOG_FILE.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return []
+        except PermissionError:
+            if attempt == max_attempts - 1:
+                return []
+            time.sleep(0.05 * (attempt + 1))
+        except OSError:
+            return []
+    return []
 
 
 def _save_raw(tickets: list[dict]) -> None:
@@ -128,14 +161,25 @@ def list_tickets(status: str | None = None) -> list[Ticket]:
     return list(reversed(tickets))  # Listenreihenfolge = Aktualisierungsreihenfolge, siehe _save_raw()
 
 
+def get_ticket(ticket_id: str) -> Ticket | None:
+    """Ein einzelnes Ticket anhand seiner ID, oder None, wenn es nicht existiert. Team-
+    Retrospektive nach dem taskpulse-Lauf: Fix-Schleifen (agents/orchestrator/verification.py)
+    öffnen bereits Tickets für ungelöste Funde NACH einem Lauf, prüften aber bisher nie VOR
+    einem neuen Lauf, ob für dasselbe Projekt schon ein offenes Ticket zu genau diesem Problem
+    existiert - ein neuer Lauf startete jedes Mal bei Null, ohne zu wissen, dass ein Fixversuch
+    für ein ähnliches Problem im letzten Lauf bereits gescheitert war."""
+    return next((t for t in list_tickets() if t.id == ticket_id), None)
+
+
 def new_ticket_id(source: str) -> str:
     return f"{source}-{uuid.uuid4().hex[:8]}"
 
 
 def upsert_ticket(
-    ticket_id: str, title: str, source: str, status: str, detail: str = "", project_slug: str = "",
+    ticket_id: str, title: str, source: str, status: str, detail: str = "", project_slug: str | None = None,
     priority: int | None = None, estimate: str | None = None,
     epic: str | None = None, depends_on: list[str] | None = None,
+    retries: int | None = None,
 ) -> Ticket:
     """
     Legt ein Ticket an ODER aktualisiert ein bestehendes (anhand `ticket_id`) – ein einziger
@@ -157,19 +201,32 @@ def upsert_ticket(
     tickets = _load_raw()
     existing = next((t for t in tickets if t["id"] == ticket_id), None)
     created_at = existing["created_at"] if existing else _now()
+    # Bugfix (Team-Optimierung, real beobachtet im mockforge-Governance-Retry): project_slug
+    # hatte bisher einen blanken Default ("", KEIN Sentinel wie priority/estimate/epic/retries
+    # unten) - core/backlog_worker.py._process_single_ticket() aktualisiert denselben Ticket
+    # aber MEHRFACH über seinen Lebenszyklus hinweg (Aufgreifen, Retry-Zähler, finaler Status),
+    # ohne project_slug bei jedem Aufruf erneut mitzugeben. Der finale Status-Update-Aufruf
+    # (nach dem Orchestrator-Lauf) überschrieb project_slug dadurch STILLSCHWEIGEND mit "" -
+    # beim nächsten automatischen Retry desselben Governance-Tickets (core/backlog_worker.py.
+    # _governance_retry_pool()) fand `if ticket.project_slug:` dadurch nichts mehr, der
+    # Orchestrator legte statt einer Fortsetzung des BESTEHENDEN Projekts ein komplett neues,
+    # leeres Projekt an. Jetzt derselbe Sentinel wie bei priority/estimate/epic/retries: None
+    # (Standard) übernimmt den vorhandenen Wert unverändert, nur ein EXPLIZITES "" löscht ihn.
+    resolved_project_slug = project_slug if project_slug is not None else (existing.get("project_slug", "") if existing else "")
     resolved_priority = priority if priority is not None else (existing.get("priority", 2) if existing else 2)
     resolved_estimate = estimate if estimate is not None else (existing.get("estimate", "") if existing else "")
     resolved_epic = epic if epic is not None else (existing.get("epic", "") if existing else "")
     resolved_depends_on = depends_on if depends_on is not None else (existing.get("depends_on", []) if existing else [])
+    resolved_retries = retries if retries is not None else (existing.get("retries", 0) if existing else 0)
     # Alte Position entfernen (falls vorhanden) - das aktualisierte Ticket wird unten ans
     # ENDE angehängt, damit die Listenreihenfolge selbst die Aktualisierungsreihenfolge
     # abbildet (siehe list_tickets()/_save_raw()).
     tickets = [t for t in tickets if t["id"] != ticket_id]
     result = Ticket(
         id=ticket_id, title=title, source=source, status=status,
-        created_at=created_at, updated_at=_now(), detail=detail, project_slug=project_slug,
+        created_at=created_at, updated_at=_now(), detail=detail, project_slug=resolved_project_slug,
         priority=resolved_priority, estimate=resolved_estimate,
-        epic=resolved_epic, depends_on=list(resolved_depends_on),
+        epic=resolved_epic, depends_on=list(resolved_depends_on), retries=resolved_retries,
     )
     tickets.append(asdict(result))
     _save_raw(tickets)

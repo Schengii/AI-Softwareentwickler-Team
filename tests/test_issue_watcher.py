@@ -49,6 +49,11 @@ class TestIssueWatcherOrchestration(unittest.TestCase):
         # `getattr(orchestrator, "last_needs_human_input", False)` fälschlich True liefern.
         self.fake_orchestrator.last_needs_human_input = False
         self.fake_orchestrator.last_clarification_questions = []
+        # Dasselbe MagicMock-Fallstrick-Problem wie bei last_needs_human_input oben: ohne diese
+        # explizite Zuweisung würde core/issue_watcher.py's
+        # `getattr(orchestrator, "last_isolated_worktree", None)` ein truthy Mock-Objekt statt
+        # None liefern und fälschlich einen (nicht existierenden) Worktree-Merge auslösen.
+        self.fake_orchestrator.last_isolated_worktree = None
 
         self._gh_patcher = patch("core.issue_watcher.GitHubAgent", return_value=self.fake_github)
         self._orch_patcher = patch("core.issue_watcher.Orchestrator", return_value=self.fake_orchestrator)
@@ -138,6 +143,43 @@ class TestIssueWatcherOrchestration(unittest.TestCase):
         tickets = asyncio.run(_run_and_check())
         self.assertEqual(len(tickets), 1)
         self.assertEqual(tickets[0].status, "in_progress")
+
+    def test_isolated_worktree_changes_are_merged_back_before_diff_check(self):
+        """Bugfix, dieselbe Ursache wie in tests/test_backlog_worker.py.
+        test_isolated_worktree_changes_are_merged_back_before_diff_check - siehe dort und
+        core/git_isolation.py.copy_worktree_changes_to_target()."""
+        fake_worktree = MagicMock(path="/fake/worktree/path", branch="ai-team/fix-abc123")
+        self.fake_orchestrator.last_isolated_worktree = fake_worktree
+
+        with patch("core.issue_watcher.copy_worktree_changes_to_target", return_value=["app/main.py"]) as mock_copy, \
+             patch("core.issue_watcher.remove_worktree") as mock_remove:
+            report = asyncio.run(run_issue_poll_cycle())
+
+        mock_copy.assert_called_once()
+        self.assertIs(mock_copy.call_args.args[0], fake_worktree)
+        mock_remove.assert_called_once_with(fake_worktree, force=True)
+        self.assertEqual(report.results[0].outcome, "pr_opened")
+
+    def test_no_isolated_worktree_skips_merge_step(self):
+        with patch("core.issue_watcher.copy_worktree_changes_to_target") as mock_copy, \
+             patch("core.issue_watcher.remove_worktree") as mock_remove:
+            asyncio.run(run_issue_poll_cycle())
+
+        mock_copy.assert_not_called()
+        mock_remove.assert_not_called()
+
+    def test_falls_back_to_current_branch_when_project_missing_from_protected_branch(self):
+        """Bugfix, dieselbe Ursache wie in tests/test_backlog_worker.py.
+        test_falls_back_to_current_branch_when_project_missing_from_protected_branch."""
+        self.fake_github.get_current_branch.return_value = "feat/some-long-lived-branch"
+        self.fake_github.path_exists_in_branch.return_value = False
+        self.fake_orchestrator.last_project_slug = "mockforge"
+
+        asyncio.run(run_issue_poll_cycle())
+
+        self.fake_github.create_branch.assert_called_once_with(
+            "feat/health-check-endpoint-abc123", base="feat/some-long-lived-branch",
+        )
 
     def test_no_file_changes_skips_branch_creation_and_comments(self):
         self.fake_github.get_status.return_value = ""

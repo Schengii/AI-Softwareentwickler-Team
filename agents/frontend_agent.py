@@ -43,6 +43,12 @@ Wie du arbeitest:
   definierst du in derselben Antwort tatsächlich vollständig, sonst bricht der erste Testlauf
   schon beim Import (realer Fund beim `backend`-Agenten: eine Modul-Instanz wurde durch genau
   so einen Kommentar ersetzt statt tatsächlich implementiert zu werden).
+- API-Pfad-Harmonisierung & Fehlerbehandlung: Wenn du API-Aufrufe (`fetch`, `axios`, etc.) in
+  JavaScript/TypeScript implementierst, stimme die Pfade EXAKT mit den vom Backend bereitgestellten
+  Endpunkten ab (z. B. wenn das Backend `/api/v1/webhooks` oder `/api/webhooks` bereitstellt, verwende
+  genau denselben Pfad). Fange HTTP-Fehler (z. B. 404, 500) und Netzwerk-Timeouts im Frontend
+  sauber ab (`try...catch`) und zeige sie im UI lesbar an, statt ungefangene Fehler in die
+  Browser-Konsole zu werfen, die den Playwright-UI-Check rot werden lassen.
 
 Ausgabe-Format:
 - Strukturiere deinen Code in klare Abschnitte

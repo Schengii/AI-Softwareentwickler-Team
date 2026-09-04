@@ -70,6 +70,19 @@ TOOL_SPECS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "patch_file",
+        "description": "Wendet einen Unified-Diff (@@ ... @@) oder SEARCH/REPLACE-Patch chirurgisch auf eine bestehende Datei an. Ideal für Refactorings und Erweiterungen (spart bis zu 70% Tokens).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relativer Pfad zur bestehenden Datei"},
+                "patch": {"type": "string", "description": "Unified-Diff oder SEARCH/REPLACE Block"},
+            },
+            "required": ["path", "patch"],
+        },
+    },
+
+    {
         "name": "search_code",
         "description": "Durchsucht den Code des aktuellen Projekts per BM25-Relevanz nach einem Suchbegriff (Funktions-/Klassennamen, Konzepte). Hilfreich, um relevante Stellen zu finden, ohne jede Datei einzeln zu lesen.",
         "parameters": {
@@ -340,8 +353,22 @@ class AgentToolbox:
             "Zeichen ('\\\\n', '\\\\\"') statt als echte Escape-Sequenzen im Inhalt gelandet sind."
         )
 
+    @staticmethod
+    def _reject_if_corrupted_manifest(path: str, content: str) -> str | None:
+        """Gibt eine Fehlermeldung zurück, wenn `path` ein Dependency-Manifest (requirements.txt,
+        package.json, ...) ist und `content` typische Merge-/Diff-Korruption zeigt – None bedeutet
+        "in Ordnung, schreiben erlaubt". Siehe core/manifest_guard.py für den realen Fund, der
+        diese Prüfung ausgelöst hat (roh übernommener Diff-Hunk statt gemergter requirements.txt,
+        pip install schlug dadurch fehl)."""
+        from core.manifest_guard import detect_corrupted_manifest
+
+        return detect_corrupted_manifest(path, content)
+
     async def _tool_write_file(self, path: str, content: str) -> dict:
         rejection = self._reject_if_invalid_python(path, content)
+        if rejection:
+            return {"error": rejection}
+        rejection = self._reject_if_corrupted_manifest(path, content)
         if rejection:
             return {"error": rejection}
 
@@ -374,13 +401,52 @@ class AgentToolbox:
         rejection = self._reject_if_invalid_python(path, updated)
         if rejection:
             return {"error": rejection}
+        rejection = self._reject_if_corrupted_manifest(path, updated)
+        if rejection:
+            return {"error": rejection}
 
         target.write_text(updated, encoding="utf-8")
         clean_rel = str(target.relative_to(self.project_dir)).replace("\\", "/")
         self.files_written.add(clean_rel)
         return {"path": clean_rel, "status": "ok"}
 
+    async def _tool_patch_file(self, path: str, patch: str) -> dict:
+        from core.diff_patcher import patch_content
+
+        target = self._resolve(path)
+        if not target.exists():
+            return {"error": f"Datei '{path}' existiert nicht."}
+        if not target.is_file():
+            return {"error": f"'{path}' ist keine reguläre Datei."}
+
+        try:
+            current_content = target.read_text(encoding="utf-8")
+        except Exception as e:
+            return {"error": f"Konnte '{path}' nicht lesen: {e}"}
+
+        success, new_content, msg = patch_content(current_content, patch)
+        if not success:
+            return {"error": f"Patch fehlgeschlagen: {msg}"}
+
+        # Syntax-Validierung für Python
+        py_err = self._reject_if_invalid_python(path, new_content)
+        if py_err:
+            return {"error": py_err}
+        manifest_err = self._reject_if_corrupted_manifest(path, new_content)
+        if manifest_err:
+            return {"error": manifest_err}
+
+        try:
+            target.write_text(new_content, encoding="utf-8")
+        except Exception as e:
+            return {"error": f"Konnte '{path}' nicht schreiben: {e}"}
+
+        clean_rel = str(target.relative_to(self.project_dir)).replace("\\", "/")
+        self.files_written.add(clean_rel)
+        return {"path": clean_rel, "status": "ok", "message": msg}
+
     # ── Such-Werkzeug ────────────────────────────────────────────────
+
 
     async def _tool_search_code(self, query: str, top_k: int = 5) -> dict:
         import asyncio

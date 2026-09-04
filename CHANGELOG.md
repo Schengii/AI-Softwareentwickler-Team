@@ -7,6 +7,115 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🛠️ CI-Fehlschläge auf GitHub Actions behoben (Groq-Fallback-Tests & Workspace-Checks)
+
+Realer Fund bei GitHub Actions PR-Checks (#35): die CI schlug mit 3 fehlerhaften Jobs fehl:
+- `tests/test_llm_routing.py`: Tests für Fallback auf Groq mockten zwar `create_for_model`, aber nicht `GROQ_API_KEY`. Durch die kürzlich eingeführte `_provider_available()`-Prüfung sortierte der Client Groq in Umgebungen ohne Secrets (GitHub Actions CI-Runner) vorab aus. Mit `@patch("core.llm_factory.GROQ_API_KEY", "gsk_dummy_test_key")` laufen die Tests nun unabhängig von lokalen `.env`-Keys stabil in CI.
+- `Workspace-Python-Check`: Ungenutzte Imports in `cloudvault` (`HTTPException`, `Depends`, `pytest`), ungenutzte Zuweisung `as websocket` in `omnichat` und fehlender `TestClient`-Import in `taskpulse` bereinigt (`ruff check --isolated --select F,E9` clean).
+- `Workspace-TypeScript-Check`: Escapte Quotes `\"` in `omnichat/ChatWindow.tsx` korrigiert, `incidentpilot/vite.config.ts` typisiert und JSX-haltige Hooks `useWebSocket.ts`/`useWebSocket.test.ts` sauber auf `.tsx` umbenannt (`tsc --noEmit` clean).
+
+---
+
+## 🚦 `/tokens` zeigt jetzt Agent→Modell-Zuordnung & Wanduhr-ETA erschöpfter Modelle
+
+Nutzeranfrage: eine Übersicht des Token-Status pro AGENT und Modell – welche Modelle gerade
+verfügbar sind, welche das Kontingent aufgebraucht haben und WANN sie wieder verfügbar sind.
+Der bisherige `/tokens`-Report (`core/quota_estimator.py`) zeigte Verbrauch nur pro Provider/
+Modell, mit einem binären "🚨 Cooldown / Limit"-Badge ohne Zeitangabe – und keinen Bezug
+dazu, welche der 38 Agenten-Rollen (`config.AGENT_MODELS`) davon überhaupt betroffen sind.
+
+- `core/token_guard.py.get_exhausted_details()`: neue Methode, die für jedes aktuell
+  erschöpfte Modell Grund, verbleibende Sekunden UND einen für Menschen lesbaren
+  Wanduhr-Zeitpunkt (`HH:MM:SS`) liefert, ab dem es voraussichtlich wieder verfügbar ist –
+  der interne Cooldown-Zähler läuft über `time.monotonic()` (nicht direkt mit einer Uhrzeit
+  vergleichbar).
+- `core/quota_estimator.py.get_agent_availability()`: ordnet jeden konfigurierten Agenten
+  seinem aktuellen Modell (inkl. Fachbereichs-/Env-Overrides über `get_model_for_agent()`)
+  und dessen Live-Verfügbarkeit zu.
+- `format_markdown_table()` (angezeigt über `/tokens`) ergänzt zwei neue Abschnitte: eine
+  Tabelle erschöpfter Modelle mit Grund + ETA + verbleibender Zeit, und eine
+  Agent→Modell→Status-Tabelle (🟢 Verfügbar / 🚨 Cooldown bis HH:MM:SS Uhr).
+- 3 neue Tests in `tests/test_quota_estimator.py`.
+
+---
+
+## ⚡ Fallback-Kette überspringt Provider ohne konfigurierten API-Key statt sie erfolglos zu versuchen
+
+Wiederkehrender Fund aus mehreren echten Läufen (`ZWISCHENSTAND_KI_TEAM_PROJEKT.md`): `MODEL_
+FALLBACKS` listet `claude-sonnet-5`/`claude-opus-5`/`claude-haiku-4-5` als ERSTEN Fallback-
+Kandidaten für jede Gemini-Stufe – in Setups ohne `ANTHROPIC_API_KEY` scheiterte dieser Hop
+jedes Mal mit `Claude innerhalb einer Fallback-Kette nicht verfügbar (kein ANTHROPIC_API_KEY)`,
+bevor die Kette beim tatsächlich funktionierenden nächsten Kandidaten (kleinere Gemini-Stufe
+oder Groq) ankam. Der Lauf scheiterte dadurch nicht final, aber jeder betroffene Agenten-Aufruf
+verschwendete einen kompletten Hop (Client instanziieren, Anfrage starten, Fehler fangen) UND
+erzeugte im Report eine irreführende ❌-Zeile, die wie ein echter Ausfall aussah statt wie eine
+von vornherein bekannte Konfigurationslücke.
+
+- `core/llm_factory.py._provider_available()`: neue, zentrale Prüfung, ob für einen
+  Fallback-Kandidaten überhaupt ein API-Key konfiguriert ist (Claude → `ANTHROPIC_API_KEY`,
+  Groq → `GROQ_API_KEY`, DeepSeek/OpenRouter/HuggingFace analog). Beide `models_to_try`-
+  Konstruktionen (`generate_with_tools()` und `_call_with_retry_and_usage()`, inkl. der
+  Cooldown-Wartelogik bei komplett erschöpfter Kette) filtern Kandidaten ohne Key jetzt VOR
+  dem Versuch heraus, statt sie zu versuchen und den Fehler abzufangen.
+- Neuer Test in `tests/test_llm_routing.py`
+  (`test_claude_candidate_is_skipped_entirely_without_anthropic_api_key`): stellt sicher, dass
+  `LLMFactory.create_for_model()` für Claude ohne `ANTHROPIC_API_KEY` gar nicht erst
+  aufgerufen wird und die Kette direkt zur nächsten Gemini-Stufe springt.
+
+---
+
+## 🎨 Automatischer Safe-Fix für Lint-Funde statt liegenbleibender Warnungen
+
+Zweiter Fund derselben cloudvault-Bestandsaufnahme: 13 ruff-Lint-Funde standen im
+Verifikations-Protokoll ("⚠️ ruff: 13 Lint-Fund(e)"), wurden aber nie behoben – Lint ist
+bewusst rein informativ (kein Blocker wie ein Testfehler, siehe `LintReport`-Docstring), aber
+bisher war auch niemand je beauftragt, sie zu FIXEN, selbst wenn es triviale, syntaktisch
+zweifelsfreie Autofixes gewesen wären (unsortierte/ungenutzte Importe, veraltete
+Typannotationen, …).
+
+- `core/verifier/lint.py._lint_python()` führt vor dem eigentlichen Check-Lauf jetzt
+  `ruff check --fix` aus – NUR sichere Autofixes, bewusst OHNE `--unsafe-fixes` (das kann
+  Verhalten ändern). Dieselbe Idee wie `black`/`prettier` im Pre-Commit-Hook eines echten
+  Teams: trivialer Aufräumschritt ohne Agenten-Auftrag, bevor überhaupt berichtet wird.
+  Opt-out über `ENABLE_AUTO_LINT_FIX=false` (Standard: an).
+- 2 neue Tests in `tests/test_verifier_lint.py` (Fix-Aufruf vor Check-Aufruf, Opt-out-Flag).
+
+---
+
+## 🧩 Vollständigkeits-Check: "Tests grün" ≠ "Feature fertig" (cloudvault-Bestandsaufnahme)
+
+Analyse des zuletzt generierten Projekts (`workspace/cloudvault`, sichere File-Sharing-
+Plattform) zeigte einen Lauf, der als "✅ Vollständig verifiziert & einsatzbereit" markiert
+wurde (`verification_ok: true`), obwohl:
+- der Upload-Endpunkt nur den Kommentar `# Hier würde die AES-256-GCM Verschlüsselung ... und
+  S3-Speicherung erfolgen` enthielt statt echter Verschlüsselung – die Tests prüften denselben
+  Stub, den der Code tatsächlich lieferte, also bestanden sie trivial;
+- das README `pip install -r requirements.txt` vorschrieb, obwohl diese Datei nie erzeugt wurde;
+- 13 ruff-Lint-Funde im Protokoll standen, aber nie behoben wurden.
+
+Keiner der bisherigen Checks (Testsuite, Lint, SAST, Coverage, Runtime-Smoke) erkennt einen
+absichtlich unfertig gelassenen Codepfad, nur einen tatsächlich FALSCHEN – "Tests grün" wurde
+bisher mit "Anforderung erfüllt" gleichgesetzt.
+
+- Neuer Check `core/verifier/completeness.py.check_completeness()`: durchsucht generierten
+  Code nach Platzhalter-/Stub-Markern (deutsch/englisch: "Hier würde ... erfolgen",
+  `NotImplementedError`, "placeholder implementation", …) und prüft, ob im README per
+  Installationsbefehl referenzierte Dateien (`pip install -r X`, `psql -f X.sql`, …)
+  tatsächlich existieren.
+- Anders als Lint/SAST (rein informativ) blockiert ein Fund hier `verification_ok` wie ein
+  echter Testfehler – ein Stub-Kommentar ist eine nicht erfüllte fachliche Anforderung, keine
+  Stil-Frage. `agents/orchestrator/verification.py` löst bei einem Fund dieselbe gezielte
+  Fix-Schleife aus wie bei einem echten Testfehler (Owner per Dateipfad ermittelt, Auftrag "die
+  Funktionalität WIRKLICH implementieren, nicht nur den Kommentar entfernen").
+  Opt-out über `ENABLE_COMPLETENESS_CHECK=false` (Standard: an).
+- `agents/security_agent.py`: der Systemprompt weist den Security-Agenten jetzt explizit an,
+  einen Sicherheits-Stub (simulierte Verschlüsselung, ein Auth-Check, der immer `True`
+  zurückgibt, …) immer als **Kritisch** einzustufen statt als Hinweis – ein solcher Stub sieht
+  in Reports wie ein erledigtes Feature aus, bietet aber keinerlei Schutz.
+- 7 neue Tests in `tests/test_verifier_completeness.py`.
+
+---
+
 ## 🩹 Echter Praxistest des Ziel-Loops deckt Kosten-Historie-Bug auf: `KeyError('cache_read_tokens')`
 
 Erster echter Live-Lauf von `/goal` (echte LLM-Aufrufe, kein Mock) nach der Kill-Switch-Runde:

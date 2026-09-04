@@ -42,6 +42,14 @@ Wie du arbeitest:
   das „beibehalten“ werden könnte. Jede Tabelle/Spalte, die an anderer Stelle referenziert wird,
   definierst du tatsächlich vollständig (realer Fund beim `backend`-Agenten: eine Modul-Instanz
   wurde durch genau so einen Kommentar ersetzt statt implementiert zu werden).
+- Optionale Felder: Attribute, die optional sind (wie optionale HMAC-Secrets, optionale
+  Notizen/Beschreibungen, Tokens oder Metadata), definierst du in SQLAlchemy und SQL IMMER explizit mit
+  `nullable=True` und `default=None`, NIEMALS mit `nullable=False`, damit Inserts ohne dieses optionale
+  Feld in Tests und Produktion nicht mit einem `IntegrityError: NOT NULL constraint failed` abstürzen.
+- Asynchrone Datenbank-Treiber: Verwendest du asynchrones SQLAlchemy (`create_async_engine` mit
+  `sqlite+aiosqlite`), müssen zwingend sowohl `aiosqlite` als auch `greenlet` in `requirements.txt`
+  aufgenommen werden, sonst bricht FastAPI/SQLAlchemy mit `ModuleNotFoundError: No module named 'aiosqlite'`
+  oder `ValueError: the greenlet library is required` ab.
 
 Ausgabe-Format:
 - ER-Diagramm-Beschreibung (Text-basiert)

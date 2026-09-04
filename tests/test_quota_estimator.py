@@ -74,6 +74,56 @@ class TestQuotaEstimator(unittest.TestCase):
         self.assertIn("1,800", table)  # 1500 + 300, unabhängig vom aktuellen Sitzungs-Zähler
         self.assertIn("claude-sonnet-5", table)
 
+    def test_agent_availability_reflects_exhausted_model(self):
+        """
+        Nutzeranfrage: Übersicht, welche AGENTEN (nicht nur welche Modelle) gerade betroffen
+        sind, wenn ein Modell erschöpft ist, und wann es wieder verfügbar ist. Ermittelt das
+        Modell des "architect"-Agenten dynamisch über `get_model_for_agent()` statt es
+        hart zu kodieren - welches Modell einer Rolle zugeordnet ist, hängt von
+        Env-Overrides ab (siehe config.AGENT_MODELS), auch von hier nicht kontrollierten
+        .env-Werten in der jeweiligen Umgebung.
+        """
+        from config import get_model_for_agent
+        target_model = get_model_for_agent("architect")
+        quota_estimator_module.token_guard.mark_model_exhausted(
+            target_model, reason="Test: simulierte Quota-Erschöpfung", cooldown_seconds=120.0,
+        )
+        rows = QuotaEstimator.get_agent_availability()
+        affected_rows = [r for r in rows if r["model_name"] == target_model]
+        self.assertIn("architect", [r["agent_id"] for r in affected_rows])
+        for row in affected_rows:
+            self.assertFalse(row["available"])
+            self.assertIsNotNone(row["available_at"])
+            self.assertEqual(row["reason"], "Test: simulierte Quota-Erschöpfung")
+
+        # Ein Agent auf einem NICHT erschöpften Modell bleibt verfügbar.
+        available_rows = [r for r in rows if r["model_name"] != target_model]
+        self.assertTrue(available_rows)
+        for row in available_rows:
+            self.assertTrue(row["available"])
+            self.assertIsNone(row["available_at"])
+
+    def test_markdown_table_shows_exhausted_models_with_eta_and_affected_agents(self):
+        from config import get_model_for_agent
+        target_model = get_model_for_agent("tester")
+        quota_estimator_module.token_guard.mark_model_exhausted(
+            target_model, reason="429 Quota Exceeded", cooldown_seconds=60.0,
+        )
+        table = QuotaEstimator.format_markdown_table()
+
+        self.assertIn("Aktuell erschöpfte Modelle", table)
+        self.assertIn(target_model, table)
+        self.assertIn("429 Quota Exceeded", table)
+        self.assertIn("Agenten → Modell-Zuordnung", table)
+        self.assertIn("🚨 Cooldown bis", table)
+        self.assertIn("🟢 Verfügbar", table)
+
+    def test_markdown_table_has_no_exhausted_section_when_everything_is_available(self):
+        table = QuotaEstimator.format_markdown_table()
+        self.assertNotIn("Aktuell erschöpfte Modelle", table)
+        self.assertIn("🟢 Verfügbar", table)
+        self.assertNotIn("🚨 Cooldown bis", table)
+
 
 if __name__ == "__main__":
     unittest.main()

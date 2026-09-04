@@ -131,9 +131,15 @@ class TestSmallDepartmentRunsSequentially(unittest.TestCase):
                 mock_synthesize.return_value = ("### Fertig", 5)
                 mock_verifier = mock_verifier_cls.return_value
                 mock_verifier.ensure_environment.return_value = ""
+                # Bewusst ran=True/passed=True (echter Testlauf-Erfolg) statt "keine Tests
+                # gefunden" - Letzteres löst inzwischen einen gezielten Nachbeauftragungs-Task
+                # an tester aus (siehe agents/orchestrator/verification.py._run_verification_loop
+                # "no_tests_fix_attempted"), was hier einen zweiten, für DIESEN Test irrelevanten
+                # _run_agents_parallel-Aufruf hinzufügen und den Parallelitäts-Spy verfälschen
+                # würde. Dieser Test prüft ausschließlich, dass ab 3 Fachbereichs-Mitgliedern
+                # echt parallel gearbeitet wird, nicht das Verifikations-Verhalten.
                 mock_verifier.run_tests.return_value = VerificationReport(
-                    ran=False, passed=True, exit_code=0, stdout="", stderr="", duration_seconds=0.0,
-                    reason_skipped="simuliert",
+                    ran=True, passed=True, exit_code=0, stdout="", stderr="", duration_seconds=0.1,
                 )
                 asyncio.run(self.orchestrator.process("Baue etwas"))
 

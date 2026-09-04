@@ -286,7 +286,7 @@ Wichtige Regeln:
 class TaskManager:
     """Analysiert und zerlegt Nutzeraufgaben in parallelisierbare Teilaufgaben."""
 
-    def __init__(self, model_name: str = "gemini-3.6-flash"):
+    def __init__(self, model_name: str = "gemini-3.8-flash"):
         self._llm = LLMFactory.create_for_model(model_name)
 
     async def decompose(

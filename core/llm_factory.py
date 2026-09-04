@@ -18,8 +18,10 @@ from config import (
     DEEPSEEK_API_KEY,
     GEMINI_API_KEY,
     GEMINI_MAX_CALLS_PER_MINUTE,
+    GEMINI_STANDARD_MODEL,
     GROQ_API_KEY,
     GROQ_HEAVY_MODEL,
+    HUGGINGFACE_API_KEY,
     MAX_OUTPUT_TOKENS,
     OPENROUTER_API_KEY,
     TEMPERATURE,
@@ -69,12 +71,43 @@ if GROQ_API_KEY:
 MODEL_FALLBACKS = {
     # Gemini erschöpft/fehlerhaft -> auf das jeweils gleichwertige Claude-Modell ausweichen,
     # dann eine kleinere Gemini-Stufe, zuletzt Groq als kostenloser Backstop.
-    "gemini-pro-latest":    ["claude-opus-5", "claude-sonnet-5", "gemini-3.6-flash"],
-    "gemini-3.6-flash":     ["claude-sonnet-5", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
-    "gemini-3.1-flash-lite": ["claude-haiku-4-5-20251001", "gemini-3.6-flash", "groq:openai/gpt-oss-120b"],
+    "gemini-pro-latest":    ["claude-opus-5", "claude-sonnet-5", "gemini-3.8-flash", "gemini-3.6-flash"],
+    "gemini-3.8-flash":     ["claude-sonnet-5", "gemini-3.6-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
+    "gemini-3.6-flash":     ["claude-sonnet-5", "gemini-3.8-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
+    "gemini-3.1-flash-lite": ["claude-haiku-4-5-20251001", "gemini-3.8-flash", "gemini-3.6-flash", "groq:openai/gpt-oss-120b"],
     # Ältere/abweichende Konfigurationswerte (falls per .env manuell gesetzt) ebenfalls abdecken.
-    "gemini-3.5-flash":     ["claude-sonnet-5", "gemini-3.6-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
+    "gemini-3.5-flash":     ["claude-sonnet-5", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
 }
+
+def _provider_available(model_name: str) -> bool:
+    """
+    Realer Fund aus echten Läufen (siehe ZWISCHENSTAND_KI_TEAM_PROJEKT.md, wiederholt
+    aufgetreten: `Claude innerhalb einer Fallback-Kette nicht verfügbar (kein
+    ANTHROPIC_API_KEY)`): MODEL_FALLBACKS listet Claude als ERSTEN Fallback-Kandidaten für
+    jede Gemini-Stufe, obwohl in diesem Setup nie ein ANTHROPIC_API_KEY konfiguriert war. Die
+    Fallback-Schleifen unten versuchten den Hop trotzdem jedes Mal - Client instanziieren,
+    Anfrage starten, `RuntimeError` fangen, zum nächsten Kandidaten weiterziehen -, bevor sie
+    beim tatsächlich funktionierenden Groq-Fallback landeten. Der Lauf scheiterte dadurch
+    nicht (die Kette lief ja weiter), aber jeder betroffene Agent-Aufruf erzeugte unnötige
+    Latenz UND eine irreführende ❌-Zeile im Report, die wie ein echter Ausfall aussah statt
+    wie eine von vornherein bekannte Konfigurationslücke.
+    Filtert Kandidaten OHNE konfigurierten API-Key bereits VOR dem Versuch heraus, statt sie
+    zu versuchen und den Fehler abzufangen. Gemini selbst ist hier immer verfügbar (sonst
+    würde diese Methode gar nicht erst aufgerufen, siehe GEMINI_API_KEY-Check am Modulanfang).
+    """
+    name = model_name.lower()
+    if "claude" in name:
+        return bool(ANTHROPIC_API_KEY)
+    if name.startswith("groq:") or "gpt-oss" in name or "qwen" in name:
+        return bool(GROQ_API_KEY)
+    if name.startswith("deepseek:") or "deepseek" in name:
+        return bool(DEEPSEEK_API_KEY)
+    if name.startswith("openrouter:") or "openrouter" in name:
+        return bool(OPENROUTER_API_KEY)
+    if name.startswith("huggingface:") or "huggingface" in name:
+        return bool(HUGGINGFACE_API_KEY)
+    return True
+
 
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 1.5
@@ -252,7 +285,7 @@ class HuggingFaceClient:
         # Gemini-Modellnamen als Key aufgerufen, siehe Kommentar an MODEL_FALLBACKS oben.
         if not _allow_self_fallback:
             raise RuntimeError("HuggingFace-Provider innerhalb einer Fallback-Kette nicht verfügbar.")
-        fallback = GeminiClient(model_name="gemini-3.6-flash")
+        fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
         return await fallback.generate_with_usage(prompt, system_prompt)
 
     async def generate(self, prompt: str, system_prompt: str | None = None) -> str:
@@ -267,11 +300,11 @@ class HuggingFaceClient:
         # Fallback auf Gemini, das die Werkzeug-Schleife vollständig unterstützt.
         if not _allow_self_fallback:
             raise RuntimeError("HuggingFace-Provider innerhalb einer Fallback-Kette nicht verfügbar.")
-        fallback = GeminiClient(model_name="gemini-3.6-flash")
+        fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
         return await fallback.generate_with_tools(messages, system_prompt, tools)
 
     async def generate_json(self, prompt: str, system_prompt: str | None = None) -> str:
-        fallback = GeminiClient(model_name="gemini-3.6-flash")
+        fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
         return await fallback.generate_json(prompt, system_prompt)
 
 
@@ -288,7 +321,7 @@ class OpenRouterClient:
         if not OPENROUTER_API_KEY or token_guard.is_model_exhausted(f"openrouter:{self.model_name}"):
             if not _allow_self_fallback:
                 raise RuntimeError("OpenRouter innerhalb einer Fallback-Kette nicht verfügbar (kein Key/erschöpft).")
-            fallback = GeminiClient(model_name="gemini-3.6-flash")
+            fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
             return await fallback.generate_with_usage(prompt, system_prompt)
 
         headers = {
@@ -336,14 +369,14 @@ class OpenRouterClient:
                         token_guard.mark_model_exhausted(f"openrouter:{self.model_name}", f"OpenRouter: {err_msg}")
                     if not _allow_self_fallback:
                         raise RuntimeError(f"OpenRouter-Fehler innerhalb einer Fallback-Kette: {err_msg}")
-                    fallback = GeminiClient(model_name="gemini-3.6-flash")
+                    fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
                     return await fallback.generate_with_usage(prompt, system_prompt)
 
         except Exception as e:
             token_guard.mark_model_exhausted(f"openrouter:{self.model_name}", str(e))
             if not _allow_self_fallback:
                 raise
-            fallback = GeminiClient(model_name="gemini-3.6-flash")
+            fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
             return await fallback.generate_with_usage(prompt, system_prompt)
 
     async def generate(self, prompt: str, system_prompt: str | None = None) -> str:
@@ -357,7 +390,7 @@ class OpenRouterClient:
         if not OPENROUTER_API_KEY or token_guard.is_model_exhausted(f"openrouter:{self.model_name}"):
             if not _allow_self_fallback:
                 raise RuntimeError("OpenRouter innerhalb einer Fallback-Kette nicht verfügbar (kein Key/erschöpft).")
-            fallback = GeminiClient(model_name="gemini-3.6-flash")
+            fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
             return await fallback.generate_with_tools(messages, system_prompt, tools)
 
         headers = {
@@ -401,14 +434,14 @@ class OpenRouterClient:
                     token_guard.mark_model_exhausted(f"openrouter:{self.model_name}", f"OpenRouter: {err_msg}")
                 if not _allow_self_fallback:
                     raise RuntimeError(f"OpenRouter-Fehler innerhalb einer Fallback-Kette: {err_msg}")
-                fallback = GeminiClient(model_name="gemini-3.6-flash")
+                fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
                 return await fallback.generate_with_tools(messages, system_prompt, tools)
 
         except Exception as e:
             token_guard.mark_model_exhausted(f"openrouter:{self.model_name}", str(e))
             if not _allow_self_fallback:
                 raise
-            fallback = GeminiClient(model_name="gemini-3.6-flash")
+            fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
             return await fallback.generate_with_tools(messages, system_prompt, tools)
 
     async def generate_json(self, prompt: str, system_prompt: str | None = None) -> str:
@@ -430,7 +463,7 @@ class DeepSeekClient:
         if not DEEPSEEK_API_KEY or token_guard.is_model_exhausted(f"deepseek:{self.model_name}"):
             if not _allow_self_fallback:
                 raise RuntimeError("DeepSeek innerhalb einer Fallback-Kette nicht verfügbar (kein Key/erschöpft).")
-            fallback = GeminiClient(model_name="gemini-3.6-flash")
+            fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
             return await fallback.generate_with_usage(prompt, system_prompt)
 
         headers = {
@@ -476,14 +509,14 @@ class DeepSeekClient:
                         token_guard.mark_model_exhausted(f"deepseek:{self.model_name}", f"DeepSeek: {err_msg}")
                     if not _allow_self_fallback:
                         raise RuntimeError(f"DeepSeek-Fehler innerhalb einer Fallback-Kette: {err_msg}")
-                    fallback = GeminiClient(model_name="gemini-3.6-flash")
+                    fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
                     return await fallback.generate_with_usage(prompt, system_prompt)
 
         except Exception as e:
             token_guard.mark_model_exhausted(f"deepseek:{self.model_name}", str(e))
             if not _allow_self_fallback:
                 raise
-            fallback = GeminiClient(model_name="gemini-3.6-flash")
+            fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
             return await fallback.generate_with_usage(prompt, system_prompt)
 
     async def generate(self, prompt: str, system_prompt: str | None = None) -> str:
@@ -497,7 +530,7 @@ class DeepSeekClient:
         if not DEEPSEEK_API_KEY or token_guard.is_model_exhausted(f"deepseek:{self.model_name}"):
             if not _allow_self_fallback:
                 raise RuntimeError("DeepSeek innerhalb einer Fallback-Kette nicht verfügbar (kein Key/erschöpft).")
-            fallback = GeminiClient(model_name="gemini-3.6-flash")
+            fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
             return await fallback.generate_with_tools(messages, system_prompt, tools)
 
         headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
@@ -536,14 +569,14 @@ class DeepSeekClient:
                     token_guard.mark_model_exhausted(f"deepseek:{self.model_name}", f"DeepSeek: {err_msg}")
                 if not _allow_self_fallback:
                     raise RuntimeError(f"DeepSeek-Fehler innerhalb einer Fallback-Kette: {err_msg}")
-                fallback = GeminiClient(model_name="gemini-3.6-flash")
+                fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
                 return await fallback.generate_with_tools(messages, system_prompt, tools)
 
         except Exception as e:
             token_guard.mark_model_exhausted(f"deepseek:{self.model_name}", str(e))
             if not _allow_self_fallback:
                 raise
-            fallback = GeminiClient(model_name="gemini-3.6-flash")
+            fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
             return await fallback.generate_with_tools(messages, system_prompt, tools)
 
     async def generate_json(self, prompt: str, system_prompt: str | None = None) -> str:
@@ -555,7 +588,7 @@ class DeepSeekClient:
 class GeminiClient:
     """Wrapper für die Google Gemini API."""
 
-    def __init__(self, model_name: str = "gemini-3.6-flash"):
+    def __init__(self, model_name: str = "gemini-3.8-flash"):
         self.model_name = model_name
 
     async def generate_with_usage(
@@ -612,15 +645,17 @@ class GeminiClient:
         )
 
         all_candidates = [self.model_name] + MODEL_FALLBACKS.get(self.model_name, [])
-        models_to_try = [m for m in all_candidates if not token_guard.is_model_exhausted(m)]
+        models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)]
         if not models_to_try:
             # Komplette Kette gerade erschöpft (siehe MAX_EXHAUSTION_WAIT_SECONDS oben) -
             # kurz auf den kürzesten bekannten Cooldown warten statt sofort denselben
-            # Fehler erneut zu kassieren.
+            # Fehler erneut zu kassieren. Kandidaten ohne konfigurierten Key (siehe
+            # _provider_available()) bleiben auch nach dem Warten aussortiert - ein
+            # Cooldown behebt keinen fehlenden API-Key.
             wait_s = min(token_guard.seconds_until_available(all_candidates), MAX_EXHAUSTION_WAIT_SECONDS)
             if wait_s > 0:
                 await asyncio.sleep(wait_s)
-            models_to_try = [m for m in all_candidates if not token_guard.is_model_exhausted(m)] or [self.model_name]
+            models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)] or [self.model_name]
 
         last_error: Exception | None = None
         for model in models_to_try:
@@ -641,18 +676,29 @@ class GeminiClient:
                     last_error = e
                     continue
 
-            try:
-                await _gemini_rate_limiter.acquire()
-                response = await asyncio.to_thread(
-                    _gemini_client.models.generate_content, model=model, contents=contents, config=config,
-                )
-                return self._parse_gemini_tool_response(response, model)
-            except Exception as e:
-                last_error = e
-                err_str = str(e)
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota" in err_str:
-                    token_guard.mark_model_exhausted(model, "429 Quota Exceeded")
-                continue
+            for attempt in range(MAX_RETRIES):
+                try:
+                    await _gemini_rate_limiter.acquire()
+                    response = await asyncio.to_thread(
+                        _gemini_client.models.generate_content, model=model, contents=contents, config=config,
+                    )
+                    return self._parse_gemini_tool_response(response, model)
+                except Exception as e:
+                    last_error = e
+                    err_str = str(e)
+                    is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower()
+                    is_unavailable = "503" in err_str or "UNAVAILABLE" in err_str or "high demand" in err_str.lower()
+
+                    if (is_rate_limit or is_unavailable) and attempt < MAX_RETRIES - 1:
+                        wait = RETRY_DELAY_SECONDS * (attempt + 1) * 1.5
+                        await asyncio.sleep(wait)
+                        continue
+
+                    if is_rate_limit:
+                        token_guard.mark_model_exhausted(model, "429 Quota Exceeded")
+                    elif is_unavailable:
+                        token_guard.mark_model_exhausted(model, "503 High Demand", cooldown_seconds=20.0)
+                    break
 
         raise RuntimeError(f"Gemini Function-Calling Fehler nach allen Fallback-Modellen ({self.model_name}): {last_error}") from last_error
 
@@ -736,14 +782,16 @@ class GeminiClient:
 
         start_model = self.model_name
         all_candidates = [start_model] + MODEL_FALLBACKS.get(start_model, [])
-        models_to_try = [m for m in all_candidates if not token_guard.is_model_exhausted(m)]
+        models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)]
         if not models_to_try:
             # Siehe generate_with_tools() weiter oben: kurz auf den kürzesten bekannten
-            # Cooldown warten, statt sofort denselben Fehler erneut zu kassieren.
+            # Cooldown warten, statt sofort denselben Fehler erneut zu kassieren. Kandidaten
+            # ohne konfigurierten Key bleiben auch danach aussortiert (siehe
+            # _provider_available()).
             wait_s = min(token_guard.seconds_until_available(all_candidates), MAX_EXHAUSTION_WAIT_SECONDS)
             if wait_s > 0:
                 await asyncio.sleep(wait_s)
-            models_to_try = [m for m in all_candidates if not token_guard.is_model_exhausted(m)] or [start_model]
+            models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)] or [start_model]
 
         last_error: Exception | None = None
         for model in models_to_try:
@@ -801,15 +849,19 @@ class GeminiClient:
                 except Exception as e:
                     last_error = e
                     err_str = str(e)
-                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota" in err_str:
-                        token_guard.mark_model_exhausted(model, "429 Quota Exceeded")
-                        break
-                    elif "503" in err_str or "UNAVAILABLE" in err_str:
-                        wait = RETRY_DELAY_SECONDS * (attempt + 1)
+                    is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower()
+                    is_unavailable = "503" in err_str or "UNAVAILABLE" in err_str or "high demand" in err_str.lower()
+
+                    if (is_rate_limit or is_unavailable) and attempt < MAX_RETRIES - 1:
+                        wait = RETRY_DELAY_SECONDS * (attempt + 1) * 1.5
                         await asyncio.sleep(wait)
                         continue
-                    else:
-                        break
+
+                    if is_rate_limit:
+                        token_guard.mark_model_exhausted(model, "429 Quota Exceeded")
+                    elif is_unavailable:
+                        token_guard.mark_model_exhausted(model, "503 High Demand", cooldown_seconds=20.0)
+                    break
 
         raise RuntimeError(
             f"Gemini API Fehler nach allen Versuchen ({self.model_name}): {last_error}"
@@ -838,7 +890,7 @@ class GroqClient:
         if not _groq_client:
             if not _allow_self_fallback:
                 raise RuntimeError("Groq innerhalb einer Fallback-Kette nicht verfügbar (kein Key).")
-            gemini_fallback = GeminiClient(model_name="gemini-3.6-flash")
+            gemini_fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
             return await gemini_fallback.generate_with_usage(prompt, system_prompt)
 
         messages = []
@@ -880,7 +932,7 @@ class GroqClient:
                 if is_rate_limit:
                     raise _pinned_provider_failure("Groq", self.model_name, e) from e
                 raise
-            gemini_fallback = GeminiClient(model_name="gemini-3.6-flash")
+            gemini_fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
             return await gemini_fallback.generate_with_usage(prompt, system_prompt)
 
     async def generate(self, prompt: str, system_prompt: str | None = None) -> str:
@@ -894,7 +946,7 @@ class GroqClient:
         if not _groq_client:
             if not _allow_self_fallback:
                 raise RuntimeError("Groq innerhalb einer Fallback-Kette nicht verfügbar (kein Key).")
-            gemini_fallback = GeminiClient(model_name="gemini-3.6-flash")
+            gemini_fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
             return await gemini_fallback.generate_with_tools(messages, system_prompt, tools)
 
         try:
@@ -938,7 +990,7 @@ class GroqClient:
                 if is_rate_limit:
                     raise _pinned_provider_failure("Groq", self.model_name, e) from e
                 raise
-            gemini_fallback = GeminiClient(model_name="gemini-3.6-flash")
+            gemini_fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
             return await gemini_fallback.generate_with_tools(messages, system_prompt, tools)
 
     async def generate_json(self, prompt: str, system_prompt: str | None = None) -> str:
@@ -970,7 +1022,7 @@ class ClaudeClient:
         """
         if GROQ_API_KEY:
             return GroqClient(model_name=GROQ_HEAVY_MODEL)
-        return GeminiClient(model_name="gemini-3.6-flash")
+        return GeminiClient(model_name=GEMINI_STANDARD_MODEL)
 
     async def generate_with_usage(
         self, prompt: str, system_prompt: str | None = None, _allow_self_fallback: bool = True,
@@ -1135,7 +1187,7 @@ class LLMFactory:
     """Factory zum Erstellen von LLM-Instanzen basierend auf Konfiguration."""
 
     @staticmethod
-    def create_gemini(model_name: str = "gemini-3.6-flash") -> GeminiClient:
+    def create_gemini(model_name: str = "gemini-3.8-flash") -> GeminiClient:
         return GeminiClient(model_name=model_name)
 
     @staticmethod

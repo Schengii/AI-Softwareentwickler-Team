@@ -121,6 +121,27 @@ def get_agent_model_performance(limit_runs: int = 100) -> list[dict]:
     return sorted(result, key=lambda r: (r["agent_id"], -r["calls"]))
 
 
+def get_verification_success_rate(limit_runs: int = 10) -> dict:
+    """
+    Anteil der letzten `limit_runs` Läufe (projektübergreifend) mit `verification_ok=True` -
+    Team-Retrospektive nach dem taskpulse-Lauf: die letzten 6 aufgezeichneten Läufe endeten
+    ALLE mit `verification_ok=False` (271k-714k Tokens, 3-23 Minuten JE Lauf), ohne dass
+    irgendeine Stelle im Framework dieses Muster über mehrere Läufe hinweg sichtbar gemacht
+    hätte - jeder Lauf für sich zeigte nur sein eigenes Ergebnis, nie den Trend. Grundlage für
+    core/optimization_advisor.py, das bei einer anhaltend niedrigen Quote jetzt einen expliziten
+    Hinweis in den Abschlussbericht aufnimmt, statt dass dieses Muster nur durch manuelle
+    Auswertung von memory/run_history.json auffällt.
+    """
+    runs = _load()[-limit_runs:]
+    passed = sum(1 for r in runs if r.get("verification_ok"))
+    total = len(runs)
+    return {
+        "runs": total,
+        "passed": passed,
+        "rate": round(100 * passed / total, 1) if total else 0.0,
+    }
+
+
 def get_total_tokens_for_project(project_slug: str) -> int:
     """
     Summiert `total_tokens` über ALLE bisher aufgezeichneten Läufe eines Projekts (bereits

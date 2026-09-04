@@ -12,6 +12,7 @@ NIEMALS ein Nicht-Gemini-Modellname an den echten Gemini-Client geht.
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from config import GEMINI_STANDARD_MODEL
 from core.llm_factory import GeminiClient, LLMResponse
 from core.token_guard import token_guard
 
@@ -24,7 +25,7 @@ class _FakeGenAIResponse:
 class TestLLMRouting(unittest.TestCase):
     def tearDown(self):
         # Global geteilten TokenGuard-Zustand nicht in andere Tests durchsickern lassen.
-        for model in ("gemini-3.6-flash", "gemini-3.1-flash-lite", "claude-sonnet-5", "groq:openai/gpt-oss-120b"):
+        for model in ("gemini-3.6-flash", GEMINI_STANDARD_MODEL, "gemini-3.1-flash-lite", "claude-sonnet-5", "groq:openai/gpt-oss-120b"):
             token_guard._exhausted_models.pop(model, None)
 
     @patch("core.llm_factory._gemini_client")
@@ -73,8 +74,14 @@ class TestLLMRouting(unittest.TestCase):
         """
         # Die GESAMTE Kette von gemini-3.6-flash (sich selbst + claude-sonnet-5 +
         # gemini-3.1-flash-lite + groq, siehe MODEL_FALLBACKS) muss als erschöpft markiert
-        # sein, damit die Wartelogik greift - nicht nur ein einzelnes Glied.
+        # sein, damit die Wartelogik greift - nicht nur ein einzelnes Glied. Realer Fund (Team-
+        # Retrospektive nach dem taskpulse-Lauf): als MODEL_FALLBACKS um "gemini-3.8-flash" als
+        # zusätzlichen Hop erweitert wurde (siehe core/llm_factory.py), fehlte dieser Test hier
+        # in der Liste - die Kette fand dadurch einen freien Hop und die Wartelogik griff nie
+        # (mock_sleep wurde 0x statt 1x aufgerufen), obwohl das GETESTETE Verhalten selbst
+        # unverändert korrekt war.
         token_guard.mark_model_exhausted("gemini-3.6-flash", "Test", cooldown_seconds=3.0)
+        token_guard.mark_model_exhausted(GEMINI_STANDARD_MODEL, "Test", cooldown_seconds=3.0)
         token_guard.mark_model_exhausted("claude-sonnet-5", "Test", cooldown_seconds=3.0)
         token_guard.mark_model_exhausted("gemini-3.1-flash-lite", "Test", cooldown_seconds=3.0)
         token_guard.mark_model_exhausted("groq:openai/gpt-oss-120b", "Test", cooldown_seconds=3.0)
@@ -120,9 +127,12 @@ class TestLLMRouting(unittest.TestCase):
         self.assertEqual(result.text, "ok")
         mock_limiter.acquire.assert_called_once()
 
+    @patch("core.llm_factory.GROQ_API_KEY", "gsk_dummy_test_key")
     @patch("core.llm_factory.LLMFactory.create_for_model")
     @patch("core.llm_factory._gemini_client")
-    def test_falls_back_to_groq_when_gemini_and_claude_both_fail(self, mock_gemini_client, mock_create_for_model):
+    def test_falls_back_to_groq_when_gemini_and_claude_both_fail(
+        self, mock_gemini_client, mock_create_for_model, mock_groq_key=None,
+    ):
         """
         Realer Fund aus einem echten End-to-End-Testlauf ohne ANTHROPIC_API_KEY: der
         QA-Tester scheiterte komplett ("Gemini Function-Calling Fehler nach allen
@@ -160,10 +170,11 @@ class TestLLMRouting(unittest.TestCase):
         self.assertEqual(result.text, "von Groq gerettet")
         fake_groq_client.generate_with_tools.assert_called_once()
 
+    @patch("core.llm_factory.GROQ_API_KEY", "gsk_dummy_test_key")
     @patch("core.llm_factory.LLMFactory.create_for_model")
     @patch("core.llm_factory._gemini_client")
     def test_generate_with_usage_falls_back_to_groq_when_gemini_and_claude_both_fail(
-        self, mock_gemini_client, mock_create_for_model,
+        self, mock_gemini_client, mock_create_for_model, mock_groq_key=None,
     ):
         """
         Gegenstück zu test_falls_back_to_groq_when_gemini_and_claude_both_fail für den
@@ -200,6 +211,40 @@ class TestLLMRouting(unittest.TestCase):
 
         self.assertEqual(result.text, "von Groq gerettet")
         fake_groq_client.generate_with_usage.assert_called_once()
+
+    @patch("core.llm_factory.ANTHROPIC_API_KEY", "")
+    @patch("core.llm_factory.LLMFactory.create_for_model")
+    @patch("core.llm_factory._gemini_client")
+    def test_claude_candidate_is_skipped_entirely_without_anthropic_api_key(
+        self, mock_gemini_client, mock_create_for_model,
+    ):
+        """
+        Realer Fund aus mehreren echten Läufen (siehe ZWISCHENSTAND_KI_TEAM_PROJEKT.md):
+        ohne ANTHROPIC_API_KEY versuchte die Fallback-Kette 'claude-sonnet-5' trotzdem bei
+        JEDEM erschöpften/gescheiterten Gemini-Aufruf - unnötiger Hop (Client instanziieren,
+        RuntimeError fangen, weiterziehen) UND eine irreführende ❌-Zeile im Report, die wie
+        ein echter Ausfall aussah statt wie eine von vornherein bekannte Konfigurationslücke.
+        _provider_available() filtert Claude jetzt VOR dem Versuch aus der Kette heraus, wenn
+        kein Key konfiguriert ist - LLMFactory.create_for_model() darf für 'claude-sonnet-5'
+        also gar nicht erst aufgerufen werden, die Kette muss direkt zur nächsten Gemini-Stufe
+        springen.
+        """
+        def fake_generate_content(model, contents, config):
+            if model == "gemini-3.6-flash":
+                raise RuntimeError("simulierter Gemini-Fehler")
+            return _FakeGenAIResponse(text="von gemini-3.8-flash gerettet")
+        mock_gemini_client.models.generate_content = fake_generate_content
+
+        client = GeminiClient(model_name="gemini-3.6-flash")
+
+        async def run():
+            return await client.generate_with_usage("Sag nur 'ok'.", None)
+
+        import asyncio
+        result = asyncio.run(run())
+
+        self.assertEqual(result.text, "von gemini-3.8-flash gerettet")
+        mock_create_for_model.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -11,12 +11,17 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import core.backlog_store as backlog_store
 import core.project_status as project_status
 from core.project_status import (
     FULL_LOG_FILENAME,
     count_consecutive_failed_runs,
     format_context_for_agents,
+    generate_project_state_md,
+    has_open_blocker_ticket,
+    has_repeated_lint_finding,
     read_status,
     record_run,
 )
@@ -157,6 +162,167 @@ class TestProjectStatus(unittest.TestCase):
             self.assertNotIn("Lauf Nr. 0\n", content)
         finally:
             project_status.MAX_FULL_LOG_BYTES = original_max
+
+    def test_has_repeated_lint_finding_true_for_identical_signature_across_streak(self):
+        # Realer Fund (Team-Retrospektive, omnichat-Projekt): dasselbe ruff-F841 blieb über
+        # mehrere volle Läufe unverändert bestehen, ohne dass has_repeated_failure() je
+        # griff (Lint beeinflusst verification_ok nicht).
+        sig = ["ruff:tests/test_chat_flow.py:F841"]
+        record_run(self.temp_dir, "Lauf 1", verification_ok=False, budget_aborted=False,
+                   files_written_count=1, lint_signature=sig)
+        record_run(self.temp_dir, "Lauf 2", verification_ok=False, budget_aborted=False,
+                   files_written_count=1, lint_signature=sig)
+        self.assertTrue(has_repeated_lint_finding(self.temp_dir))
+
+    def test_has_repeated_lint_finding_false_when_signature_changes(self):
+        record_run(self.temp_dir, "Lauf 1", verification_ok=False, budget_aborted=False,
+                   files_written_count=1, lint_signature=["ruff:a.py:F841"])
+        record_run(self.temp_dir, "Lauf 2", verification_ok=False, budget_aborted=False,
+                   files_written_count=1, lint_signature=["ruff:b.py:UP007"])
+        self.assertFalse(has_repeated_lint_finding(self.temp_dir))
+
+    def test_has_repeated_lint_finding_false_when_no_lint_findings(self):
+        record_run(self.temp_dir, "Lauf 1", verification_ok=True, budget_aborted=False, files_written_count=1)
+        record_run(self.temp_dir, "Lauf 2", verification_ok=True, budget_aborted=False, files_written_count=1)
+        self.assertFalse(has_repeated_lint_finding(self.temp_dir))
+
+    def test_record_run_deduplicates_lint_signature_before_truncating(self):
+        # Team-Optimierung (Retrospektive 2026-09-04): agents/orchestrator/verification.py
+        # liefert einen Eintrag JE FUND-INSTANZ, nicht je distinkter Regel/Datei-Kombination
+        # (real beobachtet: 6x "ruff:tests/test_invoices.py:DTZ001" für sechs betroffene
+        # Zeilen derselben Regel). Ohne vorherige Deduplizierung konnten solche Duplikate den
+        # MAX_LINT_SIGNATURE_ITEMS-Schnitt dominieren und andere, distinkte Funde verdrängen.
+        sig = ["ruff:tests/test_invoices.py:DTZ001"] * 6 + ["ruff:app/main.py:B008"]
+        record_run(self.temp_dir, "Lauf 1", verification_ok=False, budget_aborted=False,
+                   files_written_count=1, lint_signature=sig)
+        entries = read_status(self.temp_dir)
+        stored = entries[0]["lint_signature"]
+        self.assertEqual(len(stored), 2)
+        self.assertEqual(set(stored), {"ruff:tests/test_invoices.py:DTZ001", "ruff:app/main.py:B008"})
+
+    def test_has_repeated_lint_finding_ignores_signature_order(self):
+        record_run(self.temp_dir, "Lauf 1", verification_ok=False, budget_aborted=False,
+                   files_written_count=1, lint_signature=["ruff:a.py:F841", "ruff:b.py:UP007"])
+        record_run(self.temp_dir, "Lauf 2", verification_ok=False, budget_aborted=False,
+                   files_written_count=1, lint_signature=["ruff:b.py:UP007", "ruff:a.py:F841"])
+        self.assertTrue(has_repeated_lint_finding(self.temp_dir))
+
+
+class TestOpenBlockerTicketOverridesEinsatzbereitStatus(unittest.TestCase):
+    """
+    Realer Fund (mockforge-Projekt, Team-Bestandsaufnahme 2026-09-03): PROJECT_STATE.md wies
+    "✅ Vollständig verifiziert & einsatzbereit" aus, obwohl ein Backlog-Ticket zu einem
+    ungelösten kritischen Governance-Befund (ProxyMiddleware-Deadlock-Risiko) für exakt dieses
+    Projekt offen ("blocked") war - verification_ok und der offene kritische Befund waren
+    komplett entkoppelt. Diese Tests decken die Kopplung ab.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_slug = Path(self.temp_dir).name
+        self._backlog_patcher = patch.object(
+            backlog_store, "BACKLOG_FILE", Path(self.temp_dir).parent / f"{self.project_slug}-backlog.json",
+        )
+        self._backlog_patcher.start()
+        self.addCleanup(self._backlog_patcher.stop)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_no_open_ticket_means_no_blocker(self):
+        self.assertFalse(has_open_blocker_ticket(self.temp_dir))
+
+    def test_open_governance_ticket_is_detected_as_blocker(self):
+        backlog_store.upsert_ticket(
+            ticket_id=f"unresolved-governance-critical-{self.project_slug}",
+            title="Ungelöster kritischer Governance-Befund", source="orchestrator",
+            status="blocked", project_slug=self.project_slug, detail="DB-Session pro Request",
+        )
+        self.assertTrue(has_open_blocker_ticket(self.temp_dir))
+
+    def test_ticket_for_a_different_project_is_not_a_blocker(self):
+        backlog_store.upsert_ticket(
+            ticket_id="unresolved-governance-critical-other-project",
+            title="Anderes Projekt", source="orchestrator",
+            status="blocked", project_slug="other-project", detail="...",
+        )
+        self.assertFalse(has_open_blocker_ticket(self.temp_dir))
+
+    def test_resolved_ticket_no_longer_blocks(self):
+        ticket_id = f"unresolved-governance-critical-{self.project_slug}"
+        backlog_store.upsert_ticket(
+            ticket_id=ticket_id, title="...", source="orchestrator",
+            status="blocked", project_slug=self.project_slug, detail="...",
+        )
+        backlog_store.upsert_ticket(
+            ticket_id=ticket_id, title="...", source="orchestrator",
+            status="done", project_slug=self.project_slug, detail="behoben",
+        )
+        self.assertFalse(has_open_blocker_ticket(self.temp_dir))
+
+    def test_state_md_shows_not_einsatzbereit_despite_passing_verification(self):
+        backlog_store.upsert_ticket(
+            ticket_id=f"unresolved-governance-critical-{self.project_slug}",
+            title="Ungelöster kritischer Governance-Befund", source="orchestrator",
+            status="blocked", project_slug=self.project_slug, detail="DB-Session pro Request",
+        )
+        state_md = generate_project_state_md(self.temp_dir, verification_ok=True)
+        self.assertIn("NICHT einsatzbereit", state_md)
+        self.assertNotIn("Vollständig verifiziert & einsatzbereit", state_md)
+        self.assertIn("Offener kritischer Befund", state_md)
+
+    def test_state_md_shows_einsatzbereit_when_no_blocker(self):
+        state_md = generate_project_state_md(self.temp_dir, verification_ok=True)
+        self.assertIn("Vollständig verifiziert & einsatzbereit", state_md)
+
+    def test_ticket_auto_closes_when_completeness_check_now_passes(self):
+        # Team-Optimierung (Retrospektive, zeiterfassung_app-Lauf): das Ticket wurde bisher NUR
+        # über einen erneuten Governance-Reviewer-Recheck geschlossen (agents/orchestrator/
+        # verification.py._run_governance_fix_loop). Wird das zugrunde liegende Problem
+        # stattdessen auf einem anderen Weg behoben (hier simuliert: die fehlende Datei existiert
+        # inzwischen), muss der nächste Checkpoint mit bestandener Testsuite das Ticket
+        # eigenständig per statischem Vollständigkeits-Check schließen, statt für immer "blocked"
+        # zu bleiben.
+        ticket_id = f"unresolved-governance-critical-{self.project_slug}"
+        backlog_store.upsert_ticket(
+            ticket_id=ticket_id, title="Ungelöster kritischer Governance-Befund", source="orchestrator",
+            status="blocked", project_slug=self.project_slug, detail="app/models.py fehlt",
+        )
+        # Jetzt existiert echter, vollständiger Code ohne offene Vollständigkeits-Funde.
+        Path(self.temp_dir, "main.py").write_text("print('hallo')\n", encoding="utf-8")
+
+        state_md = generate_project_state_md(self.temp_dir, verification_ok=True)
+
+        self.assertIn("Vollständig verifiziert & einsatzbereit", state_md)
+        self.assertFalse(has_open_blocker_ticket(self.temp_dir, verification_ok=True))
+        closed = backlog_store.get_ticket(ticket_id)
+        self.assertEqual(closed.status, "done")
+
+    def test_ticket_stays_open_when_completeness_check_still_fails(self):
+        ticket_id = f"unresolved-governance-critical-{self.project_slug}"
+        backlog_store.upsert_ticket(
+            ticket_id=ticket_id, title="...", source="orchestrator",
+            status="blocked", project_slug=self.project_slug, detail="app/models.py fehlt",
+        )
+        # Importiert ein lokales Modul, das nach wie vor nicht existiert - derselbe Befund besteht weiter.
+        Path(self.temp_dir, "main.py").write_text("from . import models\n", encoding="utf-8")
+
+        state_md = generate_project_state_md(self.temp_dir, verification_ok=True)
+
+        self.assertIn("NICHT einsatzbereit", state_md)
+        self.assertTrue(has_open_blocker_ticket(self.temp_dir, verification_ok=True))
+
+    def test_ticket_not_auto_closed_when_verification_did_not_pass(self):
+        # Ein bestandener Vollständigkeits-Check allein reicht nicht - solange die eigentliche
+        # Testsuite NICHT grün ist (verification_ok=False), bleibt das Ticket offen.
+        ticket_id = f"unresolved-governance-critical-{self.project_slug}"
+        backlog_store.upsert_ticket(
+            ticket_id=ticket_id, title="...", source="orchestrator",
+            status="blocked", project_slug=self.project_slug, detail="...",
+        )
+        Path(self.temp_dir, "main.py").write_text("print('hallo')\n", encoding="utf-8")
+
+        self.assertTrue(has_open_blocker_ticket(self.temp_dir, verification_ok=False))
 
 
 if __name__ == "__main__":

@@ -250,7 +250,32 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
         interface/cli.py._ask_for_git_push(): nach einem PR-Workflow-Lauf bleibt das
         Arbeitsverzeichnis jetzt bewusst auf dem zuletzt genutzten Feature-Branch stehen,
         damit gerade erst generierte Dateien nicht durch einen Checkout unsichtbar werden).
+
+        Bugfix (Team-Optimierung, real beobachtet im mockforge-Governance-Retry, zweimal
+        hintereinander): `git checkout -b <branch> <base>` scheitert hart mit "Your local
+        changes ... would be overwritten by checkout", sobald das Arbeitsverzeichnis
+        uncommittete Änderungen an Dateien trägt, die sich zwischen dem aktuellen Stand und
+        `base` unterscheiden – real ausgelöst durch die vom Orchestrator selbst hinterlassenen,
+        automatisch regenerierten Status-Dateien (workspace/<slug>/.ai_team_status.json,
+        PROJECT_STATE.md), NICHT durch echte Arbeitsergebnisse. Ein `base`-Wechsel stasht ein
+        dirty Arbeitsverzeichnis deshalb jetzt automatisch VOR dem Checkout und spielt es
+        danach auf dem neuen Branch wieder ein – der Fehler tritt so gar nicht mehr auf, statt
+        das Ticket erneut als "blocked" liegen zu lassen. Ohne `base` (Branch vom aktuellen
+        HEAD) ist kein Konflikt möglich, dort wird nie gestasht.
         """
+        stashed = False
+        if base:
+            status = self._run_git("status", "--short")
+            if status.strip():
+                stash_result = subprocess.run(
+                    ["git", "stash", "push", "-u", "-m", f"auto-stash-vor-{branch_name}"],
+                    cwd=BASE_DIR, capture_output=True, text=True, encoding="utf-8",
+                )
+                # "No local changes to save" kann trotz nicht-leerem `status --short` auftreten
+                # (z.B. reine Konflikt-/Merge-Marker) - dann wurde nichts tatsächlich gestasht,
+                # ein späteres `stash pop` darf dann auch nicht versucht werden.
+                stashed = stash_result.returncode == 0 and "No local changes to save" not in stash_result.stdout
+
         args = ["checkout", "-b", branch_name]
         if base:
             args.append(base)
@@ -260,6 +285,26 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
         )
         success = result.returncode == 0
         output = result.stdout + result.stderr
+
+        if stashed:
+            pop_result = subprocess.run(
+                ["git", "stash", "pop"],
+                cwd=BASE_DIR, capture_output=True, text=True, encoding="utf-8",
+            )
+            if pop_result.returncode != 0:
+                # Der Stash bleibt in diesem Fall bewusst ERHALTEN (kein `stash drop`) - die
+                # Änderungen sind damit nicht verloren, sondern warten auf manuelle Prüfung
+                # (`git stash list`). Als Fehlschlag zurückgeben statt still weiterzumachen:
+                # ein Branch ohne die eigentlich beabsichtigten Änderungen wäre ein stiller
+                # Datenverlust, kein Erfolg.
+                success = False
+                output += (
+                    "\n⚠️ Automatisch gestashte Änderungen konnten nach dem Branch-Wechsel "
+                    f"nicht wiederhergestellt werden (`git stash pop` fehlgeschlagen): "
+                    f"{(pop_result.stdout + pop_result.stderr).strip()} - Stash bleibt erhalten "
+                    "(`git stash list`), bitte manuell prüfen."
+                )
+
         return success, output.strip()
 
     def checkout(self, branch: str) -> tuple[bool, str]:

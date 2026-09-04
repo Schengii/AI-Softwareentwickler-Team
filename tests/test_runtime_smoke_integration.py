@@ -49,7 +49,7 @@ class TestRuntimeSmokeInVerificationLoop(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.temp_workspace, ignore_errors=True)
 
-    def _run(self, smoke_report: RuntimeSmokeReport):
+    def _run(self, smoke_report: RuntimeSmokeReport, tests_passed: bool = True):
         @patch("agents.orchestrator.verification.ProjectVerifier")
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")
@@ -60,7 +60,8 @@ class TestRuntimeSmokeInVerificationLoop(unittest.TestCase):
             mock_verifier = mock_verifier_cls.return_value
             mock_verifier.ensure_environment.return_value = ""
             mock_verifier.run_tests.return_value = VerificationReport(
-                ran=True, passed=True, exit_code=0, stdout="", stderr="", duration_seconds=0.1,
+                ran=True, passed=tests_passed, exit_code=0 if tests_passed else 1,
+                stdout="", stderr="" if tests_passed else "1 echter Testfehler", duration_seconds=0.1,
             )
             mock_verifier.check_docker_build.return_value.attempted = False
             mock_verifier.check_load_test.return_value.attempted = False
@@ -95,6 +96,26 @@ class TestRuntimeSmokeInVerificationLoop(unittest.TestCase):
         # Ein echter Startfehler ist eine Anforderungsverletzung, kein reiner Hinweis -
         # verification_ok muss zurückgesetzt werden (sichtbar am "NICHT verifiziert"-Status).
         self.assertTrue(any("NICHT verifiziert" in line for line in logs))
+
+    def test_smoke_test_still_runs_when_test_suite_stayed_red(self):
+        """
+        Team-Optimierung (Retrospektive 2026-09-04): real beobachtet an `zeiterfassung_app` -
+        die Testsuite blieb nach MAX_VERIFICATION_ITERATIONS-Versuchen rot ("letzter Stand
+        übernommen"), der Runtime-Smoke-Test lief bisher NUR bei report.passed und wurde damit
+        genau in diesem Fall übersprungen. Ein echter ImportError (App startet nicht) blieb
+        dadurch bis zu einem späteren, separaten Governance-Review-Lauf unentdeckt. Der Smoke-
+        Test muss jetzt auch bei einer weiterhin roten Testsuite laufen, solange sie überhaupt
+        ausgeführt wurde (report.ran).
+        """
+        smoke_report = RuntimeSmokeReport(
+            attempted=True, passed=False, entrypoint="app/main.py", app_type="fastapi",
+            output="ImportError: cannot import name 'RateLimitMiddleware' from 'app.middleware.rate_limit'",
+        )
+        result, logs, mock_verifier = self._run(smoke_report, tests_passed=False)
+
+        mock_verifier.check_runtime_smoke.assert_called()
+        self.assertIn("Runtime-Smoke-Test fehlgeschlagen", result)
+        self.assertIn("RateLimitMiddleware", result)
 
     def test_passed_smoke_test_keeps_verification_ok(self):
         smoke_report = RuntimeSmokeReport(

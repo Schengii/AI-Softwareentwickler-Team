@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import core.backlog_store as backlog_store
+import core.backlog_worker as backlog_worker
 from core.backlog_worker import run_backlog_poll_cycle
 
 
@@ -235,6 +236,37 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
         ticket = backlog_store.get_ticket("unresolved-governance-critical-mockforge")
         self.assertEqual(ticket.status, "blocked")
         self.assertEqual(ticket.retries, 1)
+
+    def test_first_governance_retry_does_not_escalate_model(self):
+        # Team-Optimierung (Retrospektive 2026-09-04): retries=0 beim Aufgreifen (Standardwert
+        # eines frisch eröffneten Tickets) ist der ERSTE automatische Backlog-Retry - noch kein
+        # Grund, das Modell hochzustufen.
+        backlog_store.upsert_ticket(
+            "unresolved-governance-critical-mockforge", "Ungelöster kritischer Governance-Befund",
+            "orchestrator", "blocked", project_slug="mockforge", detail="...", retries=0,
+        )
+        asyncio.run(run_backlog_poll_cycle())
+
+        backlog_worker.Orchestrator.assert_called_once_with(escalate_models=False)
+
+    def test_second_governance_retry_escalates_model(self):
+        # Team-Optimierung (Retrospektive 2026-09-04): real beobachtet - fast jedes zuletzt
+        # bearbeitete Projekt blieb nach den ersten Fixversuchen rot und ein automatischer
+        # Backlog-Retry griff DANACH mit exakt demselben Modell erneut (erfolglos) an. Ab
+        # retries>=1 (schon mindestens ein Backlog-Retry gescheitert) wird jetzt eskaliert.
+        backlog_store.upsert_ticket(
+            "unresolved-governance-critical-mockforge", "Ungelöster kritischer Governance-Befund",
+            "orchestrator", "blocked", project_slug="mockforge", detail="...", retries=1,
+        )
+        asyncio.run(run_backlog_poll_cycle())
+
+        backlog_worker.Orchestrator.assert_called_once_with(escalate_models=True)
+
+    def test_regular_todo_ticket_never_escalates_model(self):
+        backlog_store.upsert_ticket("cli-1", "Login-Seite bauen", "cli", "todo")
+        asyncio.run(run_backlog_poll_cycle())
+
+        backlog_worker.Orchestrator.assert_called_once_with(escalate_models=False)
 
     def test_governance_ticket_exhausted_after_max_retries_is_no_longer_picked_up(self):
         from config import MAX_GOVERNANCE_TICKET_RETRIES

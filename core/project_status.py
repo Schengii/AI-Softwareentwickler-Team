@@ -391,7 +391,15 @@ def record_run(
         # Sortiert (nicht Erfassungsreihenfolge) - has_repeated_lint_finding() vergleicht
         # zwei Läufe als Mengen-Gleichheit, die Reihenfolge, in der ruff Funde ausgibt, ist
         # dafür irrelevant und soll einen echten Vergleich nicht durch Zufall verfälschen.
-        entry["lint_signature"] = sorted(lint_signature)[:MAX_LINT_SIGNATURE_ITEMS]
+        #
+        # Team-Optimierung (Retrospektive 2026-09-04): `lint_signature` enthält von
+        # agents/orchestrator/verification.py EINEN Eintrag JE FUND-INSTANZ, nicht je
+        # distinkter Regel/Datei-Kombination - dieselbe Regel auf mehreren Zeilen derselben
+        # Datei (real beobachtet: 6x "ruff:tests/test_invoices.py:DTZ001") erzeugte bisher
+        # 6 identische Einträge. Ohne vorherige Deduplizierung konnte das den
+        # MAX_LINT_SIGNATURE_ITEMS-Schnitt dominieren und andere, distinkte Funde verdrängen -
+        # jetzt wird zuerst dedupliziert, dann sortiert/geschnitten.
+        entry["lint_signature"] = sorted(set(lint_signature))[:MAX_LINT_SIGNATURE_ITEMS]
     if verification_summary.strip():
         # Bei Fehlschlag als failure_detail (siehe format_context_for_agents-Eskalation unten),
         # bei Erfolg als success_detail - Punkt 5 einer Team-Retrospektive: bisher wurde ein

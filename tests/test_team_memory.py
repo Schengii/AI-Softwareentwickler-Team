@@ -73,6 +73,53 @@ class TestTeamMemory(unittest.TestCase):
                 team_memory.record_lesson("project_b", "governance_escalation", "Gleicher Text.")
                 self.assertEqual(len(team_memory.read_team_lessons()), 2)
 
+    def test_prioritize_slug_puts_matching_project_lesson_first_even_if_older(self):
+        # Team-Optimierung (Retrospektive 2026-09-04): real beobachtet an `zeiterfassung_app`
+        # - zwei separate Lektionen für dasselbe Projekt sollen NICHT hinter zwischenzeitlich
+        # aufgezeichneten Lektionen ANDERER Projekte im "limit"-Fenster verschwinden.
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            fake_file = Path(d) / "team_lessons.jsonl"
+            with self._use_temp_file(fake_file):
+                team_memory.record_lesson("zeiterfassung_app", "unresolved_governance_critical", "Fehlende Router-Struktur.")
+                team_memory.record_lesson("mockforge", "recurring_failure", "Andere Projekte dazwischen 1.")
+                team_memory.record_lesson("taskpulse", "recurring_failure", "Andere Projekte dazwischen 2.")
+                team_memory.record_lesson("webhook_shield", "recurring_failure", "Andere Projekte dazwischen 3.")
+
+                text = team_memory.format_team_lessons_for_agents(limit=3, prioritize_slug="zeiterfassung_app")
+
+                lines = [line for line in text.splitlines() if line.startswith("- [")]
+                self.assertEqual(len(lines), 3)
+                self.assertIn("zeiterfassung_app", lines[0])
+                self.assertIn("Fehlende Router-Struktur.", lines[0])
+
+    def test_prioritize_slug_empty_keeps_pure_recency_behavior(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            fake_file = Path(d) / "team_lessons.jsonl"
+            with self._use_temp_file(fake_file):
+                team_memory.record_lesson("project_a", "recurring_failure", "Älterer Fund.")
+                team_memory.record_lesson("project_b", "recurring_failure", "Neuerer Fund.")
+
+                text = team_memory.format_team_lessons_for_agents(limit=1, prioritize_slug="")
+
+                self.assertIn("Neuerer Fund.", text)
+                self.assertNotIn("Älterer Fund.", text)
+
+    def test_prioritize_slug_with_no_own_lessons_falls_back_to_recency(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            fake_file = Path(d) / "team_lessons.jsonl"
+            with self._use_temp_file(fake_file):
+                team_memory.record_lesson("project_a", "recurring_failure", "Einziger Fund.")
+
+                text = team_memory.format_team_lessons_for_agents(limit=5, prioritize_slug="brand_new_project")
+
+                self.assertIn("Einziger Fund.", text)
+
     def test_record_lesson_never_raises_on_unwritable_path(self):
         from pathlib import Path
         # Ein Pfad, dessen Elternverzeichnis nicht angelegt werden kann (ungültiges Laufwerk) -

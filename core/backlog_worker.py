@@ -253,8 +253,21 @@ async def _process_single_ticket(
         else ticket.title
     )
 
+    # Team-Optimierung (Retrospektive 2026-09-04): `ticket.retries` ist hier noch der Stand VOR
+    # dem Zähler-Erhöhen in run_backlog_poll_cycle (derselbe `ticket`, die Erhöhung schreibt nur
+    # in den Store, siehe dort) - retries>=1 heißt also "mindestens ein automatischer Backlog-
+    # Retry ist bereits gescheitert, das hier ist schon der ZWEITE (oder ein späterer)". Genau
+    # dann mit demselben Agenten/Modell wie zuvor weiterzumachen, hätte real beobachtet (siehe
+    # Orchestrator.__init__-Docstring) selten zu einem anderen Ergebnis geführt.
+    escalate_models = ticket.id.startswith(_GOVERNANCE_RETRY_PREFIXES) and ticket.retries >= 1
+    if escalate_models and status_callback:
+        status_callback(
+            f"⬆️ Governance-Ticket `{ticket.id}` scheiterte bereits an einem vorherigen "
+            "automatischen Retry - dieser Versuch nutzt ein stärkeres Modell (HEAVY_MODEL)."
+        )
+
     try:
-        orchestrator = Orchestrator()
+        orchestrator = Orchestrator(escalate_models=escalate_models)
         final_report = await orchestrator.process(
             task_text, status_callback=status_callback, forced_project_dir=forced_project_dir,
         )

@@ -286,6 +286,112 @@ class TestCompletenessCheck(unittest.TestCase):
             report = verifier.check_completeness()
             self.assertTrue(report.passed)
 
+    def test_detects_missing_symbol_in_existing_module_file(self):
+        # Team-Optimierung (Retrospektive 2026-09-04, sechster realer Fund): real beobachtet an
+        # `zeiterfassung_app` - app/main.py importierte `RateLimitMiddleware`, die Klasse in der
+        # Zieldatei hieß aber tatsächlich `SimpleRateLimiter`. Die Zieldatei EXISTIERT (anders
+        # als beim taskpulse-Fund oben), der Import schlägt trotzdem mit ImportError fehl.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            middleware_dir = app_dir / "middleware"
+            middleware_dir.mkdir()
+            (middleware_dir / "__init__.py").write_text("", encoding="utf-8")
+            (middleware_dir / "rate_limit.py").write_text(
+                "class SimpleRateLimiter:\n    pass\n", encoding="utf-8",
+            )
+            (app_dir / "main.py").write_text(
+                "from .middleware.rate_limit import RateLimitMiddleware\n\napp = object()\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any(
+                "RateLimitMiddleware" in i.message and "rate_limit.py" in i.message
+                for i in report.issues
+            ))
+
+    def test_existing_symbol_in_module_file_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            middleware_dir = app_dir / "middleware"
+            middleware_dir.mkdir()
+            (middleware_dir / "__init__.py").write_text("", encoding="utf-8")
+            (middleware_dir / "rate_limit.py").write_text(
+                "class RateLimitMiddleware:\n    pass\n", encoding="utf-8",
+            )
+            (app_dir / "main.py").write_text(
+                "from .middleware.rate_limit import RateLimitMiddleware\n\napp = object()\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_reexported_symbol_via_plain_import_in_module_file_not_flagged(self):
+        # `defined` erfasst auch Namen, die die Zieldatei selbst importiert (Re-Export) - z.B.
+        # `from .base import RateLimiter as RateLimitMiddleware` in rate_limit.py.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            middleware_dir = app_dir / "middleware"
+            middleware_dir.mkdir()
+            (middleware_dir / "__init__.py").write_text("", encoding="utf-8")
+            (middleware_dir / "base.py").write_text("class RateLimiter:\n    pass\n", encoding="utf-8")
+            (middleware_dir / "rate_limit.py").write_text(
+                "from .base import RateLimiter as RateLimitMiddleware\n", encoding="utf-8",
+            )
+            (app_dir / "main.py").write_text(
+                "from .middleware.rate_limit import RateLimitMiddleware\n\napp = object()\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_wildcard_import_in_module_file_suppresses_symbol_check(self):
+        # Ein Wildcard-Import in der Zieldatei kann beliebige Namen einführen - eine rein
+        # statische Analyse kann das nicht zuverlässig auflösen, also lieber gar nicht melden
+        # als einen Fehlalarm riskieren.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            (app_dir / "constants.py").write_text("SOME_OTHER_VALUE = 1\n", encoding="utf-8")
+            (app_dir / "settings.py").write_text("from .constants import *\n", encoding="utf-8")
+            (app_dir / "main.py").write_text(
+                "from .settings import ANYTHING_AT_ALL\n\napp = object()\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_dynamic_getattr_in_module_file_suppresses_symbol_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            (app_dir / "dynamic.py").write_text(
+                "def __getattr__(name):\n    return object()\n", encoding="utf-8",
+            )
+            (app_dir / "main.py").write_text(
+                "from .dynamic import AnythingGeneratedAtRuntime\n\napp = object()\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
     def test_reexported_symbol_via_init_not_flagged(self):
         # "from . import X" ist mehrdeutig: X kann ein Submodul ODER ein in __init__.py
         # (re-)exportiertes Symbol sein - Letzteres ist kein Fehler.

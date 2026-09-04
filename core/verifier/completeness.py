@@ -383,9 +383,9 @@ class CompletenessMixin:
         bei `from . import models`), prüft _check_ambiguous_names() zusätzlich jeden importierten
         Namen einzeln, weil er dort entweder ein Submodul (models.py) oder ein in __init__.py
         (re-)exportiertes Symbol sein könnte. Löst sich `module_path` dagegen zu einer einzelnen
-        .py-DATEI auf (kein Paket), bleiben die importierten Namen unbeprüft - eine
-        verlässliche Symbol-in-Datei-Prüfung bräuchte eine zweite AST-Analyse dieser Datei und
-        wäre wegen dynamischer Attribute/Re-Exporte fehlalarmanfällig."""
+        .py-DATEI auf (kein Paket), prüft _check_symbols_in_module_file() konservativ, ob jeder
+        importierte Name dort tatsächlich definiert/re-exportiert wird (siehe dort für die
+        Fehlalarm-Vorkehrungen)."""
         dotted = "." * node.level + (node.module or "")
         if node.module:
             module_path = base / Path(*node.module.split("."))
@@ -398,10 +398,82 @@ class CompletenessMixin:
                             f"beim Start fehl.",
                 )]
             if not module_path.is_dir():
-                return []  # einzelne .py-Datei, keine Namens-Ambiguität - siehe Docstring
+                return self._check_symbols_in_module_file(node, module_path.with_suffix(".py"), dotted, rel)
             base = module_path
 
         return self._check_ambiguous_names(node, base, dotted, rel)
+
+    def _check_symbols_in_module_file(
+        self, node: ast.ImportFrom, module_file: Path, dotted: str, rel: str,
+    ) -> list[CompletenessIssue]:
+        """
+        Team-Optimierung (Retrospektive 2026-09-04, sechster realer Fund): `_check_import_from()`
+        ließ ein Zielmodul, das sich zu einer einzelnen .py-DATEI auflöst, bisher komplett
+        unbeprüft (siehe dortiger Docstring) - real beobachtet an `zeiterfassung_app`: `app/
+        main.py` importierte `from .middleware.rate_limit import RateLimitMiddleware`, aber die
+        Klasse in `app/middleware/rate_limit.py` hieß tatsächlich `SimpleRateLimiter` - ein
+        garantierter `ImportError` beim Start. Weder die Testsuite (blieb aus anderen Gründen
+        bereits rot, siehe MAX_VERIFICATION_ITERATIONS) noch dieser Check bisher fingen das ab -
+        erst ein SPÄTERER Governance-Review-Lauf per Code-Lesen fand es, einen ganzen Lauf
+        später als nötig.
+
+        Bewusst konservativ (dieselbe Fehlalarm-Vorsicht wie _check_ambiguous_names()): meldet
+        NUR, wenn
+        - die Zieldatei syntaktisch parsbar ist (ein SyntaxError wird bereits vom Testlauf/Lint
+          gemeldet, keine doppelte Meldung hier),
+        - sie KEINEN Wildcard-Import (`from x import *`) und KEINE dynamische Namens-Erzeugung
+          (`globals()[...] = `, `setattr(sys.modules[...], ...)`, `__getattr__`) enthält - beides
+          kann Namen zur Laufzeit erzeugen, die eine rein statische AST-Analyse nie sehen kann,
+        und der importierte Name dort weder als Funktion/Klasse/Variable/Alias auf Modulebene
+        NOCH via `__all__` auftaucht.
+        """
+        try:
+            text = module_file.read_text(encoding="utf-8", errors="ignore")
+            tree = ast.parse(text)
+        except (OSError, SyntaxError, ValueError):
+            return []
+
+        defined: set[str] = set()
+        has_dynamic_names = False
+        for stmt in tree.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                defined.add(stmt.name)
+            elif isinstance(stmt, ast.Assign):
+                for target in stmt.targets:
+                    if isinstance(target, ast.Name):
+                        defined.add(target.id)
+                    elif isinstance(target, ast.Tuple):
+                        defined.update(elt.id for elt in target.elts if isinstance(elt, ast.Name))
+            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                defined.add(stmt.target.id)
+            elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                if isinstance(stmt, ast.ImportFrom) and any(a.name == "*" for a in stmt.names):
+                    has_dynamic_names = True  # Wildcard-Import kann beliebige Namen einführen
+                    break
+                for alias in stmt.names:
+                    defined.add((alias.asname or alias.name).split(".")[0])
+        if has_dynamic_names:
+            return []
+        # Modulweite dynamische Namens-Erzeugung außerhalb von Top-Level-Statements (z.B. in
+        # einem `if`-Block oder per globals()/setattr) - grob per Volltextsuche statt vollem
+        # Kontrollfluss-Tracking, bewusst lieber einen echten Fund verpassen als einen
+        # Fehlalarm riskieren.
+        if "__getattr__" in text or "globals()[" in text or "setattr(sys.modules" in text:
+            return []
+
+        issues: list[CompletenessIssue] = []
+        for alias in node.names:
+            if alias.name == "*" or alias.name in defined:
+                continue
+            issues.append(CompletenessIssue(
+                file_path=rel, line_number=node.lineno,
+                message=f"Import „from {dotted} import {alias.name}“ verweist auf kein "
+                        f"in `{self._relative_or_raw(module_file)}` definiertes/importiertes "
+                        f"Symbol - der Import schlägt vermutlich beim Start mit ImportError fehl "
+                        f"(Namens-Tippfehler oder die Datei wurde umbenannt, ohne alle "
+                        f"Importstellen anzupassen?).",
+            ))
+        return issues
 
     def _check_ambiguous_names(self, node: ast.ImportFrom, base: Path, dotted: str, rel: str) -> list[CompletenessIssue]:
         """Prüft jeden importierten Namen bei "from <paket> import X, Y, Z" einzeln: X/Y/Z

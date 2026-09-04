@@ -95,6 +95,7 @@ from config import (
     AGENT_MAX_TOOL_ITERATIONS,
     AUTO_SAVE_WORKSPACE,
     BASE_DIR,
+    HEAVY_MODEL,
     ORCHESTRATOR_MODEL,
     PLAN_CONFIRMATION_MIN_TASKS,
 )
@@ -154,7 +155,16 @@ class Orchestrator(
     Hauptagent, der die 6 Fachbereichs-Teamleiter und deren 33 Spezialisten koordiniert.
     """
 
-    def __init__(self):
+    def __init__(self, escalate_models: bool = False):
+        """
+        escalate_models: Team-Optimierung (Retrospektive 2026-09-04) - core/backlog_worker.py
+        setzt dies ab dem ZWEITEN automatischen Versuch eines Governance-/Verifikations-Retry-
+        Tickets (core/backlog_worker.py._governance_retry_pool()). Realer Fund: fast jedes der
+        zuletzt bearbeiteten Projekte (sentinelproxy, taskpulse, webhook_shield, mockforge,
+        zeiterfassung_app) blieb nach den standardmäßigen 2 Fixversuchen (MAX_VERIFICATION_
+        ITERATIONS) rot, der automatische Backlog-Retry griff DANACH mit exakt demselben
+        Agenten/Modell erneut an - ohne jede Eskalation. Siehe _escalate_agent_models().
+        """
         # 1. Fachbereichs-Teamleiter (Department Leads)
         self._dept_leads: dict[str, DepartmentLeadAgent] = {
             dept_id: DepartmentLeadAgent(dept_id) for dept_id in DEPARTMENT_DEFINITIONS
@@ -207,6 +217,8 @@ class Orchestrator(
             "readme":            ReadmeAgent(),
             "github":            GitHubAgent(),
         }
+        if escalate_models:
+            self._escalate_agent_models()
 
         self._task_manager = TaskManager(model_name=ORCHESTRATOR_MODEL)
         self._result_aggregator = ResultAggregator(model_name=ORCHESTRATOR_MODEL)
@@ -263,6 +275,23 @@ class Orchestrator(
         # top über den bestehenden _tokens_used_since()-Mechanismus.
         self._project_token_budget: int = 0
         self._project_tokens_before_run: int = 0
+
+    def _escalate_agent_models(self) -> None:
+        """
+        Stuft jeden Fachagenten, der nicht ohnehin bereits auf HEAVY_MODEL läuft, für DIESEN
+        Lauf auf HEAVY_MODEL hoch (siehe __init__.escalate_models-Docstring für den vollen
+        Kontext). Best-effort: ein einzelner Agent, dessen Modell-Erstellung fehlschlägt (z.B.
+        fehlender API-Key für den Zielprovider), behält sein bisheriges Modell statt den ganzen
+        Lauf zu verhindern - dieselbe Großzügigkeit wie beim Fallback in core/llm_factory.py.
+        """
+        from core.llm_factory import LLMFactory
+        for agent in self._agents.values():
+            if agent._llm.model_name == HEAVY_MODEL:
+                continue
+            try:
+                agent._llm = LLMFactory.create_for_model(HEAVY_MODEL)
+            except Exception:
+                continue
 
     async def process(
         self,
@@ -548,7 +577,7 @@ class Orchestrator(
         # BELIEBIGEN Projekten zusammen - ein neues, brandaktuelles Projekt profitiert so direkt
         # von Fehlern, die frühere, völlig andere Projekte bereits gemacht haben. Leer, solange
         # noch keine Lektion je aufgezeichnet wurde (kein unnötiger Prompt-Text im Normalfall).
-        team_lessons_context = format_team_lessons_for_agents()
+        team_lessons_context = format_team_lessons_for_agents(prioritize_slug=project_slug)
 
         # Projekt-Konstitution (core/project_constitution.py): feste Tech-Stack-Präferenzen,
         # die der Nutzer einmal per /constitution festlegt (Sprache, Framework, Test-Framework,
@@ -798,11 +827,16 @@ class Orchestrator(
                 "wurde eröffnet."
             )
             try:
+                # Team-Optimierung (Retrospektive 2026-09-04): lint_signature trägt einen
+                # Eintrag JE FUND-INSTANZ (siehe agents/orchestrator/verification.py) - ohne
+                # Deduplizierung listete ein Ticket dieselbe Regel/Datei-Kombination real
+                # mehrfach identisch auf (z.B. 6x "ruff:tests/test_invoices.py:DTZ001") statt
+                # bis zu 10 tatsächlich UNTERSCHIEDLICHE Funde zu zeigen.
                 upsert_ticket(
                     ticket_id=lint_ticket_id,
                     title=f"Wiederkehrender Lint-Fund: {self.last_project_slug}",
                     source="orchestrator", status="blocked", project_slug=self.last_project_slug,
-                    detail="; ".join(sorted(lint_signature)[:10]),
+                    detail="; ".join(sorted(set(lint_signature))[:10]),
                 )
             except Exception as e:
                 notify(f"⚠️ [dim yellow]Ticket für wiederkehrenden Lint-Fund konnte nicht angelegt werden: {e}[/dim yellow]")

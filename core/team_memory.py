@@ -85,10 +85,30 @@ def read_team_lessons(limit: int = MAX_LESSONS_SHOWN) -> list[dict]:
     return lessons[-limit:][::-1]
 
 
-def format_team_lessons_for_agents(limit: int = MAX_LESSONS_SHOWN) -> str:
+def format_team_lessons_for_agents(limit: int = MAX_LESSONS_SHOWN, prioritize_slug: str = "") -> str:
     """Leerer String, wenn es noch keine Lektionen gibt (kein unnötiger Prompt-Text für den
-    Normalfall eines frischen Setups ohne aufgezeichnete Muster)."""
-    lessons = read_team_lessons(limit)
+    Normalfall eines frischen Setups ohne aufgezeichnete Muster).
+
+    Team-Optimierung (Retrospektive 2026-09-04): bisher immer genau die `limit` JÜNGSTEN
+    Lektionen über ALLE Projekte hinweg, unabhängig davon, ob eine davon ausgerechnet FÜR
+    DAS AKTUELL BEARBEITETE PROJEKT aufgezeichnet wurde. Real beobachtet an `zeiterfassung_app`:
+    zwei separate "unresolved_governance_critical"-Lektionen an DEMSELBEN Projekt innerhalb
+    weniger Stunden - bei wachsendem, projektübergreifendem Log droht genau die für dieses
+    Projekt relevanteste Lektion aus den `limit` jüngsten herauszufallen, sobald andere
+    Projekte zwischenzeitlich weitere Lektionen erzeugen. `prioritize_slug` (Standard: "" -
+    Verhalten unverändert) stellt Lektionen DESSELBEN project_slug voran (jeweils intern nach
+    Aktualität sortiert), der Rest der `limit` Plätze wird mit den übrigen jüngsten Lektionen
+    aufgefüllt - eine bereits einmal für dieses Projekt gemachte Lektion geht so nicht mehr im
+    allgemeinen Rauschen unter."""
+    if not prioritize_slug:
+        lessons = read_team_lessons(limit)
+    else:
+        # read_team_lessons(limit=0) wäre "keine" (Slice-Semantik), nicht "alle" - deshalb hier
+        # ein bewusst großzügiger, aber endlicher Deckel statt limit für die volle Vorauswahl.
+        all_recent = read_team_lessons(limit=max(limit * 20, 200))
+        own_project = [entry for entry in all_recent if entry.get("project_slug") == prioritize_slug]
+        others = [entry for entry in all_recent if entry.get("project_slug") != prioritize_slug]
+        lessons = (own_project + others)[:limit]
     if not lessons:
         return ""
     lines = ["## 🧠 Team-weite Lektionen aus früheren Projekten (nicht nur diesem hier):"]

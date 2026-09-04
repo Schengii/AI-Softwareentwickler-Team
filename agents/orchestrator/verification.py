@@ -1509,7 +1509,18 @@ class VerificationMixin:
                     verification_ok = False
 
         # Runtime Smoke-Check: Prüft, ob die generierte App tatsächlich hochfährt / antwortet (Tests grün != App startet)
-        if not (budget_aborted or manually_cancelled) and report is not None and report.ran and report.passed:
+        #
+        # Team-Optimierung (Retrospektive 2026-09-04): bisher lief dieser Check nur bei
+        # report.passed - also GENAU DANN NICHT, wenn die Testsuite nach MAX_VERIFICATION_
+        # ITERATIONS-Versuchen weiterhin rot blieb und "der letzte Stand übernommen" wurde
+        # (siehe Zweig oben, `verify_fix_test`-Schleife). Real beobachtet an `zeiterfassung_
+        # app`: genau in diesem Fall blieb ein simpler ImportError (Klassenname-Mismatch
+        # zwischen main.py-Import und der tatsächlichen Middleware-Klasse) unentdeckt, bis ihn
+        # ein SPÄTERER Governance-Review-Lauf per Code-Lesen fand - der automatisierte Smoke-
+        # Test hätte ihn sofort UND günstiger gefunden. `report.ran` bleibt Voraussetzung (ohne
+        # jeden Testlauf ist z.B. auch keine Dependency-Installation gesichert, gegen die
+        # `check_runtime_smoke()` starten könnte), `report.passed` nicht mehr.
+        if not (budget_aborted or manually_cancelled) and report is not None and report.ran:
             def _build_smoke_fix_task(smoke_report, attempt):
                 owner = file_owners.get(smoke_report.entrypoint) if smoke_report.entrypoint else None
                 agent_id = owner if owner in self._agents else ("backend" if "backend" in self._agents else None)

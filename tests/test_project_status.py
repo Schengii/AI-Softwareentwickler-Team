@@ -186,6 +186,20 @@ class TestProjectStatus(unittest.TestCase):
         record_run(self.temp_dir, "Lauf 2", verification_ok=True, budget_aborted=False, files_written_count=1)
         self.assertFalse(has_repeated_lint_finding(self.temp_dir))
 
+    def test_record_run_deduplicates_lint_signature_before_truncating(self):
+        # Team-Optimierung (Retrospektive 2026-09-04): agents/orchestrator/verification.py
+        # liefert einen Eintrag JE FUND-INSTANZ, nicht je distinkter Regel/Datei-Kombination
+        # (real beobachtet: 6x "ruff:tests/test_invoices.py:DTZ001" für sechs betroffene
+        # Zeilen derselben Regel). Ohne vorherige Deduplizierung konnten solche Duplikate den
+        # MAX_LINT_SIGNATURE_ITEMS-Schnitt dominieren und andere, distinkte Funde verdrängen.
+        sig = ["ruff:tests/test_invoices.py:DTZ001"] * 6 + ["ruff:app/main.py:B008"]
+        record_run(self.temp_dir, "Lauf 1", verification_ok=False, budget_aborted=False,
+                   files_written_count=1, lint_signature=sig)
+        entries = read_status(self.temp_dir)
+        stored = entries[0]["lint_signature"]
+        self.assertEqual(len(stored), 2)
+        self.assertEqual(set(stored), {"ruff:tests/test_invoices.py:DTZ001", "ruff:app/main.py:B008"})
+
     def test_has_repeated_lint_finding_ignores_signature_order(self):
         record_run(self.temp_dir, "Lauf 1", verification_ok=False, budget_aborted=False,
                    files_written_count=1, lint_signature=["ruff:a.py:F841", "ruff:b.py:UP007"])

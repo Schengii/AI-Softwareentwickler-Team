@@ -8,7 +8,7 @@ interface WebSocketContextType {
 
 const WebSocketContext = createContext<WebSocketContextType | null>(null);
 
-export const WebSocketProvider = ({ channelId, token, children }: { channelId: string, token: string, children: ReactNode }) => {
+export const WebSocketProvider = ({ channelId, token, children }: { channelId: string, token: string, children?: ReactNode }) => {
   const [socket, setSocket] = useState<WebSocket | null>(null);
   const [messages, setMessages] = useState<any[]>([]);
   const [isConnected, setIsConnected] = useState(false);

@@ -7,7 +7,7 @@ client = TestClient(app)
 
 def test_websocket_connection_unauthorized():
     # Test ohne Token
-    with client.websocket_connect("/ws/chat") as websocket:
+    with client.websocket_connect("/ws/chat"):
         # Hier sollte der Handshake fehlschlagen oder ein Error kommen
         # Je nach Implementierung
         pass

@@ -15,22 +15,22 @@ export const ChatWindow = () => {
   };
 
   return (
-    <div className=\"flex flex-col h-full bg-[#2C2F33] text-white\">
-      <div className=\"flex-1 overflow-y-auto p-4\">
+    <div className="flex flex-col h-full bg-[#2C2F33] text-white">
+      <div className="flex-1 overflow-y-auto p-4">
         {messages.map((msg, i) => (
-          <div key={i} className=\"mb-2\">
-            <span className=\"font-bold\">{msg.user}: </span>
+          <div key={i} className="mb-2">
+            <span className="font-bold">{msg.user}: </span>
             <span dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(msg.content) }} />
           </div>
         ))}
       </div>
-      <div className=\"p-4 bg-[#23272A]\">
+      <div className="p-4 bg-[#23272A]">
         <input
-          className=\"w-full p-2 bg-[#2C2F33] rounded\"
+          className="w-full p-2 bg-[#2C2F33] rounded"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyPress={(e) => e.key === 'Enter' && handleSend()}
-          placeholder=\"Nachricht senden...\"
+          placeholder="Nachricht senden..."
         />
       </div>
     </div>

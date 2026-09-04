@@ -13,7 +13,7 @@ describe('useWebSocket Hook', () => {
       readyState: WebSocket.OPEN,
     };
     // Mock global WebSocket
-    global.WebSocket = vi.fn().mockImplementation(() => mockWebSocket) as any;
+    (globalThis as any).WebSocket = vi.fn().mockImplementation(() => mockWebSocket) as any;
   });
 
   afterEach(() => {
@@ -25,7 +25,7 @@ describe('useWebSocket Hook', () => {
       <WebSocketProvider channelId="123" token="abc">{children}</WebSocketProvider>
     );
     renderHook(() => useWebSocket(), { wrapper });
-    expect(global.WebSocket).toHaveBeenCalledWith('ws://localhost:8000/ws/123?token=abc');
+    expect((globalThis as any).WebSocket).toHaveBeenCalledWith('ws://localhost:8000/ws/123?token=abc');
   });
 
   it('should send messages when connected', () => {

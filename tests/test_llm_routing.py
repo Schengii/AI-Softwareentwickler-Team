@@ -127,9 +127,12 @@ class TestLLMRouting(unittest.TestCase):
         self.assertEqual(result.text, "ok")
         mock_limiter.acquire.assert_called_once()
 
+    @patch("core.llm_factory.GROQ_API_KEY", "gsk_dummy_test_key")
     @patch("core.llm_factory.LLMFactory.create_for_model")
     @patch("core.llm_factory._gemini_client")
-    def test_falls_back_to_groq_when_gemini_and_claude_both_fail(self, mock_gemini_client, mock_create_for_model):
+    def test_falls_back_to_groq_when_gemini_and_claude_both_fail(
+        self, mock_gemini_client, mock_create_for_model, mock_groq_key=None,
+    ):
         """
         Realer Fund aus einem echten End-to-End-Testlauf ohne ANTHROPIC_API_KEY: der
         QA-Tester scheiterte komplett ("Gemini Function-Calling Fehler nach allen
@@ -167,10 +170,11 @@ class TestLLMRouting(unittest.TestCase):
         self.assertEqual(result.text, "von Groq gerettet")
         fake_groq_client.generate_with_tools.assert_called_once()
 
+    @patch("core.llm_factory.GROQ_API_KEY", "gsk_dummy_test_key")
     @patch("core.llm_factory.LLMFactory.create_for_model")
     @patch("core.llm_factory._gemini_client")
     def test_generate_with_usage_falls_back_to_groq_when_gemini_and_claude_both_fail(
-        self, mock_gemini_client, mock_create_for_model,
+        self, mock_gemini_client, mock_create_for_model, mock_groq_key=None,
     ):
         """
         Gegenstück zu test_falls_back_to_groq_when_gemini_and_claude_both_fail für den

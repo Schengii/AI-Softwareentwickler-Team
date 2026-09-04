@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime, timedelta

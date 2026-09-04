@@ -7,6 +7,15 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🛠️ CI-Fehlschläge auf GitHub Actions behoben (Groq-Fallback-Tests & Workspace-Checks)
+
+Realer Fund bei GitHub Actions PR-Checks (#35): die CI schlug mit 3 fehlerhaften Jobs fehl:
+- `tests/test_llm_routing.py`: Tests für Fallback auf Groq mockten zwar `create_for_model`, aber nicht `GROQ_API_KEY`. Durch die kürzlich eingeführte `_provider_available()`-Prüfung sortierte der Client Groq in Umgebungen ohne Secrets (GitHub Actions CI-Runner) vorab aus. Mit `@patch("core.llm_factory.GROQ_API_KEY", "gsk_dummy_test_key")` laufen die Tests nun unabhängig von lokalen `.env`-Keys stabil in CI.
+- `Workspace-Python-Check`: Ungenutzte Imports in `cloudvault` (`HTTPException`, `Depends`, `pytest`), ungenutzte Zuweisung `as websocket` in `omnichat` und fehlender `TestClient`-Import in `taskpulse` bereinigt (`ruff check --isolated --select F,E9` clean).
+- `Workspace-TypeScript-Check`: Escapte Quotes `\"` in `omnichat/ChatWindow.tsx` korrigiert, `incidentpilot/vite.config.ts` typisiert und JSX-haltige Hooks `useWebSocket.ts`/`useWebSocket.test.ts` sauber auf `.tsx` umbenannt (`tsc --noEmit` clean).
+
+---
+
 ## 🚦 `/tokens` zeigt jetzt Agent→Modell-Zuordnung & Wanduhr-ETA erschöpfter Modelle
 
 Nutzeranfrage: eine Übersicht des Token-Status pro AGENT und Modell – welche Modelle gerade

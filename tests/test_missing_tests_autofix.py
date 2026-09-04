@@ -26,6 +26,24 @@ NO_TESTS_REPORT = VerificationReport(
     ran=False, passed=True, exit_code=0, stdout="", stderr="", duration_seconds=0.0,
     reason_skipped="Keine Testdateien gefunden.",
 )
+INCOMPLETE_TESTS_REPORT = VerificationReport(
+    ran=False, passed=False, exit_code=1, stdout="", stderr="", duration_seconds=0.0,
+    reason_skipped=(
+        "Unvollständiges Projekt erkannt: Ein tests/-Verzeichnis mit conftest.py existiert, "
+        "aber keine einzige echte Testdatei (test_*.py/*_test.py) - sieht nach einer "
+        "abgebrochenen Testsuite aus, nicht nach einem Projekt, das bewusst auf Tests verzichtet."
+    ),
+)
+MISSING_ENTRYPOINT_REPORT = VerificationReport(
+    ran=False, passed=False, exit_code=1, stdout="", stderr="", duration_seconds=0.0,
+    reason_skipped=(
+        "Unvollständiges Projekt erkannt: 3 Python-Quelldateien und eine Abhängigkeitsliste "
+        "(requirements.txt/pyproject.toml) gefunden, aber kein erkennbarer Einstiegspunkt "
+        "(__main__.py/app.py/asgi.py/main.py/manage.py/run.py/wsgi.py) - sieht nach einem "
+        "mitten in der Generierung abgebrochenen Backend-Projekt aus, nicht nach einem "
+        "fertigen Skript."
+    ),
+)
 PASSED_REPORT = VerificationReport(
     ran=True, passed=True, exit_code=0, stdout="", stderr="", duration_seconds=0.1,
 )
@@ -92,6 +110,34 @@ class TestMissingTestsAutofix(unittest.TestCase):
         self.assertEqual(mock_verifier.run_tests.call_count, 2)
         self.assertFalse(self.orchestrator.last_verification_ok)
         self.assertTrue(any("NICHT verifiziert" in line for line in logs))
+
+    def test_incomplete_conftest_only_project_dispatches_tester_then_succeeds(self):
+        # Team-Optimierung (Retrospektive, zeiterfassung_app-Lauf): "tests/-Verzeichnis mit
+        # conftest.py, aber keine echte Testdatei" wurde bisher zwar korrekt als Fehlschlag
+        # (report.ran=False, report.passed=False statt nur "nichts zu testen") erkannt, aber nie
+        # ein Fix dafür beauftragt - der Zweig endete direkt in einem `break`. Jetzt bekommt der
+        # tester denselben EINEN Nachbeauftragungs-Versuch wie beim "keine Tests gefunden"-Fall.
+        result, logs, mock_verifier = self._run([INCOMPLETE_TESTS_REPORT, PASSED_REPORT])
+
+        self.assertEqual(mock_verifier.run_tests.call_count, 2)
+        self.assertTrue(self.orchestrator.last_verification_ok)
+        self.assertTrue(any("beauftrage tester" in line for line in logs))
+
+    def test_incomplete_conftest_only_project_gives_up_after_one_retry(self):
+        result, logs, mock_verifier = self._run([INCOMPLETE_TESTS_REPORT, INCOMPLETE_TESTS_REPORT])
+
+        self.assertEqual(mock_verifier.run_tests.call_count, 2)
+        self.assertFalse(self.orchestrator.last_verification_ok)
+
+    def test_missing_entrypoint_is_not_routed_to_tester(self):
+        # Ein fehlender Einstiegspunkt (main.py/app.py/...) ist kein Testsuite-Problem - der
+        # tester darf hierfür NICHT beauftragt werden (das wäre architect/backend-Aufgabe),
+        # die Schleife muss stattdessen direkt aufgeben, ohne einen Fix-Versuch zu verschwenden.
+        result, logs, mock_verifier = self._run([MISSING_ENTRYPOINT_REPORT, PASSED_REPORT])
+
+        self.assertEqual(mock_verifier.run_tests.call_count, 1)
+        self.assertFalse(self.orchestrator.last_verification_ok)
+        self.assertFalse(any("beauftrage tester" in line for line in logs))
 
 
 if __name__ == "__main__":

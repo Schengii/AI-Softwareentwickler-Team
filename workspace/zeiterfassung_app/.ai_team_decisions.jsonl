@@ -1,0 +1,3 @@
+{"timestamp": "2026-09-04T09:55:04.373068+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 1: 1 kritische(r) Befund(e) → architect"}
+{"timestamp": "2026-09-04T09:56:28.252559+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 2: 1 kritische(r) Befund(e) → backend"}
+{"timestamp": "2026-09-04T09:58:25.753278+00:00", "event": "unresolved_governance_critical_ticket_opened", "detail": "🔴 Kritische Probleme (müssen behoben werden)\n*   **Fehlende Implementierung:** `app/main.py` importiert `from .routers import auth, users, time_entries`, aber das Verzeichnis `app/routers/` existiert nicht.\n    *   *Fix:* Implementierung der Router-Struktur und der entsprechenden Endpunkte in `app/r"}

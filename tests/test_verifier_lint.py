@@ -155,6 +155,34 @@ class TestPythonLintViaRuff(unittest.TestCase):
 
     @patch("core.verifier.CodeSandbox.run_command")
     @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
+    def test_b008_ignored_for_detected_fastapi_project(self, mock_which, mock_run):
+        # Team-Optimierung (Retrospektive, zeiterfassung_app-Lauf): B008 ("kein Funktionsaufruf
+        # in Default-Argumenten") schlägt bei JEDEM FastAPI-`Depends()`-Parameter an - dem von
+        # FastAPI selbst vorgeschriebenen Dependency-Injection-Idiom, keine echte Fehlerquelle.
+        # Ein als FastAPI erkanntes Projekt (hier: "fastapi" in requirements.txt) muss die Regel
+        # deshalb per --ignore=B008 ausnehmen.
+        (self.project_dir / "requirements.txt").write_text("fastapi==0.110.2\n", encoding="utf-8")
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="[]", stderr="", duration_seconds=0.1)
+        verifier = ProjectVerifier(self.project_dir)
+
+        verifier.check_lint()
+
+        check_call_args = mock_run.call_args_list[-1][0][0]
+        self.assertIn("--ignore=B008", check_call_args)
+
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
+    def test_b008_not_ignored_for_non_fastapi_project(self, mock_which, mock_run):
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="[]", stderr="", duration_seconds=0.1)
+        verifier = ProjectVerifier(self.project_dir)  # setUp() legt nur ein plain app.py an
+
+        verifier.check_lint()
+
+        check_call_args = mock_run.call_args_list[-1][0][0]
+        self.assertNotIn("--ignore=B008", check_call_args)
+
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
     def test_technical_failure_is_never_reported_as_clean(self, mock_which, mock_run):
         mock_run.return_value = ExecutionResult(exit_code=2, stdout="", stderr="ruff: internal error", duration_seconds=0.1)
         verifier = ProjectVerifier(self.project_dir)

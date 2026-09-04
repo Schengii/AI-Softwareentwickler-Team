@@ -91,8 +91,31 @@ class CompletenessMixin:
 
         issues.extend(self._missing_readme_referenced_files())
         issues.extend(self._missing_dependency_manifest(py_import_names))
+        issues.extend(self._corrupted_dependency_manifests())
 
         return CompletenessReport(attempted=True, passed=not issues, issues=issues)
+
+    def _corrupted_dependency_manifests(self) -> list[CompletenessIssue]:
+        """Prüft vorhandene Dependency-Manifeste (requirements.txt, package.json, ...) auf
+        Merge-/Diff-Korruption – siehe core/manifest_guard.py für den realen Fund. Ergänzt die
+        Schreibzeit-Prüfung in core/agent_toolbox.py/core/workspace.py als zweite
+        Verteidigungslinie: erkennt auch Korruption, die auf einem anderen Weg (z.B. manuelles
+        Kopieren, ältere Läufe vor dieser Prüfung) ins Projekt gelangt ist."""
+        from core.manifest_guard import _JSON_MANIFESTS, _PYTHON_REQUIREMENTS_MANIFESTS, detect_corrupted_manifest
+
+        issues: list[CompletenessIssue] = []
+        for name in _PYTHON_REQUIREMENTS_MANIFESTS | _JSON_MANIFESTS:
+            candidate = self.project_dir / name
+            if not candidate.exists() or not candidate.is_file():
+                continue
+            try:
+                text = candidate.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            message = detect_corrupted_manifest(name, text)
+            if message:
+                issues.append(CompletenessIssue(file_path=name, message=message))
+        return issues
 
     def _scan_text_for_stubs(self, rel: str, text: str) -> list[CompletenessIssue]:
         found: list[CompletenessIssue] = []

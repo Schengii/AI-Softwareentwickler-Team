@@ -369,9 +369,39 @@ class VerificationMixin:
                 notify("  ⚠️ [yellow]Kritische Governance-Befunde konnten keinem Agenten eindeutig zugeordnet werden – Auto-Fix übersprungen.[/yellow]")
                 break
 
+            # Team-Retrospektive nach dem zeiterfassung_app-Lauf: dieselbe Fehlerklasse (fehlendes
+            # lokales Modul/Paket, z.B. `app/routers/`) wurde hier vom LLM-Reviewer als Freitext-
+            # Befund gemeldet UND wenig später vom rein statischen Vorab-Import-Check in
+            # _run_verification_loop erneut gefunden - zwei getrennte, unkoordinierte Fix-Budgets
+            # für denselben Defekt. Reichert den Freitext-Befund hier zusätzlich um die exakte,
+            # dateigenaue Fundliste des statischen Checks an (Datei:Zeile + erwarteter Pfad statt
+            # nur Prosa) - derselbe check_completeness()-Aufruf wie beim Vorab-Import-Check, hier
+            # nur zusätzlich in den Fix-Prompt gemischt, läuft rein lokal (Millisekunden, kein
+            # LLM-Aufruf) und kostet daher kein zusätzliches Budget.
+            try:
+                structural_report = ProjectVerifier(project_dir).check_completeness()
+                structural_import_issues = [
+                    i for i in structural_report.issues if "existierendes lokales" in i.message
+                ] if structural_report.attempted else []
+            except Exception:
+                structural_import_issues = []
+
             fix_tasks = []
             for agent_id, texts in agents_to_fix.items():
                 finding_text = "\n\n".join(texts)[:3000]
+                owned_import_issues = [
+                    i for i in structural_import_issues if file_owners.get(i.file_path) == agent_id
+                ] or structural_import_issues
+                structural_addendum = ""
+                if owned_import_issues:
+                    exact_list = "\n".join(
+                        f"- {i.file_path}:{i.line_number} – {i.message}" for i in owned_import_issues[:10]
+                    )
+                    structural_addendum = (
+                        "\n\nZUSÄTZLICH ein statischer Check derselben Fehlerklasse (fehlendes "
+                        "lokales Modul/Paket) mit der EXAKTEN Datei-Liste - lege GENAU diese "
+                        f"Dateien/Symbole an, nicht nur sinngemäß:\n{exact_list}"
+                    )
                 fix_tasks.append(AgentTask(
                     task_id=f"governance_fix_{agent_id}_{attempt}",
                     agent_id=agent_id,
@@ -379,7 +409,7 @@ class VerificationMixin:
                         f"Das Governance-Review (code_reviewer/security/compliance) hat ein "
                         f"KRITISCHES Problem in deinem Code gefunden. Nutze read_file, um die "
                         f"betroffene(n) Datei(en) zu prüfen, und edit_file/write_file, um das "
-                        f"Problem zu beheben.\n\n{finding_text}"
+                        f"Problem zu beheben.\n\n{finding_text}{structural_addendum}"
                         + (_prior_run_context(governance_ticket_id) if attempt == 1 and governance_ticket_id else "")
                     ),
                     context="", project_dir=project_dir,
@@ -966,6 +996,44 @@ class VerificationMixin:
                     # jetzt als eigenständigen Fehlschlag statt als bloßes "nicht geprüft".
                     notify(f"  ❌ [bold red]{report.reason_skipped}[/bold red]")
                     summary_lines.append(f"- ❌ {report.reason_skipped}")
+
+                    # Team-Optimierung (Retrospektive, zeiterfassung_app-Lauf): "conftest.py ohne
+                    # jede echte Testdatei" wurde bisher zwar korrekt als Fehlschlag ERKANNT, aber
+                    # nie ein Fix dafür ausgelöst - der Zweig endete direkt in `break`, anders als
+                    # der Nachbar-Zweig weiter unten ("keine Tests gefunden" bei report.passed=True),
+                    # der den tester gezielt nachbeauftragt. Ergebnis: das Projekt blieb dauerhaft
+                    # ohne lauffähige Testsuite, obwohl die Ursache (fehlende Testdatei, kein
+                    # fehlender Einstiegspunkt) für den tester-Agenten genauso behebbar gewesen wäre
+                    # wie im Nachbar-Fall. Derselbe EINE Nachbeauftragungs-Versuch (no_tests_fix_
+                    # attempted-Zirkuit-Breaker) wie dort, NUR für die Testdatei-Variante des Befunds
+                    # - eine fehlende Einstiegspunkt-Datei (main.py/app.py/...) ist kein Testsuite-
+                    # Problem und bleibt bewusst unangetastet, damit der tester nicht fälschlich mit
+                    # einer Aufgabe beauftragt wird, die architect/backend lösen müssten.
+                    if (
+                        not no_tests_fix_attempted and "tester" in self._agents
+                        and ("Testdatei" in report.reason_skipped or "Testsuite" in report.reason_skipped)
+                    ):
+                        no_tests_fix_attempted = True
+                        notify(f"  🧪 [yellow]{report.reason_skipped}[/yellow] – beauftrage tester, die fehlende Testsuite nachzuliefern...")
+                        summary_lines.append(f"- 🧪 {report.reason_skipped} → tester beauftragt, eine echte Testsuite nachzuliefern.")
+                        log_decision(project_dir, "missing_tests_fix_dispatched", report.reason_skipped)
+                        fix_task = AgentTask(
+                            task_id=f"incomplete_tests_fix_{attempt}",
+                            agent_id="tester",
+                            description=(
+                                "Für dieses Projekt existiert ein tests/-Verzeichnis (z.B. eine "
+                                "conftest.py), aber KEINE einzige echte Testdatei (test_*.py/"
+                                "*_test.py) - die Testsuite bricht dadurch ab, bevor auch nur ein "
+                                "Test läuft, der vorhandene Code bleibt komplett ungeprüft. Schreibe "
+                                "jetzt vollständige, lauffähige Testdateien (pytest) für den "
+                                f"vorhandenen Code.\n\n{report.reason_skipped}"
+                            ),
+                            context="", project_dir=project_dir,
+                        )
+                        fix_results = await self._run_agents_parallel([fix_task], notify=notify)
+                        self._update_file_owners(file_owners, fix_results)
+                        all_results.extend(fix_results)
+                        continue
                     break
                 # Bewusst ⚠️ statt ℹ️: "keine Tests gefunden" bedeutet, dass generierter Code
                 # UNGEPRÜFT ausgeliefert wird – real beobachtet an einem Taschenrechner-Projekt

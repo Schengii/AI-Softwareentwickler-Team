@@ -1002,7 +1002,7 @@ class Orchestrator(
         # führte. Geprüft VOR verification_ok, weil ein ungelöster kritischer Befund schwerer
         # wiegt als eine grüne Testsuite.
         try:
-            open_blocker = has_open_blocker_ticket(project_dir)
+            open_blocker = has_open_blocker_ticket(project_dir, verification_ok=verification_ok)
         except Exception:
             open_blocker = False
 

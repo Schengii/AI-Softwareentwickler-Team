@@ -68,23 +68,58 @@ MAX_LINT_SIGNATURE_ITEMS = 20
 _BLOCKER_TICKET_PREFIXES = ("unresolved-governance-critical-", "unresolved-permission-blocked-")
 
 
-def _open_blocker_ticket(project_dir: str):
+def _open_blocker_ticket(project_dir: str, verification_ok: bool = False):
     """Gibt das offene ("blocked") Governance-/Verifikations-Ticket dieses Projekts zurück,
     falls eines existiert - None sonst. Ein Lookup-Fehler (z.B. eine kaputte
     memory/backlog.json) darf die Checkpoint-Erstellung nie zum Absturz bringen, dieselbe
-    defensive Haltung wie bei _prior_run_context() in agents/orchestrator/verification.py."""
+    defensive Haltung wie bei _prior_run_context() in agents/orchestrator/verification.py.
+
+    Team-Optimierung (Retrospektive, zeiterfassung_app-Lauf): ein Ticket wird bisher NUR über
+    agents/orchestrator/verification.py._run_governance_fix_loop() geschlossen - dort ausschließlich
+    durch einen erneuten, expliziten Recheck derselben Governance-Rollen (code_reviewer/security/
+    compliance). Wird das zugrunde liegende Problem stattdessen auf einem anderen Weg behoben
+    (z.B. ein direkt beauftragter Folge-Chat, der die fehlenden Dateien anlegt, ohne dass die
+    Governance-Rollen erneut liefen), bleibt das Ticket ewig "blocked" im Backlog stehen, obwohl
+    das Projekt auf der Platte längst repariert ist - PROJECT_STATE.md zeigte dadurch real
+    "🔴 Kritischer Befund ungelöst", obwohl `app/routers/` und `app/dependencies.py` bereits
+    existierten. Bei jedem Checkpoint mit BESTANDENER Testsuite wird deshalb zusätzlich der
+    günstige, rein statische Vollständigkeits-Check (core/verifier/completeness.py, Millisekunden,
+    kein LLM-Aufruf) als Ground-Truth herangezogen: findet er keine Stub-/Missing-Import-/Manifest-
+    Funde mehr, gilt das Ticket als eigenständig gelöst und wird automatisch geschlossen, statt der
+    reinen Ticket-Statuszeile blind zu vertrauen."""
     try:
-        from core.backlog_store import list_tickets
+        from core.backlog_store import list_tickets, upsert_ticket
     except Exception:
         return None
     slug = Path(project_dir).name
     try:
-        for t in list_tickets(status="blocked"):
-            if t.project_slug == slug and t.id.startswith(_BLOCKER_TICKET_PREFIXES):
-                return t
+        ticket = next(
+            (t for t in list_tickets(status="blocked")
+             if t.project_slug == slug and t.id.startswith(_BLOCKER_TICKET_PREFIXES)),
+            None,
+        )
     except Exception:
         return None
-    return None
+    if ticket is None:
+        return None
+
+    if verification_ok:
+        try:
+            from core.verifier import ProjectVerifier
+            report = ProjectVerifier(project_dir).check_completeness()
+            if report.attempted and report.passed:
+                upsert_ticket(
+                    ticket_id=ticket.id, title=ticket.title, source=ticket.source,
+                    status="done", project_slug=ticket.project_slug,
+                    detail="Eigenständig behoben (statischer Vollständigkeits-Check findet keine "
+                           "offenen Funde mehr) - automatisch beim nächsten Checkpoint erkannt und "
+                           "geschlossen, ohne einen erneuten Governance-Recheck abzuwarten.",
+                )
+                return None
+        except Exception:
+            pass
+
+    return ticket
 
 
 def _status_path(project_dir: str) -> Path:
@@ -196,7 +231,7 @@ def generate_project_state_md(
     p_path = Path(project_dir)
     project_name = p_path.name or "Projekt"
 
-    blocker_ticket = _open_blocker_ticket(project_dir)
+    blocker_ticket = _open_blocker_ticket(project_dir, verification_ok=verification_ok)
 
     # Status-Badge. Ein offenes Governance-/Verifikations-Ticket überschreibt JEDEN anderen
     # Status inkl. einer bestandenen Testsuite (verification_ok=True) - ein kritischer,
@@ -475,12 +510,14 @@ def format_context_for_agents(project_dir: str, max_entries: int = 3) -> str:
     return "\n\n".join(sections)
 
 
-def has_open_blocker_ticket(project_dir: str) -> bool:
+def has_open_blocker_ticket(project_dir: str, verification_ok: bool = False) -> bool:
     """Öffentlicher Wrapper um _open_blocker_ticket() für Aufrufer außerhalb dieses Moduls
     (agents/orchestrator/__init__.py nutzt dies, um den allerletzten Lauf-Status im Chat
     ebenfalls konsistent mit dem PROJECT_STATE.md-Badge zu halten, statt "✅ Fertig!" trotz
-    eines offenen kritischen Befunds anzuzeigen)."""
-    return _open_blocker_ticket(project_dir) is not None
+    eines offenen kritischen Befunds anzuzeigen). `verification_ok` durchreichen, wenn die
+    Testsuite dieses Laufs bestanden hat - ermöglicht dieselbe automatische Ticket-Schließung
+    per statischem Vollständigkeits-Check wie generate_project_state_md() oben."""
+    return _open_blocker_ticket(project_dir, verification_ok=verification_ok) is not None
 
 
 def has_repeated_failure(project_dir: str, streak: int = 2) -> bool:

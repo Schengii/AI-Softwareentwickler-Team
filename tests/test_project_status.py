@@ -261,6 +261,55 @@ class TestOpenBlockerTicketOverridesEinsatzbereitStatus(unittest.TestCase):
         state_md = generate_project_state_md(self.temp_dir, verification_ok=True)
         self.assertIn("Vollständig verifiziert & einsatzbereit", state_md)
 
+    def test_ticket_auto_closes_when_completeness_check_now_passes(self):
+        # Team-Optimierung (Retrospektive, zeiterfassung_app-Lauf): das Ticket wurde bisher NUR
+        # über einen erneuten Governance-Reviewer-Recheck geschlossen (agents/orchestrator/
+        # verification.py._run_governance_fix_loop). Wird das zugrunde liegende Problem
+        # stattdessen auf einem anderen Weg behoben (hier simuliert: die fehlende Datei existiert
+        # inzwischen), muss der nächste Checkpoint mit bestandener Testsuite das Ticket
+        # eigenständig per statischem Vollständigkeits-Check schließen, statt für immer "blocked"
+        # zu bleiben.
+        ticket_id = f"unresolved-governance-critical-{self.project_slug}"
+        backlog_store.upsert_ticket(
+            ticket_id=ticket_id, title="Ungelöster kritischer Governance-Befund", source="orchestrator",
+            status="blocked", project_slug=self.project_slug, detail="app/models.py fehlt",
+        )
+        # Jetzt existiert echter, vollständiger Code ohne offene Vollständigkeits-Funde.
+        Path(self.temp_dir, "main.py").write_text("print('hallo')\n", encoding="utf-8")
+
+        state_md = generate_project_state_md(self.temp_dir, verification_ok=True)
+
+        self.assertIn("Vollständig verifiziert & einsatzbereit", state_md)
+        self.assertFalse(has_open_blocker_ticket(self.temp_dir, verification_ok=True))
+        closed = backlog_store.get_ticket(ticket_id)
+        self.assertEqual(closed.status, "done")
+
+    def test_ticket_stays_open_when_completeness_check_still_fails(self):
+        ticket_id = f"unresolved-governance-critical-{self.project_slug}"
+        backlog_store.upsert_ticket(
+            ticket_id=ticket_id, title="...", source="orchestrator",
+            status="blocked", project_slug=self.project_slug, detail="app/models.py fehlt",
+        )
+        # Importiert ein lokales Modul, das nach wie vor nicht existiert - derselbe Befund besteht weiter.
+        Path(self.temp_dir, "main.py").write_text("from . import models\n", encoding="utf-8")
+
+        state_md = generate_project_state_md(self.temp_dir, verification_ok=True)
+
+        self.assertIn("NICHT einsatzbereit", state_md)
+        self.assertTrue(has_open_blocker_ticket(self.temp_dir, verification_ok=True))
+
+    def test_ticket_not_auto_closed_when_verification_did_not_pass(self):
+        # Ein bestandener Vollständigkeits-Check allein reicht nicht - solange die eigentliche
+        # Testsuite NICHT grün ist (verification_ok=False), bleibt das Ticket offen.
+        ticket_id = f"unresolved-governance-critical-{self.project_slug}"
+        backlog_store.upsert_ticket(
+            ticket_id=ticket_id, title="...", source="orchestrator",
+            status="blocked", project_slug=self.project_slug, detail="...",
+        )
+        Path(self.temp_dir, "main.py").write_text("print('hallo')\n", encoding="utf-8")
+
+        self.assertTrue(has_open_blocker_ticket(self.temp_dir, verification_ok=False))
+
 
 if __name__ == "__main__":
     unittest.main()

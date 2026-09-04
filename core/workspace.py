@@ -218,6 +218,13 @@ class WorkspaceManager:
             if clean_rel.lower().endswith(".py") and not CodeSandbox.validate_code(content, "py").is_valid:
                 continue
 
+            # Dieselbe Manifest-Korruptions-Prüfung wie core/agent_toolbox.py._tool_write_file():
+            # ein roh übernommener Diff-Hunk statt einer echten requirements.txt/package.json
+            # darf nicht unbemerkt auf die Platte gelangen (siehe core/manifest_guard.py).
+            from core.manifest_guard import detect_corrupted_manifest
+            if detect_corrupted_manifest(clean_rel, content):
+                continue
+
             target_file.parent.mkdir(parents=True, exist_ok=True)
             target_file.write_text(content, encoding="utf-8")
 

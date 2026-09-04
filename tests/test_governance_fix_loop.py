@@ -256,6 +256,46 @@ class TestGovernanceFixLoop(unittest.TestCase):
         self.assertGreaterEqual(call_count["n"], 2)
         self.assertIn("Keine kritischen Befunde", result)
 
+    def test_fix_prompt_enriched_with_exact_structural_import_findings(self):
+        # Team-Optimierung (Retrospektive, zeiterfassung_app-Lauf): dieselbe Fehlerklasse
+        # (fehlendes lokales Modul) wurde bisher vom LLM-Reviewer als Freitext gemeldet UND
+        # unkoordiniert erneut vom rein statischen Vorab-Import-Check gefunden - zwei getrennte
+        # Fix-Budgets für denselben Defekt. Der Governance-Fix-Prompt bekommt jetzt zusätzlich
+        # die EXAKTE, dateigenaue Fundliste des statischen Checks (core/verifier/completeness.py)
+        # mitgeliefert, damit der Fix-Agent nicht nur die Prosa des Reviewers, sondern auch die
+        # präzise erwartete Datei kennt.
+        Path(self.temp_workspace, "app.py").write_text("from . import models\n", encoding="utf-8")
+
+        code_reviewer_result = AgentResult(
+            task_id="t2", agent_id="code_reviewer", agent_name="Code-Reviewer", success=True,
+            content=CRITICAL_CODE_REVIEWER_REPORT,
+        )
+        captured_tasks: list[AgentTask] = []
+
+        async def _fake_run_agents_parallel(tasks, notify=None):
+            captured_tasks.extend(tasks)
+            return [
+                AgentResult(task_id=t.task_id, agent_id=t.agent_id, agent_name=t.agent_id,
+                            success=True, content="Fertig.", total_tokens=10)
+                for t in tasks
+            ]
+
+        with patch.object(self.orchestrator, "_run_agents_parallel", side_effect=_fake_run_agents_parallel):
+            asyncio.run(self.orchestrator._run_governance_fix_loop(
+                project_dir=self.temp_workspace,
+                all_results=[code_reviewer_result],
+                file_owners={"backend/db.py": "backend"},
+                notify=lambda msg: None,
+                run_start_tokens=0,
+            ))
+
+        fix_tasks = [t for t in captured_tasks if t.task_id.startswith("governance_fix_")]
+        self.assertEqual(len(fix_tasks), 1)
+        description = fix_tasks[0].description
+        self.assertIn("ZUSÄTZLICH", description)
+        self.assertIn("app.py", description)
+        self.assertIn("existierendes lokales", description)
+
 
 if __name__ == "__main__":
     unittest.main()

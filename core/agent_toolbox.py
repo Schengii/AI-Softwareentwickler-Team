@@ -353,8 +353,22 @@ class AgentToolbox:
             "Zeichen ('\\\\n', '\\\\\"') statt als echte Escape-Sequenzen im Inhalt gelandet sind."
         )
 
+    @staticmethod
+    def _reject_if_corrupted_manifest(path: str, content: str) -> str | None:
+        """Gibt eine Fehlermeldung zurück, wenn `path` ein Dependency-Manifest (requirements.txt,
+        package.json, ...) ist und `content` typische Merge-/Diff-Korruption zeigt – None bedeutet
+        "in Ordnung, schreiben erlaubt". Siehe core/manifest_guard.py für den realen Fund, der
+        diese Prüfung ausgelöst hat (roh übernommener Diff-Hunk statt gemergter requirements.txt,
+        pip install schlug dadurch fehl)."""
+        from core.manifest_guard import detect_corrupted_manifest
+
+        return detect_corrupted_manifest(path, content)
+
     async def _tool_write_file(self, path: str, content: str) -> dict:
         rejection = self._reject_if_invalid_python(path, content)
+        if rejection:
+            return {"error": rejection}
+        rejection = self._reject_if_corrupted_manifest(path, content)
         if rejection:
             return {"error": rejection}
 
@@ -387,6 +401,9 @@ class AgentToolbox:
         rejection = self._reject_if_invalid_python(path, updated)
         if rejection:
             return {"error": rejection}
+        rejection = self._reject_if_corrupted_manifest(path, updated)
+        if rejection:
+            return {"error": rejection}
 
         target.write_text(updated, encoding="utf-8")
         clean_rel = str(target.relative_to(self.project_dir)).replace("\\", "/")
@@ -415,6 +432,9 @@ class AgentToolbox:
         py_err = self._reject_if_invalid_python(path, new_content)
         if py_err:
             return {"error": py_err}
+        manifest_err = self._reject_if_corrupted_manifest(path, new_content)
+        if manifest_err:
+            return {"error": manifest_err}
 
         try:
             target.write_text(new_content, encoding="utf-8")

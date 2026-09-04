@@ -46,6 +46,21 @@ class TimeEntry(Base):
     end_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    is_billed: Mapped[bool] = mapped_column(default=False, index=True)
+    invoice_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
 
     project: Mapped["Project"] = relationship("Project", back_populates="time_entries")
     user: Mapped["User"] = relationship("User", back_populates="time_entries")
+
+
+class Invoice(Base):
+    __tablename__ = "invoices"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    project_id: Mapped[int] = mapped_column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    file_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    project: Mapped["Project"] = relationship("Project")

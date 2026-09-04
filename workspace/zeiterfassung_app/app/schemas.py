@@ -1,13 +1,14 @@
-# app/schemas.py
 from datetime import datetime
+from decimal import Decimal
 
-from pydantic import BaseModel, EmailStr, condecimal, constr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class UserCreate(BaseModel):
-    username: constr(min_length=3, max_length=50, regex=r'^[a-zA-Z0-9_]+$')
+    username: str = Field(min_length=3, max_length=50, pattern=r"^[a-zA-Z0-9_]+$")
     email: EmailStr
-    password: constr(min_length=8, max_length=128)
+    password: str = Field(min_length=8, max_length=128)
+
 
 class UserRead(BaseModel):
     id: int
@@ -16,12 +17,40 @@ class UserRead(BaseModel):
     is_active: bool
     created_at: datetime
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
+
 
 class ProjectCreate(BaseModel):
-    name: constr(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=100)
     description: str | None = None
-    hourly_rate: condecimal(gt=0, max_digits=10, decimal_places=2) | None = None
+    hourly_rate: Decimal | None = None
 
-# weitere Schemas analog …
+
+class ProjectRead(BaseModel):
+    id: int
+    name: str
+    description: str | None = None
+    hourly_rate: Decimal | None = None
+    owner_id: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TimeEntryCreate(BaseModel):
+    project_id: int
+    start_time: datetime
+    end_time: datetime | None = None
+    description: str | None = None
+
+
+class TimeEntryRead(BaseModel):
+    id: int
+    project_id: int
+    user_id: int
+    start_time: datetime
+    end_time: datetime | None = None
+    description: str | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

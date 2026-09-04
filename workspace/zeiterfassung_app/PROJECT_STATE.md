@@ -1,8 +1,8 @@
 # 📌 zeiterfassung_app – Projekt-Status & Checkpoint
 
-- **Letzte Aktualisierung:** `2026-09-04 10:01:07 UTC`
+- **Letzte Aktualisierung:** `2026-09-04 13:10:07 UTC`
 - **Aktueller Status:** 🔴 Kritischer Befund ungelöst – NICHT einsatzbereit (Backlog-Ticket offen)
-- **Zuletzt bearbeitete Aufgabe:** Zeiterfassungs-Web-App implementiert
+- **Zuletzt bearbeitete Aufgabe:** Export- und Abrechnungs-Funktionalität in FastAPI implementiert
 
 ## 📁 Wichtige Projektkomponenten & Dateien
 - `Dockerfile`
@@ -16,16 +16,16 @@
 - `app/middleware/rate_limit.py`
 - `app/middleware/security_headers.py`
 - `app/models.py`
+- `app/models_invoice.py`
 - `app/routers/auth.py`
+- `app/routers/export.py`
+- `app/routers/invoices.py`
 - `app/routers/time_entries.py`
 - `app/routers/users.py`
 - `app/schemas.py`
 - `app/security.py`
 - `docker-compose.yml`
-- `docs/adr/0001-monolith-statt-microservices-f-r-zeiterf.md`
-- `docs/adr/0002-postgresql-statt-mysql.md`
-- `pytest.ini`
-- *... und 9 weitere Dateien*
+- *... und 16 weitere Dateien*
 
 ## 🧪 Verifikations- & Test-Status
 - **Tests bestanden:** Ausstehend / Fehlgeschlagen ⚠️

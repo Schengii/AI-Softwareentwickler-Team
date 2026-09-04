@@ -30,14 +30,15 @@ und ein Fehlschlag der Verifikation ODER eine offene Rückfrage (core/agent_tool
 ask_human_for_clarification) öffnen trotzdem einen (dann als Draft markierten) PR statt
 bereits geleistete Arbeit stillschweigend zu verwerfen.
 
-Team-Optimierung (Retrospektive 2026-09-03): "blocked"-Tickets, die agents/orchestrator/
-verification.py für einen ungelösten KRITISCHEN Governance-/Verifikations-Befund eröffnet
-(unresolved-governance-critical-<slug>, unresolved-permission-blocked-<slug>), landeten bisher
-in einer Sackgasse - source="orchestrator" und status="blocked" fielen durch JEDES Filter
-unten, kein Poll-Zyklus griff sie je wieder auf, selbst wenn ein späterer, unabhängiger Versuch
-das Problem durchaus hätte lösen können. _governance_retry_pool() macht genau diese Tickets
-(bis zu MAX_GOVERNANCE_TICKET_RETRIES-mal) wieder zu aufgreifbarer Arbeit - siehe dort für die
-Details und die Abgrenzung zu einer echten Endlosschleife.
+Team-Optimierung (Retrospektive 2026-09-03, erweitert 2026-09-04): "blocked"-Tickets, die
+agents/orchestrator/(verification.py|__init__.py) für einen ungelösten KRITISCHEN Governance-/
+Verifikations-Befund eröffnen (unresolved-governance-critical-<slug>, unresolved-permission-
+blocked-<slug>, recurring-failure-<slug>, recurring-lint-<slug>), landeten bisher in einer
+Sackgasse - source="orchestrator" und status="blocked" fielen durch JEDES Filter unten, kein
+Poll-Zyklus griff sie je wieder auf, selbst wenn ein späterer, unabhängiger Versuch das Problem
+durchaus hätte lösen können. _governance_retry_pool() macht genau diese Tickets (bis zu
+MAX_GOVERNANCE_TICKET_RETRIES-mal) wieder zu aufgreifbarer Arbeit - siehe dort für die Details
+und die Abgrenzung zu einer echten Endlosschleife.
 """
 
 import asyncio
@@ -65,12 +66,28 @@ StatusCallback = Callable[[str], None]
 
 _AUTONOMOUS_SOURCES = ("cli", "dashboard")
 
-# ID-Präfixe, unter denen agents/orchestrator/verification.py ungelöste kritische Befunde als
-# "blocked"-Ticket eröffnet (siehe dort: upsert_ticket(ticket_id=f"unresolved-...-{slug}", ...)).
-# NUR diese beiden - ein generisches "jedes blocked-Ticket erneut versuchen" würde auch ein
-# Ticket wieder aufgreifen, das ein MENSCH bewusst als "blocked" markiert hat (z.B. wartet auf
-# eine externe Entscheidung), was hier ausdrücklich nicht gewollt ist.
-_GOVERNANCE_RETRY_PREFIXES = ("unresolved-governance-critical-", "unresolved-permission-blocked-")
+# ID-Präfixe, unter denen agents/orchestrator/(verification.py|__init__.py) ungelöste Befunde als
+# "blocked"-Ticket eröffnet (siehe dort: upsert_ticket(ticket_id=f"unresolved-...-{slug}", ...)
+# bzw. f"recurring-...-{slug}"). NUR diese vier - ein generisches "jedes blocked-Ticket erneut
+# versuchen" würde auch ein Ticket wieder aufgreifen, das ein MENSCH bewusst als "blocked"
+# markiert hat (z.B. wartet auf eine externe Entscheidung), was hier ausdrücklich nicht gewollt
+# ist.
+#
+# Team-Optimierung (Retrospektive, 2026-09-04): "recurring-failure-" (echte Testfehler, die nach
+# 2 Fixversuchen bestehen blieben, agents/orchestrator/verification.py) und "recurring-lint-"
+# (hartnäckige Lint-Funde über mehrere Läufe, agents/orchestrator/__init__.py) fehlten hier
+# ursprünglich - genau die Sackgasse, die dieses Modul laut Docstring oben bereits einmal für die
+# "unresolved-..."-Tickets behoben hatte, nur nicht auf diese beiden Nachbar-Kategorien
+# ausgeweitet. Ergebnis: 5 von 17 echten Tickets im Backlog steckten dauerhaft fest, weil
+# `--work-backlog` sie nie wieder aufgriff. Beide Kategorien schließen sich inzwischen (wie die
+# "unresolved-..."-Tickets) automatisch selbst, sobald der zugrunde liegende Befund in einem
+# späteren Lauf behoben ist (siehe agents/orchestrator/verification.py: had_prior_test_ticket
+# bzw. agents/orchestrator/__init__.py: lint_ticket_id-Auto-Close) - ein Retry-Versuch kann also
+# tatsächlich zu einem geschlossenen Ticket führen, nicht nur zu erneutem "blocked".
+_GOVERNANCE_RETRY_PREFIXES = (
+    "unresolved-governance-critical-", "unresolved-permission-blocked-",
+    "recurring-failure-", "recurring-lint-",
+)
 
 
 def _governance_retry_pool(all_tickets: list[Ticket]) -> list[Ticket]:

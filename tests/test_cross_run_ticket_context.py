@@ -24,7 +24,7 @@ from agents.orchestrator.verification import _prior_run_context
 from core import team_memory
 from core.llm_factory import LLMResponse
 from core.message_bus import AgentTask
-from core.verifier import VerificationReport
+from core.verifier import LintReport, VerificationReport
 from core.workspace import WorkspaceManager
 
 CLEAN_CODE_REVIEWER_REPORT = """## Code-Review Report
@@ -175,6 +175,62 @@ class TestCrossRunTicketClosing(unittest.TestCase):
         ticket = backlog_store.get_ticket("unresolved-governance-critical-cross_run_test_proj")
         self.assertEqual(ticket.status, "done")
         self.assertTrue(any("Ticket für vorherigen Governance-Befund als gelöst geschlossen" in line for line in logs))
+
+    def test_prior_blocked_lint_ticket_closed_after_clean_lint_run(self):
+        # Team-Optimierung (Retrospektive, 2026-09-04): anders als "recurring-failure-" oben
+        # wurde ein "recurring-lint-"-Ticket bisher NIE automatisch geschlossen, selbst wenn ein
+        # späterer Lauf keine Lint-Funde mehr meldete - core/backlog_worker.py konnte es zwar
+        # inzwischen erneut aufgreifen (siehe tests/test_backlog_worker.py), aber ohne diesen
+        # Auto-Close blieb es trotz erfolgreichem Fix für immer "blocked".
+        backlog_store.upsert_ticket(
+            "recurring-lint-cross_run_test_proj", "Alter Lint-Fund", "orchestrator", "blocked",
+            detail="ruff:app/main.py:B008", project_slug="cross_run_test_proj",
+        )
+
+        @patch("agents.orchestrator.verification.ProjectVerifier")
+        @patch("core.task_manager.TaskManager.decompose")
+        @patch("core.result_aggregator.ResultAggregator.synthesize")
+        def _inner(mock_synthesize, mock_decompose, mock_verifier_cls):
+            task = AgentTask(task_id="t1", agent_id="backend", description="Baue etwas")
+            mock_decompose.return_value = ("Kurze Aufgabe", "cross_run_test_proj", [task])
+            mock_synthesize.return_value = ("### Fertig", 5)
+            mock_verifier = mock_verifier_cls.return_value
+            mock_verifier.ensure_environment.return_value = ""
+            mock_verifier.run_tests.return_value = PASSED_REPORT
+            mock_verifier.check_docker_build.return_value.attempted = False
+            mock_verifier.check_load_test.return_value.attempted = False
+            mock_verifier.check_dependency_vulnerabilities.return_value = []
+            # attempted=True, aber keine issues -> "wirklich geprüft und sauber", nicht bloß
+            # "Lint übersprungen" (siehe last_lint_attempted-Guard in verification.py).
+            mock_verifier.check_lint.return_value = [
+                LintReport(attempted=True, passed=True, tool="ruff", issues=[]),
+            ]
+
+            status_logs: list[str] = []
+            asyncio.run(self.orchestrator.process("Baue etwas", status_callback=status_logs.append))
+            return status_logs
+
+        logs = _inner()
+
+        ticket = backlog_store.get_ticket("recurring-lint-cross_run_test_proj")
+        self.assertEqual(ticket.status, "done")
+        self.assertTrue(any("Ticket für wiederkehrenden Lint-Fund als gelöst geschlossen" in line for line in logs))
+
+    def test_lint_skipped_entirely_does_not_falsely_close_prior_ticket(self):
+        # Bugfix-Absicherung: "keine Lint-Funde" (leere Liste) darf NUR schließen, wenn Lint
+        # tatsächlich lief (attempted=True) - mock_verifier.check_lint.return_value = [] (wie in
+        # den übrigen Tests dieser Datei) simuliert "gar nicht geprüft" und darf NICHT als
+        # "Fund behoben" durchgehen.
+        backlog_store.upsert_ticket(
+            "recurring-lint-cross_run_test_proj", "Alter Lint-Fund", "orchestrator", "blocked",
+            detail="ruff:app/main.py:B008", project_slug="cross_run_test_proj",
+        )
+
+        result, logs = self._run()
+
+        ticket = backlog_store.get_ticket("recurring-lint-cross_run_test_proj")
+        self.assertEqual(ticket.status, "blocked")
+        self.assertFalse(any("Lint-Fund als gelöst geschlossen" in line for line in logs))
 
 
 if __name__ == "__main__":

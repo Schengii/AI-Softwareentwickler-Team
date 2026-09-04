@@ -99,7 +99,7 @@ from config import (
     PLAN_CONFIRMATION_MIN_TASKS,
 )
 from core.adr import format_adr_summary_for_context
-from core.backlog_store import upsert_ticket
+from core.backlog_store import get_ticket, upsert_ticket
 from core.decision_log import log_decision
 from core.design_system import format_design_system_for_agents
 from core.git_isolation import (
@@ -789,6 +789,7 @@ class Orchestrator(
         # `ruff check --fix` behebt inzwischen triviale Fälle bereits vor dem Report - dieser
         # Check fängt die verbleibenden, nicht automatisch behebbaren Funde ab.
         lint_signature = getattr(self, "last_lint_signature", [])
+        lint_ticket_id = f"recurring-lint-{self.last_project_slug}" if self.last_project_slug else None
         if lint_signature and has_repeated_lint_finding(project_dir):
             notify(
                 "🎨 [bold yellow]Wiederkehrender Lint-Fund erkannt:[/bold yellow] Derselbe Lint-Fund "
@@ -797,13 +798,32 @@ class Orchestrator(
             )
             try:
                 upsert_ticket(
-                    ticket_id=f"recurring-lint-{self.last_project_slug}",
+                    ticket_id=lint_ticket_id,
                     title=f"Wiederkehrender Lint-Fund: {self.last_project_slug}",
                     source="orchestrator", status="blocked", project_slug=self.last_project_slug,
                     detail="; ".join(sorted(lint_signature)[:10]),
                 )
             except Exception as e:
                 notify(f"⚠️ [dim yellow]Ticket für wiederkehrenden Lint-Fund konnte nicht angelegt werden: {e}[/dim yellow]")
+        elif lint_ticket_id and not lint_signature and getattr(self, "last_lint_attempted", False):
+            # Team-Optimierung (Retrospektive, 2026-09-04): anders als das "recurring-failure-"-
+            # Pendant oben (siehe _run_verification_loop weiter unten: had_prior_test_ticket schließt
+            # es automatisch, sobald die Testsuite wieder grün ist) wurde ein "recurring-lint-"-Ticket
+            # bisher NIE geschlossen, selbst wenn der Lint-Fund in einem späteren Lauf behoben wurde -
+            # es blieb für immer "blocked" im Backlog stehen. Dieser Lauf hatte KEINEN einzigen
+            # Lint-Fund (lint_signature leer) - ein zuvor offenes Ticket für dasselbe Projekt gilt
+            # damit als erledigt.
+            try:
+                existing_lint_ticket = get_ticket(lint_ticket_id)
+                if existing_lint_ticket is not None and existing_lint_ticket.status == "blocked":
+                    upsert_ticket(
+                        ticket_id=lint_ticket_id, title=existing_lint_ticket.title,
+                        source="orchestrator", status="done", project_slug=self.last_project_slug,
+                        detail="In einem späteren Lauf behoben - keine Lint-Funde mehr.",
+                    )
+                    notify("  🎫 [dim]Ticket für wiederkehrenden Lint-Fund als gelöst geschlossen.[/dim]")
+            except Exception as e:
+                notify(f"⚠️ [dim yellow]Ticket für wiederkehrenden Lint-Fund konnte nicht geschlossen werden: {e}[/dim yellow]")
 
         # Projekt-Hygiene: automatisch regenerierbare Caches (__pycache__, .pytest_cache, …),
         # die die echte Testausführung gerade erzeugt hat, physisch entfernen. Bewusst OHNE

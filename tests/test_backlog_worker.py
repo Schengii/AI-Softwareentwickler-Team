@@ -260,6 +260,47 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
         self.assertEqual(report.results, [])
         self.fake_orchestrator.process.assert_not_called()
 
+    def test_recurring_failure_ticket_is_picked_up_and_retries_incremented(self):
+        # Team-Optimierung (Retrospektive, 2026-09-04): "recurring-failure-" (echte Testfehler,
+        # die trotz Fixversuchen bestehen blieben, agents/orchestrator/verification.py) fehlte
+        # ursprünglich im Retry-Muster - dieselbe Sackgasse wie einst bei den
+        # "unresolved-..."-Tickets, nur für eine andere Ticket-Kategorie.
+        backlog_store.upsert_ticket(
+            "recurring-failure-mockforge", "Nicht behobener Verifikations-Fehler",
+            "orchestrator", "blocked", project_slug="mockforge", detail="1 echter Testfehler",
+        )
+        report = asyncio.run(run_backlog_poll_cycle())
+
+        self.fake_orchestrator.process.assert_called_once()
+        self.assertEqual(len(report.results), 1)
+        ticket = backlog_store.get_ticket("recurring-failure-mockforge")
+        self.assertEqual(ticket.retries, 1)
+
+    def test_recurring_lint_ticket_is_picked_up_and_retries_incremented(self):
+        backlog_store.upsert_ticket(
+            "recurring-lint-mockforge", "Wiederkehrender Lint-Fund",
+            "orchestrator", "blocked", project_slug="mockforge", detail="ruff:app/main.py:B008",
+        )
+        report = asyncio.run(run_backlog_poll_cycle())
+
+        self.fake_orchestrator.process.assert_called_once()
+        self.assertEqual(len(report.results), 1)
+        ticket = backlog_store.get_ticket("recurring-lint-mockforge")
+        self.assertEqual(ticket.retries, 1)
+
+    def test_unrelated_recurring_prefix_is_not_retried(self):
+        # Nur die vier bekannten Präfixe werden erneut aufgegriffen - ein generisches "jedes
+        # 'recurring-*'-Ticket erneut versuchen" würde auch ein Ticket treffen, das kein
+        # Orchestrator-Fix-Loop-Muster ist (Absicherung gegen zu breite Übernahme).
+        backlog_store.upsert_ticket(
+            "recurring-something-else-mockforge", "Anderes Muster", "orchestrator", "blocked",
+            project_slug="mockforge", detail="...",
+        )
+        report = asyncio.run(run_backlog_poll_cycle())
+
+        self.assertEqual(report.results, [])
+        self.fake_orchestrator.process.assert_not_called()
+
     def test_isolated_worktree_changes_are_merged_back_before_diff_check(self):
         """
         Bugfix (Team-Optimierung, real beobachtet in einem echten mockforge-Governance-Retry-

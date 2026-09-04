@@ -1357,11 +1357,19 @@ class VerificationMixin:
         # self.last_lint_signature statt Erweiterung des Rückgabe-Tupels dieser Methode - hält
         # bestehende Aufrufer/Tests, die die feste Tupel-Länge erwarten, unverändert.
         self.last_lint_signature: list[str] = []
+        # Team-Optimierung (Retrospektive, 2026-09-04): agents/orchestrator/__init__.py schließt
+        # ein offenes "recurring-lint-"-Ticket automatisch, sobald ein Lauf KEINE Lint-Funde mehr
+        # meldet (last_lint_signature leer) - das darf aber NICHT greifen, wenn Lint in diesem Lauf
+        # gar nicht erst lief (z.B. `ruff` auf diesem System nicht installiert, oder die Schleife
+        # wegen Budget/Abbruch übersprungen wurde). Ohne dieses Flag würde ein übersprungener Check
+        # fälschlich als "Fund behoben" durchgehen.
+        self.last_lint_attempted: bool = False
         if not (budget_aborted or manually_cancelled):
             lint_reports = await asyncio.to_thread(verifier.check_lint)
             for lint in lint_reports:
                 if not lint.attempted:
                     continue
+                self.last_lint_attempted = True
                 self.last_lint_signature.extend(
                     f"{lint.tool}:{i.file_path}:{i.rule}" for i in lint.issues
                 )

@@ -1,5 +1,22 @@
 [
   {
+    "timestamp": "2026-09-04T13:32:19+00:00",
+    "task_summary": "ReportsOverview React-Komponente für Umsatz und Dauer implementiert",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 6,
+    "lint_signature": [
+      "ruff:tests/test_invoices.py:DTZ001",
+      "ruff:tests/test_invoices.py:DTZ001",
+      "ruff:tests/test_invoices.py:DTZ001",
+      "ruff:tests/test_invoices.py:DTZ001",
+      "ruff:tests/test_invoices.py:DTZ001",
+      "ruff:tests/test_invoices.py:DTZ001"
+    ],
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 📦 ✅ pip install -r requirements.txt (exit_code=0)\n- 🛠️ Versuch 1: 1 echte Testfehler → gezielt zur Korrektur an frontend zurückgespielt.\n- 🛠️ Versuch 2: 1 echte Testfehler → gezielt zur Korrektur an frontend zurückgespielt.\n- ⚠️ Nach 2 Versuchen nicht vollständig grün – letzter Stand wurde übernommen.\n- 🐳 ❌ Docker-Build fehlgeschlagen: ERROR: request returned 500 Internal Server Error for API route and version http:"
+  },
+  {
     "timestamp": "2026-09-04T13:10:07+00:00",
     "task_summary": "Export- und Abrechnungs-Funktionalität in FastAPI implementiert",
     "verification_ok": false,

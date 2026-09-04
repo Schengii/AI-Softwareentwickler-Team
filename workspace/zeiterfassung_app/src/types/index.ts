@@ -23,3 +23,8 @@ export interface TimeEntry {
   end: string;   // ISO String
   description: string;
 }
+
+export interface ReportSummary {
+  total_revenue: number;
+  total_duration_hours: number;
+}

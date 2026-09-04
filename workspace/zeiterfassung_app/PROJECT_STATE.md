@@ -1,31 +1,11 @@
 # 📌 zeiterfassung_app – Projekt-Status & Checkpoint
 
-- **Letzte Aktualisierung:** `2026-09-04 10:01:07 UTC`
+- **Letzte Aktualisierung:** `2026-09-04 12:14:14 UTC`
 - **Aktueller Status:** 🔴 Kritischer Befund ungelöst – NICHT einsatzbereit (Backlog-Ticket offen)
-- **Zuletzt bearbeitete Aufgabe:** Zeiterfassungs-Web-App implementiert
+- **Zuletzt bearbeitete Aufgabe:** Requirements.txt bereinigt und Abhängigkeiten konsolidiert
 
 ## 📁 Wichtige Projektkomponenten & Dateien
-- `Dockerfile`
-- `PRIVACY_POLICY.md`
-- `README.md`
-- `app/__init__.py`
-- `app/database.py`
-- `app/dependencies.py`
-- `app/main.py`
-- `app/middleware/pii_filter.py`
-- `app/middleware/rate_limit.py`
-- `app/middleware/security_headers.py`
-- `app/models.py`
-- `app/routers/auth.py`
-- `app/routers/time_entries.py`
-- `app/routers/users.py`
-- `app/schemas.py`
-- `app/security.py`
-- `docker-compose.yml`
-- `docs/adr/0001-monolith-statt-microservices-f-r-zeiterf.md`
-- `docs/adr/0002-postgresql-statt-mysql.md`
-- `pytest.ini`
-- *... und 9 weitere Dateien*
+- *(Noch keine Quellcodedateien angelegt)*
 
 ## 🧪 Verifikations- & Test-Status
 - **Tests bestanden:** Ausstehend / Fehlgeschlagen ⚠️

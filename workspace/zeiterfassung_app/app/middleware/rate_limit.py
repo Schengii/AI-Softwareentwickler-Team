@@ -29,3 +29,7 @@ class SimpleRateLimiter(BaseHTTPMiddleware):
         self.history[client] = timestamps
         response = await call_next(request)
         return response
+
+
+# Alias for backward-compatibility with alternative naming
+RateLimitMiddleware = SimpleRateLimiter

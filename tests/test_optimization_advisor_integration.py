@@ -74,7 +74,7 @@ class TestOptimizationAdvisorInProcess(unittest.TestCase):
 
         self.assertIn("Selbstoptimierungs-Vorschläge", result)
         self.assertIn("backend", result)
-        self.assertIn("keine automatische Änderung", result)
+        self.assertIn("sonst rein informativ", result)
 
     def test_empty_report_adds_no_noise_to_final_output(self):
         result = self._run(OptimizationReport())

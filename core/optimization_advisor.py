@@ -10,16 +10,30 @@ oft scheitert – bisher gab es dafür keine Datengrundlage (memory/run_history.
 Erfolgsquote je Agent, aber nicht aufgeschlüsselt nach tatsächlich genutztem Modell).
 
 Bewusst rein deterministisch (keine LLM-Interpretation nötig – Erfolgsquoten/Tokenverbrauch
-sind bereits harte Zahlen aus memory/run_history.py) und bewusst NUR ein Vorschlag, KEINE
+sind bereits harte Zahlen aus memory/run_history.py). Standardmäßig NUR ein Vorschlag, KEINE
 automatische Änderung an config.py: eine Modellzuweisung hat neben der reinen Erfolgsquote
-weitere Faktoren (Kosten pro Token, Rate-Limits, bewusste Provider-Präferenzen des Nutzers),
-die dieses Modul nicht kennt – dieselbe Linie wie die bereits im CHANGELOG dokumentierte
-Entscheidung, Phasenreihenfolge-Änderungen nicht automatisch, sondern nur nach Rücksprache
-umzusetzen.
+weitere Faktoren (Rate-Limits, bewusste Provider-Präferenzen des Nutzers), die dieses Modul
+nicht kennt – dieselbe Linie wie die bereits im CHANGELOG dokumentierte Entscheidung,
+Phasenreihenfolge-Änderungen nicht automatisch, sondern nur nach Rücksprache umzusetzen.
+apply_auto_tuning() unten ist die EINZIGE Ausnahme, und auch die nur, wenn der Nutzer das
+explizit per config.ENABLE_AUTO_MODEL_TUNING freigeschaltet hat.
+
+Team-Optimierung (Retrospektive 2026-09-04, Kosten-Nutzen-Abwägung): memory/run_history.py.
+get_agent_model_performance() lieferte den durchschnittlichen Tokenverbrauch je (Agent, Modell)
+schon immer mit, analyze() wertete ihn aber NIE aus - ein Modell konnte dadurch rein wegen einer
+etwas höheren Erfolgsquote vorgeschlagen werden, selbst wenn es pro Aufruf deutlich mehr Tokens
+kostet. Das widerspricht dem Ziel optimaler Tokennutzung direkt. TOKEN_COST_INCREASE_TOLERANCE/
+SIGNIFICANT_SUCCESS_RATE_GAP unten verlangen von einem spürbar teureren Modell einen deutlich
+größeren Erfolgsquoten-Vorsprung, bevor es trotzdem vorgeschlagen wird - dieselbe Abwägung, die
+ein Mensch bei einer manuellen Modellwahl ohnehin anstellen würde.
 """
 
+import json
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 
+import config
 from memory.run_history import (
     get_agent_model_performance,
     get_agent_success_rates,
@@ -33,6 +47,12 @@ MIN_SAMPLE_SIZE = 5
 # Ab diesem Unterschied in Prozentpunkten gilt eine Abweichung als meldenswert, kein triviales
 # Rauschen (z.B. 88% vs. 90% wäre kein echter Hinweis, nur statistisches Rauschen).
 MIN_SUCCESS_RATE_GAP = 15.0
+# Kosten-Nutzen-Abwägung (siehe Moduldocstring): bis zu 20% mehr Tokens pro Aufruf gilt als
+# "nicht spürbar teurer" - der normale MIN_SUCCESS_RATE_GAP reicht dann weiterhin aus. Erst
+# darüber hinaus verlangt ein Vorschlag den deutlich größeren SIGNIFICANT_SUCCESS_RATE_GAP, um
+# den Mehrverbrauch zu rechtfertigen.
+TOKEN_COST_INCREASE_TOLERANCE = 1.2
+SIGNIFICANT_SUCCESS_RATE_GAP = 30.0
 # Team-Retrospektive nach dem taskpulse-Lauf: kleinere Stichprobe als MIN_SAMPLE_SIZE, weil ein
 # GANZER Lauf (nicht ein einzelner Agenten-Aufruf) die Beobachtungseinheit ist - bei nur 1-2
 # aufgezeichneten Läufen wäre jede Quote (0% oder 100%) noch reines Rauschen, ab 3 wird ein
@@ -44,14 +64,18 @@ VERIFICATION_TREND_WINDOW = 10
 
 @dataclass
 class ModelSuggestion:
-    """Ein einzelner, datenbasierter Vorschlag: Agent X könnte von Modell B statt A profitieren."""
+    """Ein einzelner, datenbasierter Vorschlag: Agent X könnte von Modell B statt A profitieren.
+    current_avg_tokens/suggested_avg_tokens machen die Kosten-Seite der Abwägung sichtbar -
+    eine höhere Erfolgsquote allein rechtfertigt nicht automatisch ein teureres Modell."""
     agent_id: str
     current_model: str
     current_success_rate: float
     current_calls: int
+    current_avg_tokens: float
     suggested_model: str
     suggested_success_rate: float
     suggested_calls: int
+    suggested_avg_tokens: float
 
 
 @dataclass
@@ -97,7 +121,9 @@ def analyze(limit_runs: int = 100) -> OptimizationReport:
        beste vorgeschlagen – NUR wenn beide Modelle die Mindest-Stichprobengröße erreichen UND
        der Unterschied deutlich genug ist (siehe MIN_SUCCESS_RATE_GAP). "Aktuell" ist dabei das
        unter den ausreichend geprüften Modellen am häufigsten genutzte – die Historie spiegelt
-       bereits wider, was tatsächlich lief, ein Blick in config.py ist dafür nicht nötig.
+       bereits wider, was tatsächlich lief, ein Blick in config.py ist dafür nicht nötig. Ist das
+       vorgeschlagene Modell spürbar teurer (siehe TOKEN_COST_INCREASE_TOLERANCE), muss der
+       Erfolgsquoten-Vorsprung den größeren SIGNIFICANT_SUCCESS_RATE_GAP erreichen.
     2. Auffällig niedrige Erfolgsquote: ein Agent, dessen Erfolgsquote deutlich unter dem
        Team-Durchschnitt liegt – unabhängig vom Modell (kann z.B. auf eine zu vage
        Aufgabenbeschreibung oder ein strukturelles Prompt-Problem hindeuten, nicht nur auf die
@@ -120,10 +146,21 @@ def analyze(limit_runs: int = 100) -> OptimizationReport:
         gap = best["success_rate"] - current["success_rate"]
         if gap < MIN_SUCCESS_RATE_GAP:
             continue
+        # Kosten-Nutzen-Abwägung (siehe Moduldocstring): ein spürbar teureres Modell (mehr als
+        # TOKEN_COST_INCREASE_TOLERANCE mal so viele Tokens/Aufruf) braucht einen deutlich
+        # größeren Erfolgsquoten-Vorsprung, sonst ist der Vorschlag reiner Mehrverbrauch ohne
+        # verhältnismäßigen Nutzen - das Gegenteil von optimaler Tokennutzung.
+        is_meaningfully_more_expensive = (
+            current["avg_tokens"] > 0 and best["avg_tokens"] > current["avg_tokens"] * TOKEN_COST_INCREASE_TOLERANCE
+        )
+        if is_meaningfully_more_expensive and gap < SIGNIFICANT_SUCCESS_RATE_GAP:
+            continue
         report.model_suggestions.append(ModelSuggestion(
             agent_id=agent_id,
-            current_model=current["model"], current_success_rate=current["success_rate"], current_calls=current["calls"],
-            suggested_model=best["model"], suggested_success_rate=best["success_rate"], suggested_calls=best["calls"],
+            current_model=current["model"], current_success_rate=current["success_rate"],
+            current_calls=current["calls"], current_avg_tokens=current["avg_tokens"],
+            suggested_model=best["model"], suggested_success_rate=best["success_rate"],
+            suggested_calls=best["calls"], suggested_avg_tokens=best["avg_tokens"],
         ))
 
     eligible_agents = [a for a in get_agent_success_rates(limit_runs) if a["calls"] >= MIN_SAMPLE_SIZE]
@@ -156,14 +193,16 @@ def format_report_for_humans(report: OptimizationReport) -> str:
 
     lines = [
         "### 🔧 Datenbasierte Selbstoptimierungs-Vorschläge",
-        "*Rein informativ, keine automatische Änderung an config.py – bitte manuell prüfen.*",
+        "*Automatische Anwendung nur, wenn ENABLE_AUTO_MODEL_TUNING aktiv ist (siehe config.py) – "
+        "sonst rein informativ, bitte manuell prüfen.*",
     ]
     for s in report.model_suggestions:
         lines.append(
             f"- **{s.agent_id}**: aktuell überwiegend `{s.current_model}` "
-            f"({s.current_success_rate}% Erfolgsquote über {s.current_calls} Aufrufe) – "
-            f"`{s.suggested_model}` lief historisch besser "
-            f"({s.suggested_success_rate}% Erfolgsquote über {s.suggested_calls} Aufrufe)."
+            f"({s.current_success_rate}% Erfolgsquote, ⌀{s.current_avg_tokens:.0f} Tokens/Aufruf, "
+            f"{s.current_calls} Aufrufe) – `{s.suggested_model}` lief historisch besser "
+            f"({s.suggested_success_rate}% Erfolgsquote, ⌀{s.suggested_avg_tokens:.0f} Tokens/Aufruf, "
+            f"{s.suggested_calls} Aufrufe)."
         )
     for a in report.low_performing_agents:
         lines.append(
@@ -179,3 +218,64 @@ def format_report_for_humans(report: OptimizationReport) -> str:
             "systematisch fehlender Agenten-Fähigkeitsbereich) als auf einzelne Projekt-Ausreißer."
         )
     return "\n".join(lines)
+
+
+def _load_auto_tuned_models() -> dict:
+    """Liest config.AUTO_TUNED_MODELS_FILE - leeres Dict, falls sie fehlt oder beschädigt ist
+    (nie ein Absturz nur wegen dieser rein optionalen Optimierung)."""
+    path = Path(config.AUTO_TUNED_MODELS_FILE)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def apply_auto_tuning(report: OptimizationReport) -> list[str]:
+    """
+    Schreibt die Modell-Vorschläge aus `report` in config.AUTO_TUNED_MODELS_FILE - macht sie
+    damit für JEDEN künftigen Lauf über config.py.get_model_for_agent() sofort wirksam, ohne
+    dass ein Mensch .env/config.py manuell anpassen muss. Schließt den in der Team-Retrospektive
+    identifizierten Kreislauf: bisher blieb selbst eine glasklare, datenbasierte Empfehlung
+    wirkungslos, solange niemand den Abschlussbericht liest.
+
+    No-Op (gibt [] zurück), solange config.ENABLE_AUTO_MODEL_TUNING nicht explizit aktiviert
+    ist - bewusst Opt-in, damit sich die Modellzuweisung eines Agenten nie überraschend ändert.
+    Jeder Eintrag speichert genug Kontext (Vorher-Modell, Kennzahlen, Zeitstempel, Begründung),
+    um die Datei jederzeit manuell nachvollziehen, korrigieren oder löschen zu können - eine
+    normale, git-ignorierte memory/*.json wie jede andere Historie in diesem Projekt.
+
+    Gibt die Liste der tatsächlich angepassten agent_id zurück (für eine Erfolgsmeldung im
+    Abschlussbericht).
+    """
+    if not config.ENABLE_AUTO_MODEL_TUNING or not report.model_suggestions:
+        return []
+
+    data = _load_auto_tuned_models()
+    applied: list[str] = []
+    now_iso = datetime.now(UTC).isoformat(timespec="seconds")
+    for s in report.model_suggestions:
+        data[s.agent_id] = {
+            "model": s.suggested_model,
+            "previous_model": s.current_model,
+            "success_rate": s.suggested_success_rate,
+            "avg_tokens": s.suggested_avg_tokens,
+            "applied_at": now_iso,
+            "reason": (
+                f"Empirisch bessere Erfolgsquote ({s.suggested_success_rate}% vs. "
+                f"{s.current_success_rate}% über {s.suggested_calls} bzw. {s.current_calls} "
+                f"Aufrufe) bei vertretbarem Tokenverbrauch (⌀{s.suggested_avg_tokens:.0f} vs. "
+                f"⌀{s.current_avg_tokens:.0f} Tokens/Aufruf)."
+            ),
+        }
+        applied.append(s.agent_id)
+
+    try:
+        path = Path(config.AUTO_TUNED_MODELS_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        return []
+    return applied

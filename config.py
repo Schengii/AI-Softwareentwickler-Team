@@ -3,7 +3,9 @@ config.py – Zentrale Konfiguration für das KI-Softwareentwickler-Team (30 Spe
 Multi-LLM & Tool Support: Gemini, Groq, DeepSeek, OpenRouter, Tavily, Hugging Face & Claude
 """
 
+import json
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -169,8 +171,31 @@ def get_model_for_agent(agent_id: str) -> str:
     if agent_id in DEPARTMENT_GOVERNANCE_AGENTS and DEPARTMENT_MODELS["governance"]:
         return DEPARTMENT_MODELS["governance"]
 
-    # 3. Standard-Zuordnung aus AGENT_MODELS oder Fallback
+    # 3. Datenbasierte Selbstoptimierung (opt-in, siehe ENABLE_AUTO_MODEL_TUNING oben) - NUR
+    # wenn weder ein Rollen- noch ein Fachbereichs-Override explizit gesetzt ist, greift eine
+    # zuvor von core/optimization_advisor.py empirisch ermittelte, bessere Modellzuweisung.
+    if ENABLE_AUTO_MODEL_TUNING:
+        auto_tuned = _read_auto_tuned_model(agent_id)
+        if auto_tuned:
+            return auto_tuned
+
+    # 4. Standard-Zuordnung aus AGENT_MODELS oder Fallback
     return AGENT_MODELS.get(agent_id, DEFAULT_AGENT_MODEL)
+
+
+def _read_auto_tuned_model(agent_id: str) -> str:
+    """Liest eine zuvor automatisch vorgeschlagene Modellzuweisung für `agent_id` aus
+    AUTO_TUNED_MODELS_FILE - leerer String, falls keine existiert oder die Datei fehlt/beschädigt
+    ist (nie ein Absturz nur wegen dieser rein optionalen Optimierung)."""
+    path = Path(AUTO_TUNED_MODELS_FILE)
+    if not path.exists():
+        return ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    entry = data.get(agent_id) if isinstance(data, dict) else None
+    return entry.get("model", "") if isinstance(entry, dict) else ""
 
 
 # ──────────────────────────────────────────
@@ -527,6 +552,24 @@ BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))
 PROMPTS_DIR: str = os.path.join(BASE_DIR, "prompts")
 MEMORY_DIR: str = os.path.join(BASE_DIR, "memory")
 WORKSPACE_DIR: str = os.path.join(BASE_DIR, "workspace")
+
+# ──────────────────────────────────────────
+# Datenbasierte Selbstoptimierung (core/optimization_advisor.py)
+# ──────────────────────────────────────────
+# Team-Optimierung (Retrospektive 2026-09-04): core/optimization_advisor.py.analyze() erkennt
+# bereits nach jedem Lauf datenbasiert, ob ein Agent mit einem ANDEREN Modell empirisch
+# erfolgreicher wäre - das Ergebnis landete bisher AUSSCHLIESSLICH als Textabschnitt im
+# Abschlussbericht, nie angewendet, sofern nicht ein Mensch ihn liest und manuell .env/config.py
+# anpasst. Bei autonomen Läufen (--work-backlog, Cron) sieht das niemand. ENABLE_AUTO_MODEL_
+# TUNING schließt diesen Kreislauf: bewusst standardmäßig AUS (Opt-in), damit das Verhalten nie
+# überraschend einsetzt. Ist es aktiv, schreibt core/optimization_advisor.py.apply_auto_tuning()
+# empirisch bessere Modellzuweisungen in AUTO_TUNED_MODELS_FILE - eine reine, jederzeit
+# inspizier-/löschbare JSON-Datei (git-ignored wie jede memory/*.json), NIE eine automatische
+# Änderung an dieser Datei selbst. get_model_for_agent() liest sie unten als NIEDRIGSTE
+# Prioritätsstufe - ein expliziter .env-Rollen- oder Fachbereichs-Override (Schritt 1/2 dort)
+# gewinnt IMMER, ein Mensch, der bewusst ein Modell festlegt, wird also nie überstimmt.
+ENABLE_AUTO_MODEL_TUNING: bool = os.getenv("ENABLE_AUTO_MODEL_TUNING", "false").strip().lower() in ("true", "1", "yes")
+AUTO_TUNED_MODELS_FILE: str = os.path.join(MEMORY_DIR, "auto_tuned_models.json")
 
 # ──────────────────────────────────────────
 # Obsidian Vault & Gedächtnis-Synchronisation (core/obsidian_sync.py)

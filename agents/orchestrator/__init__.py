@@ -111,6 +111,7 @@ from core.git_isolation import (
 from core.message_bus import AgentTask
 from core.notifier import notify_external
 from core.optimization_advisor import analyze as analyze_optimization_potential
+from core.optimization_advisor import apply_auto_tuning
 from core.optimization_advisor import format_report_for_humans as format_optimization_report
 from core.project_constitution import format_constitution_for_agents, get_max_project_tokens
 from core.project_status import (
@@ -917,10 +918,28 @@ class Orchestrator(
         # Datenbasierte Selbstoptimierungs-Vorschläge (core/optimization_advisor.py) - rein
         # deterministische Auswertung der BEREITS BESTEHENDEN, projektübergreifenden
         # Lauf-Historie (kein zusätzlicher LLM-Aufruf nötig, anders als retrospective/
-        # agent_trainer direkt darunter). Bewusst NUR ein Vorschlag, keine automatische
+        # agent_trainer direkt darunter). Standardmäßig NUR ein Vorschlag, keine automatische
         # Änderung an config.py (siehe Modul-Docstring) - leer für die Mehrheit der Läufe ohne
         # statistisch aussagekräftigen Befund, kein unnötiger Abschnitt im Bericht.
-        optimization_section = format_optimization_report(analyze_optimization_potential())
+        #
+        # Team-Optimierung (Retrospektive 2026-09-04): apply_auto_tuning() schließt den Kreislauf
+        # für Nutzer, die config.ENABLE_AUTO_MODEL_TUNING explizit aktiviert haben - ohne diesen
+        # Aufruf blieb selbst eine glasklare Empfehlung wirkungslos, solange niemand den
+        # Abschlussbericht liest (z.B. bei autonomen --work-backlog/Cron-Läufen). No-Op und []
+        # zurück, solange das Flag aus ist (Standard) - dieselbe Zeile läuft für JEDEN Lauf.
+        optimization_report = analyze_optimization_potential()
+        auto_tuned_agents = apply_auto_tuning(optimization_report)
+        optimization_section = format_optimization_report(optimization_report)
+        if auto_tuned_agents:
+            notify(
+                f"  🔧 [bold cyan]Selbstoptimierung angewendet:[/bold cyan] {', '.join(auto_tuned_agents)} "
+                "auf empirisch besseres Modell umgestellt (memory/auto_tuned_models.json)."
+            )
+            optimization_section += (
+                f"\n\n✅ **Automatisch angewendet** (ENABLE_AUTO_MODEL_TUNING aktiv): "
+                f"{', '.join(auto_tuned_agents)} laufen ab dem nächsten Aufruf mit dem "
+                "empfohlenen Modell."
+            )
 
         final_output = (
             f"{final_solution}\n\n"

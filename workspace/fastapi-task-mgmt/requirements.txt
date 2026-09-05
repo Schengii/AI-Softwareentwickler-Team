@@ -9,4 +9,10 @@ httpx
 alembic
 python-jose
 passlib
-bcrypt
+# passlib 1.7.4 (letztes PyPI-Release, seit 2020 unmaintained) prüft intern
+# `bcrypt.__about__.__version__` - das Attribut wurde in bcrypt>=4.1 entfernt, passlibs
+# eigener Selbsttest bricht dadurch mit "password cannot be longer than 72 bytes" ab (echt
+# reproduziert). Bekannter, dokumentierter Kompatibilitätsbruch - bcrypt bewusst < 4.1 gepinnt.
+bcrypt<4.1
+python-multipart
+python-multipart

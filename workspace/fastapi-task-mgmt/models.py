@@ -17,7 +17,10 @@ class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
-    email: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    # email bleibt optional: schemas.UserCreate (Registrierung) fragt bewusst nur
+    # username/password ab, kein E-Mail-Feld - siehe auth.py/main.py für den Login-Flow.
+    email: Mapped[str | None] = mapped_column(String(100), unique=True, nullable=True)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
 
 class Task(Base):
     __tablename__ = "tasks"

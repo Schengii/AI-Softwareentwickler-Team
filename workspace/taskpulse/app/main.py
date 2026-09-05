@@ -30,9 +30,6 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' https://cdn.tailwindcss.com;"
     return response
 
-# DB Initialisierung
-database.init_db()
-
 def get_db():
     db = database.SessionLocal()
     try:
@@ -74,8 +71,7 @@ async def check_endpoint(url: str):
 
 @app.on_event("startup")
 async def startup_event():
-    # Schedule cleanup job
-    pass
+    database.init_db()
 
 @app.get("/tasks", response_model=list[schemas.TaskResponse])
 def read_tasks(db: Session = Depends(get_db)):

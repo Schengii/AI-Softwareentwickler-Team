@@ -24,6 +24,18 @@ from datetime import UTC, datetime
 DECISION_LOG_FILENAME = ".ai_team_decisions.jsonl"
 MAX_DECISIONS_SHOWN = 20
 
+# Team-Optimierung (Retrospektive 2026-09-05): mehrere Aufrufstellen (unresolved_governance_
+# critical_ticket_opened, recurring_failure_ticket_opened, ...) kürzten `detail` schon VOR dem
+# Aufruf hier auf 300 Zeichen, zusätzlich zum bisherigen 500-Zeichen-Cap unten - beide Grenzen
+# lagen unter der Länge eines echten mehrzeiligen Governance-/Testfehler-Berichts und schnitten
+# ihn dadurch mitten im Satz ab. Anders als core/project_status.py (dort existiert bereits ein
+# ungekürztes Vollprotokoll, .ai_team_status_full.log, als Fallback) gibt es für dieses Log
+# KEINE Vollversion - eine hier verlorene Information ist unwiederbringlich weg, sowohl für
+# menschliche Post-Mortems als auch für eine künftige automatische Lern-Extraktion aus
+# wiederkehrenden Fehlschlägen. Einzelnes, deutlich großzügigeres Limit statt der bisherigen
+# zwei inkonsistenten Werte - die Aufrufstellen kürzen nicht mehr selbst.
+MAX_DETAIL_CHARS = 4000
+
 
 def log_decision(project_dir: str, event: str, detail: str, **extra) -> None:
     """Hängt eine Entscheidung an. `event` ist ein kurzer, stabiler Kategorie-Slug (z.B.
@@ -34,7 +46,7 @@ def log_decision(project_dir: str, event: str, detail: str, **extra) -> None:
         entry = {
             "timestamp": datetime.now(UTC).isoformat(),
             "event": event,
-            "detail": detail[:500],
+            "detail": detail[:MAX_DETAIL_CHARS],
             **extra,
         }
         path = os.path.join(project_dir, DECISION_LOG_FILENAME)

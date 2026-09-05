@@ -276,22 +276,40 @@ class Orchestrator(
         self._project_token_budget: int = 0
         self._project_tokens_before_run: int = 0
 
-    def _escalate_agent_models(self) -> None:
+    def _escalate_agent_models(self, agent_ids: set[str] | None = None) -> set[str]:
         """
-        Stuft jeden Fachagenten, der nicht ohnehin bereits auf HEAVY_MODEL läuft, für DIESEN
-        Lauf auf HEAVY_MODEL hoch (siehe __init__.escalate_models-Docstring für den vollen
-        Kontext). Best-effort: ein einzelner Agent, dessen Modell-Erstellung fehlschlägt (z.B.
-        fehlender API-Key für den Zielprovider), behält sein bisheriges Modell statt den ganzen
-        Lauf zu verhindern - dieselbe Großzügigkeit wie beim Fallback in core/llm_factory.py.
+        Stuft jeden Fachagenten, der nicht ohnehin bereits auf HEAVY_MODEL läuft, auf HEAVY_MODEL
+        hoch (siehe __init__.escalate_models-Docstring für den vollen Kontext). Best-effort: ein
+        einzelner Agent, dessen Modell-Erstellung fehlschlägt (z.B. fehlender API-Key für den
+        Zielprovider), behält sein bisheriges Modell statt den ganzen Lauf zu verhindern - dieselbe
+        Großzügigkeit wie beim Fallback in core/llm_factory.py.
+
+        agent_ids: None (Standard, wie bisher) eskaliert ALLE Fachagenten für den Rest des Laufs -
+        genau das Verhalten, das core/backlog_worker.py beim automatischen Retry eines Governance-
+        Tickets nutzt. Eine konkrete Menge eskaliert NUR diese Agenten - siehe
+        _run_verification_loop weiter unten (verification.py): dort ist zum Zeitpunkt des letzten
+        Eskalationsversuchs innerhalb EINES Laufs bereits exakt bekannt, welche Agenten an der
+        stecken gebliebenen Datei hängen (`stuck_owners`), ein pauschales Hochstufen ALLER 33
+        Fachagenten (inkl. der an dem Fehler unbeteiligten) wäre unnötiger Mehrverbrauch.
+
+        Gibt die IDs der tatsächlich hochgestuften Agenten zurück (leer, wenn `agent_ids` gesetzt
+        war, aber keiner davon ein bekannter Fachagent ist - z.B. ein Fachbereichsleiter statt
+        eines Spezialisten).
         """
         from core.llm_factory import LLMFactory
-        for agent in self._agents.values():
+        targets = self._agents.items() if agent_ids is None else (
+            (aid, self._agents[aid]) for aid in agent_ids if aid in self._agents
+        )
+        escalated: set[str] = set()
+        for agent_id, agent in targets:
             if agent._llm.model_name == HEAVY_MODEL:
                 continue
             try:
                 agent._llm = LLMFactory.create_for_model(HEAVY_MODEL)
+                escalated.add(agent_id)
             except Exception:
                 continue
+        return escalated
 
     async def process(
         self,
@@ -540,6 +558,16 @@ class Orchestrator(
                 log_decision(
                     project_dir, "architect_forced_reescalation",
                     f"{consecutive_failures} Läufe in Folge ohne bestandene Verifikation – architect zusätzlich eingeplant.",
+                )
+                # Team-Optimierung (Retrospektive 2026-09-05, Punkt 1): dieser Punkt bedeutet
+                # konkret "mindestens 2 komplette Läufe an diesem Projekt sind bereits ohne
+                # Erfolg verpufft" - bisher stumm nur im Entscheidungslog vermerkt, obwohl das
+                # exakt der Moment ist, in dem ein Mensch (statt eines weiteren, ggf. erneut
+                # wirkungslosen Laufs) informiert werden sollte.
+                await asyncio.to_thread(
+                    notify_external, "Wiederholtes Scheitern – architect zusätzlich eingeplant",
+                    f"{self.last_project_slug}: {consecutive_failures} Läufe in Folge ohne bestandene "
+                    "Verifikation.",
                 )
 
         # Pro-Projekt-Kostenbudget (siehe __init__): MAX_RUN_TOKENS begrenzt nur DIESEN einen
@@ -792,12 +820,19 @@ class Orchestrator(
                     "sehr ähnlichen Fehler wie die vorherigen Läufe gescheitert. Ein Backlog-Ticket für "
                     "menschliche Prüfung wurde eröffnet, statt automatisch weiterzuversuchen."
                 )
+                # Team-Optimierung (Retrospektive 2026-09-05): Ticket, Lernprotokoll und
+                # Entscheidungslog kürzten dieselbe Zusammenfassung bisher JEWEILS separat auf
+                # 300 Zeichen - bei einem mehrzeiligen Verifikations-Protokoll (mehrere Versuche,
+                # Eskalation, Governance-Funde) schnitt das den eigentlichen Grund oft mitten im
+                # Satz ab, ohne dass irgendwo eine Vollversion übrig blieb. Einmal ungekürzt
+                # berechnen, überall gleich verwenden.
+                recurring_failure_detail = verification_summary.strip()
                 try:
                     upsert_ticket(
                         ticket_id=f"recurring-failure-{self.last_project_slug}",
                         title=f"Wiederkehrender Verifikations-Fehler: {self.last_project_slug}",
                         source="orchestrator", status="blocked", project_slug=self.last_project_slug,
-                        detail=verification_summary.strip()[:300],
+                        detail=recurring_failure_detail,
                     )
                 except Exception as e:
                     notify(f"⚠️ [dim yellow]Ticket für wiederkehrenden Fehler konnte nicht angelegt werden: {e}[/dim yellow]")
@@ -807,9 +842,19 @@ class Orchestrator(
                 # wieder auftreten kann - best-effort, darf den Lauf nie zum Absturz bringen.
                 record_lesson(
                     project_slug=self.last_project_slug, category="recurring_failure",
-                    detail=verification_summary.strip()[:300],
+                    detail=recurring_failure_detail,
                 )
-                log_decision(project_dir, "recurring_failure_ticket_opened", verification_summary.strip()[:300])
+                log_decision(project_dir, "recurring_failure_ticket_opened", recurring_failure_detail)
+                # Team-Optimierung (Retrospektive 2026-09-05, Punkt 1): bisher rief nur der
+                # Budget-Abbruch notify_external() auf - ein wiederkehrender Fehler, der die
+                # Verifikations-Schleife endgültig aufgeben lässt, ist ein mindestens ebenso
+                # starkes Signal, dass ein Mensch jetzt eingreifen muss (siehe reale Historie
+                # von workspace/zeiterfassung_app: 3 Läufe mit demselben Fehler, bevor ein
+                # Mensch das per Hand nachbesserte, ohne dass das Team aktiv Bescheid gab).
+                await asyncio.to_thread(
+                    notify_external, "Wiederkehrender Verifikations-Fehler",
+                    f"{self.last_project_slug}: {recurring_failure_detail[:300]}",
+                )
 
         # Analog zur "wiederholtes Scheitern"-Eskalation oben, aber für Lint-Funde: ein
         # Lint-Fund ist bewusst rein informativ und setzt verification_ok NIE zurück (siehe
@@ -837,6 +882,10 @@ class Orchestrator(
                     title=f"Wiederkehrender Lint-Fund: {self.last_project_slug}",
                     source="orchestrator", status="blocked", project_slug=self.last_project_slug,
                     detail="; ".join(sorted(set(lint_signature))[:10]),
+                )
+                await asyncio.to_thread(
+                    notify_external, "Wiederkehrender Lint-Fund",
+                    f"{self.last_project_slug}: {'; '.join(sorted(set(lint_signature))[:10])}",
                 )
             except Exception as e:
                 notify(f"⚠️ [dim yellow]Ticket für wiederkehrenden Lint-Fund konnte nicht angelegt werden: {e}[/dim yellow]")
@@ -911,6 +960,8 @@ class Orchestrator(
                 user_request=user_request,
                 results=results,
                 retro_content=retro_result.content if retro_result else "",
+                verification_ok=verification_ok,
+                verification_summary=verification_summary,
             )
 
         stats_table = self._build_metrics_summary(

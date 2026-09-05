@@ -31,6 +31,9 @@ DIFFERENT_FAILING_REPORT = VerificationReport(
     ran=True, passed=False, exit_code=1, stdout="", stderr="", duration_seconds=0.1,
     failures=[TestFailure(test_id="tests/test_app.py::test_y", message="AssertionError: other", files=["backend/app.py"])],
 )
+PASSING_REPORT = VerificationReport(
+    ran=True, passed=True, exit_code=0, stdout="", stderr="", duration_seconds=0.1, failures=[],
+)
 
 
 class _FakeToolCapableLLM:
@@ -87,11 +90,19 @@ class TestVerificationNoProgressBreaker(unittest.TestCase):
         shutil.rmtree(self.temp_workspace, ignore_errors=True)
 
     def _run(self, run_tests_side_effect):
+        # Team-Optimierung (2026-09-05, Punkt 3): der letzte Eskalationsschritt vor dem
+        # endgültigen Aufgeben ersetzt _llm auf den stecken gebliebenen Agenten per
+        # LLMFactory.create_for_model(HEAVY_MODEL) - ohne diesen Patch würde der Test einen
+        # ECHTEN Provider-Client konstruieren (und, falls in dieser Umgebung ein API-Key gesetzt
+        # ist, sogar einen echten API-Aufruf auslösen) statt weiter mit einer kontrollierten
+        # Test-Double zu arbeiten.
+        @patch("core.llm_factory.LLMFactory.create_for_model")
         @patch("agents.orchestrator.verification.upsert_ticket")
         @patch("agents.orchestrator.verification.ProjectVerifier")
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")
-        def _inner(mock_synthesize, mock_decompose, mock_verifier_cls, mock_upsert_ticket):
+        def _inner(mock_synthesize, mock_decompose, mock_verifier_cls, mock_upsert_ticket, mock_create_for_model):
+            mock_create_for_model.side_effect = lambda model_name: _ScriptedLLM(written_file="backend/app.py")
             task = AgentTask(task_id="t1", agent_id="backend", description="backend/app.py bauen")
             mock_decompose.return_value = ("Kurze Aufgabe", "no_progress_test_proj", [task])
             mock_synthesize.return_value = ("### Fertig", 5)
@@ -114,18 +125,39 @@ class TestVerificationNoProgressBreaker(unittest.TestCase):
         # Schleife TROTZDEM beide regulären Versuche ausschöpfen. Seit dem Eskalations-
         # Strategiewechsel (Team-Retrospektive: "letzter Stand wurde übernommen" statt eine
         # andere Strategie zu versuchen) folgt auf "kein Fortschritt" GENAU EIN zusätzlicher,
-        # sofort geprüfter Eskalationsversuch an den Fachbereichsleiter - macht 3 echte
-        # run_tests-Aufrufe insgesamt (2 reguläre + 1 Eskalations-Recheck). Ein vierter Eintrag
-        # im side_effect (der nie erreicht werden darf) macht das weiterhin messbar.
+        # sofort geprüfter Eskalationsversuch an den Fachbereichsleiter, UND (Team-Optimierung
+        # 2026-09-05, Punkt 3) danach GENAU EIN weiterer, ebenfalls sofort geprüfter Versuch mit
+        # auf HEAVY_MODEL hochgestuften, stecken gebliebenen Agenten, bevor endgültig aufgegeben
+        # wird - macht 4 echte run_tests-Aufrufe insgesamt (2 reguläre + 1 Eskalations-Recheck +
+        # 1 Modell-Eskalations-Recheck). Ein fünfter Eintrag im side_effect (der nie erreicht
+        # werden darf) macht das weiterhin messbar.
         result, logs, mock_verifier, mock_upsert_ticket = self._run(
-            [FAILING_REPORT, FAILING_REPORT, FAILING_REPORT, FAILING_REPORT],
+            [FAILING_REPORT, FAILING_REPORT, FAILING_REPORT, FAILING_REPORT, FAILING_REPORT],
         )
 
-        self.assertEqual(mock_verifier.run_tests.call_count, 3)
+        self.assertEqual(mock_verifier.run_tests.call_count, 4)
         self.assertFalse(self.orchestrator.last_verification_ok)
         self.assertTrue(any("Strategiewechsel" in line for line in logs))
         self.assertTrue(any("Kein Fortschritt" in line for line in logs))
         mock_upsert_ticket.assert_called()
+
+    def test_model_escalation_recovers_after_failed_lead_escalation(self):
+        # Team-Optimierung (2026-09-05, Punkt 3): schlägt sowohl der reguläre Fixversuch als
+        # auch die Eskalation an den Fachbereichsleiter fehl (identischer Fehler), bekommt der
+        # stecken gebliebene Agent (hier: backend) für GENAU einen letzten Versuch HEAVY_MODEL,
+        # BEVOR aufgegeben und ein Ticket eröffnet wird. Schlägt DIESER Versuch an - hier
+        # simuliert per PASSING_REPORT als 4. run_tests-Ergebnis - gilt der Lauf als verifiziert,
+        # OHNE dass ein "recurring-failure"-Ticket eröffnet wird.
+        result, logs, mock_verifier, mock_upsert_ticket = self._run(
+            [FAILING_REPORT, FAILING_REPORT, FAILING_REPORT, PASSING_REPORT],
+        )
+
+        self.assertEqual(mock_verifier.run_tests.call_count, 4)
+        self.assertTrue(self.orchestrator.last_verification_ok)
+        self.assertEqual(self.orchestrator._agents["backend"]._llm.model_name, "fake-model")
+        self.assertTrue(any("stärkerem Modell" in line for line in logs))
+        self.assertTrue(any("Modell-Eskalation erfolgreich" in line for line in logs))
+        mock_upsert_ticket.assert_not_called()
 
     def test_different_failures_after_fix_do_not_trigger_breaker(self):
         result, logs, mock_verifier, mock_upsert_ticket = self._run(

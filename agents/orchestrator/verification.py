@@ -36,6 +36,7 @@ from config import (
 from core.backlog_store import get_ticket, upsert_ticket
 from core.decision_log import log_decision
 from core.message_bus import AgentResult, AgentTask
+from core.notifier import notify_external
 from core.review_gate import (
     find_critical_findings,
     find_permission_blocked_questions,
@@ -336,22 +337,34 @@ class VerificationMixin:
                     f"- 🛑 Versuch {attempt}: dieselben {len(findings)} kritische(n) Befund(e) wie nach dem vorherigen "
                     "Fixversuch (keine Veränderung) – weiterer Fix-Dispatch übersprungen, Backlog-Ticket direkt eröffnet."
                 )
+                # Team-Optimierung (Retrospektive 2026-09-05): früher wurde dieselbe Zusammen-
+                # fassung an 3 Stellen (Ticket, Lernprotokoll, Entscheidungslog) JEWEILS separat
+                # auf 300 Zeichen gekürzt - für keine der drei existiert ein ungekürztes
+                # Vollprotokoll wie .ai_team_status_full.log, ein hier gekürzter Governance-Fund
+                # war also unwiederbringlich weg. Einmal ungekürzt berechnen, überall gleich
+                # verwenden (log_decision() deckelt selbst noch auf core.decision_log.
+                # MAX_DETAIL_CHARS, aber deutlich großzügiger als vorher).
+                unresolved_detail = "\n\n".join(block for _agent_id, block in findings)
                 try:
                     upsert_ticket(
                         ticket_id=f"unresolved-governance-critical-{getattr(self, 'last_project_slug', 'project')}",
                         title=f"Ungelöster kritischer Governance-Befund: {getattr(self, 'last_project_slug', 'project')}",
                         source="orchestrator", status="blocked",
                         project_slug=getattr(self, "last_project_slug", "project"),
-                        detail="\n\n".join(block for _agent_id, block in findings)[:300],
+                        detail=unresolved_detail,
                     )
                 except Exception as e:
                     notify(f"⚠️ [dim yellow]Ticket für ungelösten Governance-Befund konnte nicht angelegt werden: {e}[/dim yellow]")
                 record_lesson(
                     project_slug=getattr(self, "last_project_slug", "project"),
                     category="unresolved_governance_critical",
-                    detail="\n\n".join(block for _agent_id, block in findings)[:300],
+                    detail=unresolved_detail,
                 )
-                log_decision(project_dir, "unresolved_governance_critical_ticket_opened", "\n\n".join(block for _agent_id, block in findings)[:300])
+                log_decision(project_dir, "unresolved_governance_critical_ticket_opened", unresolved_detail)
+                await asyncio.to_thread(
+                    notify_external, "Ungelöster kritischer Governance-Befund",
+                    f"{getattr(self, 'last_project_slug', 'project')}: {unresolved_detail[:300]}",
+                )
                 break
             previous_findings_signature = current_findings_signature
 
@@ -490,22 +503,27 @@ class VerificationMixin:
                         f"{len(still_critical)} kritische(n) Befund(e) – Backlog-Ticket eröffnet statt "
                         "stillschweigend zu übernehmen."
                     )
+                    still_critical_detail = "\n\n".join(still_critical)
                     try:
                         upsert_ticket(
                             ticket_id=f"unresolved-governance-critical-{getattr(self, 'last_project_slug', 'project')}",
                             title=f"Ungelöster kritischer Governance-Befund: {getattr(self, 'last_project_slug', 'project')}",
                             source="orchestrator", status="blocked",
                             project_slug=getattr(self, "last_project_slug", "project"),
-                            detail="\n\n".join(still_critical)[:300],
+                            detail=still_critical_detail,
                         )
                     except Exception as e:
                         notify(f"⚠️ [dim yellow]Ticket für ungelösten Governance-Befund konnte nicht angelegt werden: {e}[/dim yellow]")
                     record_lesson(
                         project_slug=getattr(self, "last_project_slug", "project"),
                         category="unresolved_governance_critical",
-                        detail="\n\n".join(still_critical)[:300],
+                        detail=still_critical_detail,
                     )
-                    log_decision(project_dir, "unresolved_governance_critical_ticket_opened", "\n\n".join(still_critical)[:300])
+                    log_decision(project_dir, "unresolved_governance_critical_ticket_opened", still_critical_detail)
+                    await asyncio.to_thread(
+                        notify_external, "Ungelöster kritischer Governance-Befund",
+                        f"{getattr(self, 'last_project_slug', 'project')}: {still_critical_detail[:300]}",
+                    )
                 else:
                     summary_lines.append(f"- ✅ Re-Review nach Versuch {attempt} bestätigt: keine kritischen Befunde mehr.")
 
@@ -659,22 +677,27 @@ class VerificationMixin:
                         f"- 🛑 Re-Review bestätigt den Fix NICHT – {len(still_critical)} weiterhin kritische(r) "
                         "Befund(e). Backlog-Ticket für menschliche Prüfung eröffnet."
                     )
+                    still_critical_detail = "\n\n".join(still_critical)
                     try:
                         upsert_ticket(
                             ticket_id=f"unresolved-permission-blocked-{getattr(self, 'last_project_slug', 'project')}",
                             title=f"Ungelöster, zuvor schreibgeschützt blockierter Befund: {getattr(self, 'last_project_slug', 'project')}",
                             source="orchestrator", status="blocked",
                             project_slug=getattr(self, "last_project_slug", "project"),
-                            detail="\n\n".join(still_critical)[:300],
+                            detail=still_critical_detail,
                         )
                     except Exception as e:
                         notify(f"⚠️ [dim yellow]Ticket konnte nicht angelegt werden: {e}[/dim yellow]")
                     record_lesson(
                         project_slug=getattr(self, "last_project_slug", "project"),
                         category="unresolved_permission_blocked_fix",
-                        detail="\n\n".join(still_critical)[:300],
+                        detail=still_critical_detail,
                     )
-                    log_decision(project_dir, "unresolved_permission_blocked_fix_ticket_opened", "\n\n".join(still_critical)[:300])
+                    log_decision(project_dir, "unresolved_permission_blocked_fix_ticket_opened", still_critical_detail)
+                    await asyncio.to_thread(
+                        notify_external, "Ungelöster, zuvor schreibgeschützt blockierter Befund",
+                        f"{getattr(self, 'last_project_slug', 'project')}: {still_critical_detail[:300]}",
+                    )
                 else:
                     summary_lines.append("- ✅ Re-Review bestätigt: Fix erfolgreich.")
 
@@ -859,6 +882,24 @@ class VerificationMixin:
         # gegen dasselbe Problem laufen zu lassen - eine andere Perspektive/Instruktion statt
         # exakter Wiederholung.
         escalation_attempted = False
+        # Team-Optimierung (Retrospektive 2026-09-05, Punkt 3): core/backlog_worker.py eskaliert
+        # bereits beim ZWEITEN automatischen Retry eines liegen gebliebenen Governance-/
+        # Verifikations-Tickets auf HEAVY_MODEL (Orchestrator(escalate_models=True)) - aber ERST
+        # in einem SEPARATEN, späteren Lauf. Real beobachtet (workspace/zeiterfassung_app,
+        # 2026-09-04): drei komplette, eigenständige Läufe an demselben Projekt, bevor der Fehler
+        # behoben war - jeder einzelne davon wiederholte innerhalb sich selbst nur "derselbe
+        # Agent, dann der Fachbereichsleiter", beide mit dem UNVERÄNDERTEN Standard-Modell. Bevor
+        # DIESER Lauf komplett aufgibt und ein Ticket für einen erst viel später folgenden
+        # Backlog-Retry eröffnet, wird deshalb - GENAU EINMAL pro Lauf, NUR für die tatsächlich
+        # betroffenen Agenten (kein pauschales Hochstufen aller 33 Fachagenten) - ein letzter
+        # Versuch mit HEAVY_MODEL unternommen. Das verkürzt den in zeiterfassung_app real
+        # beobachteten Drei-Lauf-Kreislauf im Idealfall auf einen einzigen Lauf.
+        model_escalation_attempted = False
+        # Defensiv vorinitialisiert (nicht nur im escalation_attempted-Zweig unten): bei einem
+        # per Env auf >2 hochgesetzten MAX_VERIFICATION_ITERATIONS kann der "kein Fortschritt"-
+        # Zweig ein zweites Mal greifen, NACHDEM escalation_attempted schon True ist - top_failures
+        # würde dann sonst nie (neu) berechnet, aber unten beim Ticket-Text referenziert.
+        top_failures = ""
         # Cross-Run-Gedächtnis (Team-Retrospektive nach dem taskpulse-Lauf, zweite Runde): ein
         # offenes Ticket aus einem VORHERIGEN Lauf desselben Projekts fließt als Kontext in den
         # ERSTEN Fix-Auftrag dieses Laufs ein (siehe _prior_run_context()) - und wird, sobald
@@ -1104,15 +1145,15 @@ class VerificationMixin:
                         dept_id for dept_id, defn in DEPARTMENT_DEFINITIONS.items()
                         if stuck_owners & set(defn["members"]) and dept_id in self._dept_leads
                     }
+                    top_failures = "\n\n".join(
+                        f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(f.files) or 'unbekannt'}"
+                        for f in report.failures[:5]
+                    )
                     if lead_targets:
                         notify(
                             f"  🔀 [bold yellow]Strategiewechsel (Eskalation):[/bold yellow] Derselbe Fehler nach "
                             f"einem wirkungslosen Fixversuch – ziehe Fachbereichsleiter "
                             f"({', '.join(sorted(lead_targets))}) statt derselben Wiederholung hinzu..."
-                        )
-                        top_failures = "\n\n".join(
-                            f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(f.files) or 'unbekannt'}"
-                            for f in report.failures[:5]
                         )
                         escalation_tasks = [
                             AgentTask(
@@ -1164,6 +1205,62 @@ class VerificationMixin:
                             break
                         escalated_and_resolved = True  # Eskalation lief, aber weiterhin rot - unten normal abbrechen.
 
+                    # Team-Optimierung (Retrospektive 2026-09-05, Punkt 3): letzter Versuch VOR
+                    # dem endgültigen Aufgeben - dieselben stecken gebliebenen Agenten (NICHT die
+                    # Fachbereichsleiter, die haben es gerade erst versucht) bekommen für GENAU
+                    # diesen einen Fix-Auftrag ein stärkeres Modell (HEAVY_MODEL), statt den Fehler
+                    # unverändert in ein Ticket zu schieben, das ohnehin erst bei einem viel
+                    # späteren Backlog-Retry (core/backlog_worker.py) dieselbe Eskalation bekäme.
+                    if not model_escalation_attempted and stuck_owners:
+                        model_escalation_attempted = True
+                        escalated_agent_ids = self._escalate_agent_models(stuck_owners)
+                        if escalated_agent_ids:
+                            notify(
+                                f"  ⬆️ [bold yellow]Letzter Versuch mit stärkerem Modell:[/bold yellow] "
+                                f"{', '.join(sorted(escalated_agent_ids))} laufen für diesen Fix-Auftrag "
+                                "auf HEAVY_MODEL, statt direkt aufzugeben."
+                            )
+                            model_escalation_tasks = [
+                                AgentTask(
+                                    task_id=f"verify_model_escalation_{owner}_{attempt}",
+                                    agent_id=owner,
+                                    description=(
+                                        "Dein vorheriger, gezielter Fixversuch UND die Eskalation an deinen "
+                                        "Fachbereichsleiter haben den folgenden echten Testfehler NICHT behoben - "
+                                        "du bekommst jetzt für diesen letzten Versuch ein stärkeres Modell. "
+                                        "Analysiere die Grundannahme neu, statt denselben Ansatz ein drittes Mal "
+                                        f"zu wiederholen.\n\n{top_failures}"
+                                    ),
+                                    context="", project_dir=project_dir,
+                                )
+                                for owner in sorted(escalated_agent_ids)
+                            ]
+                            fix_results = await self._run_agents_parallel(model_escalation_tasks, notify=notify)
+                            self._update_file_owners(file_owners, fix_results)
+                            all_results.extend(fix_results)
+                            summary_lines.append(
+                                f"- ⬆️ Versuch {attempt}: kein Fortschritt auch nach Eskalation an den "
+                                f"Fachbereichsleiter → letzter Versuch mit HEAVY_MODEL für "
+                                f"{', '.join(sorted(escalated_agent_ids))}."
+                            )
+                            report = await asyncio.to_thread(verifier.run_tests)
+                            if report.passed:
+                                notify(f"  ✅ [bold green]Modell-Eskalation erfolgreich:[/bold green] Alle Tests bestanden (Versuch {attempt}, {report.duration_seconds:.1f}s).")
+                                summary_lines.append("- ✅ Fix mit HEAVY_MODEL behob den Fehler – Testsuite bestanden.")
+                                verification_ok = True
+                                if had_prior_test_ticket and test_ticket_id:
+                                    try:
+                                        upsert_ticket(
+                                            ticket_id=test_ticket_id,
+                                            title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                                            source="orchestrator", status="done", project_slug=self.last_project_slug,
+                                            detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
+                                        )
+                                    except Exception as e:
+                                        notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
+                                break
+                            escalated_and_resolved = True  # Auch mit stärkerem Modell weiterhin rot - unten normal abbrechen.
+
                 notify(
                     "  🛑 [bold red]Kein Fortschritt:[/bold red] identische Testfehler wie vor dem letzten "
                     f"Fixversuch{' (auch nach Eskalation an den Fachbereichsleiter)' if escalated_and_resolved else ''} "
@@ -1181,7 +1278,7 @@ class VerificationMixin:
                             title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
                             source="orchestrator", status="blocked", project_slug=self.last_project_slug,
                             detail=f"Fixversuch änderte nichts an {len(report.failures)} Testfehler(n) – "
-                                   "vermutlich falscher/unzureichend instruierter Agent."[:300],
+                                   "vermutlich falscher/unzureichend instruierter Agent.\n\n" + top_failures,
                         )
                     except Exception as e:
                         notify(f"  ⚠️ [dim yellow]Ticket für ungelösten Testfehler konnte nicht angelegt werden: {e}[/dim yellow]")

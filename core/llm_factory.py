@@ -1030,9 +1030,22 @@ class ClaudeClient:
         oder Fehler): Anthropic bietet – anders als Gemini – kein dauerhaftes Gratis-Kontingent.
         Bevorzugt daher Groq (echtes, kostenloses Rate-Limit-Kontingent mit einem starken
         Open-Weight-Modell) statt direkt auf die schwächere Gemini-Standardstufe abzurutschen.
+
+        Kritischer Fund (KI-Team-Optimierungs-Session): dieser Hop prüfte bisher NUR, ob
+        GROQ_API_KEY überhaupt konfiguriert ist - nicht, ob Groqs eigenes Tageskontingent
+        gerade erschöpft ist (token_guard.is_model_exhausted). Ohne ANTHROPIC_API_KEY (dieses
+        Setup) läuft z.B. core/task_manager.py.TaskManager.decompose() über GENAU diesen Hop -
+        war Groq an einem Tag mit vielen echten Läufen bereits selbst am Tageslimit (real
+        beobachtet: "tokens per day (TPD): Limit 200000, Used 199342"), scheiterte JEDE
+        Aufgabenzerlegung sofort, obwohl DeepSeek (eigenes, unabhängiges Tageskontingent,
+        siehe core/llm_factory.py.MODEL_FALLBACKS) noch komplett unbenutzt war. Prüft jetzt
+        Groq UND DeepSeek auf tatsächliche Verfügbarkeit, bevor auf die schwächere Gemini-
+        Standardstufe zurückgefallen wird.
         """
-        if GROQ_API_KEY:
+        if GROQ_API_KEY and not token_guard.is_model_exhausted(GROQ_HEAVY_MODEL):
             return GroqClient(model_name=GROQ_HEAVY_MODEL)
+        if DEEPSEEK_API_KEY and not token_guard.is_model_exhausted("deepseek:deepseek-chat"):
+            return DeepSeekClient()
         return GeminiClient(model_name=GEMINI_STANDARD_MODEL)
 
     async def generate_with_usage(

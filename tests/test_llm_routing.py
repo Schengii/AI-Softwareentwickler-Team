@@ -12,8 +12,8 @@ NIEMALS ein Nicht-Gemini-Modellname an den echten Gemini-Client geht.
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from config import GEMINI_STANDARD_MODEL
-from core.llm_factory import GeminiClient, LLMResponse
+from config import GEMINI_STANDARD_MODEL, GROQ_HEAVY_MODEL
+from core.llm_factory import ClaudeClient, DeepSeekClient, GeminiClient, GroqClient, LLMResponse
 from core.token_guard import token_guard
 
 
@@ -301,6 +301,58 @@ class TestLLMRouting(unittest.TestCase):
         # das ist kein Regressions-Signal für DIESEN Test (der geht gezielt um Claude).
         claude_calls = [c for c in mock_create_for_model.call_args_list if c.args and c.args[0] == "claude-sonnet-5"]
         self.assertEqual(claude_calls, [])
+
+
+class TestClaudeFreeHeavyFallback(unittest.TestCase):
+    """
+    Kritischer Fund (KI-Team-Optimierungs-Session): ClaudeClient._free_heavy_fallback_client()
+    (greift z.B. für core/task_manager.py.TaskManager ohne ANTHROPIC_API_KEY) prüfte bisher
+    NUR, ob GROQ_API_KEY überhaupt konfiguriert ist - nicht, ob Groqs eigenes Tageskontingent
+    gerade erschöpft ist. Real beobachtet: Groqs TPD-Limit (200000 Tokens/Tag) war nach vielen
+    echten Läufen in dieser Session erreicht - JEDE Aufgabenzerlegung scheiterte dadurch sofort,
+    obwohl DeepSeek (eigenes, unabhängiges Kontingent) zu diesem Zeitpunkt konfiguriert war.
+    """
+
+    def tearDown(self):
+        for model in (GROQ_HEAVY_MODEL, "deepseek:deepseek-chat"):
+            token_guard._exhausted_models.pop(model, None)
+
+    @patch("core.llm_factory.GROQ_API_KEY", "gsk_dummy_test_key")
+    def test_prefers_groq_when_not_exhausted(self):
+        client = ClaudeClient._free_heavy_fallback_client()
+        self.assertIsInstance(client, GroqClient)
+
+    @patch("core.llm_factory.DEEPSEEK_API_KEY", "sk-dummy-test-key")
+    @patch("core.llm_factory.GROQ_API_KEY", "gsk_dummy_test_key")
+    def test_falls_back_to_deepseek_when_groq_exhausted(self):
+        token_guard.mark_model_exhausted(GROQ_HEAVY_MODEL, "Test: TPD-Limit erreicht", cooldown_seconds=999.0)
+
+        client = ClaudeClient._free_heavy_fallback_client()
+
+        self.assertIsInstance(client, DeepSeekClient)
+
+    @patch("core.llm_factory.DEEPSEEK_API_KEY", "sk-dummy-test-key")
+    @patch("core.llm_factory.GROQ_API_KEY", "")
+    def test_falls_back_to_deepseek_when_no_groq_key(self):
+        client = ClaudeClient._free_heavy_fallback_client()
+        self.assertIsInstance(client, DeepSeekClient)
+
+    @patch("core.llm_factory.DEEPSEEK_API_KEY", "sk-dummy-test-key")
+    @patch("core.llm_factory.GROQ_API_KEY", "gsk_dummy_test_key")
+    def test_falls_back_to_gemini_when_groq_and_deepseek_both_exhausted(self):
+        token_guard.mark_model_exhausted(GROQ_HEAVY_MODEL, "Test", cooldown_seconds=999.0)
+        token_guard.mark_model_exhausted("deepseek:deepseek-chat", "Test", cooldown_seconds=999.0)
+
+        client = ClaudeClient._free_heavy_fallback_client()
+
+        self.assertIsInstance(client, GeminiClient)
+        self.assertEqual(client.model_name, GEMINI_STANDARD_MODEL)
+
+    @patch("core.llm_factory.DEEPSEEK_API_KEY", "")
+    @patch("core.llm_factory.GROQ_API_KEY", "")
+    def test_falls_back_to_gemini_when_neither_key_configured(self):
+        client = ClaudeClient._free_heavy_fallback_client()
+        self.assertIsInstance(client, GeminiClient)
 
 
 if __name__ == "__main__":

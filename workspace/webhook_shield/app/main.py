@@ -1,3 +1,5 @@
+import json
+
 from fastapi import Depends, FastAPI, HTTPException, Request
 from sqlalchemy.orm import Session
 
@@ -29,7 +31,11 @@ async def receive_webhook(
         raise HTTPException(status_code=404, detail="Webhook endpoint not found")
 
     # 2. Get payload and headers
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        # Ungültiges oder leeres JSON → 400 statt 500 (kein Traceback-Leak)
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
     headers = dict(request.headers)
 
     # 3. Persist log
@@ -44,6 +50,11 @@ async def receive_webhook(
     db.refresh(log)
 
     return {"status": "accepted", "log_id": log.id}
+
+@app.get("/api/webhooks")
+async def list_webhooks(db: Session = Depends(get_db)):
+    """Liefert alle registrierten Webhooks – Endpunkt für das Dashboard."""
+    return db.query(Webhook).all()
 
 @app.get("/logs")
 async def get_logs(db: Session = Depends(get_db)):

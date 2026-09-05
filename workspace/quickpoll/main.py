@@ -18,7 +18,6 @@ async def verify_token(token: str = Header(...)):
 
 @app.post("/polls")
 async def create_poll(poll_data: PollCreate, db: AsyncSession = Depends(get_db)):
-    # ... (rest of code)
     new_poll = Poll(title=poll_data.title)
     db.add(new_poll)
     await db.commit()

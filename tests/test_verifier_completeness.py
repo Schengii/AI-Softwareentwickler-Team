@@ -65,6 +65,41 @@ class TestCompletenessCheck(unittest.TestCase):
             self.assertFalse(report.passed)
             self.assertEqual(len(report.issues), 1)
 
+    def test_detects_elided_code_comment(self):
+        # Achter realer Fund (mockforge-Projekt, Team-Retrospektive 2026-09-05): ein Agent
+        # ersetzte den kompletten Funktionskörper durch elidierte Kommentarzeilen
+        # ("# ... (Imports)", "# ... (Request-Handling)") statt echten Code - syntaktisch
+        # gueltige Kommentare, die aber alle darunter liegenden Namen undefiniert
+        # zurueckliessen. Nur ruff (F821 in einer separaten CI-Pruefung) fing das zufaellig ab.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "middleware.py").write_text(
+                "# ... (Imports)\n"
+                "class ProxyMiddleware:\n"
+                "    async def dispatch(self, request, call_next):\n"
+                "        # ... (Request-Handling)\n"
+                "        response = await call_next(request)\n"
+                "        return response\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertEqual(len(report.issues), 2)
+
+    def test_ellipsis_inside_normal_comment_not_flagged(self):
+        # Ein legitimer Kommentar, der zufaellig "..." enthaelt, aber danach noch Fliesstext
+        # hat, ist kein elidierter Code - bewusst kein Fehlalarm.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app.py").write_text(
+                "def load():\n    x = 1  # loads data ... slowly, but correctly\n    return x\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
     def test_detects_missing_readme_referenced_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             project_dir = Path(tmp)

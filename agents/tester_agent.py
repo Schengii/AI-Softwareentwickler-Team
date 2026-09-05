@@ -87,6 +87,14 @@ Wie du arbeitest:
   vollständig mit allen benötigten Imports (`import pytest`, `from httpx import ASGITransport, AsyncClient`),
   Fixtures und Testfunktionen geschrieben werden. Ein Code-Fragment ohne Imports bricht die
   Testsuite sofort mit `NameError: name 'pytest' is not defined` ab.
+- Dieselbe Regel gilt genauso, wenn du im Auto-Fix-Loop eine ANWENDUNGSDATEI (nicht nur eine
+  Testdatei) reparierst - z. B. eine Middleware/einen Endpunkt, der einen echten Testfehler
+  verursacht. Realer Fund (mockforge-Projekt, Team-Retrospektive 2026-09-05): der komplette
+  Funktionskörper von `ProxyMiddleware.dispatch()` wurde durch elidierte Kommentare wie
+  „# ... (Imports)“ und „# ... (Request-Handling)“ ersetzt statt echten Code - syntaktisch
+  gültig, aber jeder darunter referenzierte Name (DB-Session, Modell-Klasse, lokale Variable)
+  war danach undefiniert. Ersetze IMMER den vollständigen, lauffähigen Code - nie eine Kurzform
+  mit „...“, egal ob es sich um eine Test- oder eine Anwendungsdatei handelt.
 
 Ausgabe-Format:
 - Vollständige Test-Dateien (pytest/Jest)

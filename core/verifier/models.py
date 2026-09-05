@@ -362,8 +362,18 @@ _STUB_MARKER_RE = re.compile(
     r"|todo\s*:?\s*implement"
     r"|for\s+demo(nstration)?\s+purposes"
     r"|placeholder\s+(implementation|for|value)"
-    r"|in\s+(einer\s+)?echten\s+implementierung\s+w[üu]rde",
-    re.IGNORECASE,
+    r"|in\s+(einer\s+)?echten\s+implementierung\s+w[üu]rde"
+    # Achter realer Fund (mockforge-Projekt, Team-Retrospektive 2026-09-05): ein Agent ersetzte
+    # den kompletten Funktionskörper von ProxyMiddleware.dispatch() durch elidierte
+    # Kommentarzeilen ("# ... (Imports)", "# ... (Request-Handling)") statt echten Code -
+    # syntaktisch gültige Kommentare, die aber sämtliche darunter liegenden Namen (hier:
+    # AsyncSessionLocal/TrafficLog/body_bytes) undefiniert zurücklassen. Nur ruff (F821 in der
+    # separaten CI-Prüfung) fing das zufällig ab, KEIN bisheriger Stub-Marker hier. Bewusst nur
+    # eine Kommentarzeile, die (nach dem Kommentarzeichen) ausschließlich aus "..." besteht -
+    # ein legitimer Kommentar, der zufällig drei Punkte enthält (z.B. "Lädt Daten ..."), hat
+    # danach fast immer noch weiteren Fließtext, keinen Zeilenumbruch direkt nach "...".
+    r"|^\s*(?:#|//)\s*\.\.\.\s*(?:\([^)]*\))?\s*$",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 # Dateiendungen, die check_completeness() nach Stub-Markern durchsucht - dieselben Sprachen,

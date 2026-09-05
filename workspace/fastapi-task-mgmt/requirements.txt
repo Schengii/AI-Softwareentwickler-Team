@@ -1,8 +1,12 @@
 fastapi
 uvicorn[standard]
 sqlalchemy
+greenlet
 aiosqlite
 pydantic
 pytest
 httpx
 alembic
+python-jose
+passlib
+bcrypt

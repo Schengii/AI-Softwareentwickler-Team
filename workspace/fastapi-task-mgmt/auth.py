@@ -1,4 +1,5 @@
 import os
+import secrets
 import warnings
 from datetime import datetime, timedelta
 
@@ -14,22 +15,26 @@ import models
 
 load_dotenv()
 
-# Fällt bewusst NICHT hart (kein raise) auf einen fehlenden SECRET_KEY zurück - lokale
-# Entwicklung/Tests sollen ohne .env-Setup lauffähig bleiben (siehe tests/test_api.py, das
-# main.py/auth.py ohne eigene Umgebungsvariablen importiert). Der Fallback ist bewusst
-# unverkennbar unsicher benannt und meldet sich zusätzlich per Warnung, statt eine
-# Produktionsinstanz still mit einem öffentlich im Quellcode stehenden Schlüssel laufen zu
-# lassen (siehe .env.example für die erwartete lokale Einrichtung).
-_INSECURE_DEV_FALLBACK_SECRET_KEY = "SUPER_SECRET_KEY_CHANGE_ME_IN_PROD"
+# Rotation (der bisherige Platzhalter "SUPER_SECRET_KEY_CHANGE_ME_IN_PROD" stand als fester
+# Literal im Quellcode und damit für jeden mit Repo-/Git-History-Zugriff sichtbar): JEDER neue
+# fest einprogrammierte Ersatzwert hätte exakt dasselbe Problem, sobald er committet wird - ein
+# Secret, das in Klartext im Quellcode steht, ist per Definition kein Secret mehr. Statt eines
+# weiteren Literals wird bei fehlender Umgebungsvariable jetzt bei JEDEM Prozessstart ein
+# frischer, kryptographisch zufälliger Schlüssel erzeugt (secrets.token_hex - Python-Standard-
+# bibliothek für sicherheitsrelevante Zufallswerte) und NIRGENDS persistiert. Bewusst weiterhin
+# kein hartes Scheitern ohne SECRET_KEY (lokale Entwicklung/Tests sollen ohne .env-Setup
+# lauffähig bleiben, siehe tests/test_api.py) - der einzige Nebeneffekt gegenüber einem echten
+# SECRET_KEY: bereits ausgestellte Tokens werden beim nächsten Prozess-Neustart ungültig, was
+# für einen Entwicklungs-Fallback unkritisch ist (siehe .env.example für die echte Einrichtung).
 SECRET_KEY = os.getenv("SECRET_KEY")
 if not SECRET_KEY:
     warnings.warn(
         "SECRET_KEY ist nicht gesetzt (Umgebungsvariable oder .env, siehe .env.example) - "
-        "verwende einen unsicheren Entwicklungs-Platzhalter. NIEMALS so in Produktion "
-        "einsetzen, jeder mit Zugriff auf den Quellcode könnte sonst gültige Tokens fälschen.",
+        "verwende einen zufällig erzeugten, NUR für diesen Prozesslauf gültigen Platzhalter. "
+        "NIEMALS ohne echten SECRET_KEY in Produktion einsetzen.",
         stacklevel=2,
     )
-    SECRET_KEY = _INSECURE_DEV_FALLBACK_SECRET_KEY
+    SECRET_KEY = secrets.token_hex(32)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 

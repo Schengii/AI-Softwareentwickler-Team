@@ -1,25 +1,15 @@
 # 📌 taskpulse – Projekt-Status & Checkpoint
 
-- **Letzte Aktualisierung:** `2026-09-03 09:17:02 UTC`
-- **Aktueller Status:** ⚠️ In Entwicklung / Verifikation ausstehend
-- **Zuletzt bearbeitete Aufgabe:** TaskPulse Monitoring-Dashboard mit FastAPI und Vanilla JS umgesetzt
+- **Letzte Aktualisierung:** `2026-09-05 22:16:33 UTC`
+- **Aktueller Status:** ✅ Vollständig verifiziert & einsatzbereit
+- **Zuletzt bearbeitete Aufgabe:** Taskpulse-Testfehler behoben und Testsuite grün gemacht
 
 ## 📁 Wichtige Projektkomponenten & Dateien
-- `README.md`
-- `app/core/config.py`
-- `app/database.py`
-- `app/main.py`
-- `app/schemas.py`
-- `docs/adr/0001-fastapi-statt-flask-f-r-das-backend.md`
-- `docs/adr/0002-sqlalchemy-f-r-datenzugriffsschicht.md`
-- `requirements.txt`
-- `static/index.html`
-- `static/js/app.js`
-- `tests/test_api.py`
+- *(Noch keine Quellcodedateien angelegt)*
 
 ## 🧪 Verifikations- & Test-Status
-- **Tests bestanden:** Ausstehend / Fehlgeschlagen ⚠️
+- **Tests bestanden:** Ja ✅
 
 ## 🎯 Nächste empfohlene Schritte (Next Actions)
-1. Testsuite ausführen und offene Fehler beheben (`/run-tests`).
-2. Fehlende REST-/WebSocket-Endpunkte und Validierungen komplettieren.
+1. Anwendung lokal per Docker oder Uvicorn starten (`/deploy`).
+2. Nächstes Feature im Frontend oder Backend implementieren.

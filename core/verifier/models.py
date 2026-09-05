@@ -446,6 +446,20 @@ _COMPONENT_TAKES_PROPS_RE = re.compile(r"\(\s*\{|\(\s*props\b")
 # statt einer gepflegten Liste, um Standardbibliotheks-Importe von echten Drittanbieter-Paketen
 # zu unterscheiden.
 _STDLIB_MODULES = frozenset(getattr(sys, "stdlib_module_names", ())) | {"__future__"}
+
+# Fehlalarm-Korrektur (Live-Abgleich gegen alle workspace/-Projekte, Team-Retrospektive
+# 2026-09-05, real beobachtet an `fastapi-task-mgmt`): ein Projekt mit Alembic-Migrationen legt
+# konventionsgemäß ein EIGENES Top-Level-Verzeichnis `alembic/` an (Migrationsskripte) - das
+# kollidiert im Namen exakt mit dem gleichnamigen PyPI-Paket `alembic`. `alembic/env.py`
+# importiert dort `from alembic import context` - gemeint ist das ECHTE, pip-installierte Paket
+# (das `context`-Symbol wird von Alembic selbst zur Laufzeit per `sys.modules`-Manipulation
+# injiziert, existiert nirgends als Datei), nicht das lokale `alembic/`-Verzeichnis des
+# Projekts. _local_top_level_names() hielt das lokale Verzeichnis bisher fälschlich für ein
+# eigenes, lokales Python-Paket und meldete den Import als "verweist auf keine existierende
+# Datei" - eine reine Namenskollision, kein echter Fund. Bewusst als eigene, kleine Ausnahme
+# (nicht als generelle Regel "jedes Verzeichnis mit einem PyPI-Namen ausschließen") - "alembic"
+# ist die einzige in der Praxis verbreitete Alles-oder-Nichts-Kollision dieser Art.
+_LOCAL_DIR_THIRDPARTY_NAME_COLLISIONS = frozenset({"alembic"})
 _MANIFEST_FILENAMES = ("requirements.txt", "pyproject.toml", "Pipfile", "setup.py", "poetry.lock")
 _PY_IMPORT_RE = re.compile(r"^\s*(?:import|from)\s+([a-zA-Z0-9_]+)", re.MULTILINE)
 

@@ -112,6 +112,8 @@ def main():
             else:
                 for r in failed:
                     print(f"❌ {r.project_name}: {r.detail}")
+        if report.verification_trend_warning:
+            print(f"⚠️ {report.verification_trend_warning}")
         return
 
     if "--check-pr-reviews" in sys.argv:

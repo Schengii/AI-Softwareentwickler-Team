@@ -341,12 +341,28 @@ Ausfall kann eine Infrastruktur-/DNS-/Billing-Ursache haben, die kein Code-Fix l
 
 **Einrichtung unter Windows** identisch zu `run_issue_watcher.ps1` oben, nur mit
 `scripts/run_backlog_worker.ps1`/`scripts/run_production_monitor.ps1` und eigenen
-Taskplaner-Einträgen (`AI-Team-BacklogWorker`/`AI-Team-ProductionMonitor`). **Wichtig:**
-anders als `--check-issues` (Zustand lebt auf GitHub selbst) liegt der Zustand dieser beiden
-Zyklen NUR lokal (`memory/backlog.json`, `.ai_team_deployment.json` – beide gitignored) –
-deshalb bewusst NICHT in `.github/workflows/ai-team-scheduler.yml` verdrahtet, ein Cloud-
-Runner mit frischem Checkout hätte hier immer leeren Zustand und würde scheinbar
-erfolgreich, aber wirkungslos durchlaufen.
+Taskplaner-Einträgen (`AI-Team-BacklogWorker`/`AI-Team-ProductionMonitor`).
+
+**Cloud-Betrieb (`.github/workflows/ai-team-scheduler.yml`):** anders als `--check-issues`
+(Zustand lebt auf GitHub selbst) liegt der Zustand dieser Zyklen NUR lokal (`memory/*.json`,
+`.ai_team_deployment.json` – beide gitignored, Laufzeitdaten statt Code). Ein Cloud-Runner mit
+frischem Checkout hätte deshalb OHNE weitere Vorkehrung immer leeren Zustand und würde
+scheinbar erfolgreich, aber wirkungslos durchlaufen – real beobachtet: `--work-backlog` lief in
+der Cloud-Variante ursprünglich bereits mit, sah dabei aber bei JEDEM Lauf ein leeres Backlog.
+Ein `actions/cache`-Schritt (lauf-eindeutiger Schlüssel + `restore-keys`-Präfix) vor der
+Installation der Abhängigkeiten behebt das jetzt: `memory/*.json` und
+`workspace/*/.ai_team_deployment.json` überleben seither zwischen den Scheduler-Läufen, genau
+wie auf einer durchgehend laufenden lokalen Maschine.
+
+Derselbe Scheduler deckt inzwischen auch `--audit-workspace`/`--check-deployments` ab (eigener,
+6-stündiger statt 30-minütiger Cron-Eintrag – beide installieren/testen potenziell JEDES
+Workspace-Projekt neu und wären am 30-Minuten-Takt sowohl ein Timeout-Risiko als auch unnötig
+teuer an CI-Minuten). Ein finaler `if: failure()`-Schritt benachrichtigt bei einem
+fehlgeschlagenen Scheduler-Lauf selbst über `NOTIFY_WEBHOOK_URL` – ohne das blieb ein
+stillstehender Scheduler bisher unbemerkt (real beobachtet: der ältere lokale
+`AI-Team-IssueWatcher`-Taskplaner-Eintrag lief über 10 Tage unbemerkt nicht, 1058 verpasste
+Ausführungen, bevor es auffiel – seit die GitHub-Actions-Variante übernommen hat, ist dieser
+lokale Eintrag ohnehin veraltet und kann deaktiviert bleiben/gelöscht werden).
 
 ---
 

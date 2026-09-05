@@ -15,8 +15,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import core.backlog_store as backlog_store
+import memory.run_history as run_history_module
 from core.verifier import VerificationReport
-from core.workspace_audit import run_workspace_audit_cycle
+from core.workspace_audit import TEAM_VERIFICATION_TREND_TICKET_ID, run_workspace_audit_cycle
 
 
 def _passing_report() -> VerificationReport:
@@ -47,6 +48,15 @@ class TestWorkspaceAuditCycle(unittest.TestCase):
         self._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(self.temp_dir) / "backlog.json")
         self._backlog_patcher.start()
         self.addCleanup(self._backlog_patcher.stop)
+
+        # Isoliert von der ECHTEN memory/run_history.json (core/workspace_audit.py ruft jetzt
+        # zusätzlich core/optimization_advisor.analyze() auf) - ohne das würden bestehende
+        # Tests hier gegen die tatsächliche, projektweite Lauf-Historie dieses Repos laufen und
+        # könnten je nach deren aktuellem Zustand unerwartet ein "team-verification-trend"-
+        # Ticket anlegen.
+        self._history_patcher = patch.object(run_history_module, "RUN_HISTORY_FILE", Path(self.temp_dir) / "run_history.json")
+        self._history_patcher.start()
+        self.addCleanup(self._history_patcher.stop)
 
         self.fake_workspace = MagicMock()
         self.fake_workspace.list_projects.return_value = ["fastapi_app"]
@@ -122,6 +132,80 @@ class TestWorkspaceAuditCycle(unittest.TestCase):
         self.assertEqual(len(report.results), 2)
         ticket_ids = {t.id for t in backlog_store.list_tickets()}
         self.assertEqual(ticket_ids, {"audit-proj_a", "audit-proj_b"})
+
+
+class TestTeamWideVerificationTrend(unittest.TestCase):
+    """
+    Team-Optimierung (Retrospektive 2026-09-05, KI-Team-Optimierungs-Session): core/
+    optimization_advisor.py erkennt eine anhaltend niedrige teamweite Verifikations-
+    Erfolgsquote bereits deterministisch, lief bisher aber nur auf manuellen Abruf. Diese Tests
+    decken die neue automatische Kopplung an den ohnehin periodisch laufenden Workspace-Audit-
+    Zyklus ab (Ticket + Benachrichtigung statt einer nur bei Nachfrage sichtbaren Warnung).
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(self.temp_dir) / "backlog.json")
+        self._backlog_patcher.start()
+        self.addCleanup(self._backlog_patcher.stop)
+        self._history_patcher = patch.object(run_history_module, "RUN_HISTORY_FILE", Path(self.temp_dir) / "run_history.json")
+        self._history_patcher.start()
+        self.addCleanup(self._history_patcher.stop)
+
+        self.fake_workspace = MagicMock()
+        self.fake_workspace.list_projects.return_value = []
+        self._ws_patcher = patch("core.workspace_audit.WorkspaceManager", return_value=self.fake_workspace)
+        self._ws_patcher.start()
+        self.addCleanup(self._ws_patcher.stop)
+
+    def _record_runs(self, outcomes: list[bool]) -> None:
+        from memory.run_history import record_run
+        for ok in outcomes:
+            record_run(
+                project_slug="p", task_summary="x", verification_ok=ok, total_tokens=1,
+                duration_seconds=1, agent_results=[],
+            )
+
+    @patch("core.workspace_audit.notify_external")
+    def test_persistently_low_rate_opens_ticket_and_notifies(self, mock_notify):
+        self._record_runs([False] * 10)
+
+        report = asyncio.run(run_workspace_audit_cycle())
+
+        self.assertNotEqual(report.verification_trend_warning, "")
+        ticket = backlog_store.get_ticket(TEAM_VERIFICATION_TREND_TICKET_ID)
+        self.assertIsNotNone(ticket)
+        self.assertEqual(ticket.status, "blocked")
+        mock_notify.assert_called_once()
+
+    def test_healthy_rate_creates_no_ticket(self):
+        self._record_runs([True] * 10)
+
+        report = asyncio.run(run_workspace_audit_cycle())
+
+        self.assertEqual(report.verification_trend_warning, "")
+        self.assertIsNone(backlog_store.get_ticket(TEAM_VERIFICATION_TREND_TICKET_ID))
+
+    def test_too_few_runs_creates_no_ticket(self):
+        self._record_runs([False, False])  # unter MIN_VERIFICATION_SAMPLE_SIZE
+
+        report = asyncio.run(run_workspace_audit_cycle())
+
+        self.assertEqual(report.verification_trend_warning, "")
+        self.assertIsNone(backlog_store.get_ticket(TEAM_VERIFICATION_TREND_TICKET_ID))
+
+    def test_recovered_rate_closes_previously_open_ticket(self):
+        backlog_store.upsert_ticket(
+            ticket_id=TEAM_VERIFICATION_TREND_TICKET_ID,
+            title="Team-weite Verifikations-Erfolgsquote anhaltend niedrig",
+            source="workspace_audit", status="blocked", detail="alter Fehlschlag",
+        )
+        self._record_runs([True] * 10)
+
+        asyncio.run(run_workspace_audit_cycle())
+
+        ticket = backlog_store.get_ticket(TEAM_VERIFICATION_TREND_TICKET_ID)
+        self.assertEqual(ticket.status, "done")
 
 
 if __name__ == "__main__":

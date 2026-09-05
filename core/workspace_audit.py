@@ -23,12 +23,27 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from core.adr import find_existing_near_duplicate_adr_pairs
-from core.backlog_store import list_tickets, upsert_ticket
+from core.backlog_store import get_ticket, list_tickets, upsert_ticket
 from core.notifier import notify_external
+from core.optimization_advisor import analyze
 from core.verifier import ProjectVerifier
 from core.workspace import WorkspaceManager
 
 StatusCallback = Callable[[str], None]
+
+# Team-Optimierung (Retrospektive 2026-09-05, KI-Team-Optimierungs-Session): core/
+# optimization_advisor.py erkennt eine anhaltend niedrige TEAM-WEITE Verifikations-
+# Erfolgsquote bereits rein deterministisch (memory/run_history.py, projektübergreifend über
+# ALLE zuletzt bearbeiteten Projekte hinweg) - lief aber bisher NUR auf manuellen Abruf
+# (interface/cli.py, `/optimization-advisor`), niemand sah die Warnung von selbst. Real
+# beobachtet: 0 von 10 der letzten Läufe endeten mit verification_ok=True, ohne dass irgendein
+# automatischer Mechanismus das gemeldet hätte. Da dieser Zyklus ohnehin regelmäßig läuft
+# (Cron/GitHub-Actions, siehe .github/workflows/ai-team-scheduler.yml), prüft er das jetzt bei
+# jedem Durchlauf mit und eröffnet/schließt ein eigenes Backlog-Ticket dafür - dasselbe
+# On-Call-Prinzip wie bei einem einzelnen fehlgeschlagenen Projekt oben, nur teamweit statt
+# projektbezogen. Eine feste Ticket-ID (kein projektspezifischer Slug) - der Trend betrifft per
+# Definition mehrere Projekte gleichzeitig, kein einzelnes.
+TEAM_VERIFICATION_TREND_TICKET_ID = "team-verification-trend"
 
 
 @dataclass
@@ -44,6 +59,7 @@ class WorkspaceAuditReport:
     """Ergebnis eines gesamten Audit-Zyklus (ein Aufruf von `python main.py --audit-workspace`)."""
     scanned_projects: int = 0
     results: list[ProjectAuditResult] = field(default_factory=list)
+    verification_trend_warning: str = ""
 
 
 def _ticket_id(project_name: str) -> str:
@@ -127,5 +143,41 @@ async def run_workspace_audit_cycle(status_callback: StatusCallback | None = Non
                     ticket_id=adr_ticket_id, title=existing_adr_ticket.title, source="workspace_audit",
                     status="done", project_slug=project_name,
                 )
+
+    # Team-weite Verifikations-Trend-Prüfung (siehe TEAM_VERIFICATION_TREND_TICKET_ID-Docstring
+    # oben) - läuft NACH der Pro-Projekt-Schleife, unabhängig davon, ob überhaupt Projekte
+    # gescannt wurden (die Trend-Daten kommen aus memory/run_history.py, nicht aus DIESEM
+    # Zyklus). analyze() ist rein deterministisch (keine LLM-Kosten).
+    optimization_report = analyze()
+    trend = optimization_report.verification_trend
+    if trend is not None:
+        detail = (
+            f"Nur {trend.passed}/{trend.runs} der letzten Läufe (projektübergreifend) endeten "
+            f"mit verification_ok=True ({trend.rate:.1f}%) - deutet auf ein strukturelles "
+            "Problem hin (z.B. zu ambitionierte Aufgaben, ein systematisch fehlender Agenten-"
+            "Fähigkeitsbereich), nicht nur auf einzelne Projekt-Ausreißer."
+        )
+        report.verification_trend_warning = detail
+        if status_callback:
+            status_callback(f"⚠️ Team-weite Verifikations-Erfolgsquote niedrig: {trend.passed}/{trend.runs} ({trend.rate:.1f}%)")
+        upsert_ticket(
+            ticket_id=TEAM_VERIFICATION_TREND_TICKET_ID,
+            title="Team-weite Verifikations-Erfolgsquote anhaltend niedrig",
+            source="workspace_audit", status="blocked", detail=detail,
+        )
+        await asyncio.to_thread(
+            notify_external, "Team-weite Verifikations-Erfolgsquote niedrig", detail,
+        )
+    else:
+        # Trend hat sich erholt (oder es gibt noch keine ausreichende Stichprobe) - ein zuvor
+        # offenes Ticket dazu gilt als erledigt, dasselbe Prinzip wie bei den Pro-Projekt-
+        # Tickets oben.
+        existing_trend_ticket = get_ticket(TEAM_VERIFICATION_TREND_TICKET_ID)
+        if existing_trend_ticket is not None and existing_trend_ticket.status == "blocked":
+            upsert_ticket(
+                ticket_id=TEAM_VERIFICATION_TREND_TICKET_ID, title=existing_trend_ticket.title,
+                source="workspace_audit", status="done",
+                detail="Erholt - die Verifikations-Erfolgsquote liegt wieder über dem Schwellwert.",
+            )
 
     return report

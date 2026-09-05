@@ -713,6 +713,24 @@ class TestCompletenessCheck(unittest.TestCase):
             self.assertTrue(any("create_async_engine" in i.message for i in report.issues))
             self.assertTrue(any("declarative_base" in i.message for i in report.issues))
 
+    def test_alembic_context_import_not_flagged_as_missing_local_module(self):
+        # Fehlalarm-Regressionstest (Live-Abgleich gegen alle workspace/-Projekte, Team-
+        # Retrospektive 2026-09-05, real beobachtet an `fastapi-task-mgmt`): das lokale
+        # `alembic/`-Migrationsverzeichnis kollidiert im Namen mit dem PyPI-Paket `alembic`.
+        # `from alembic import context` meint das ECHTE, pip-installierte Paket (context wird
+        # von Alembic selbst zur Laufzeit injiziert), nicht das lokale Verzeichnis.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            alembic_dir = project_dir / "alembic"
+            alembic_dir.mkdir()
+            (alembic_dir / "env.py").write_text(
+                "from alembic import context\ncontext.run_migrations_online()\n", encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("alembic\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
     def test_alembic_sync_engine_alongside_async_app_not_flagged(self):
         # Fehlalarm-Regressionstest (Live-Abgleich gegen alle workspace/-Projekte, Team-
         # Retrospektive 2026-09-05, real beobachtet an `fastapi-task-mgmt`): alembic/env.py

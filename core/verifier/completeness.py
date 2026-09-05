@@ -45,6 +45,7 @@ from core.verifier.models import (
     _JS_WRITE_ROUTE_CALL_RE,
     _JSX_RETURN_RE,
     _KNOWN_PACKAGE_NAMES,
+    _LOCAL_DIR_THIRDPARTY_NAME_COLLISIONS,
     _MANIFEST_FILENAMES,
     _PY_IMPORT_RE,
     _PY_ROUTE_DEF_RE,
@@ -330,7 +331,9 @@ class CompletenessMixin:
             return {
                 p.stem for p in self.project_dir.iterdir() if p.is_file() and p.suffix == ".py"
             } | {
-                p.name for p in self.project_dir.iterdir() if p.is_dir() and p.name not in _IGNORED_DIRS
+                p.name for p in self.project_dir.iterdir()
+                if p.is_dir() and p.name not in _IGNORED_DIRS
+                and p.name not in _LOCAL_DIR_THIRDPARTY_NAME_COLLISIONS
             }
         except OSError:
             return set()

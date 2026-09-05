@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from config import GEMINI_STANDARD_MODEL, GROQ_HEAVY_MODEL
-from core.llm_factory import ClaudeClient, DeepSeekClient, GeminiClient, GroqClient, LLMResponse
+from core.llm_factory import ClaudeClient, DeepSeekClient, GeminiClient, GroqClient, LLMResponse, OpenRouterClient
 from core.token_guard import token_guard
 
 
@@ -27,16 +27,23 @@ class TestLLMRouting(unittest.TestCase):
         # Global geteilten TokenGuard-Zustand nicht in andere Tests durchsickern lassen.
         for model in (
             "gemini-3.6-flash", GEMINI_STANDARD_MODEL, "gemini-3.1-flash-lite", "claude-sonnet-5",
-            "deepseek:deepseek-chat", "groq:openai/gpt-oss-120b",
+            "deepseek:deepseek-chat", "openrouter:openrouter/auto", "groq:openai/gpt-oss-120b",
         ):
             token_guard._exhausted_models.pop(model, None)
 
+    @patch("core.llm_factory.OPENROUTER_API_KEY", "")
+    @patch("core.llm_factory.DEEPSEEK_API_KEY", "")
     @patch("core.llm_factory._gemini_client")
-    def test_gemini_fallback_chain_never_sends_claude_model_name_to_gemini_api(self, mock_gemini_client):
+    def test_gemini_fallback_chain_never_sends_claude_model_name_to_gemini_api(
+        self, mock_gemini_client, mock_deepseek_key=None, mock_openrouter_key=None,
+    ):
         """
         Simuliert: primäres Modell (gemini-3.6-flash) ist erschöpft, die Fallback-Kette
         enthält 'claude-sonnet-5'. Ohne ANTHROPIC_API_KEY fällt Claude intern auf Gemini
         zurück – aber die Gemini-API selbst darf 'claude-sonnet-5' NIE als model= sehen.
+        DEEPSEEK_API_KEY/OPENROUTER_API_KEY bewusst auf "" gepatcht (statt sich auf die echte,
+        lokal in .env gesetzte Umgebung zu verlassen) - dieser Test geht gezielt um Claude,
+        andere echte Fallback-Kandidaten sollen ihn nicht mit echten Netzwerkaufrufen stören.
         """
         token_guard.mark_model_exhausted("gemini-3.6-flash", "Test: simulierte Quota-Erschöpfung")
 
@@ -65,10 +72,13 @@ class TestLLMRouting(unittest.TestCase):
         self.assertNotIn("claude-sonnet-5", called_models)
         self.assertTrue(all(m.startswith("gemini") for m in called_models), called_models)
 
+    @patch("core.llm_factory.OPENROUTER_API_KEY", "sk-or-dummy-test-key")
     @patch("core.llm_factory.DEEPSEEK_API_KEY", "sk-dummy-test-key")
     @patch("core.llm_factory.asyncio.sleep")
     @patch("core.llm_factory._gemini_client")
-    def test_waits_briefly_when_entire_fallback_chain_is_exhausted(self, mock_gemini_client, mock_sleep, mock_deepseek_key=None):
+    def test_waits_briefly_when_entire_fallback_chain_is_exhausted(
+        self, mock_gemini_client, mock_sleep, mock_deepseek_key=None, mock_openrouter_key=None,
+    ):
         """
         Realer Fund aus einem echten Lauf: als ALLE Modelle einer Fallback-Kette gleichzeitig
         als erschöpft markiert waren (kein ANTHROPIC_API_KEY als Backstop), scheiterte jeder
@@ -92,6 +102,7 @@ class TestLLMRouting(unittest.TestCase):
         token_guard.mark_model_exhausted(GEMINI_STANDARD_MODEL, "Test", cooldown_seconds=3.0)
         token_guard.mark_model_exhausted("claude-sonnet-5", "Test", cooldown_seconds=3.0)
         token_guard.mark_model_exhausted("deepseek:deepseek-chat", "Test", cooldown_seconds=3.0)
+        token_guard.mark_model_exhausted("openrouter:openrouter/auto", "Test", cooldown_seconds=3.0)
         token_guard.mark_model_exhausted("gemini-3.1-flash-lite", "Test", cooldown_seconds=3.0)
         token_guard.mark_model_exhausted("groq:openai/gpt-oss-120b", "Test", cooldown_seconds=3.0)
 
@@ -310,11 +321,12 @@ class TestClaudeFreeHeavyFallback(unittest.TestCase):
     NUR, ob GROQ_API_KEY überhaupt konfiguriert ist - nicht, ob Groqs eigenes Tageskontingent
     gerade erschöpft ist. Real beobachtet: Groqs TPD-Limit (200000 Tokens/Tag) war nach vielen
     echten Läufen in dieser Session erreicht - JEDE Aufgabenzerlegung scheiterte dadurch sofort,
-    obwohl DeepSeek (eigenes, unabhängiges Kontingent) zu diesem Zeitpunkt konfiguriert war.
+    obwohl DeepSeek und OpenRouter (beide eigene, unabhängige Kontingente) zu diesem Zeitpunkt
+    konfiguriert waren.
     """
 
     def tearDown(self):
-        for model in (GROQ_HEAVY_MODEL, "deepseek:deepseek-chat"):
+        for model in (GROQ_HEAVY_MODEL, "deepseek:deepseek-chat", "openrouter:openrouter/auto"):
             token_guard._exhausted_models.pop(model, None)
 
     @patch("core.llm_factory.GROQ_API_KEY", "gsk_dummy_test_key")
@@ -337,20 +349,34 @@ class TestClaudeFreeHeavyFallback(unittest.TestCase):
         client = ClaudeClient._free_heavy_fallback_client()
         self.assertIsInstance(client, DeepSeekClient)
 
+    @patch("core.llm_factory.OPENROUTER_API_KEY", "sk-or-dummy-test-key")
     @patch("core.llm_factory.DEEPSEEK_API_KEY", "sk-dummy-test-key")
     @patch("core.llm_factory.GROQ_API_KEY", "gsk_dummy_test_key")
-    def test_falls_back_to_gemini_when_groq_and_deepseek_both_exhausted(self):
+    def test_falls_back_to_openrouter_when_groq_and_deepseek_both_exhausted(self):
         token_guard.mark_model_exhausted(GROQ_HEAVY_MODEL, "Test", cooldown_seconds=999.0)
         token_guard.mark_model_exhausted("deepseek:deepseek-chat", "Test", cooldown_seconds=999.0)
+
+        client = ClaudeClient._free_heavy_fallback_client()
+
+        self.assertIsInstance(client, OpenRouterClient)
+
+    @patch("core.llm_factory.OPENROUTER_API_KEY", "sk-or-dummy-test-key")
+    @patch("core.llm_factory.DEEPSEEK_API_KEY", "sk-dummy-test-key")
+    @patch("core.llm_factory.GROQ_API_KEY", "gsk_dummy_test_key")
+    def test_falls_back_to_gemini_when_all_three_exhausted(self):
+        token_guard.mark_model_exhausted(GROQ_HEAVY_MODEL, "Test", cooldown_seconds=999.0)
+        token_guard.mark_model_exhausted("deepseek:deepseek-chat", "Test", cooldown_seconds=999.0)
+        token_guard.mark_model_exhausted("openrouter:openrouter/auto", "Test", cooldown_seconds=999.0)
 
         client = ClaudeClient._free_heavy_fallback_client()
 
         self.assertIsInstance(client, GeminiClient)
         self.assertEqual(client.model_name, GEMINI_STANDARD_MODEL)
 
+    @patch("core.llm_factory.OPENROUTER_API_KEY", "")
     @patch("core.llm_factory.DEEPSEEK_API_KEY", "")
     @patch("core.llm_factory.GROQ_API_KEY", "")
-    def test_falls_back_to_gemini_when_neither_key_configured(self):
+    def test_falls_back_to_gemini_when_no_key_configured(self):
         client = ClaudeClient._free_heavy_fallback_client()
         self.assertIsInstance(client, GeminiClient)
 

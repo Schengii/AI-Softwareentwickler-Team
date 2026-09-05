@@ -82,12 +82,20 @@ MODEL_FALLBACKS = {
     # (live verifiziert: ein echter DeepSeek-Tool-Call gelang sofort). Vor Groq einsortiert,
     # da DeepSeek ein vollwertiges, eigenständiges Modell ist (nicht nur ein Open-Weight-
     # Kompatibilitäts-Backstop wie gpt-oss-120b über Groq).
-    "gemini-pro-latest":    ["claude-opus-5", "claude-sonnet-5", "deepseek:deepseek-chat", "gemini-3.8-flash", "gemini-3.6-flash"],
-    "gemini-3.8-flash":     ["claude-sonnet-5", "deepseek:deepseek-chat", "gemini-3.6-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
-    "gemini-3.6-flash":     ["claude-sonnet-5", "deepseek:deepseek-chat", "gemini-3.8-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
-    "gemini-3.1-flash-lite": ["claude-haiku-4-5-20251001", "deepseek:deepseek-chat", "gemini-3.8-flash", "gemini-3.6-flash", "groq:openai/gpt-oss-120b"],
+    #
+    # Team-Optimierung (dieselbe Session, Fortsetzung): dasselbe Muster wiederholte sich mit
+    # OPENROUTER_API_KEY - ebenfalls konfiguriert, ebenfalls nie als Fallback-ZIEL genutzt.
+    # Live verifiziert: ein echter OpenRouter-Tool-Call UND ein echter JSON-Decompose-Prompt
+    # (dieselbe Art Anfrage, die core/task_manager.py stellt) gelangen beide sofort. Nach
+    # DeepSeek einsortiert (beide sind bezahlte Gateways, keine Gratis-Kontingente wie
+    # Gemini/Groq - Reihenfolge hier daher nicht kritisch, nur ein weiterer unabhängiger
+    # Kontingent-Pool, der zuvor komplett ungenutzt blieb).
+    "gemini-pro-latest":    ["claude-opus-5", "claude-sonnet-5", "deepseek:deepseek-chat", "openrouter:openrouter/auto", "gemini-3.8-flash", "gemini-3.6-flash"],
+    "gemini-3.8-flash":     ["claude-sonnet-5", "deepseek:deepseek-chat", "openrouter:openrouter/auto", "gemini-3.6-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
+    "gemini-3.6-flash":     ["claude-sonnet-5", "deepseek:deepseek-chat", "openrouter:openrouter/auto", "gemini-3.8-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
+    "gemini-3.1-flash-lite": ["claude-haiku-4-5-20251001", "deepseek:deepseek-chat", "openrouter:openrouter/auto", "gemini-3.8-flash", "gemini-3.6-flash", "groq:openai/gpt-oss-120b"],
     # Ältere/abweichende Konfigurationswerte (falls per .env manuell gesetzt) ebenfalls abdecken.
-    "gemini-3.5-flash":     ["claude-sonnet-5", "deepseek:deepseek-chat", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
+    "gemini-3.5-flash":     ["claude-sonnet-5", "deepseek:deepseek-chat", "openrouter:openrouter/auto", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
 }
 
 def _provider_available(model_name: str) -> bool:
@@ -1039,13 +1047,16 @@ class ClaudeClient:
         beobachtet: "tokens per day (TPD): Limit 200000, Used 199342"), scheiterte JEDE
         Aufgabenzerlegung sofort, obwohl DeepSeek (eigenes, unabhängiges Tageskontingent,
         siehe core/llm_factory.py.MODEL_FALLBACKS) noch komplett unbenutzt war. Prüft jetzt
-        Groq UND DeepSeek auf tatsächliche Verfügbarkeit, bevor auf die schwächere Gemini-
-        Standardstufe zurückgefallen wird.
+        Groq, DeepSeek UND OpenRouter (dasselbe Muster, live verifiziert - siehe
+        MODEL_FALLBACKS-Docstring oben) auf tatsächliche Verfügbarkeit, bevor auf die
+        schwächere Gemini-Standardstufe zurückgefallen wird.
         """
         if GROQ_API_KEY and not token_guard.is_model_exhausted(GROQ_HEAVY_MODEL):
             return GroqClient(model_name=GROQ_HEAVY_MODEL)
         if DEEPSEEK_API_KEY and not token_guard.is_model_exhausted("deepseek:deepseek-chat"):
             return DeepSeekClient()
+        if OPENROUTER_API_KEY and not token_guard.is_model_exhausted("openrouter:openrouter/auto"):
+            return OpenRouterClient()
         return GeminiClient(model_name=GEMINI_STANDARD_MODEL)
 
     async def generate_with_usage(

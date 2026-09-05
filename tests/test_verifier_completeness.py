@@ -577,6 +577,42 @@ class TestCompletenessCheck(unittest.TestCase):
             self.assertFalse(report.passed)
             self.assertTrue(any("httpx" in i.message for i in report.issues))
 
+    def test_transitive_fastapi_dependencies_not_flagged(self):
+        # Fehlalarm-Regressionstest (Live-Abgleich gegen alle workspace/-Projekte, Team-
+        # Retrospektive 2026-09-05): `starlette`/`pydantic` sind Pflicht-Abhängigkeiten von
+        # `fastapi` selbst - `pip install fastapi` installiert sie immer automatisch mit, ein
+        # direkter Import ohne eigenen requirements.txt-Eintrag ist deshalb kein echter Fund.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "main.py").write_text(
+                "from fastapi import FastAPI\n"
+                "from starlette.requests import Request\n"
+                "from pydantic import BaseModel\n"
+                "app = FastAPI()\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_transitive_flask_typer_dependencies_not_flagged(self):
+        # Dasselbe Prinzip wie oben, nur fuer `jinja2` (Pflicht-Abhaengigkeit von `flask`) und
+        # `click` (Pflicht-Abhaengigkeit von `typer`/`uvicorn[standard]`).
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app.py").write_text(
+                "from flask import Flask\n"
+                "from jinja2 import Template\n"
+                "import click\n"
+                "app = Flask(__name__)\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("flask\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
     def test_known_package_present_in_manifest_not_flagged(self):
         with tempfile.TemporaryDirectory() as tmp:
             project_dir = Path(tmp)
@@ -676,6 +712,33 @@ class TestCompletenessCheck(unittest.TestCase):
             self.assertFalse(report.passed)
             self.assertTrue(any("create_async_engine" in i.message for i in report.issues))
             self.assertTrue(any("declarative_base" in i.message for i in report.issues))
+
+    def test_alembic_sync_engine_alongside_async_app_not_flagged(self):
+        # Fehlalarm-Regressionstest (Live-Abgleich gegen alle workspace/-Projekte, Team-
+        # Retrospektive 2026-09-05, real beobachtet an `fastapi-task-mgmt`): alembic/env.py
+        # nutzt idiomatisch eine synchrone create_engine() fuer den Migrationslauf, selbst wenn
+        # die App durchgehend async ist - das ist Standardpraxis, kein Bug.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            (app_dir / "database.py").write_text(
+                "from sqlalchemy.ext.asyncio import create_async_engine\n"
+                "engine = create_async_engine('sqlite+aiosqlite:///./x.db')\n",
+                encoding="utf-8",
+            )
+            alembic_dir = project_dir / "alembic"
+            alembic_dir.mkdir()
+            (alembic_dir / "env.py").write_text(
+                "from sqlalchemy import create_engine\n"
+                "connectable = create_engine('sqlite:///./x.db')\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("sqlalchemy\naiosqlite\nalembic\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
 
     def test_single_sqlalchemy_base_and_engine_not_flagged(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -474,13 +474,22 @@ _IMPORT_TO_PACKAGE_NAME: dict[str, str] = {
     "multipart": "python-multipart",
 }
 _KNOWN_PACKAGE_NAMES = frozenset({
-    "fastapi", "flask", "django", "starlette", "uvicorn", "gunicorn",
+    "fastapi", "flask", "django", "uvicorn", "gunicorn",
     "sqlalchemy", "aiosqlite", "asyncpg", "psycopg2", "psycopg2-binary", "pymongo", "motor",
     "redis", "celery", "alembic",
     "pytest", "pytest-asyncio", "pytest-cov", "httpx", "requests", "aiohttp",
-    "boto3", "pydantic", "jinja2", "python-dotenv", "pyjwt", "python-jose", "passlib",
-    "bcrypt", "cryptography", "pyyaml", "click", "typer", "rich", "docker",
+    "boto3", "python-dotenv", "pyjwt", "python-jose", "passlib",
+    "bcrypt", "cryptography", "pyyaml", "typer", "rich", "docker",
     "python-multipart", "numpy", "pandas", "slowapi",
+    # BEWUSST NICHT enthalten, obwohl sie oft direkt importiert werden: `starlette`/`pydantic`
+    # (real beobachtet beim Live-Abgleich gegen ALLE workspace/-Projekte, Team-Retrospektive
+    # 2026-09-05 - beide sind Pflicht-Abhängigkeiten von `fastapi` selbst, `pip install fastapi`
+    # installiert sie IMMER automatisch mit, auch wenn requirements.txt nur "fastapi" auflistet),
+    # `jinja2`/`click` (Pflicht-Abhängigkeiten von `flask` bzw. `typer`/`uvicorn[standard]`) -
+    # ein direkter Import ohne expliziten Manifest-Eintrag ist hier so verbreitet und
+    # funktioniert so zuverlässig, dass eine Meldung nur Rauschen wäre (10 von 21 echten
+    # workspace-Projekten hätten sonst einen Fehlalarm bekommen, keines davon tatsächlich
+    # kaputt). Dieselbe konservative Grundhaltung wie überall in dieser Datei.
 })
 
 # Async-Testfunktionen (`@pytest.mark.asyncio` oder eine `async def test_...`) benötigen zwingend

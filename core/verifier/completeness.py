@@ -637,7 +637,19 @@ class CompletenessMixin:
         (`create_engine`) samt eigener `Base = declarative_base()` - zwei parallele,
         inkompatible Metadata-Registries im selben Projekt. Rein regelbasiert: die bloße
         Koexistenz beider Engine-Arten bzw. mehrerer `declarative_base()`-Definitionen im
-        selben Projekt ist so gut wie nie beabsichtigt."""
+        selben Projekt ist so gut wie nie beabsichtigt.
+
+        Fehlalarm-Korrektur (Live-Abgleich gegen alle workspace/-Projekte, Team-Retrospektive
+        2026-09-05, real beobachtet an `fastapi-task-mgmt`): Alembic-Migrationsskripte
+        (`alembic/env.py`) verwenden IDIOMATISCH eine SYNCHRONE `create_engine()` für den
+        Migrationslauf, selbst wenn die eigentliche Anwendung durchgehend async ist (Alembic
+        selbst unterstützt Async-Engines nur eingeschränkt, das offizielle Cookiecutter-Template
+        wandelt die DSN dafür extra auf ein synchrones Schema um) - das ist kein Bug, sondern
+        Standardpraxis, und wird deshalb aus dieser Prüfung ausgenommen."""
+        py_texts = {
+            rel: text for rel, text in py_texts.items()
+            if "alembic" not in Path(rel).parts and "migrations" not in Path(rel).parts
+        }
         issues: list[CompletenessIssue] = []
         sync_files = sorted(rel for rel, text in py_texts.items() if _SQLA_SYNC_ENGINE_RE.search(text))
         async_files = sorted(rel for rel, text in py_texts.items() if _SQLA_ASYNC_ENGINE_RE.search(text))

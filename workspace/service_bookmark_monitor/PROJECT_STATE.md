@@ -1,11 +1,14 @@
-# 📌 devpulse – Projekt-Status & Checkpoint
+# 📌 service_bookmark_monitor – Projekt-Status & Checkpoint
 
-- **Letzte Aktualisierung:** `2026-09-05 09:10:06 UTC`
+- **Letzte Aktualisierung:** `2026-09-05 11:11:01 UTC`
 - **Aktueller Status:** ⚠️ In Entwicklung / Verifikation ausstehend
-- **Zuletzt bearbeitete Aufgabe:** Leichtgewichtigen Service‑Bookmark‑Monitor implementiert
+- **Zuletzt bearbeitete Aufgabe:** Code-Hygiene und Verifikation repariert
 
 ## 📁 Wichtige Projektkomponenten & Dateien
-- *(Noch keine Quellcodedateien angelegt)*
+- `app/database.py`
+- `app/models.py`
+- `pytest.ini`
+- `requirements.txt`
 
 ## 🧪 Verifikations- & Test-Status
 - **Tests bestanden:** Ausstehend / Fehlgeschlagen ⚠️

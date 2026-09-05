@@ -9,11 +9,20 @@ DevPulse ist eine produktionsreife Fullstack-Monitoring-Plattform zur Echtzeit-V
 
 ---
 
+## 🛠 Features
+
+- **Echtzeit-Monitoring:** Live-Status-Updates via WebSockets.
+- **Incident Management:** Zentrale Erfassung und Verfolgung von Systemstörungen.
+- **Service-Bookmark-Monitor:** Schnelle Übersicht und Lesezeichen-Verwaltung für kritische Infrastruktur-Endpunkte.
+- **Dark Mode:** Nahtlose UI-Integration für nächtliche Wartungsfenster.
+
+---
+
 ## 🛠 Tech Stack
 
 - **Backend:** Python 3.11+, FastAPI, SQLAlchemy (Async), Pydantic v2, AsyncPG
 - **Frontend:** React 18, TypeScript, TailwindCSS, Native WebSockets
-- **Metriken & Storage:** PostgreSQL 15, Prometheus Exporter, gRPC
+- **Metriken & Storage:** PostgreSQL 15, Prometheus Exporter
 - **DevOps & Infrastructure:** Docker, Docker Compose, Kubernetes, GitHub Actions
 
 ---
@@ -23,6 +32,51 @@ DevPulse ist eine produktionsreife Fullstack-Monitoring-Plattform zur Echtzeit-V
 ### Voraussetzungen
 - Python >= 3.11
 - Node.js >= 18 & npm
-- Docker & Docker Compose (optional für PostgreSQL)
+- Docker & Docker Compose
 
-### 1. Backend starten
+### 1. Installation
+```bash
+# Backend
+pip install -r requirements.txt
+
+# Frontend
+npm install
+```
+
+### 2. Services starten
+```bash
+# Startet PostgreSQL und Backend-Worker
+docker-compose up -d
+# Startet FastAPI-Server
+uvicorn app.main:app --reload
+# Startet Frontend
+npm run dev
+```
+
+---
+
+## 📖 API-Referenz
+
+Die API-Dokumentation wird automatisch via OpenAPI generiert. Nach dem Start des Backends finden Sie diese unter:
+- **Swagger UI:** `http://localhost:8000/docs`
+- **ReDoc:** `http://localhost:8000/redoc`
+
+### Beispiel: Service-Bookmark abrufen
+```bash
+curl -X GET "http://localhost:8000/api/v1/services/bookmarks" \
+     -H "accept: application/json"
+```
+
+---
+
+## 📜 Changelog
+
+### [2026-09-01] - Dokumentations-Update
+- README um Service-Bookmark-Monitor Sektion erweitert.
+- API-Referenz und Quickstart-Anleitung aktualisiert.
+- Struktur für Features und Tech-Stack konsolidiert.
+
+---
+
+## ⚖️ Lizenz
+Dieses Projekt steht unter der MIT-Lizenz. Siehe `LICENSE` für weitere Details.

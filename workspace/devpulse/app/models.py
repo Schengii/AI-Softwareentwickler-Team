@@ -1,5 +1,7 @@
-from sqlalchemy import Column, Integer, String, DateTime, func
+from sqlalchemy import Column, DateTime, Integer, String, func
+
 from app.core.database import Base
+
 
 class Service(Base):
     __tablename__ = "services"

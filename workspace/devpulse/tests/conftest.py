@@ -1,11 +1,12 @@
 import httpx
 import pytest
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+
 from app.core.database import Base, get_db
-from app.main import app # FastAPI App ist in app/main.py
+from app.main import app  # FastAPI App ist in app/main.py
 
 # Test-Datenbank URL
 DATABASE_URL = "sqlite+aiosqlite:///:memory:"

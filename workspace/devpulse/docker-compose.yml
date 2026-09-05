@@ -1,6 +1,8 @@
 services:
   db:
     image: postgres:15-alpine
+    networks:
+      - devpulse-net
     environment:
       POSTGRES_USER: devpulse
       POSTGRES_PASSWORD: password
@@ -13,11 +15,19 @@ services:
 
   backend:
     build: .
+    networks:
+      - devpulse-net
     depends_on:
       db: { condition: service_healthy }
     environment:
       DATABASE_URL: postgresql+asyncpg://devpulse:password@db:5432/devpulse
 
   frontend:
-    build: ./frontend
+    build: .
+    networks:
+      - devpulse-net
     ports: ["80:80"]
+
+networks:
+  devpulse-net:
+    driver: bridge

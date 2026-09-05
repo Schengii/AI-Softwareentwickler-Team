@@ -449,6 +449,58 @@ _STDLIB_MODULES = frozenset(getattr(sys, "stdlib_module_names", ())) | {"__futur
 _MANIFEST_FILENAMES = ("requirements.txt", "pyproject.toml", "Pipfile", "setup.py", "poetry.lock")
 _PY_IMPORT_RE = re.compile(r"^\s*(?:import|from)\s+([a-zA-Z0-9_]+)", re.MULTILINE)
 
+# Siebter realer Fund (Team-Retrospektive 2026-09-05, logpulse-Projekt): der bisherige
+# _missing_dependency_manifest()-Check prüft nur, ob IRGENDEIN Manifest existiert - nicht, ob es
+# die tatsächlich importierten Pakete auch AUFLISTET. logpulse importierte in seiner Testsuite
+# `pytest`/`httpx` und nutzte `@pytest.mark.asyncio`, aber requirements.txt enthielt keines der
+# drei (auch nicht `pytest-asyncio`) - jeder Testlauf schlug deshalb zuverlässig fehl, ohne dass
+# ein bisheriger Check das VOR der teuren echten Testausführung erkannt hätte. Bewusst nur eine
+# kuratierte Allowlist bekannter, eindeutiger Pakete (statt jeden Drittanbieter-Import zu prüfen):
+# viele Importnamen sind keine 1:1-Entsprechung ihres PyPI-Paketnamens (z.B. `google.cloud.x`) und
+# ein sicherer Treffer ist hier wichtiger als Vollständigkeit - ein Fehlalarm bei einem exotischen
+# Paket wäre schlimmer als ein unentdeckter Fund außerhalb dieser Liste.
+_IMPORT_TO_PACKAGE_NAME: dict[str, str] = {
+    "pytest_asyncio": "pytest-asyncio",
+    "pytest_cov": "pytest-cov",
+    "dotenv": "python-dotenv",
+    "jose": "python-jose",
+    "jwt": "pyjwt",
+    "yaml": "pyyaml",
+    "PIL": "pillow",
+    "cv2": "opencv-python",
+    "bs4": "beautifulsoup4",
+    "dateutil": "python-dateutil",
+    "sklearn": "scikit-learn",
+    "multipart": "python-multipart",
+}
+_KNOWN_PACKAGE_NAMES = frozenset({
+    "fastapi", "flask", "django", "starlette", "uvicorn", "gunicorn",
+    "sqlalchemy", "aiosqlite", "asyncpg", "psycopg2", "psycopg2-binary", "pymongo", "motor",
+    "redis", "celery", "alembic",
+    "pytest", "pytest-asyncio", "pytest-cov", "httpx", "requests", "aiohttp",
+    "boto3", "pydantic", "jinja2", "python-dotenv", "pyjwt", "python-jose", "passlib",
+    "bcrypt", "cryptography", "pyyaml", "click", "typer", "rich", "docker",
+    "python-multipart", "numpy", "pandas", "slowapi",
+})
+
+# Async-Testfunktionen (`@pytest.mark.asyncio` oder eine `async def test_...`) benötigen zwingend
+# das `pytest-asyncio`-Plugin (oder `anyio` mit dessen eigenem Marker) installiert - ohne das
+# bricht jeder so markierte Test mit einem Fixture-/Marker-Fehler ab, unabhängig davon, ob der
+# eigentliche Testcode korrekt ist. Derselbe logpulse-Fund wie oben.
+_PYTEST_ASYNC_TEST_RE = re.compile(r"@pytest\.mark\.asyncio\b|^\s*async\s+def\s+test_", re.MULTILINE)
+
+# Zweiter Teil desselben logpulse-Funds: `app/database.py` definierte eine ASYNCHRONE Engine
+# (`create_async_engine`), `app/models.py` daneben eine eigene SYNCHRONE Engine
+# (`create_engine`) samt eigener `Base = declarative_base()` - zwei parallele, inkompatible
+# Metadata-Registries im selben Projekt. Rein regelbasiert (kein AST nötig): die bloße
+# Koexistenz beider Engine-Arten bzw. mehrerer `declarative_base()`-Definitionen im selben
+# Projekt ist so gut wie nie beabsichtigt.
+_SQLA_SYNC_ENGINE_RE = re.compile(r"\bcreate_engine\s*\(")
+_SQLA_ASYNC_ENGINE_RE = re.compile(r"\bcreate_async_engine\s*\(")
+_SQLA_DECLARATIVE_BASE_RE = re.compile(
+    r"\bdeclarative_base\s*\(|class\s+\w+\s*\(\s*(?:orm\.)?DeclarativeBase\s*\)"
+)
+
 # Fünfter realer Fund (Team-Retrospektive, taskpulse-Projekt): _missing_local_python_imports()
 # (siehe completeness.py) prüfte bisher NUR Python - dieselbe Fehlerklasse ("lokaler Import
 # verweist auf eine nie erzeugte Datei") passiert genauso in JS/TS-Frontend-Projekten, z.B.

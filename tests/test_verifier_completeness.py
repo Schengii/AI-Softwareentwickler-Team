@@ -559,6 +559,213 @@ class TestCompletenessCheck(unittest.TestCase):
             report = verifier.check_completeness()
             self.assertTrue(report.passed)
 
+    def test_detects_missing_known_package_in_manifest(self):
+        # Siebter realer Fund (logpulse-Projekt): requirements.txt existiert, listet aber
+        # `httpx` nicht auf, obwohl tests/conftest.py es importiert.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "main.py").write_text(
+                "from fastapi import FastAPI\napp = FastAPI()\n", encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_app.py").write_text(
+                "from httpx import AsyncClient\n\ndef test_x():\n    pass\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any("httpx" in i.message for i in report.issues))
+
+    def test_known_package_present_in_manifest_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "main.py").write_text(
+                "from fastapi import FastAPI\napp = FastAPI()\n", encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\nhttpx\n", encoding="utf-8")
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_app.py").write_text(
+                "from httpx import AsyncClient\n\ndef test_x():\n    pass\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_detects_missing_pytest_asyncio_dependency(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "main.py").write_text(
+                "from fastapi import FastAPI\napp = FastAPI()\n", encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text(
+                "fastapi\npytest\nhttpx\n", encoding="utf-8",
+            )
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_app.py").write_text(
+                "import pytest\n\n"
+                "@pytest.mark.asyncio\n"
+                "async def test_x():\n    assert True\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any("pytest-asyncio" in i.message for i in report.issues))
+
+    def test_pytest_asyncio_present_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "main.py").write_text(
+                "from fastapi import FastAPI\napp = FastAPI()\n", encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text(
+                "fastapi\npytest\npytest-asyncio\nhttpx\n", encoding="utf-8",
+            )
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_app.py").write_text(
+                "import pytest\n\n"
+                "@pytest.mark.asyncio\n"
+                "async def test_x():\n    assert True\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_sync_test_without_asyncio_mark_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "main.py").write_text(
+                "from fastapi import FastAPI\napp = FastAPI()\n", encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\npytest\n", encoding="utf-8")
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_app.py").write_text(
+                "def test_x():\n    assert True\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_detects_mixed_sync_and_async_sqlalchemy_engines(self):
+        # Achter realer Fund (logpulse-Projekt): app/database.py definiert eine asynchrone
+        # Engine, app/models.py daneben eine eigene synchrone Engine + eigene Base.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            (app_dir / "database.py").write_text(
+                "from sqlalchemy.ext.asyncio import create_async_engine\n"
+                "from sqlalchemy.orm import declarative_base\n"
+                "engine = create_async_engine('sqlite+aiosqlite:///./x.db')\n"
+                "Base = declarative_base()\n",
+                encoding="utf-8",
+            )
+            (app_dir / "models.py").write_text(
+                "from sqlalchemy import create_engine\n"
+                "from sqlalchemy.orm import declarative_base\n"
+                "engine = create_engine('sqlite:///./x.db')\n"
+                "Base = declarative_base()\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("sqlalchemy\naiosqlite\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any("create_async_engine" in i.message for i in report.issues))
+            self.assertTrue(any("declarative_base" in i.message for i in report.issues))
+
+    def test_single_sqlalchemy_base_and_engine_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            (app_dir / "database.py").write_text(
+                "from sqlalchemy.ext.asyncio import create_async_engine\n"
+                "from sqlalchemy.orm import declarative_base\n"
+                "engine = create_async_engine('sqlite+aiosqlite:///./x.db')\n"
+                "Base = declarative_base()\n",
+                encoding="utf-8",
+            )
+            (app_dir / "models.py").write_text(
+                "from app.database import Base\n"
+                "from sqlalchemy import Column, Integer\n"
+                "class Item(Base):\n"
+                "    __tablename__ = 'items'\n"
+                "    id = Column(Integer, primary_key=True)\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("sqlalchemy\naiosqlite\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_detects_double_router_prefix(self):
+        # Neunter realer Fund (logpulse-Projekt): app/routers/logs.py deklariert bereits
+        # APIRouter(prefix="/api/v1/logs"), app/main.py hängt beim Registrieren zusätzlich
+        # prefix="/api/v1" an - die Route landet unter /api/v1/api/v1/logs statt /api/v1/logs.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            routers_dir = app_dir / "routers"
+            routers_dir.mkdir()
+            (routers_dir / "__init__.py").write_text("", encoding="utf-8")
+            (routers_dir / "logs.py").write_text(
+                "from fastapi import APIRouter\n"
+                "router = APIRouter(prefix='/api/v1/logs', tags=['logs'])\n\n"
+                "@router.get('')\n"
+                "async def read_logs():\n    return []\n",
+                encoding="utf-8",
+            )
+            (app_dir / "main.py").write_text(
+                "from fastapi import FastAPI\n"
+                "from app.routers import logs\n\n"
+                "app = FastAPI()\n"
+                "app.include_router(logs.router, prefix='/api/v1', tags=['logs'])\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any(
+                "/api/v1/api/v1/logs" in i.message and i.file_path == "app/main.py"
+                for i in report.issues
+            ))
+
+    def test_single_router_prefix_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            routers_dir = app_dir / "routers"
+            routers_dir.mkdir()
+            (routers_dir / "__init__.py").write_text("", encoding="utf-8")
+            (routers_dir / "logs.py").write_text(
+                "from fastapi import APIRouter\n"
+                "router = APIRouter(prefix='/api/v1/logs', tags=['logs'])\n\n"
+                "@router.get('')\n"
+                "async def read_logs():\n    return []\n",
+                encoding="utf-8",
+            )
+            (app_dir / "main.py").write_text(
+                "from fastapi import FastAPI\n"
+                "from app.routers import logs\n\n"
+                "app = FastAPI()\n"
+                "app.include_router(logs.router)\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
     def test_ignores_venv_and_node_modules(self):
         with tempfile.TemporaryDirectory() as tmp:
             project_dir = Path(tmp)

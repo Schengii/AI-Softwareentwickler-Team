@@ -25,6 +25,7 @@ externe Referenzen.
 """
 
 import ast
+import re
 from pathlib import Path
 
 from core.verifier.models import (
@@ -32,6 +33,7 @@ from core.verifier.models import (
     _COMPONENT_FILENAME_RE,
     _COMPONENT_TAKES_PROPS_RE,
     _IGNORED_DIRS,
+    _IMPORT_TO_PACKAGE_NAME,
     _IO_CALL_MARKERS,
     _IO_MUTATION_RE,
     _JS_IO_CALL_MARKERS,
@@ -42,12 +44,17 @@ from core.verifier.models import (
     _JS_RELATIVE_REQUIRE_RE,
     _JS_WRITE_ROUTE_CALL_RE,
     _JSX_RETURN_RE,
+    _KNOWN_PACKAGE_NAMES,
     _MANIFEST_FILENAMES,
     _PY_IMPORT_RE,
     _PY_ROUTE_DEF_RE,
     _PY_WRITE_ROUTE_DECORATOR_RE,
+    _PYTEST_ASYNC_TEST_RE,
     _README_FILE_REF_RE,
     _ROUTE_IO_EXEMPT_NAME_RE,
+    _SQLA_ASYNC_ENGINE_RE,
+    _SQLA_DECLARATIVE_BASE_RE,
+    _SQLA_SYNC_ENGINE_RE,
     _STDLIB_MODULES,
     _STUB_MARKER_RE,
     _STUB_SCAN_EXTENSIONS,
@@ -71,6 +78,8 @@ class CompletenessMixin:
 
         issues: list[CompletenessIssue] = []
         py_import_names: set[str] = set()
+        py_texts: dict[str, str] = {}
+        has_async_pytest_marks = False
         py_files = [f for f in source_files if f.suffix == ".py"]
         local_top_level = self._local_top_level_names() if py_files else set()
         for f in source_files:
@@ -84,6 +93,9 @@ class CompletenessMixin:
                 issues.extend(self._scan_write_routes_missing_io(rel, text))
                 py_import_names.update(self._collect_third_party_imports(text))
                 issues.extend(self._missing_local_python_imports(rel, f, text, local_top_level))
+                py_texts[rel] = text
+                if _PYTEST_ASYNC_TEST_RE.search(text):
+                    has_async_pytest_marks = True
             elif f.suffix in (".js", ".jsx", ".ts", ".tsx"):
                 issues.extend(self._scan_component_missing_api(rel, text))
                 issues.extend(self._missing_local_js_imports(rel, f, text))
@@ -92,6 +104,12 @@ class CompletenessMixin:
         issues.extend(self._missing_readme_referenced_files())
         issues.extend(self._missing_dependency_manifest(py_import_names))
         issues.extend(self._corrupted_dependency_manifests())
+        real_third_party = py_import_names - local_top_level
+        issues.extend(self._missing_known_packages_in_manifest(real_third_party))
+        if has_async_pytest_marks:
+            issues.extend(self._missing_async_test_dependencies())
+        issues.extend(self._conflicting_sqlalchemy_config(py_texts))
+        issues.extend(self._double_router_prefix(py_texts))
 
         return CompletenessReport(attempted=True, passed=not issues, issues=issues)
 
@@ -542,6 +560,176 @@ class CompletenessMixin:
                     f"liefert aber kein Dependency-Manifest (requirements.txt/pyproject.toml/"
                     f"Pipfile) - Installation beim Nutzer schlägt fehl.",
         )]
+
+    def _read_manifest_texts(self) -> str:
+        """Liest den kombinierten Inhalt aller vorhandenen Python-Dependency-Manifeste roh als
+        einen Textblock (kleingeschrieben, "_" durch "-" normalisiert) - Grundlage für die
+        einfache Token-Prüfung in _missing_known_packages_in_manifest()/
+        _missing_async_test_dependencies() unten. Bewusst kein echter TOML-/Requirements-Parser
+        (dieselbe konservative Grundhaltung wie der Rest dieser Datei) - reicht, um zu prüfen,
+        ob ein Paketname überhaupt irgendwo im Manifest auftaucht."""
+        names = ("requirements.txt", "requirements-dev.txt", "pyproject.toml", "Pipfile")
+        chunks: list[str] = []
+        for name in names:
+            candidate = self.project_dir / name
+            if candidate.exists() and candidate.is_file():
+                try:
+                    chunks.append(candidate.read_text(encoding="utf-8", errors="ignore"))
+                except OSError:
+                    pass
+        return "\n".join(chunks).lower().replace("_", "-")
+
+    def _manifest_has_package(self, manifest_text: str, package_name: str) -> bool:
+        token_re = re.compile(rf"(?<![a-z0-9.-]){re.escape(package_name)}(?![a-z0-9.-])")
+        return bool(token_re.search(manifest_text))
+
+    def _missing_known_packages_in_manifest(self, third_party_imports: set[str]) -> list[CompletenessIssue]:
+        """Siebter realer Fund (siehe _IMPORT_TO_PACKAGE_NAME-Docstring in
+        core/verifier/models.py, logpulse-Projekt): _missing_dependency_manifest() oben prüft
+        nur, ob IRGENDEIN Manifest existiert - nicht, ob es die tatsächlich importierten Pakete
+        auch auflistet. Prüft deshalb zusätzlich, für eine kuratierte Allowlist bekannter,
+        eindeutiger Pakete (_KNOWN_PACKAGE_NAMES), ob der jeweilige Paketname im Manifest-Text
+        auftaucht. Läuft NUR, wenn überhaupt ein Manifest existiert - fehlt es komplett, meldet
+        das bereits _missing_dependency_manifest(), eine zweite Meldung wäre nur Rauschen."""
+        manifest_text = self._read_manifest_texts()
+        if not manifest_text:
+            return []
+        issues: list[CompletenessIssue] = []
+        for import_name in sorted(third_party_imports):
+            package_name = _IMPORT_TO_PACKAGE_NAME.get(import_name, import_name.replace("_", "-"))
+            if package_name not in _KNOWN_PACKAGE_NAMES:
+                continue
+            if self._manifest_has_package(manifest_text, package_name):
+                continue
+            issues.append(CompletenessIssue(
+                file_path=".",
+                message=f"Projekt importiert `{import_name}` (erwartetes PyPI-Paket "
+                        f"`{package_name}`), aber kein Dependency-Manifest listet es auf - "
+                        f"`pip install` installiert die tatsächlich benötigten Pakete dann "
+                        f"unvollständig, ein Import-/Testlauf schlägt fehl.",
+            ))
+        return issues
+
+    def _missing_async_test_dependencies(self) -> list[CompletenessIssue]:
+        """Zweiter Teil desselben logpulse-Funds: Testdateien nutzten `@pytest.mark.asyncio`,
+        aber weder `pytest-asyncio` noch `anyio` waren im Manifest gelistet - jeder so markierte
+        Test bricht dann mit einem Fixture-/Marker-Fehler ab, unabhängig vom eigentlichen
+        Testcode. Läuft nur, wenn check_completeness() zuvor mindestens eine async-Testfunktion
+        gefunden hat (_PYTEST_ASYNC_TEST_RE), siehe dortiger Aufrufer."""
+        manifest_text = self._read_manifest_texts()
+        if not manifest_text:
+            return []
+        if self._manifest_has_package(manifest_text, "pytest-asyncio"):
+            return []
+        if self._manifest_has_package(manifest_text, "anyio"):
+            return []  # anyio-Plugin kann denselben Zweck erfüllen, kein Fehlalarm
+        return [CompletenessIssue(
+            file_path=".",
+            message="Testdateien enthalten `@pytest.mark.asyncio`/`async def test_...`, aber "
+                    "weder `pytest-asyncio` noch `anyio` sind im Dependency-Manifest gelistet - "
+                    "jeder async Test schlägt beim Ausführen mit einem Fixture-/Marker-Fehler "
+                    "fehl (fehlendes pytest-Plugin).",
+        )]
+
+    def _conflicting_sqlalchemy_config(self, py_texts: dict[str, str]) -> list[CompletenessIssue]:
+        """Erster Teil desselben logpulse-Funds: `app/database.py` definierte eine asynchrone
+        Engine (`create_async_engine`), `app/models.py` daneben eine eigene synchrone Engine
+        (`create_engine`) samt eigener `Base = declarative_base()` - zwei parallele,
+        inkompatible Metadata-Registries im selben Projekt. Rein regelbasiert: die bloße
+        Koexistenz beider Engine-Arten bzw. mehrerer `declarative_base()`-Definitionen im
+        selben Projekt ist so gut wie nie beabsichtigt."""
+        issues: list[CompletenessIssue] = []
+        sync_files = sorted(rel for rel, text in py_texts.items() if _SQLA_SYNC_ENGINE_RE.search(text))
+        async_files = sorted(rel for rel, text in py_texts.items() if _SQLA_ASYNC_ENGINE_RE.search(text))
+        if sync_files and async_files:
+            issues.append(CompletenessIssue(
+                file_path=", ".join(sorted(set(sync_files) | set(async_files))),
+                message=f"Projekt mischt synchrones SQLAlchemy (`create_engine()` in "
+                        f"{', '.join(sync_files)}) mit asynchronem (`create_async_engine()` in "
+                        f"{', '.join(async_files)}) - typischerweise ein Fehler (zwei parallele "
+                        f"DB-Engines/Base-Registries statt einer konsistenten async- oder "
+                        f"sync-Anbindung).",
+            ))
+
+        base_files = sorted(rel for rel, text in py_texts.items() if _SQLA_DECLARATIVE_BASE_RE.search(text))
+        if len(base_files) > 1:
+            issues.append(CompletenessIssue(
+                file_path=", ".join(base_files),
+                message=f"Mehrere eigenständige SQLAlchemy-`Base`-Definitionen "
+                        f"(`declarative_base()`/`DeclarativeBase`) in {', '.join(base_files)} "
+                        f"gefunden - Modelle landen dann in getrennten Metadata-Registries, "
+                        f"`Base.metadata.create_all()` legt nur einen Teil der Tabellen an.",
+            ))
+        return issues
+
+    def _find_matching_paren(self, text: str, open_idx: int) -> int | None:
+        """Pendant zu _find_matching_js_brace() (siehe oben), nur für "(...)" statt "{...}" -
+        genutzt von _double_router_prefix(), um den vollständigen Argument-Bereich eines
+        APIRouter(...)/include_router(...)-Aufrufs robust gegen verschachtelte Klammern (z.B.
+        `tags=["a", "b"]`, verschachtelte Funktionsaufrufe) zu erfassen."""
+        depth = 0
+        for i in range(open_idx, len(text)):
+            ch = text[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return i
+        return None
+
+    def _double_router_prefix(self, py_texts: dict[str, str]) -> list[CompletenessIssue]:
+        """Neunter realer Fund (logpulse-Projekt, bei der Live-Verifikation dieses Checks
+        gefunden): `app/routers/logs.py` deklariert bereits `APIRouter(prefix="/api/v1/logs")`,
+        `app/main.py` hängt beim Registrieren zusätzlich `app.include_router(logs.router,
+        prefix="/api/v1")` an - die tatsächliche Route landet dadurch unter
+        `/api/v1/api/v1/logs` statt der beabsichtigten `/api/v1/logs`, jeder Aufruf der
+        "richtigen" URL schlägt mit 404 fehl (echt reproduziert: `pytest` lief durch, bis
+        genau dieser Bug den Testlauf fehlschlagen ließ). Rein regelbasiert: pro Datei wird der
+        von `APIRouter(prefix=...)` deklarierte Präfix unter dem Dateinamen (ohne Endung) als
+        Schlüssel gemerkt (FastAPI-Konvention `from app.routers import logs` + `logs.router`),
+        dann wird jeder `include_router(<name>.router, ..., prefix=...)`-Aufruf mit demselben
+        Namen gegengeprüft - zwei NICHT-LEERE Präfixe für denselben Router gleichzeitig sind
+        so gut wie nie beabsichtigt. Ein Import-Alias (`import logs as x`) wird bewusst NICHT
+        aufgelöst - dieselbe konservative Grundhaltung wie überall in dieser Datei, ein
+        übersehener Fund ist besser als ein Fehlalarm."""
+        router_prefix_by_module: dict[str, str] = {}
+        for rel, text in py_texts.items():
+            for m in re.finditer(r"\bAPIRouter\s*(\()", text):
+                close_idx = self._find_matching_paren(text, m.start(1))
+                if close_idx is None:
+                    continue
+                args_text = text[m.end(1):close_idx]
+                prefix_match = re.search(r"\bprefix\s*=\s*[\"']([^\"']+)[\"']", args_text)
+                if prefix_match and prefix_match.group(1):
+                    router_prefix_by_module[Path(rel).stem] = prefix_match.group(1)
+
+        if not router_prefix_by_module:
+            return []
+
+        issues: list[CompletenessIssue] = []
+        for rel, text in py_texts.items():
+            for m in re.finditer(r"\.include_router\s*(\()\s*([A-Za-z_]\w*)\.router\b", text):
+                router_prefix = router_prefix_by_module.get(m.group(2))
+                if not router_prefix:
+                    continue
+                close_idx = self._find_matching_paren(text, m.start(1))
+                if close_idx is None:
+                    continue
+                call_args = text[m.end(1):close_idx]
+                include_prefix_match = re.search(r"\bprefix\s*=\s*[\"']([^\"']+)[\"']", call_args)
+                if not include_prefix_match or not include_prefix_match.group(1):
+                    continue
+                line_no = text.count("\n", 0, m.start()) + 1
+                issues.append(CompletenessIssue(
+                    file_path=rel, line_number=line_no,
+                    message=f"`include_router({m.group(2)}.router, prefix=\"{include_prefix_match.group(1)}\")` "
+                            f"registriert einen zusätzlichen Präfix, obwohl der Router selbst bereits "
+                            f"`APIRouter(prefix=\"{router_prefix}\")` deklariert - die tatsächliche Route "
+                            f"landet unter `{include_prefix_match.group(1)}{router_prefix}` statt der "
+                            f"vermutlich beabsichtigten `{router_prefix}`.",
+                ))
+        return issues
 
     def _missing_readme_referenced_files(self) -> list[CompletenessIssue]:
         readme = next(

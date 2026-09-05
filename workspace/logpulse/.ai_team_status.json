@@ -1,0 +1,29 @@
+[
+  {
+    "timestamp": "2026-09-05T16:35:46+00:00",
+    "task_summary": "Fehlende Test-/Laufzeit-Dependencies (pytest, pytest-asyncio, httpx, slowapi, greenlet) ergaenzt, asyncio_mode=auto gesetzt, doppelten Router-Prefix in app/main.py entfernt",
+    "verification_ok": true,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 4,
+    "success_detail": "Echte pytest-Ausfuehrung in isolierter venv: 2 passed. check_completeness() (inkl. neuer Checks fuer Manifest-Vollstaendigkeit, async-Test-Dependencies, SQLAlchemy-Engine-Konsistenz, doppelte Router-Prefixe): passed."
+  },
+  {
+    "timestamp": "2026-09-05T13:53:22+00:00",
+    "task_summary": "Pytest-Konfiguration bereinigt und Modelle angepasst",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 2,
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 📦 ✅ pip install -r requirements.txt (exit_code=0)\n- 🛠️ Versuch 1: 1 echte Testfehler → gezielt zur Korrektur an tester zurückgespielt.\n- 🛑 Versuch 2: dieselben 1 Testfehler wie nach dem vorherigen Fixversuch (keine Veränderung) – Schleife abgebrochen statt einen wirkungslosen weiteren Versuch zu verbrauchen.\n- 🐳 ⏭️ Docker-Daemon lokal nicht erreichbar (z.B. Docker Desktop nicht gestartet) - keine Aussage über die Co"
+  },
+  {
+    "timestamp": "2026-09-05T13:34:11+00:00",
+    "task_summary": "Logpulse Log-Aggregator mit Dashboard implementiert",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 21,
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 📦 ✅ pip install -r requirements.txt (exit_code=0)\n- ❌ Unvollständiges Projekt erkannt: Ein tests/-Verzeichnis mit conftest.py existiert, aber keine einzige echte Testdatei (test_*.py/*_test.py) - sieht nach einer abgebrochenen Testsuite aus, nicht nach einem Projekt, das bewusst auf Tests verzichtet.\n- 🧪 Unvollständiges Projekt erkannt: Ein tests/-Verzeichnis mit conftest.py existiert, aber keine einzige echte Testd"
+  }
+]

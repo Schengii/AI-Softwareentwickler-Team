@@ -1,5 +1,18 @@
 [
   {
+    "timestamp": "2026-09-05T20:25:54+00:00",
+    "task_summary": "API-Trigger-Status-Check behoben",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 0,
+    "lint_signature": [
+      "ruff:app/main.py:BLE001",
+      "ruff:app/main.py:DTZ003"
+    ],
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 📦 ✅ pip install -r requirements.txt (exit_code=0)\n- 🧩 ❌ Vorab-Import-Check: 1 Fund(e) blieben ungelöst (keinem Agenten eindeutig zuordenbar): app/main.py:10 – Import „from . import models“ verweist auf kein existierendes lokales Submodul (`app/models.py`) und wird auch nicht in `app/__init__.py` (re-)exportiert - der Import schlägt vermutlich beim Start fehl.\n- 🛠️ Versuch 1: 1 echte Testfehler → gezielt zur Korrektu"
+  },
+  {
     "timestamp": "2026-09-03T09:17:02+00:00",
     "task_summary": "TaskPulse Monitoring-Dashboard mit FastAPI und Vanilla JS umgesetzt",
     "verification_ok": false,

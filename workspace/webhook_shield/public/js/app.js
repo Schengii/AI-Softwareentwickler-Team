@@ -7,7 +7,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function fetchWebhooks() {
     try {
-        const response = await fetch('/api/webhooks');
+        const response = await fetch('/logs');
         if (!response.ok) throw new Error('Fehler beim Laden der Webhooks');
         const data = await response.json();
         renderWebhooks(data);

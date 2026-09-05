@@ -1,31 +1,28 @@
 # 📌 webhook_shield – Projekt-Status & Checkpoint
 
-- **Letzte Aktualisierung:** `2026-09-03 11:24:43 UTC`
-- **Aktueller Status:** ⚠️ In Entwicklung / Verifikation ausstehend
-- **Zuletzt bearbeitete Aufgabe:** WebhookShield Proxy-Anwendung mit FastAPI und UI entwickelt
+- **Letzte Aktualisierung:** `2026-09-05 19:39:06 UTC`
+- **Aktueller Status:** 🔴 Kritischer Befund ungelöst – NICHT einsatzbereit (Backlog-Ticket offen)
+- **Zuletzt bearbeitete Aufgabe:** Webhook-Shield-Verifikationsfehler und Mockforge-Linting behoben
 
 ## 📁 Wichtige Projektkomponenten & Dateien
-- `Dockerfile`
-- `README.md`
-- `app/main.py`
-- `app/models.py`
-- `app/resilience.py`
-- `docker-compose.yml`
-- `docs/adr/0001-fastapi-als-web-framework.md`
-- `docs/adr/0002-sqlite-als-datenbank-backend.md`
-- `docs/adr/0003-sse-f-r-echtzeit-updates.md`
-- `public/css/style.css`
-- `public/index.html`
-- `public/js/app.js`
-- `pytest.ini`
-- `requirements.txt`
-- `schema.sql`
-- `tests/test_api.py`
-- `webhookshield.db`
+- *(Noch keine Quellcodedateien angelegt)*
 
 ## 🧪 Verifikations- & Test-Status
 - **Tests bestanden:** Ausstehend / Fehlgeschlagen ⚠️
 
+## 🔴 Offener kritischer Befund (Backlog-Ticket)
+- **Ticket:** `recurring-failure-webhook_shield` (Status: `blocked`, bisherige Wiederholungsversuche: 1)
+- **Befund:**
+  > Fixversuch änderte nichts an 1 Testfehler(n) – vermutlich falscher/unzureichend instruierter Agent.
+
+Test: <Testlauf>
+Fehlermeldung: ----------------------------------------------------------------------
+Ran 0 tests in 0.000s
+
+NO TESTS RAN
+Betroffene Dateien: unbekannt
+- Dieses Projekt gilt trotz einer eventuell bestandenen Testsuite NICHT als einsatzbereit, solange dieses Ticket offen ist. `python main.py --work-backlog` greift es automatisch erneut auf (begrenzte Anzahl Versuche, siehe config.MAX_GOVERNANCE_TICKET_RETRIES).
+
 ## 🎯 Nächste empfohlene Schritte (Next Actions)
-1. Testsuite ausführen und offene Fehler beheben (`/run-tests`).
-2. Fehlende REST-/WebSocket-Endpunkte und Validierungen komplettieren.
+1. Offenen kritischen Befund aus Ticket `recurring-failure-webhook_shield` beheben (siehe oben).
+2. Danach `/run-tests` bzw. einen neuen Lauf anstoßen, um das Ticket zu schließen.

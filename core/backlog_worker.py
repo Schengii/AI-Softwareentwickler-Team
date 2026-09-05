@@ -87,6 +87,18 @@ _AUTONOMOUS_SOURCES = ("cli", "dashboard")
 _GOVERNANCE_RETRY_PREFIXES = (
     "unresolved-governance-critical-", "unresolved-permission-blocked-",
     "recurring-failure-", "recurring-lint-",
+    # Team-Optimierung (KI-Team-Optimierungs-Session, echter Fund): core/workspace_audit.py
+    # eröffnet "audit-<slug>"-Tickets (fehlgeschlagene Re-Verifikation) UND
+    # "audit-<slug>-adr-duplicate"-Tickets (Nahezu-Duplikat-ADRs) mit `source="workspace_audit"`
+    # - beide Filter unten (Prefix UND source) ließen sie bisher durchfallen, obwohl sie
+    # inhaltlich genau dasselbe Muster sind wie die vier Governance-Kategorien oben (rein
+    # maschinell erkannt, kein Mensch hat sie bewusst "blocked" gesetzt). Real beobachtet: 7
+    # per --audit-workspace eröffnete Tickets blieben deshalb für immer liegen, `--work-backlog`
+    # griff sie nie auf. "team-verification-trend" (ebenfalls source="workspace_audit", aber
+    # OHNE project_slug und ohne "audit-"-Prefix) bleibt bewusst NICHT retry-fähig - es
+    # beschreibt einen teamweiten Trend über viele Projekte hinweg, kein einzelnes, für einen
+    # Orchestrator-Lauf sinnvoll formulierbares Fix-Ziel.
+    "audit-",
 )
 
 
@@ -130,7 +142,7 @@ def _governance_retry_pool(all_tickets: list[Ticket]) -> list[Ticket]:
     return [
         t for t in all_tickets
         if t.status == "blocked"
-        and t.source == "orchestrator"
+        and t.source in ("orchestrator", "workspace_audit")
         and t.id.startswith(_GOVERNANCE_RETRY_PREFIXES)
         and t.retries < MAX_GOVERNANCE_TICKET_RETRIES
         and is_ticket_ready(t, all_tickets)[0]

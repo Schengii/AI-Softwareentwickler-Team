@@ -332,6 +332,46 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
         ticket = backlog_store.get_ticket("recurring-lint-mockforge")
         self.assertEqual(ticket.retries, 1)
 
+    def test_audit_ticket_is_picked_up_and_retries_incremented(self):
+        # Team-Optimierung (KI-Team-Optimierungs-Session, echter Fund): core/workspace_audit.py
+        # eröffnet "audit-<slug>"-Tickets mit source="workspace_audit" - fiel bisher durch
+        # BEIDE Filter (weder Prefix noch source passten) und blieb dadurch für immer liegen,
+        # obwohl es inhaltlich dasselbe Muster ist wie "recurring-failure-"/"recurring-lint-".
+        backlog_store.upsert_ticket(
+            "audit-omnichat", "Verifikation fehlgeschlagen: omnichat",
+            "workspace_audit", "blocked", project_slug="omnichat", detail="1 echter Testfehler",
+        )
+        report = asyncio.run(run_backlog_poll_cycle())
+
+        self.fake_orchestrator.process.assert_called_once()
+        self.assertEqual(len(report.results), 1)
+        ticket = backlog_store.get_ticket("audit-omnichat")
+        self.assertEqual(ticket.retries, 1)
+
+    def test_audit_adr_duplicate_ticket_is_picked_up(self):
+        backlog_store.upsert_ticket(
+            "audit-omnichat-adr-duplicate", "Nahezu-Duplikat-ADRs gefunden: omnichat",
+            "workspace_audit", "blocked", project_slug="omnichat", detail="ADR-0001 ~ ADR-0002",
+        )
+        report = asyncio.run(run_backlog_poll_cycle())
+
+        self.fake_orchestrator.process.assert_called_once()
+        self.assertEqual(len(report.results), 1)
+
+    def test_team_verification_trend_ticket_is_never_auto_retried(self):
+        # Bewusste Ausnahme: "team-verification-trend" hat source="workspace_audit", aber
+        # weder das "audit-"-Prefix noch einen project_slug - es beschreibt einen teamweiten
+        # Trend über viele Projekte hinweg, kein fuer einen einzelnen Orchestrator-Lauf
+        # sinnvoll formulierbares Fix-Ziel, und darf deshalb NIE automatisch aufgegriffen werden.
+        backlog_store.upsert_ticket(
+            "team-verification-trend", "Team-weite Verifikations-Erfolgsquote anhaltend niedrig",
+            "workspace_audit", "blocked", detail="Nur 0/10 der letzten Läufe gruen.",
+        )
+        report = asyncio.run(run_backlog_poll_cycle())
+
+        self.assertEqual(report.results, [])
+        self.fake_orchestrator.process.assert_not_called()
+
     def test_unrelated_recurring_prefix_is_not_retried(self):
         # Nur die vier bekannten Präfixe werden erneut aufgegriffen - ein generisches "jedes
         # 'recurring-*'-Ticket erneut versuchen" würde auch ein Ticket treffen, das kein

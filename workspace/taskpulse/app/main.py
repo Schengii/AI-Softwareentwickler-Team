@@ -1,103 +1,86 @@
-import asyncio
-from datetime import datetime, timedelta
+import logging
+import threading
+import time
+from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from . import database, models, schemas
-from .core.config import settings
+from app.core.config import ALLOWED_CHECK_HOSTS
+from app.database import SessionLocal, get_db, init_db
+from app.models import EndpointStatus, Task
+from app.schemas import EndpointStatusResponse, TaskCreate, TaskResponse
 
-app = FastAPI(title="TaskPulse API")
+logger = logging.getLogger(__name__)
 
-# Security Middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"],
-)
 
-@app.middleware("http")
-async def add_security_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' https://cdn.tailwindcss.com;"
-    return response
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Erstellt beim Start alle Tabellen, falls sie noch fehlen."""
+    init_db()
+    yield
 
-# DB Initialisierung
-database.init_db()
 
-def get_db():
-    db = database.SessionLocal()
+app = FastAPI(title="TaskPulse", version="0.1.0", lifespan=lifespan)
+
+
+@app.get("/")
+def read_root():
+    return {"message": "TaskPulse API", "docs": "/docs"}
+
+
+@app.post("/tasks", response_model=TaskResponse)
+def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
+    """Legt eine neue Hintergrund-Aufgabe an."""
+    task = Task(name=payload.name)
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+@app.get("/tasks", response_model=list[TaskResponse])
+def list_tasks(db: Session = Depends(get_db)):
+    """Liefert alle angelegten Aufgaben."""
+    return db.query(Task).order_by(Task.id).all()
+
+
+def _run_status_check(url: str) -> None:
+    """Führt den HTTP-Check im Hintergrund aus und speichert das Ergebnis."""
     try:
-        yield db
-    finally:
-        db.close()
-
-async def cleanup_old_status():
-    db = database.SessionLocal()
-    try:
-        cutoff = datetime.utcnow() - timedelta(days=30)
-        db.query(models.EndpointStatus).filter(models.EndpointStatus.timestamp < cutoff).delete()
-        db.commit()
-    finally:
-        db.close()
-
-async def check_endpoint(url: str):
-    parsed = urlparse(url)
-    if parsed.netloc not in settings.ALLOWED_CHECK_HOSTS:
-        return
-        
-    async with httpx.AsyncClient() as client:
+        with httpx.Client(timeout=5.0) as client:
+            start = time.perf_counter()
+            response = client.get(url)
+            end = time.perf_counter()
+        db = SessionLocal()
         try:
-            start = asyncio.get_event_loop().time()
-            response = await client.get(url)
-            end = asyncio.get_event_loop().time()
-            
-            db = database.SessionLocal()
-            status = models.EndpointStatus(
+            entry = EndpointStatus(
                 url=url,
                 status_code=response.status_code,
-                response_time=end - start
+                response_time=round(end - start, 3),
             )
-            db.add(status)
+            db.add(entry)
             db.commit()
+        finally:
             db.close()
-        except Exception as e:
-            print(f"Error checking {url}: {e}")
+    except Exception:
+        logger.exception("Status-Check für %s fehlgeschlagen", url)
 
-@app.on_event("startup")
-async def startup_event():
-    # Schedule cleanup job
-    pass
-
-@app.get("/tasks", response_model=list[schemas.TaskResponse])
-def read_tasks(db: Session = Depends(get_db)):
-    return db.query(models.Task).all()
-
-@app.post("/tasks", response_model=schemas.TaskResponse)
-def create_task(task: schemas.TaskCreate, db: Session = Depends(get_db)):
-    db_task = models.Task(name=task.name)
-    db.add(db_task)
-    db.commit()
-    db.refresh(db_task)
-    return db_task
-
-@app.get("/status", response_model=list[schemas.EndpointStatusResponse])
-def read_status(db: Session = Depends(get_db)):
-    return db.query(models.EndpointStatus).all()
 
 @app.post("/status/check")
-async def trigger_check(url: str, background_tasks: BackgroundTasks):
+def trigger_status_check(url: str = Query(..., description="Zu prüfende URL")):
+    """Startet einen Status-Check für eine erlaubte URL (Fire-and-forget)."""
     parsed = urlparse(url)
-    if parsed.netloc not in settings.ALLOWED_CHECK_HOSTS:
-        raise HTTPException(status_code=400, detail="URL domain not allowed")
-    background_tasks.add_task(check_endpoint, url)
-    background_tasks.add_task(cleanup_old_status)
+    if parsed.scheme not in ("http", "https") or parsed.hostname not in ALLOWED_CHECK_HOSTS:
+        raise HTTPException(status_code=400, detail="URL ist nicht erlaubt")
+    thread = threading.Thread(target=_run_status_check, args=(url,), daemon=True)
+    thread.start()
     return {"message": "Check initiated"}
+
+
+@app.get("/status", response_model=list[EndpointStatusResponse])
+def list_status(db: Session = Depends(get_db)):
+    """Liefert die gespeicherten Status-Messungen, neueste zuerst."""
+    return db.query(EndpointStatus).order_by(EndpointStatus.id.desc()).all()

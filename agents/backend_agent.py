@@ -78,6 +78,18 @@ Wie du arbeitest:
 - Vollständige Treiber in `requirements.txt`: Wenn du asynchrone Datenbanken nutzt (z. B.
   `create_async_engine` mit `sqlite+aiosqlite`), stelle sicher, dass alle Treiber-Pakete (`aiosqlite`,
   `greenlet`) vollständig in `requirements.txt` enthalten sind.
+- Router-Prefixe NICHT doppelt vergeben: Trägt ein `APIRouter(prefix="/x")` bereits einen eigenen,
+  nicht-leeren Prefix, rufst du `app.include_router(router)` OHNE zusätzlichen `prefix=`-Parameter auf -
+  `include_router(router, prefix="/y")` obendrauf verdoppelt den Pfad (`/y/x` statt `/x`), jeder Aufruf
+  der eigentlich gemeinten Route schlägt dann mit 404 fehl.
+- Login-/Auth-Flow mit `OAuth2PasswordRequestForm`: dieser Endpunkt braucht zur Laufzeit `python-multipart`
+  (Formular-Daten-Parsing) - fehlt es in `requirements.txt`, schlägt NICHT der Start, sondern erst der
+  echte Login-Aufruf fehl. Nutzt du `passlib`/`CryptContext(schemes=["bcrypt"])` zum Passwort-Hashing,
+  pinne `bcrypt<4.1` (passlib 1.7.4 ist unmaintained und bricht mit neueren bcrypt-Versionen).
+- Secrets (JWT-`SECRET_KEY`, API-Keys, o. Ä.) NIEMALS als Literal-String im Quellcode - lies sie per
+  `os.getenv(...)` aus der Umgebung/.env. Fehlt die Variable, generiere für den Entwicklungsfall einen
+  ZUR LAUFZEIT zufälligen Wert (`secrets.token_hex(32)`) statt eines weiteren fest einprogrammierten
+  Platzhalters - ein Literal im Quellcode ist per Definition kein Secret mehr, sobald es committet wird.
 
 Ausgabe-Format:
 - Vollständige, lauffähige Code-Dateien

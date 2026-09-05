@@ -67,6 +67,24 @@ MAX_LINT_SIGNATURE_ITEMS = 20
 # schließt diese Lücke: der Status-Badge berücksichtigt jetzt BEIDES.
 _BLOCKER_TICKET_PREFIXES = ("unresolved-governance-critical-", "unresolved-permission-blocked-")
 
+# Team-Optimierung (Retrospektive 2026-09-05, logpulse-Nachlauf): "recurring-failure-<slug>"-
+# Tickets (agents/orchestrator/verification.py._run_verification_loop, dort per
+# `had_prior_test_ticket` geschlossen) wurden bisher AUSSCHLIESSLICH innerhalb GENAU DES Laufs
+# geschlossen, dessen eigene interne Fix-Schleife bis zu einem erneut grünen Testlauf iterierte.
+# Wurde das zugrunde liegende Problem stattdessen AUSSERHALB dieser einen Schleife behoben (z.B.
+# ein manueller Fix zwischen zwei Läufen, oder ein späterer Lauf ist gleich beim allerersten
+# Testlauf grün, ohne dass die Schließlogik in verification.py für DIESES Ticket je erneut
+# durchlaufen wird), blieb das Ticket für immer "blocked" stehen, obwohl das Projekt auf der
+# Platte längst wieder grün war (real beobachtet: workspace/logpulse - requirements.txt/
+# pytest.ini/app/main.py wurden außerhalb eines Orchestrator-Laufs repariert, `pytest` bestand
+# danach nachweislich, das Ticket blieb trotzdem offen). _open_blocker_ticket() prüft deshalb
+# jetzt, genau wie bei den _BLOCKER_TICKET_PREFIXES-Tickets oben, bei JEDEM Checkpoint mit
+# verification_ok=True zusätzlich, ob ein offenes "recurring-failure-"-Ticket für dieses Projekt
+# existiert - verification_ok bedeutet hier bereits "die echte Testsuite ist in DIESEM Lauf
+# tatsächlich grün", das allein reicht als Beleg (kein weiterer check_completeness()-Aufruf nötig,
+# der prüft nur strukturelle Vollständigkeit, keine Testergebnisse).
+_RECURRING_FAILURE_TICKET_PREFIX = "recurring-failure-"
+
 
 def _open_blocker_ticket(project_dir: str, verification_ok: bool = False):
     """Gibt das offene ("blocked") Governance-/Verifikations-Ticket dieses Projekts zurück,
@@ -86,24 +104,39 @@ def _open_blocker_ticket(project_dir: str, verification_ok: bool = False):
     günstige, rein statische Vollständigkeits-Check (core/verifier/completeness.py, Millisekunden,
     kein LLM-Aufruf) als Ground-Truth herangezogen: findet er keine Stub-/Missing-Import-/Manifest-
     Funde mehr, gilt das Ticket als eigenständig gelöst und wird automatisch geschlossen, statt der
-    reinen Ticket-Statuszeile blind zu vertrauen."""
+    reinen Ticket-Statuszeile blind zu vertrauen. Dieselbe Ground-Truth-Re-Verifikation gilt seit
+    der logpulse-Retrospektive (siehe _RECURRING_FAILURE_TICKET_PREFIX oben) zusätzlich für
+    "recurring-failure-"-Tickets, dort genügt bereits ein grünes verification_ok dieses Laufs."""
     try:
         from core.backlog_store import list_tickets, upsert_ticket
     except Exception:
         return None
     slug = Path(project_dir).name
     try:
-        ticket = next(
-            (t for t in list_tickets(status="blocked")
-             if t.project_slug == slug and t.id.startswith(_BLOCKER_TICKET_PREFIXES)),
-            None,
-        )
+        blocked_tickets = [t for t in list_tickets(status="blocked") if t.project_slug == slug]
     except Exception:
         return None
-    if ticket is None:
-        return None
 
-    if verification_ok:
+    ticket = next((t for t in blocked_tickets if t.id.startswith(_BLOCKER_TICKET_PREFIXES)), None)
+    recurring_failure_ticket = next(
+        (t for t in blocked_tickets if t.id.startswith(_RECURRING_FAILURE_TICKET_PREFIX)), None,
+    )
+
+    if verification_ok and recurring_failure_ticket is not None:
+        try:
+            upsert_ticket(
+                ticket_id=recurring_failure_ticket.id, title=recurring_failure_ticket.title,
+                source=recurring_failure_ticket.source, status="done",
+                project_slug=recurring_failure_ticket.project_slug,
+                detail="Eigenständig behoben (dieser Checkpoint bestätigt eine erneut grüne "
+                       "Testsuite) - automatisch erkannt und geschlossen, ohne auf denselben Lauf "
+                       "zu warten, der das Ticket ursprünglich eröffnet hat.",
+            )
+            recurring_failure_ticket = None
+        except Exception:
+            pass
+
+    if ticket is not None and verification_ok:
         try:
             from core.verifier import ProjectVerifier
             report = ProjectVerifier(project_dir).check_completeness()
@@ -115,11 +148,15 @@ def _open_blocker_ticket(project_dir: str, verification_ok: bool = False):
                            "offenen Funde mehr) - automatisch beim nächsten Checkpoint erkannt und "
                            "geschlossen, ohne einen erneuten Governance-Recheck abzuwarten.",
                 )
-                return None
+                ticket = None
         except Exception:
             pass
 
-    return ticket
+    # Governance-/Berechtigungs-Tickets zuerst (schwerwiegender, ausführlicherer Befundtext) -
+    # ein weiterhin offenes "recurring-failure-"-Ticket wird nur angezeigt, wenn KEIN Governance-
+    # Ticket mehr offen ist, dieselbe Priorisierung wie beim Status-Badge in
+    # generate_project_state_md() unten (ein einzelnes Ticket wird dort dargestellt).
+    return ticket or recurring_failure_ticket
 
 
 def _status_path(project_dir: str) -> Path:

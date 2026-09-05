@@ -312,6 +312,59 @@ class TestOpenBlockerTicketOverridesEinsatzbereitStatus(unittest.TestCase):
         self.assertIn("NICHT einsatzbereit", state_md)
         self.assertTrue(has_open_blocker_ticket(self.temp_dir, verification_ok=True))
 
+    def test_recurring_failure_ticket_auto_closes_on_green_verification(self):
+        # Team-Optimierung (Retrospektive 2026-09-05, logpulse-Nachlauf): bisher wurde ein
+        # "recurring-failure-"-Ticket AUSSCHLIESSLICH innerhalb der EIGENEN Fix-Schleife des
+        # Laufs geschlossen, der es ursprünglich eröffnet hat (agents/orchestrator/
+        # verification.py). Wurde das zugrunde liegende Problem stattdessen AUSSERHALB dieser
+        # Schleife behoben (hier simuliert: verification_ok=True, ohne dass je ein
+        # Governance-Recheck lief), muss der nächste Checkpoint das Ticket trotzdem schließen.
+        ticket_id = f"recurring-failure-{self.project_slug}"
+        backlog_store.upsert_ticket(
+            ticket_id=ticket_id, title="Wiederkehrender Verifikations-Fehler", source="orchestrator",
+            status="blocked", project_slug=self.project_slug, detail="pytest schlägt wiederholt fehl",
+        )
+
+        self.assertFalse(has_open_blocker_ticket(self.temp_dir, verification_ok=True))
+        closed = backlog_store.get_ticket(ticket_id)
+        self.assertEqual(closed.status, "done")
+
+    def test_recurring_failure_ticket_stays_open_when_verification_still_fails(self):
+        ticket_id = f"recurring-failure-{self.project_slug}"
+        backlog_store.upsert_ticket(
+            ticket_id=ticket_id, title="Wiederkehrender Verifikations-Fehler", source="orchestrator",
+            status="blocked", project_slug=self.project_slug, detail="pytest schlägt wiederholt fehl",
+        )
+
+        self.assertTrue(has_open_blocker_ticket(self.temp_dir, verification_ok=False))
+        still_open = backlog_store.get_ticket(ticket_id)
+        self.assertEqual(still_open.status, "blocked")
+
+    def test_governance_ticket_takes_priority_over_recurring_failure_ticket(self):
+        # Beide Ticket-Arten können gleichzeitig offen sein - solange der schwerwiegendere
+        # Governance-Befund nicht per Vollständigkeits-Check bestätigt gelöst ist, wird er
+        # (statt des recurring-failure-Tickets) im Status-Badge angezeigt.
+        backlog_store.upsert_ticket(
+            ticket_id=f"unresolved-governance-critical-{self.project_slug}",
+            title="Ungelöster kritischer Governance-Befund", source="orchestrator",
+            status="blocked", project_slug=self.project_slug, detail="app/models.py fehlt",
+        )
+        backlog_store.upsert_ticket(
+            ticket_id=f"recurring-failure-{self.project_slug}",
+            title="Wiederkehrender Verifikations-Fehler", source="orchestrator",
+            status="blocked", project_slug=self.project_slug, detail="pytest schlägt wiederholt fehl",
+        )
+        # Kein vollständiger Code vorhanden - der Governance-Befund bleibt bestehen.
+        Path(self.temp_dir, "main.py").write_text("from . import models\n", encoding="utf-8")
+
+        state_md = generate_project_state_md(self.temp_dir, verification_ok=True)
+
+        self.assertIn("NICHT einsatzbereit", state_md)
+        self.assertIn(f"unresolved-governance-critical-{self.project_slug}", state_md)
+        # Das recurring-failure-Ticket wird trotzdem eigenständig geschlossen (verification_ok=True).
+        recurring_ticket = backlog_store.get_ticket(f"recurring-failure-{self.project_slug}")
+        self.assertEqual(recurring_ticket.status, "done")
+
     def test_ticket_not_auto_closed_when_verification_did_not_pass(self):
         # Ein bestandener Vollständigkeits-Check allein reicht nicht - solange die eigentliche
         # Testsuite NICHT grün ist (verification_ok=False), bleibt das Ticket offen.

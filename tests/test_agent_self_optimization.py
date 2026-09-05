@@ -9,13 +9,15 @@ Abweichungen), mit dem alten Textmuster nur noch als Fallback. Jede agent_id wir
 die echten Agenten/Leads validiert, damit keine erfundene Rolle in der Wissensbasis landet.
 """
 
+import asyncio
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from agents.orchestrator import Orchestrator
+from core.message_bus import AgentResult
 
 
 class TestSelfOptimizationLearningExtraction(unittest.TestCase):
@@ -109,6 +111,54 @@ Beispiel für einen Tool-Aufruf mit Begründung:
             self.orchestrator._extract_and_store_learnings(report)
 
         self.assertIn("Schreibe nach maximal 2 Lese-Schritten eine erste Datei.", kb.get_learnings("backend"))
+
+    def test_verification_failure_triggers_self_optimization_despite_successful_agents(self):
+        """
+        Team-Optimierung (Retrospektive 2026-09-05, Punkt 4): AgentResult.success beschreibt nur
+        den technischen Tool-Aufruf, nicht ob die echte Verifikation (Tests/Governance) am Ende
+        durchging - vorher blieb die Selbstoptimierung deshalb stumm, wenn alle Agenten
+        anstandslos, aber fachlich falschen Code lieferten (real beobachtet: workspace/
+        zeiterfassung_app, drei Läufe mit identischem Testfehler, KEIN einziger AgentResult mit
+        success=False). `verification_ok=False` muss die Selbstoptimierung jetzt AUCH ohne
+        jeden Agenten-Fehler und ohne hohen Tokenverbrauch auslösen.
+        """
+        results = [
+            AgentResult(task_id="t1", agent_id="backend", agent_name="Backend", success=True,
+                        content="Fertig.", total_tokens=100),
+        ]
+        mock_execute = AsyncMock(return_value=AgentResult(
+            task_id="trainer_auto_opt", agent_id="agent_trainer", agent_name="Agent Trainer",
+            success=True, content='```json\n{"learnings": []}\n```',
+        ))
+        with patch.object(self.orchestrator._agents["agent_trainer"], "execute", mock_execute):
+            trainer_result = asyncio.run(self.orchestrator._run_agent_trainer_self_optimization(
+                user_request="Baue etwas", results=results, retro_content="",
+                verification_ok=False, verification_summary="### Testfehler\n- DTZ001 in tests/test_invoices.py",
+            ))
+
+        mock_execute.assert_called_once()
+        self.assertIsNotNone(trainer_result)
+        # Die echte Verifikations-Zusammenfassung muss dem Trainer als Kontext mitgegeben
+        # werden - sonst kann er die Grundursache nicht diagnostizieren, sondern rät nur aus
+        # den (hier fehlerfreien) Agenten-Metadaten.
+        sent_task = mock_execute.call_args.args[0]
+        self.assertIn("DTZ001", sent_task.context)
+
+    def test_successful_run_without_high_usage_skips_self_optimization(self):
+        """Gegenprobe: verification_ok=True (Standardwert) und keine Fehler/hoher Tokenverbrauch
+        - die Selbstoptimierung darf weiterhin NICHT für jeden grünen Lauf laufen (Kosten)."""
+        results = [
+            AgentResult(task_id="t1", agent_id="backend", agent_name="Backend", success=True,
+                        content="Fertig.", total_tokens=100),
+        ]
+        mock_execute = AsyncMock()
+        with patch.object(self.orchestrator._agents["agent_trainer"], "execute", mock_execute):
+            trainer_result = asyncio.run(self.orchestrator._run_agent_trainer_self_optimization(
+                user_request="Baue etwas", results=results, retro_content="",
+            ))
+
+        mock_execute.assert_not_called()
+        self.assertIsNone(trainer_result)
 
     def test_department_lead_is_a_valid_learning_target(self):
         report = '''```json

@@ -43,6 +43,8 @@ class RetrospectiveMixin:
         user_request: str,
         results: list[AgentResult],
         retro_content: str,
+        verification_ok: bool = True,
+        verification_summary: str = "",
     ) -> AgentResult | None:
         trainer = self._agents.get("agent_trainer")
         if not trainer:
@@ -51,7 +53,18 @@ class RetrospectiveMixin:
         has_errors = any(not r.success for r in results)
         high_usage = any(r.total_tokens > 4000 for r in results)
 
-        if not has_errors and not high_usage:
+        # Team-Optimierung (Retrospektive 2026-09-05, Punkt 4): AgentResult.success beschreibt
+        # nur, ob ein Agent seinen EIGENEN Tool-Aufruf ohne Absturz beendet hat - ein Agent, der
+        # anstandslos, aber fachlich falschen Code liefert (genau die Fälle, die
+        # recurring_failure_ticket_opened/unresolved_governance_critical_ticket_opened auslösen,
+        # siehe agents/orchestrator/verification.py), zählt hier NICHT als Fehler. Real
+        # beobachtet (workspace/zeiterfassung_app, 2026-09-04): drei Läufe mit identischem
+        # DTZ001-/Testfehler, aber KEIN einziger davon hätte has_errors=True ausgelöst, weil
+        # jeder beteiligte Agent seinen Tool-Aufruf technisch erfolgreich beendete - der
+        # Selbstlern-Kanal (memory/agent_learnings.json) bekam dadurch nie die Chance, aus einem
+        # der eigentlich lehrreichsten Signale (ein Fehler, den das Team trotz Eskalation NICHT
+        # selbst beheben konnte) etwas zu lernen.
+        if not has_errors and not high_usage and verification_ok:
             return None
 
         context = (
@@ -62,6 +75,12 @@ class RetrospectiveMixin:
         for r in results:
             if not r.success or r.total_tokens > 4000:
                 context += f"- {r.agent_name} ({r.agent_id}): Success={r.success}, Tokens={r.total_tokens}, Error={r.error}\n"
+        if not verification_ok and verification_summary.strip():
+            context += (
+                "\nECHTE VERIFIKATION SCHLUG FEHL (Tests/Governance/Lint blieben rot, obwohl "
+                "kein Agent selbst einen Fehler meldete - das ist das eigentlich lehrreichste "
+                f"Signal hier):\n{verification_summary.strip()[:2000]}\n"
+            )
 
         task = AgentTask(
             task_id="trainer_auto_opt",

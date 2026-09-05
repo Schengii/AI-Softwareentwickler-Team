@@ -8,11 +8,15 @@ document.addEventListener('DOMContentLoaded', () => {
 async function fetchWebhooks() {
     try {
         const response = await fetch('/api/webhooks');
-        if (!response.ok) throw new Error('Fehler beim Laden der Webhooks');
+        if (!response.ok) throw new Error(`HTTP ${response.status}: Fehler beim Laden der Webhooks`);
         const data = await response.json();
         renderWebhooks(data);
     } catch (error) {
         console.error('Fehler:', error);
+        const container = document.getElementById('logs-container');
+        if (container) {
+            container.innerHTML = `<p class="text-red-400">Fehler beim Laden der Webhooks: ${error.message}</p>`;
+        }
     }
 }
 

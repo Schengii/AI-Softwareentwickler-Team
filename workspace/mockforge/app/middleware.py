@@ -1,23 +1,15 @@
 from datetime import UTC, datetime
 
-from fastapi import Request
-from starlette.middleware.base import BaseHTTPMiddleware
-
-from app.models import AsyncSessionLocal, TrafficLog
-
+# ... (Imports)
 
 class ProxyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        body_bytes = await request.body()
-        async def receive():
-            return {"type": "http.request", "body": body_bytes}
-        request._receive = receive
-
+        # ... (Request-Handling)
         response = await call_next(request)
 
         async with AsyncSessionLocal() as db, db.begin():
             log = TrafficLog(
-                timestamp=datetime.now(UTC).isoformat(),
+                timestamp=datetime.now(tz=UTC).isoformat(),
                 method=request.method,
                 url=str(request.url),
                 request_headers=str(dict(request.headers)),

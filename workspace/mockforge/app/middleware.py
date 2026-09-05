@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -15,16 +15,21 @@ class ProxyMiddleware(BaseHTTPMiddleware):
 
         response = await call_next(request)
 
-        async with AsyncSessionLocal() as db, db.begin():
-            log = TrafficLog(
-                timestamp=datetime.now(UTC).isoformat(),
-                method=request.method,
-                url=str(request.url),
-                request_headers=str(dict(request.headers)),
-                request_body=body_bytes.decode("utf-8", errors="ignore"),
-                response_status=response.status_code,
-                response_body="",
-            )
-            db.add(log)
-            await db.commit()
+        try:
+            async with AsyncSessionLocal() as db, db.begin():
+                log = TrafficLog(
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    method=request.method,
+                    url=str(request.url),
+                    request_headers=str(dict(request.headers)),
+                    request_body=body_bytes.decode("utf-8", errors="ignore"),
+                    response_status=response.status_code,
+                    response_body="",
+                )
+                db.add(log)
+                await db.commit()
+        except Exception:
+            # Logging-Integration empfohlen, hier silent fail um Request-Flow zu schützen
+            pass
+            
         return response

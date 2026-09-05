@@ -15,4 +15,4 @@ passlib
 # reproduziert). Bekannter, dokumentierter Kompatibilitätsbruch - bcrypt bewusst < 4.1 gepinnt.
 bcrypt<4.1
 python-multipart
-python-multipart
+python-dotenv

@@ -1,5 +1,8 @@
+import os
+import warnings
 from datetime import datetime, timedelta
 
+from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
@@ -9,7 +12,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import models
 
-SECRET_KEY = "SUPER_SECRET_KEY_CHANGE_ME_IN_PROD" # In production, use env variable
+load_dotenv()
+
+# Fällt bewusst NICHT hart (kein raise) auf einen fehlenden SECRET_KEY zurück - lokale
+# Entwicklung/Tests sollen ohne .env-Setup lauffähig bleiben (siehe tests/test_api.py, das
+# main.py/auth.py ohne eigene Umgebungsvariablen importiert). Der Fallback ist bewusst
+# unverkennbar unsicher benannt und meldet sich zusätzlich per Warnung, statt eine
+# Produktionsinstanz still mit einem öffentlich im Quellcode stehenden Schlüssel laufen zu
+# lassen (siehe .env.example für die erwartete lokale Einrichtung).
+_INSECURE_DEV_FALLBACK_SECRET_KEY = "SUPER_SECRET_KEY_CHANGE_ME_IN_PROD"
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    warnings.warn(
+        "SECRET_KEY ist nicht gesetzt (Umgebungsvariable oder .env, siehe .env.example) - "
+        "verwende einen unsicheren Entwicklungs-Platzhalter. NIEMALS so in Produktion "
+        "einsetzen, jeder mit Zugriff auf den Quellcode könnte sonst gültige Tokens fälschen.",
+        stacklevel=2,
+    )
+    SECRET_KEY = _INSECURE_DEV_FALLBACK_SECRET_KEY
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 

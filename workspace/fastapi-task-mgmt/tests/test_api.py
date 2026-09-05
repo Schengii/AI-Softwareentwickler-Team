@@ -3,13 +3,26 @@ from httpx import ASGITransport, AsyncClient
 from main import app
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
-from models import Base
+from models import Base, get_db
 
 # Test-Datenbank Konfiguration
 DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 engine = create_async_engine(DATABASE_URL, echo=False)
 TestingSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+async def _override_get_db():
+    async with TestingSessionLocal() as session:
+        yield session
+
+
+# Ohne das nutzen die über den Testclient aufgerufenen Endpunkte weiterhin models.get_db()
+# (die ECHTE App-Engine, sqlite+aiosqlite:///./tasks.db) statt der oben angelegten
+# In-Memory-Test-Engine - die `db`-Fixture unten würde dann Tabellen in einer völlig anderen
+# Datenbank anlegen, als die Endpunkte tatsächlich verwenden ("no such table: tasks").
+app.dependency_overrides[get_db] = _override_get_db
+
 
 @pytest.fixture(scope="session")
 async def db():

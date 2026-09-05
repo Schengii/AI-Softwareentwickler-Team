@@ -1,5 +1,16 @@
 name: AI Team Autonomous Scheduler
 
+# Team-Optimierung (2026-09-05): der neue "Run Backlog Worker Cycle"-Schritt kann jetzt deutlich
+# länger laufen als die ursprünglichen reinen Poll-Schritte (siehe timeout-minutes unten) - ohne
+# concurrency-Guard könnte der nächste Cron-Trigger (alle 30 Minuten) starten, WÄHREND ein
+# vorheriger Lauf noch an einem Backlog-Ticket arbeitet, und dasselbe Ticket doppelt aufgreifen
+# (doppelter Tokenverbrauch, ggf. widersprüchliche PRs). cancel-in-progress bewusst NICHT
+# gesetzt: ein bereits laufender Fix-Versuch soll zu Ende laufen statt mitten drin abgebrochen
+# zu werden - der neue Lauf wartet stattdessen, bis der alte fertig ist.
+concurrency:
+  group: ai-team-scheduler
+  cancel-in-progress: false
+
 on:
   schedule:
     # Alle 30 Minuten tagsüber prüfen
@@ -16,11 +27,17 @@ on:
           - check-issues
           - check-pr-reviews
           - check-dependencies
+          - work-backlog
 
 jobs:
   scheduled-cycle:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Team-Optimierung (2026-09-05): 30 Minuten reichten für die ursprünglichen drei reinen
+    # GitHub-Poll-Schritte (Sekunden bis wenige Minuten). Der neue "Run Backlog Worker Cycle"-
+    # Schritt kann einen VOLLEN Orchestrator-Lauf auslösen (real beobachtet: bis zu ~20+ Minuten
+    # für ein einzelnes Ticket, siehe taskpulse-Retrospektive) - ohne Erhöhung würde der Job
+    # mitten in einem laufenden Fix-Versuch hart abgebrochen statt sauber zu beenden.
+    timeout-minutes: 60
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -63,3 +80,17 @@ jobs:
         if: github.event.inputs.action == 'all' || github.event.inputs.action == 'check-dependencies' || github.event_name == 'schedule'
         run: |
           python main.py --check-dependencies
+
+      # Team-Optimierung (Retrospektive 2026-09-05): core/backlog_worker.py wurde genau für
+      # diesen Scheduler gebaut (siehe dessen Docstring, "aufgerufen ... z.B. per Cron/
+      # Taskplaner/GitHub-Actions-Schedule"), aber bis hierher NIE tatsächlich hier eingebunden
+      # - liegen gebliebene Tickets (recurring-failure-*, unresolved-governance-critical-*,
+      # recurring-lint-*, ...) blieben ohne manuellen `--work-backlog`-Aufruf für immer
+      # "blocked", die eingebaute Modell-Eskalation ab dem zweiten Retry (Orchestrator
+      # (escalate_models=True)) griff dadurch nie automatisch. BACKLOG_WORKER_MAX_PER_CYCLE=1
+      # (Standard, config.py) begrenzt bereits konservativ auf ein Ticket pro Zyklus - dieselbe
+      # Vorsicht wie bei den anderen drei Checks oben.
+      - name: Run Backlog Worker Cycle
+        if: github.event.inputs.action == 'all' || github.event.inputs.action == 'work-backlog' || github.event_name == 'schedule'
+        run: |
+          python main.py --work-backlog

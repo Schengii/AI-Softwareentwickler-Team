@@ -90,6 +90,34 @@ _GOVERNANCE_RETRY_PREFIXES = (
 )
 
 
+_PROVIDER_EXHAUSTION_MARKERS = ("429", "resource_exhausted", "quota")
+
+
+def _is_provider_exhaustion_error(error: str | None) -> bool:
+    """Erkennt eine API-Kontingent-/Rate-Limit-Erschöpfung (429/RESOURCE_EXHAUSTED/quota) in
+    einer AgentResult.error-Meldung - siehe _process_single_ticket()-Aufrufstelle für die
+    volle Herleitung (echter Fund, KI-Team-Optimierungs-Session: ein Lauf, bei dem JEDER
+    Agenten-Aufruf inkl. aller konfigurierten Fallback-Modelle an genau diesem Fehler
+    scheiterte, öffnete trotzdem einen PR - der enthielt aber ausschließlich automatisch
+    aktualisierte Statusdateien, keine einzige echte Code-Änderung, weil kein Agent je
+    erfolgreich lief)."""
+    if not error:
+        return False
+    lowered = error.lower()
+    return any(marker in lowered for marker in _PROVIDER_EXHAUSTION_MARKERS)
+
+
+def _all_agents_failed_on_provider_exhaustion(results: list) -> bool:
+    """True, wenn DIESER Lauf mindestens ein Agenten-Ergebnis hatte UND ALLE davon an einer
+    API-Kontingent-Erschöpfung scheiterten - eine leere Ergebnisliste (kein Agent lief
+    überhaupt) zählt bewusst NICHT als "alle gescheitert", das ist ein anderer, hier nicht
+    behandelter Fall."""
+    return bool(results) and all(
+        not getattr(r, "success", True) and _is_provider_exhaustion_error(getattr(r, "error", None))
+        for r in results
+    )
+
+
 def _governance_retry_pool(all_tickets: list[Ticket]) -> list[Ticket]:
     """
     Liefert die "blocked"-Governance-/Verifikations-Tickets, die noch nicht
@@ -282,26 +310,52 @@ async def _process_single_ticket(
     # Ticket nachweislich korrekt bearbeitet hatte. Siehe core/git_isolation.py.
     # copy_worktree_changes_to_target()-Docstring für die volle Herleitung.
     worktree = getattr(orchestrator, "last_isolated_worktree", None)
+    # Echter Fund (KI-Team-Optimierungs-Session): ein Lauf, bei dem JEDER Agenten-Aufruf
+    # (inkl. aller konfigurierten Fallback-Modelle, siehe core/llm_factory.py.MODEL_FALLBACKS)
+    # an einer API-Kontingent-Erschöpfung scheiterte, öffnete trotzdem einen PR - der enthielt
+    # ausschließlich automatisch aktualisierte Statusdateien (.ai_team_status.json,
+    # PROJECT_STATE.md, ui_screenshot.png; diese werden unabhängig vom Agenten-Erfolg vom
+    # Orchestrator selbst geschrieben), keine einzige echte Code-Änderung. Bewusst NUR bei
+    # 100% Fehlschlag durch Kontingent-Erschöpfung übersprungen (siehe
+    # _all_agents_failed_on_provider_exhaustion()-Docstring) - ein normaler Verifikations-
+    # Fehlschlag mit ECHTEN Code-Änderungen öffnet weiterhin wie gewohnt einen (dann als Draft
+    # markierten) PR, siehe Moduldocstring oben ("...verwerfen bereits geleistete Arbeit
+    # NICHT stillschweigend").
+    provider_exhausted = _all_agents_failed_on_provider_exhaustion(
+        getattr(orchestrator, "last_agent_results", None) or [],
+    )
     if worktree is not None:
-        try:
-            copied = copy_worktree_changes_to_target(worktree, BASE_DIR)
-            if status_callback and copied:
+        if provider_exhausted:
+            if status_callback:
                 status_callback(
-                    f"🌳 {len(copied)} Datei(en) aus isoliertem Worktree `{worktree.branch}` "
-                    "ins echte Arbeitsverzeichnis übernommen."
+                    "⏭️ Alle Agenten-Aufrufe scheiterten an einer API-Kontingent-Erschöpfung - "
+                    "keine echte Änderung entstanden, Worktree wird verworfen statt einen "
+                    "leeren PR zu eröffnen."
                 )
-        finally:
-            # Worktree danach immer aufräumen (force=True, da die soeben übertragenen
-            # Änderungen dort absichtlich als "unkommittiert" zurückbleiben) - ein
-            # vollautomatischer Aufrufer hat keinen Menschen, der ihn später manuell prüft.
             remove_worktree(worktree, force=True)
+        else:
+            try:
+                copied = copy_worktree_changes_to_target(worktree, BASE_DIR)
+                if status_callback and copied:
+                    status_callback(
+                        f"🌳 {len(copied)} Datei(en) aus isoliertem Worktree `{worktree.branch}` "
+                        "ins echte Arbeitsverzeichnis übernommen."
+                    )
+            finally:
+                # Worktree danach immer aufräumen (force=True, da die soeben übertragenen
+                # Änderungen dort absichtlich als "unkommittiert" zurückbleiben) - ein
+                # vollautomatischer Aufrufer hat keinen Menschen, der ihn später manuell prüft.
+                remove_worktree(worktree, force=True)
 
     diff_status = github_agent.get_status()
     if not diff_status:
-        return BacklogRunResult(
-            ticket.id, ticket.title, "no_changes",
-            "Ticket bearbeitet, dabei aber keine Datei geändert - vermutlich war der Titel nicht eindeutig genug.",
+        detail = (
+            "Alle Agenten-Aufrufe scheiterten an einer API-Kontingent-Erschöpfung (429/"
+            "RESOURCE_EXHAUSTED) - kein Fortschritt möglich, bitte später erneut versuchen."
+            if provider_exhausted else
+            "Ticket bearbeitet, dabei aber keine Datei geändert - vermutlich war der Titel nicht eindeutig genug."
         )
+        return BacklogRunResult(ticket.id, ticket.title, "no_changes", detail)
 
     # Kein Mensch zur Bestätigung verfügbar – ein Secret-Fund blockiert deshalb HART, anders
     # als im interaktiven Pfad (interface/cli.py), wo bewusst übersteuert werden kann (siehe

@@ -789,6 +789,12 @@ class Orchestrator(
         # dessen Tests nie bestätigt bestanden haben.
         self.last_verification_ok = verification_ok
         self.last_verification_summary = verification_summary
+        # Team-Optimierung (KI-Team-Optimierungs-Session, echter Fund): core/backlog_worker.py
+        # braucht Zugriff auf die vollständige Ergebnisliste, um zu erkennen, ob ein Lauf
+        # AUSSCHLIESSLICH an einer API-Kontingent-Erschöpfung scheiterte (dann soll KEIN PR mit
+        # nur Status-Datei-Änderungen eröffnet werden) - siehe dort
+        # `_is_provider_exhaustion_error()`. Bisher gab es dafür kein öffentliches Attribut.
+        self.last_agent_results = results
 
         # Härteres Gate gegen wiederholtes, blindes Scheitern (Punkt 4 einer Team-Retrospektive):
         # die reine Prompt-Warnung in format_context_for_agents() (project_history_context oben)

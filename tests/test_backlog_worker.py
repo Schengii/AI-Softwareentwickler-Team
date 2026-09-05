@@ -42,6 +42,12 @@ class TestBacklogWorkerOrchestration(unittest.TestCase):
         # `getattr(orchestrator, "last_isolated_worktree", None)` ein truthy Mock-Objekt statt
         # None liefern und fälschlich einen (nicht existierenden) Worktree-Merge auslösen.
         self.fake_orchestrator.last_isolated_worktree = None
+        # Derselbe Fallstrick für last_agent_results: `bool(MagicMock())` ist standardmäßig
+        # True, `list(MagicMock())` aber `[]` - `_all_agents_failed_on_provider_exhaustion()`
+        # würde ein unangetastetes MagicMock sonst fälschlich als "alle Agenten sind an einer
+        # Kontingent-Erschöpfung gescheitert" werten (bool(results)=True, all(...) über eine
+        # vacuously leere Iteration=True).
+        self.fake_orchestrator.last_agent_results = []
 
         self._gh_patcher = patch("core.backlog_worker.GitHubAgent", return_value=self.fake_github)
         self._orch_patcher = patch("core.backlog_worker.Orchestrator", return_value=self.fake_orchestrator)
@@ -188,6 +194,12 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
         # `getattr(orchestrator, "last_isolated_worktree", None)` ein truthy Mock-Objekt statt
         # None liefern und fälschlich einen (nicht existierenden) Worktree-Merge auslösen.
         self.fake_orchestrator.last_isolated_worktree = None
+        # Derselbe Fallstrick für last_agent_results: `bool(MagicMock())` ist standardmäßig
+        # True, `list(MagicMock())` aber `[]` - `_all_agents_failed_on_provider_exhaustion()`
+        # würde ein unangetastetes MagicMock sonst fälschlich als "alle Agenten sind an einer
+        # Kontingent-Erschöpfung gescheitert" werten (bool(results)=True, all(...) über eine
+        # vacuously leere Iteration=True).
+        self.fake_orchestrator.last_agent_results = []
 
         self._gh_patcher = patch("core.backlog_worker.GitHubAgent", return_value=self.fake_github)
         self._orch_patcher = patch("core.backlog_worker.Orchestrator", return_value=self.fake_orchestrator)
@@ -360,6 +372,52 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
         self.assertEqual(len(report.results), 1)
         self.assertEqual(report.results[0].outcome, "pr_opened")
 
+    def test_all_agents_failed_on_provider_exhaustion_skips_worktree_merge_and_pr(self):
+        """
+        Echter Fund (KI-Team-Optimierungs-Session): ein Lauf, bei dem JEDER Agenten-Aufruf
+        (inkl. aller konfigurierten Fallback-Modelle) an einer API-Kontingent-Erschöpfung
+        (429 RESOURCE_EXHAUSTED) scheiterte, öffnete trotzdem einen PR - der enthielt
+        ausschließlich automatisch aktualisierte Statusdateien (vom Orchestrator selbst
+        geschrieben, unabhängig vom Agenten-Erfolg), keine einzige echte Code-Änderung.
+        """
+        fake_worktree = MagicMock(path="/fake/worktree/path", branch="ai-team/fix-abc123")
+        self.fake_orchestrator.last_isolated_worktree = fake_worktree
+        self.fake_orchestrator.last_agent_results = [
+            MagicMock(success=False, error="Gemini Function-Calling Fehler nach allen Fallback-Modellen: 429 RESOURCE_EXHAUSTED."),
+            MagicMock(success=False, error="Gemini Function-Calling Fehler nach allen Fallback-Modellen: 429 RESOURCE_EXHAUSTED."),
+        ]
+        self.fake_github.get_status.return_value = ""  # kein echter Code-Diff, nur Statusdateien
+        backlog_store.upsert_ticket("cli-1", "Login-Seite bauen", "cli", "todo")
+
+        with patch("core.backlog_worker.copy_worktree_changes_to_target") as mock_copy, \
+             patch("core.backlog_worker.remove_worktree") as mock_remove:
+            report = asyncio.run(run_backlog_poll_cycle())
+
+        mock_copy.assert_not_called()
+        mock_remove.assert_called_once_with(fake_worktree, force=True)
+        self.assertEqual(report.results[0].outcome, "no_changes")
+        self.assertIn("Kontingent-Erschöpfung", report.results[0].detail)
+        self.fake_github.create_pull_request.assert_not_called()
+
+    def test_partial_agent_failure_still_merges_worktree_and_opens_pr(self):
+        """Nur EIN gescheiterter Agent (nicht alle) ist ein normaler Verifikations-Fehlschlag -
+        echte Arbeit wird weiterhin übernommen und als (ggf. Draft-)PR eröffnet, nicht verworfen."""
+        fake_worktree = MagicMock(path="/fake/worktree/path", branch="ai-team/fix-abc123")
+        self.fake_orchestrator.last_isolated_worktree = fake_worktree
+        self.fake_orchestrator.last_agent_results = [
+            MagicMock(success=True, error=None),
+            MagicMock(success=False, error="Gemini Function-Calling Fehler: 429 RESOURCE_EXHAUSTED."),
+        ]
+        backlog_store.upsert_ticket("cli-1", "Login-Seite bauen", "cli", "todo")
+
+        with patch("core.backlog_worker.copy_worktree_changes_to_target", return_value=["app/main.py"]) as mock_copy, \
+             patch("core.backlog_worker.remove_worktree") as mock_remove:
+            report = asyncio.run(run_backlog_poll_cycle())
+
+        mock_copy.assert_called_once()
+        mock_remove.assert_called_once_with(fake_worktree, force=True)
+        self.assertEqual(report.results[0].outcome, "pr_opened")
+
     def test_no_isolated_worktree_skips_merge_step(self):
         backlog_store.upsert_ticket("cli-1", "Login-Seite bauen", "cli", "todo")
 
@@ -434,6 +492,41 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
 
         self.assertEqual(len(report.results), 1)
         self.assertEqual(report.results[0].ticket_id, "cli-1")
+
+
+class TestProviderExhaustionDetection(unittest.TestCase):
+    def test_detects_429_and_resource_exhausted_and_quota(self):
+        for msg in (
+            "Gemini Function-Calling Fehler: 429 RESOURCE_EXHAUSTED.",
+            "You exceeded your current quota, please check your plan",
+            "429",
+        ):
+            self.assertTrue(backlog_worker._is_provider_exhaustion_error(msg), msg)
+
+    def test_unrelated_error_not_flagged(self):
+        self.assertFalse(backlog_worker._is_provider_exhaustion_error("SyntaxError: invalid syntax"))
+        self.assertFalse(backlog_worker._is_provider_exhaustion_error(None))
+
+    def test_all_failed_requires_every_result_to_be_provider_exhaustion(self):
+        all_exhausted = [
+            MagicMock(success=False, error="429 RESOURCE_EXHAUSTED"),
+            MagicMock(success=False, error="quota exceeded"),
+        ]
+        self.assertTrue(backlog_worker._all_agents_failed_on_provider_exhaustion(all_exhausted))
+
+    def test_empty_results_are_not_all_failed(self):
+        self.assertFalse(backlog_worker._all_agents_failed_on_provider_exhaustion([]))
+
+    def test_one_successful_result_is_not_all_failed(self):
+        mixed = [
+            MagicMock(success=True, error=None),
+            MagicMock(success=False, error="429 RESOURCE_EXHAUSTED"),
+        ]
+        self.assertFalse(backlog_worker._all_agents_failed_on_provider_exhaustion(mixed))
+
+    def test_failure_for_a_different_reason_is_not_provider_exhaustion(self):
+        other_failure = [MagicMock(success=False, error="SyntaxError: invalid syntax")]
+        self.assertFalse(backlog_worker._all_agents_failed_on_provider_exhaustion(other_failure))
 
 
 if __name__ == "__main__":

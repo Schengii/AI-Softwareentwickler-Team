@@ -31,7 +31,7 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 # DB Initialisierung
-database.init_db()
+database.Base.metadata.create_all(bind=database.engine)
 
 def get_db():
     db = database.SessionLocal()

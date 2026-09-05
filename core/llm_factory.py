@@ -70,13 +70,24 @@ if GROQ_API_KEY:
 # Nur Gemini-Modellnamen gehören hier als Key rein.
 MODEL_FALLBACKS = {
     # Gemini erschöpft/fehlerhaft -> auf das jeweils gleichwertige Claude-Modell ausweichen,
-    # dann eine kleinere Gemini-Stufe, zuletzt Groq als kostenloser Backstop.
-    "gemini-pro-latest":    ["claude-opus-5", "claude-sonnet-5", "gemini-3.8-flash", "gemini-3.6-flash"],
-    "gemini-3.8-flash":     ["claude-sonnet-5", "gemini-3.6-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
-    "gemini-3.6-flash":     ["claude-sonnet-5", "gemini-3.8-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
-    "gemini-3.1-flash-lite": ["claude-haiku-4-5-20251001", "gemini-3.8-flash", "gemini-3.6-flash", "groq:openai/gpt-oss-120b"],
+    # dann eine kleinere Gemini-Stufe, dann DeepSeek, zuletzt Groq als kostenloser Backstop.
+    #
+    # Team-Optimierung (KI-Team-Optimierungs-Session, echter Fund): DEEPSEEK_API_KEY war in
+    # diesem Setup bereits konfiguriert (core/llm_factory.py.DeepSeekClient existiert seit
+    # Langem, _provider_available() prüft den Key bereits korrekt), tauchte aber in KEINER
+    # dieser Fallback-Ketten als Fallback-ZIEL auf - eine vollständige Gemini-Tageskontingent-
+    # Erschöpfung (google.rpc.QuotaFailure: "GenerateRequestsPerDayPerProjectPerModel-
+    # FreeTier") legte dadurch jeden Agenten-Aufruf lahm, obwohl ein zweiter, komplett
+    # ungenutzter Anbieter mit eigenem, separatem Tageskontingent bereits einsatzbereit war
+    # (live verifiziert: ein echter DeepSeek-Tool-Call gelang sofort). Vor Groq einsortiert,
+    # da DeepSeek ein vollwertiges, eigenständiges Modell ist (nicht nur ein Open-Weight-
+    # Kompatibilitäts-Backstop wie gpt-oss-120b über Groq).
+    "gemini-pro-latest":    ["claude-opus-5", "claude-sonnet-5", "deepseek:deepseek-chat", "gemini-3.8-flash", "gemini-3.6-flash"],
+    "gemini-3.8-flash":     ["claude-sonnet-5", "deepseek:deepseek-chat", "gemini-3.6-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
+    "gemini-3.6-flash":     ["claude-sonnet-5", "deepseek:deepseek-chat", "gemini-3.8-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
+    "gemini-3.1-flash-lite": ["claude-haiku-4-5-20251001", "deepseek:deepseek-chat", "gemini-3.8-flash", "gemini-3.6-flash", "groq:openai/gpt-oss-120b"],
     # Ältere/abweichende Konfigurationswerte (falls per .env manuell gesetzt) ebenfalls abdecken.
-    "gemini-3.5-flash":     ["claude-sonnet-5", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
+    "gemini-3.5-flash":     ["claude-sonnet-5", "deepseek:deepseek-chat", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
 }
 
 def _provider_available(model_name: str) -> bool:

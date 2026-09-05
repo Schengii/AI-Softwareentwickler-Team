@@ -25,7 +25,10 @@ class _FakeGenAIResponse:
 class TestLLMRouting(unittest.TestCase):
     def tearDown(self):
         # Global geteilten TokenGuard-Zustand nicht in andere Tests durchsickern lassen.
-        for model in ("gemini-3.6-flash", GEMINI_STANDARD_MODEL, "gemini-3.1-flash-lite", "claude-sonnet-5", "groq:openai/gpt-oss-120b"):
+        for model in (
+            "gemini-3.6-flash", GEMINI_STANDARD_MODEL, "gemini-3.1-flash-lite", "claude-sonnet-5",
+            "deepseek:deepseek-chat", "groq:openai/gpt-oss-120b",
+        ):
             token_guard._exhausted_models.pop(model, None)
 
     @patch("core.llm_factory._gemini_client")
@@ -62,9 +65,10 @@ class TestLLMRouting(unittest.TestCase):
         self.assertNotIn("claude-sonnet-5", called_models)
         self.assertTrue(all(m.startswith("gemini") for m in called_models), called_models)
 
+    @patch("core.llm_factory.DEEPSEEK_API_KEY", "sk-dummy-test-key")
     @patch("core.llm_factory.asyncio.sleep")
     @patch("core.llm_factory._gemini_client")
-    def test_waits_briefly_when_entire_fallback_chain_is_exhausted(self, mock_gemini_client, mock_sleep):
+    def test_waits_briefly_when_entire_fallback_chain_is_exhausted(self, mock_gemini_client, mock_sleep, mock_deepseek_key=None):
         """
         Realer Fund aus einem echten Lauf: als ALLE Modelle einer Fallback-Kette gleichzeitig
         als erschöpft markiert waren (kein ANTHROPIC_API_KEY als Backstop), scheiterte jeder
@@ -72,17 +76,22 @@ class TestLLMRouting(unittest.TestCase):
         entfernten) Cooldown abzuwarten. Jetzt wird kurz gewartet (gedeckelt via
         MAX_EXHAUSTION_WAIT_SECONDS), dann erneut versucht.
         """
-        # Die GESAMTE Kette von gemini-3.6-flash (sich selbst + claude-sonnet-5 +
+        # Die GESAMTE Kette von gemini-3.6-flash (sich selbst + claude-sonnet-5 + DeepSeek +
         # gemini-3.1-flash-lite + groq, siehe MODEL_FALLBACKS) muss als erschöpft markiert
         # sein, damit die Wartelogik greift - nicht nur ein einzelnes Glied. Realer Fund (Team-
         # Retrospektive nach dem taskpulse-Lauf): als MODEL_FALLBACKS um "gemini-3.8-flash" als
         # zusätzlichen Hop erweitert wurde (siehe core/llm_factory.py), fehlte dieser Test hier
         # in der Liste - die Kette fand dadurch einen freien Hop und die Wartelogik griff nie
         # (mock_sleep wurde 0x statt 1x aufgerufen), obwohl das GETESTETE Verhalten selbst
-        # unverändert korrekt war.
+        # unverändert korrekt war. DEEPSEEK_API_KEY wird bewusst auf einen festen Dummy-Wert
+        # gepatcht (statt sich auf den echten, lokal evtl. gesetzten Schlüssel aus .env zu
+        # verlassen) - sonst wäre _provider_available("deepseek:...") je nach Testumgebung
+        # unterschiedlich, ohne DeepSeek würde dieser Test lokal (mit echtem Schlüssel) und in
+        # der CI (ohne Schlüssel) unterschiedliches Verhalten zeigen.
         token_guard.mark_model_exhausted("gemini-3.6-flash", "Test", cooldown_seconds=3.0)
         token_guard.mark_model_exhausted(GEMINI_STANDARD_MODEL, "Test", cooldown_seconds=3.0)
         token_guard.mark_model_exhausted("claude-sonnet-5", "Test", cooldown_seconds=3.0)
+        token_guard.mark_model_exhausted("deepseek:deepseek-chat", "Test", cooldown_seconds=3.0)
         token_guard.mark_model_exhausted("gemini-3.1-flash-lite", "Test", cooldown_seconds=3.0)
         token_guard.mark_model_exhausted("groq:openai/gpt-oss-120b", "Test", cooldown_seconds=3.0)
 
@@ -170,6 +179,48 @@ class TestLLMRouting(unittest.TestCase):
         self.assertEqual(result.text, "von Groq gerettet")
         fake_groq_client.generate_with_tools.assert_called_once()
 
+    @patch("core.llm_factory.ANTHROPIC_API_KEY", "")
+    @patch("core.llm_factory.DEEPSEEK_API_KEY", "sk-dummy-test-key")
+    @patch("core.llm_factory.LLMFactory.create_for_model")
+    @patch("core.llm_factory._gemini_client")
+    def test_falls_back_to_deepseek_before_groq_when_gemini_and_claude_both_fail(
+        self, mock_gemini_client, mock_create_for_model, mock_deepseek_key=None, mock_anthropic_key=None,
+    ):
+        """
+        Echter Fund (KI-Team-Optimierungs-Session): eine vollständige Gemini-Tageskontingent-
+        Erschöpfung (google.rpc.QuotaFailure "GenerateRequestsPerDayPerProjectPerModel-
+        FreeTier") legte jeden Agenten-Aufruf lahm, obwohl DeepSeek (eigenes, komplett
+        unbenutztes Tageskontingent) live nachweislich funktionierte - MODEL_FALLBACKS listete
+        es bisher nirgends als Fallback-Ziel. DeepSeek steht jetzt VOR Groq in der Kette.
+        """
+        def fake_generate_content(model, contents, config):
+            raise RuntimeError("simulierter Gemini-Fehler (z.B. Function-Calling)")
+        mock_gemini_client.models.generate_content = fake_generate_content
+
+        fake_deepseek_client = AsyncMock()
+        fake_deepseek_client.generate_with_tools = AsyncMock(return_value=LLMResponse(
+            text="von DeepSeek gerettet", model_name="deepseek:deepseek-chat",
+            prompt_tokens=5, completion_tokens=3, total_tokens=8, tool_calls=[],
+        ))
+
+        def fake_create_for_model(model_name):
+            if model_name == "deepseek:deepseek-chat":
+                return fake_deepseek_client
+            raise RuntimeError(f"kein API-Key für {model_name}")
+
+        mock_create_for_model.side_effect = fake_create_for_model
+
+        client = GeminiClient(model_name="gemini-3.1-flash-lite")
+
+        async def run():
+            return await client.generate_with_tools([], None, [])
+
+        import asyncio
+        result = asyncio.run(run())
+
+        self.assertEqual(result.text, "von DeepSeek gerettet")
+        fake_deepseek_client.generate_with_tools.assert_called_once()
+
     @patch("core.llm_factory.GROQ_API_KEY", "gsk_dummy_test_key")
     @patch("core.llm_factory.LLMFactory.create_for_model")
     @patch("core.llm_factory._gemini_client")
@@ -213,10 +264,11 @@ class TestLLMRouting(unittest.TestCase):
         fake_groq_client.generate_with_usage.assert_called_once()
 
     @patch("core.llm_factory.ANTHROPIC_API_KEY", "")
+    @patch("core.llm_factory.DEEPSEEK_API_KEY", "sk-dummy-test-key")
     @patch("core.llm_factory.LLMFactory.create_for_model")
     @patch("core.llm_factory._gemini_client")
     def test_claude_candidate_is_skipped_entirely_without_anthropic_api_key(
-        self, mock_gemini_client, mock_create_for_model,
+        self, mock_gemini_client, mock_create_for_model, mock_deepseek_key=None,
     ):
         """
         Realer Fund aus mehreren echten Läufen (siehe ZWISCHENSTAND_KI_TEAM_PROJEKT.md):
@@ -244,7 +296,11 @@ class TestLLMRouting(unittest.TestCase):
         result = asyncio.run(run())
 
         self.assertEqual(result.text, "von gemini-3.8-flash gerettet")
-        mock_create_for_model.assert_not_called()
+        # Claude darf NIE aufgerufen werden - andere, tatsächlich verfügbare Nicht-Gemini-
+        # Kandidaten (hier: DeepSeek, siehe MODEL_FALLBACKS) dürfen dagegen versucht werden,
+        # das ist kein Regressions-Signal für DIESEN Test (der geht gezielt um Claude).
+        claude_calls = [c for c in mock_create_for_model.call_args_list if c.args and c.args[0] == "claude-sonnet-5"]
+        self.assertEqual(claude_calls, [])
 
 
 if __name__ == "__main__":

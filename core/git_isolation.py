@@ -181,7 +181,19 @@ def copy_worktree_changes_to_target(worktree: IsolatedWorktree, target_git_root:
     übertragen gab) - der Aufrufer kann sie z.B. loggen.
     """
     try:
-        result = _run_git(["status", "--porcelain"], cwd=worktree.path, timeout=30.0)
+        # Kritischer Fund (KI-Team-Optimierungs-Session, echter Absturz): `git status
+        # --porcelain` OHNE `--untracked-files=all` fasst ein komplett NEUES, unversioniertes
+        # Verzeichnis (z.B. ein neu angelegtes `tests/`) zu EINER Zeile ("?? tests/") zusammen,
+        # statt jede einzelne enthaltene Datei aufzulisten - der Rest dieser Funktion geht aber
+        # überall davon aus, dass jede Zeile GENAU eine Datei beschreibt. `shutil.copy2()`
+        # unten versuchte dadurch, ein VERZEICHNIS wie eine Datei zu öffnen und stürzte mit
+        # `PermissionError: [Errno 13]` ab (Windows liefert bei open() auf ein Verzeichnis
+        # PermissionError statt IsADirectoryError) - der komplette --work-backlog-Prozess
+        # crashte dadurch, samt aller bereits erfolgreich kopierten Änderungen anderer
+        # Dateien in diesem Lauf. `--untracked-files=all` lässt Git jedes neue Verzeichnis
+        # bereits selbst zu einzelnen Datei-Zeilen auflösen - behebt die Ursache, nicht nur
+        # das Symptom.
+        result = _run_git(["status", "--porcelain", "--untracked-files=all"], cwd=worktree.path, timeout=30.0)
     except (OSError, subprocess.TimeoutExpired):
         return []
     if result.returncode != 0 or not result.stdout.strip():
@@ -209,12 +221,28 @@ def copy_worktree_changes_to_target(worktree: IsolatedWorktree, target_git_root:
 
         src = worktree_root / rel_path
         dst = target_root / rel_path
-        if status_code.strip().startswith("D") or not src.exists():
-            if dst.exists():
-                dst.unlink()
-        else:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
+        try:
+            if status_code.strip().startswith("D") or not src.exists():
+                if dst.exists():
+                    dst.unlink()
+            elif src.is_dir():
+                # Defensive zweite Absicherung (siehe Docstring oben zu --untracked-files=all)
+                # - sollte eine Verzeichnis-Zeile trotzdem durchrutschen (z.B. abweichendes
+                # Git-Verhalten/-Version), rekursiv kopieren statt mit shutil.copy2()
+                # abzustürzen.
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+        except OSError:
+            # Zusätzliche Absicherung (KI-Team-Optimierungs-Session, echter Absturz): EIN
+            # unerwarteter Datei-/Berechtigungsfehler (z.B. eine gesperrte Datei) darf nicht
+            # den kompletten --work-backlog-Prozess mitsamt aller bereits erfolgreich
+            # kopierten Änderungen anderer Dateien crashen lassen - lieber diese eine Datei
+            # überspringen (fehlt dann im finalen Diff, der Aufrufer sieht das über eine
+            # unvollständige, aber nicht komplett verlorene Änderung) als einen Totalausfall
+            # riskieren.
+            continue
         changed.append(rel_path)
 
     return changed

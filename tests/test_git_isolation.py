@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core.git_isolation import (
     GitIsolationError,
@@ -189,6 +190,32 @@ class TestCopyWorktreeChangesToTarget(unittest.TestCase):
         self.assertEqual(changed, [])
         self.assertFalse(has_uncommitted_changes(self.repo_dir, self.repo_dir))
 
+    def test_new_untracked_directory_is_copied_recursively_without_crashing(self):
+        """
+        Kritischer Fund (KI-Team-Optimierungs-Session, echter Absturz, service_bookmark_
+        monitor-Ticket): `git status --porcelain` OHNE `--untracked-files=all` fasst ein
+        komplett neues, unversioniertes Verzeichnis (hier: ein neu angelegtes `tests/` mit
+        mehreren Dateien) zu EINER Zeile ("?? tests/") zusammen, statt jede enthaltene Datei
+        einzeln aufzulisten. shutil.copy2() versuchte das Verzeichnis daraufhin wie eine Datei
+        zu öffnen und stürzte mit PermissionError ab (Windows) - der gesamte
+        --work-backlog-Prozess crashte dadurch, samt aller bereits kopierten Änderungen.
+        """
+        worktree = create_isolated_worktree(self.repo_dir, "Neues Testverzeichnis")
+        new_dir = Path(worktree.path) / "tests"
+        new_dir.mkdir()
+        (new_dir / "test_a.py").write_text("def test_a(): assert True\n", encoding="utf-8")
+        (new_dir / "test_b.py").write_text("def test_b(): assert True\n", encoding="utf-8")
+
+        changed = copy_worktree_changes_to_target(worktree, self.repo_dir)
+
+        self.assertIn("tests/test_a.py", changed)
+        self.assertIn("tests/test_b.py", changed)
+        self.assertEqual(
+            (Path(self.repo_dir) / "tests" / "test_a.py").read_text(encoding="utf-8"),
+            "def test_a(): assert True\n",
+        )
+        self.assertTrue((Path(self.repo_dir) / "tests" / "test_b.py").exists())
+
     def test_target_working_dir_untouched_until_copy_is_called(self):
         """Bis zum expliziten Aufruf bleibt das Sicherheitsversprechen aus
         test_writing_in_worktree_never_touches_original_working_dir oben unverändert gültig."""
@@ -201,6 +228,32 @@ class TestCopyWorktreeChangesToTarget(unittest.TestCase):
         self.assertEqual(
             (Path(self.repo_dir) / "app" / "middleware.py").read_text(encoding="utf-8"), "fixed = 2\n",
         )
+
+    def test_one_failed_file_copy_does_not_abort_the_rest(self):
+        """Zusätzliche Absicherung (KI-Team-Optimierungs-Session): ein unerwarteter Datei-
+        Fehler (z.B. eine gesperrte Datei) bei EINER Datei darf nicht dazu führen, dass bereits
+        erfolgreich kopierte Änderungen ANDERER Dateien im selben Lauf verloren gehen - lieber
+        die eine Datei überspringen als den kompletten Prozess abstürzen zu lassen."""
+        worktree = create_isolated_worktree(self.repo_dir, "Teilweise fehlschlagender Merge")
+        (Path(worktree.path) / "app" / "middleware.py").write_text("fixed = 2\n", encoding="utf-8")
+        (Path(worktree.path) / "app" / "new_module.py").write_text("x = 1\n", encoding="utf-8")
+
+        real_copy2 = shutil.copy2
+
+        def flaky_copy2(src, dst, *args, **kwargs):
+            if str(src).endswith("new_module.py"):
+                raise OSError("simulierte gesperrte Datei")
+            return real_copy2(src, dst, *args, **kwargs)
+
+        with patch("core.git_isolation.shutil.copy2", side_effect=flaky_copy2):
+            changed = copy_worktree_changes_to_target(worktree, self.repo_dir)
+
+        self.assertIn("app/middleware.py", changed)
+        self.assertNotIn("app/new_module.py", changed)
+        self.assertEqual(
+            (Path(self.repo_dir) / "app" / "middleware.py").read_text(encoding="utf-8"), "fixed = 2\n",
+        )
+        self.assertFalse((Path(self.repo_dir) / "app" / "new_module.py").exists())
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import core.backlog_store as backlog_store
 import memory.run_history as run_history_module
-from core.verifier import VerificationReport
+from core.verifier import TestFailure, VerificationReport
 from core.workspace_audit import TEAM_VERIFICATION_TREND_TICKET_ID, run_workspace_audit_cycle
 
 
@@ -40,6 +40,16 @@ def _incomplete_project_report() -> VerificationReport:
 
 def _failing_report() -> VerificationReport:
     return VerificationReport(ran=True, passed=False, exit_code=1, stdout="", stderr="Boom", duration_seconds=0.2)
+
+
+def _failing_report_with_real_failure() -> VerificationReport:
+    return VerificationReport(
+        ran=True, passed=False, exit_code=1, stdout="", stderr="", duration_seconds=0.2,
+        failures=[TestFailure(
+            test_id="tests/test_app.py::test_add", message="AssertionError: 1 != 2",
+            files=["app.py", "tests/test_app.py"],
+        )],
+    )
 
 
 class TestWorkspaceAuditCycle(unittest.TestCase):
@@ -111,6 +121,21 @@ class TestWorkspaceAuditCycle(unittest.TestCase):
         self.assertFalse(report.results[0].healthy)
         ticket = next(t for t in backlog_store.list_tickets() if t.id == "audit-fastapi_app")
         self.assertEqual(ticket.status, "blocked")
+
+    def test_failing_tests_ticket_carries_real_failure_detail_not_just_a_count(self):
+        # Team-Optimierung (echter Fund, dieselbe Fehlerklasse wie core/backlog_worker.py's
+        # detail-Erhalt-Fix): "audit-<slug>"-Tickets sind selbst retry-fähig
+        # (core/backlog_worker.py._GOVERNANCE_RETRY_PREFIXES) - ein reiner Zähler ("1 echte(r)
+        # Testfehler") ließ dem nächsten automatischen Retry keinen verwertbaren Kontext, obwohl
+        # run_tests() Test-ID/Fehlermeldung/betroffene Dateien bereits kannte.
+        with self._patch_verifier(_failing_report_with_real_failure()):
+            asyncio.run(run_workspace_audit_cycle())
+
+        ticket = next(t for t in backlog_store.list_tickets() if t.id == "audit-fastapi_app")
+        self.assertIn("test_add", ticket.detail)
+        self.assertIn("AssertionError: 1 != 2", ticket.detail)
+        self.assertIn("app.py", ticket.detail)
+        self.assertNotIn("echte(r) Testfehler", ticket.detail)
 
     def test_previously_blocked_ticket_is_resolved_when_passing_again(self):
         backlog_store.upsert_ticket(

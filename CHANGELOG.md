@@ -7,6 +7,29 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔍 Workspace-Audit-Tickets trugen nur einen Zähler statt der bereits bekannten Testfehler-Details
+
+Nutzeranfrage: Fortsetzung derselben Analyse. Dieselbe Fehlerklasse wie beim vorigen
+Backlog-Detail-Fix, an einer zweiten Stelle: `core/workspace_audit.py` (`--audit-workspace`,
+Tickets `audit-<slug>`) schrieb bei einem echten Testfehlschlag bisher nur
+`"{len(result.failures)} echte(r) Testfehler"` als Ticket-Detail - ein reiner Zähler, obwohl
+`ProjectVerifier.run_tests()` bereits Test-ID, Fehlermeldung und betroffene Dateien kannte.
+Da `audit-`-Tickets über `core/backlog_worker.py._GOVERNANCE_RETRY_PREFIXES` selbst retry-fähig
+sind und `ticket.detail` der einzige Kontext ist, den `_process_single_ticket()` in den
+Fix-Auftrag mischt, hatte ein automatischer Retry dadurch strukturell weniger Information zur
+Verfügung, als längst berechnet vorlag.
+
+- **`core/workspace_audit.py`:** baut das Ticket-Detail bei einem echten Testfehlschlag jetzt
+  aus den tatsächlichen `TestFailure`-Objekten (Test-ID/Fehlermeldung/Dateien, dieselben Felder
+  wie im regulären Fix-Loop) statt aus einem bloßen Zähler - `reason_skipped` (z.B.
+  "Unvollständiges Projekt erkannt") bleibt unverändert die bevorzugte Quelle, wenn vorhanden.
+- **`tests/test_workspace_audit.py`:** neuer Test bestätigt, dass das Ticket-Detail Test-ID,
+  Fehlermeldung und Dateien enthält statt nur eines Zählers.
+
+Volle Suite grün, `ruff check` clean.
+
+---
+
 ## 🎫 Backlog-Retry überschrieb den ursprünglichen Befund mit einer kontextlosen Ausgangs-Zeile
 
 Nutzeranfrage: Fortsetzung der Team-Analyse ("bis alle Fehler behoben sind"). Zwei reale,

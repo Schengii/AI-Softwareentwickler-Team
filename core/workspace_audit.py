@@ -99,7 +99,23 @@ async def run_workspace_audit_cycle(status_callback: StatusCallback | None = Non
         ticket_id = _ticket_id(project_name)
 
         if not healthy:
-            detail = (result.reason_skipped or f"{len(result.failures)} echte(r) Testfehler").strip()[:300]
+            # Team-Optimierung (echter Fund, dieselbe Fehlerklasse wie core/backlog_worker.py's
+            # detail-Erhalt-Fix): "audit-<slug>"-Tickets sind über `_GOVERNANCE_RETRY_PREFIXES`
+            # (core/backlog_worker.py) selbst retry-fähig - `ticket.detail` ist dabei der EINZIGE
+            # Kontext, den `_process_single_ticket()` in den Fix-Auftrag mischt. Bisher warf der
+            # reine Zähler ("1 echte(r) Testfehler") die bereits vorhandenen, echten Testfehler-
+            # Details (Test-ID, Fehlermeldung, betroffene Dateien - dieselben Felder, die
+            # agents/orchestrator/verification.py._run_verification_loop() für einen gezielten
+            # Fix-Auftrag nutzt) ungenutzt weg, obwohl run_tests() sie bereits berechnet hatte.
+            if result.reason_skipped:
+                detail = result.reason_skipped.strip()[:300]
+            elif result.failures:
+                detail = "\n\n".join(
+                    f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(f.files) or 'unbekannt'}"
+                    for f in result.failures[:5]
+                )[:1500]
+            else:
+                detail = "Verifikation fehlgeschlagen (kein Detail verfügbar)."
             upsert_ticket(
                 ticket_id=ticket_id, title=f"Verifikation fehlgeschlagen: {project_name}",
                 source="workspace_audit", status="blocked", detail=detail, project_slug=project_name,

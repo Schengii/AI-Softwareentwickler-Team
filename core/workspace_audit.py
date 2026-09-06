@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from core.adr import find_existing_near_duplicate_adr_pairs
-from core.backlog_store import get_ticket, list_tickets, upsert_ticket
+from core.backlog_store import get_ticket, list_tickets, prune_orphaned_tickets, upsert_ticket
 from core.notifier import notify_external
 from core.optimization_advisor import analyze
 from core.verifier import ProjectVerifier
@@ -60,6 +60,7 @@ class WorkspaceAuditReport:
     scanned_projects: int = 0
     results: list[ProjectAuditResult] = field(default_factory=list)
     verification_trend_warning: str = ""
+    pruned_ticket_ids: list[str] = field(default_factory=list)
 
 
 def _ticket_id(project_name: str) -> str:
@@ -78,6 +79,19 @@ async def run_workspace_audit_cycle(status_callback: StatusCallback | None = Non
     report = WorkspaceAuditReport()
     workspace = WorkspaceManager()
     project_names = workspace.list_projects()
+
+    # Nutzerauftrag: automatisches Pruning verwaister Tickets gelöschter Projekte (siehe
+    # core/backlog_store.py.prune_orphaned_tickets()-Docstring für den vollen Kontext) - läuft
+    # hier, weil `project_names` (die tatsächlich vorhandenen Workspace-Projekte) ohnehin schon
+    # für die Verifikations-Schleife unten ermittelt wird, kein zusätzlicher Dateisystem-Scan
+    # nötig. VOR der Pro-Projekt-Schleife, damit ein gerade gelöschtes Projekt nicht erst in
+    # diesem Zyklus fälschlich als "Verifikation fehlgeschlagen" auffällt, bevor es geprunt wird.
+    report.pruned_ticket_ids = prune_orphaned_tickets(existing_project_slugs=set(project_names))
+    if report.pruned_ticket_ids and status_callback:
+        status_callback(
+            f"🗑️ {len(report.pruned_ticket_ids)} verwaiste(s) Ticket(s) gelöschter Projekte "
+            f"entfernt: {', '.join(report.pruned_ticket_ids)}."
+        )
 
     for project_name in project_names:
         if status_callback:

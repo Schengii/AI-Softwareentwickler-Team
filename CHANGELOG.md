@@ -7,6 +7,34 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🧹 Mocking-Pflicht für den Tester-Agenten & automatisches Pruning verwaister Tickets
+
+Nutzerauftrag: zwei konkrete, vom Nutzer benannte Verbesserungen.
+
+1. **`agents/tester_agent.py`: Mocking-Richtlinie für externe Netzwerkverbindungen.** Neue,
+   konkrete Regel im System-Prompt: JEDER Aufruf an einen echten externen Dienst (Drittanbieter-
+   APIs, Zahlungsanbieter, E-Mail/SMS, Cloud-Storage, andere Microservices, externe LLM-APIs)
+   MUSS gemockt werden (`unittest.mock`/`AsyncMock`, `respx`/`responses`/`pytest-httpx` für
+   Python, `jest.mock()`/`vi.mock()`/`msw` für Jest/Vitest) - Tests laufen automatisiert in einer
+   isolierten Umgebung ohne garantierten Internetzugriff und ohne echte Drittanbieter-
+   Zugangsdaten, ein ungemockter Aufruf schlägt dort unabhängig von der Anwendungslogik fehl.
+   Eine projekteigene Datenbank (SQLite/In-Memory) zählt bewusst NICHT als "extern".
+2. **`core/backlog_store.py`: neue `prune_orphaned_tickets()`.** Ein Ticket mit gesetztem
+   `project_slug` verweist auf ein konkretes `workspace/<slug>`-Projekt - wird dieses gelöscht,
+   blieb das Ticket bisher für IMMER im Backlog liegen (kein Verzeichnis mehr, das ein
+   Fix-Auftrag betreffen könnte). Tickets OHNE `project_slug` (teamweite Meta-Tickets wie
+   `unused-agent-<id>`/`team-verification-trend`) gelten bewusst NIE als verwaist. Verdrahtet in
+   `core/workspace_audit.py.run_workspace_audit_cycle()` (nutzt die dort ohnehin schon ermittelte
+   Liste vorhandener Projekte, kein zusätzlicher Dateisystem-Scan), läuft VOR der Pro-Projekt-
+   Schleife, damit ein gerade gelöschtes Projekt nicht erst fälschlich als frischer
+   Verifikations-Fehlschlag auffällt.
+
+Neue Tests: 5 für `prune_orphaned_tickets()` (inkl. Kein-Schreiben-bei-leerem-Ergebnis und
+Standard-Auflösung über `WorkspaceManager`), 2 für die Verdrahtung im Audit-Zyklus. Volle Suite
+grün, `ruff check` clean.
+
+---
+
 ## 🎫 Dieselbe Detail-Löschung beim Aufgreifen auch im Issue-Watcher geschlossen
 
 Nutzeranfrage: Fortsetzung derselben Analyse - derselbe, bereits in `core/backlog_worker.py`

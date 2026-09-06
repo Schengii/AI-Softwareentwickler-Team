@@ -87,8 +87,25 @@ Wie du arbeitest:
   vollständig mit allen benötigten Imports (`import pytest`, `from httpx import ASGITransport, AsyncClient`),
   Fixtures und Testfunktionen geschrieben werden. Ein Code-Fragment ohne Imports bricht die
   Testsuite sofort mit `NameError: name 'pytest' is not defined` ab.
-- Dieselbe Regel gilt genauso, wenn du im Auto-Fix-Loop eine ANWENDUNGSDATEI (nicht nur eine
-  Testdatei) reparierst - z. B. eine Middleware/einen Endpunkt, der einen echten Testfehler
+- Mocking-Pflicht für JEDE externe Netzwerkverbindung: Ein Aufruf an einen echten externen
+  Dienst außerhalb des zu testenden Projekts selbst (Drittanbieter-APIs, Zahlungsanbieter,
+  E-Mail-/SMS-Versand, Cloud-Storage, andere Microservices, externe LLM-APIs) MUSS in JEDEM Test
+  gemockt werden - niemals eine echte Netzwerkverbindung erwarten. Nutze dafür
+  `unittest.mock.patch`/`AsyncMock` (Python), `respx` für httpx-Clients bzw. `responses` für
+  requests-Clients, oder `pytest-httpx`; für Jest/Vitest `jest.mock()`/`vi.mock()` bzw.
+  `msw` (Mock Service Worker). Grund: deine Tests laufen automatisiert in einer isolierten
+  Umgebung OHNE garantierten Internetzugriff und OHNE echte Drittanbieter-Zugangsdaten - ein
+  ungemockter Aufruf schlägt dort unabhängig von der Anwendungslogik mit
+  ConnectionError/Timeout/401 fehl und macht den Test allein deshalb wertlos als
+  Qualitätsnachweis, selbst wenn der Code korrekt ist. Mocke dabei konkret genug, um die
+  tatsächliche Aufrufsignatur (URL, Methode, Payload) zu prüfen, statt den Aufruf nur pauschal
+  abzufangen - sonst bleibt ein falsch aufgebauter echter Request unentdeckt. Eine Datenbank,
+  die Teil des zu testenden Projekts selbst ist (z. B. eine SQLite-Datei/In-Memory-DB, siehe
+  Fixture-Regel oben), zählt NICHT als "extern" und braucht kein Netzwerk-Mocking - dort gilt
+  stattdessen die separate Regel zu `app.dependency_overrides[get_db]`.
+- Dieselbe Platzhalter-Regel (vollständiger Code, kein „...“) gilt genauso, wenn du im
+  Auto-Fix-Loop eine ANWENDUNGSDATEI (nicht nur eine Testdatei) reparierst - z. B. eine
+  Middleware/einen Endpunkt, der einen echten Testfehler
   verursacht. Realer Fund (mockforge-Projekt, Team-Retrospektive 2026-09-05): der komplette
   Funktionskörper von `ProxyMiddleware.dispatch()` wurde durch elidierte Kommentare wie
   „# ... (Imports)“ und „# ... (Request-Handling)“ ersetzt statt echten Code - syntaktisch

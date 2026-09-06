@@ -258,3 +258,46 @@ def count_by_status(status: str) -> int:
     """Anzahl Tickets in einer Spalte – Grundlage für die WIP-Limit-Warnung (siehe
     config.BACKLOG_WIP_LIMIT_IN_PROGRESS) ohne die komplette Liste beim Aufrufer neu zu filtern."""
     return sum(1 for t in _load_raw() if t.get("status") == status)
+
+
+def prune_orphaned_tickets(existing_project_slugs: set[str] | None = None) -> list[str]:
+    """
+    Nutzerauftrag: automatisches Pruning für verwaiste Tickets gelöschter Projekte. Ein Ticket
+    mit gesetztem `project_slug` (z.B. "audit-<slug>", "unresolved-governance-critical-<slug>",
+    "recurring-failure-<slug>") verweist auf ein konkretes `workspace/<slug>`-Projekt - wird
+    dieses Projekt gelöscht (manuell oder über core/project_cleaner_agent.py aufgeräumt), bleibt
+    das Ticket sonst für IMMER im Backlog liegen: `is_ticket_ready()` behandelt eine fehlende
+    Abhängigkeit bereits bewusst als "blockiert statt stillschweigend ignoriert" (siehe dort),
+    aber es gibt bisher KEINE Prüfung, ob das PROJEKT selbst, auf das ein Ticket sich bezieht,
+    überhaupt noch existiert - ein solches Ticket kann nie mehr sinnvoll bearbeitet werden (kein
+    Verzeichnis, das ein Fix-Auftrag betreffen könnte) und blockiert nur weiter Platz im
+    MAX_TICKETS_KEPT-Fenster.
+
+    Tickets OHNE project_slug (z.B. teamweite Meta-Tickets wie "unused-agent-<id>" oder
+    "team-verification-trend", siehe core/optimization_advisor.py/core/workspace_audit.py)
+    gelten bewusst NIE als verwaist - sie beziehen sich nicht auf ein einzelnes Workspace-
+    Projekt und dürfen nicht versehentlich mitgelöscht werden.
+
+    `existing_project_slugs`: optional injizierbar für Tests (vermeidet eine echte
+    WorkspaceManager-Instanz/echtes Dateisystem) - `None` (Standard) ermittelt die tatsächlich
+    vorhandenen Workspace-Projekte selbst. Gibt die IDs der entfernten Tickets zurück (leer,
+    wenn nichts zu tun war - dann wird auch NICHT geschrieben, um unnötiges `_save_raw()` bei
+    jedem Aufruf ohne echte Änderung zu vermeiden).
+    """
+    if existing_project_slugs is None:
+        from core.workspace import WorkspaceManager
+        existing_project_slugs = set(WorkspaceManager().list_projects())
+
+    tickets = _load_raw()
+    kept: list[dict] = []
+    pruned_ids: list[str] = []
+    for t in tickets:
+        slug = t.get("project_slug", "")
+        if slug and slug not in existing_project_slugs:
+            pruned_ids.append(t["id"])
+            continue
+        kept.append(t)
+
+    if pruned_ids:
+        _save_raw(kept)
+    return pruned_ids

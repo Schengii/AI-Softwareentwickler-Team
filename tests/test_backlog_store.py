@@ -8,7 +8,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import core.backlog_store as backlog_store
 
@@ -246,6 +246,77 @@ class TestTicketReadiness(unittest.TestCase):
 
     def test_get_ticket_returns_none_when_missing(self):
         self.assertIsNone(backlog_store.get_ticket("does-not-exist"))
+
+
+class TestPruneOrphanedTickets(unittest.TestCase):
+    """
+    Nutzerauftrag: automatisches Pruning für verwaiste Tickets gelöschter Projekte - siehe
+    core/backlog_store.py.prune_orphaned_tickets()-Docstring für den vollen Kontext.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.file_path = Path(self.temp_dir) / "backlog.json"
+        self._patcher = patch.object(backlog_store, "BACKLOG_FILE", self.file_path)
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def test_removes_ticket_whose_project_no_longer_exists(self):
+        backlog_store.upsert_ticket(
+            "audit-deleted_project", "Verifikation fehlgeschlagen: deleted_project",
+            "workspace_audit", "blocked", project_slug="deleted_project",
+        )
+
+        pruned = backlog_store.prune_orphaned_tickets(existing_project_slugs=set())
+
+        self.assertEqual(pruned, ["audit-deleted_project"])
+        self.assertEqual(backlog_store.list_tickets(), [])
+
+    def test_keeps_ticket_whose_project_still_exists(self):
+        backlog_store.upsert_ticket(
+            "audit-alive_project", "Verifikation fehlgeschlagen: alive_project",
+            "workspace_audit", "blocked", project_slug="alive_project",
+        )
+
+        pruned = backlog_store.prune_orphaned_tickets(existing_project_slugs={"alive_project"})
+
+        self.assertEqual(pruned, [])
+        self.assertEqual(len(backlog_store.list_tickets()), 1)
+
+    def test_never_prunes_tickets_without_a_project_slug(self):
+        # Teamweite Meta-Tickets (z.B. "unused-agent-<id>", "team-verification-trend") beziehen
+        # sich auf keinen einzelnen Workspace-Ordner und dürfen nie als "verwaist" gelten.
+        backlog_store.upsert_ticket("unused-agent-ml", "Ungenutzte Agentenrolle: ml", "optimization_advisor", "todo")
+
+        pruned = backlog_store.prune_orphaned_tickets(existing_project_slugs=set())
+
+        self.assertEqual(pruned, [])
+        self.assertEqual(len(backlog_store.list_tickets()), 1)
+
+    def test_empty_result_does_not_rewrite_the_file(self):
+        backlog_store.upsert_ticket(
+            "audit-alive_project", "X", "workspace_audit", "blocked", project_slug="alive_project",
+        )
+        mtime_before = self.file_path.stat().st_mtime_ns
+
+        backlog_store.prune_orphaned_tickets(existing_project_slugs={"alive_project"})
+
+        self.assertEqual(self.file_path.stat().st_mtime_ns, mtime_before)
+
+    def test_resolves_existing_projects_from_workspace_manager_by_default(self):
+        fake_workspace = MagicMock()
+        fake_workspace.list_projects.return_value = ["alive_project"]
+        backlog_store.upsert_ticket(
+            "audit-deleted_project", "X", "workspace_audit", "blocked", project_slug="deleted_project",
+        )
+        backlog_store.upsert_ticket(
+            "audit-alive_project", "Y", "workspace_audit", "blocked", project_slug="alive_project",
+        )
+
+        with patch("core.workspace.WorkspaceManager", return_value=fake_workspace):
+            pruned = backlog_store.prune_orphaned_tickets()
+
+        self.assertEqual(pruned, ["audit-deleted_project"])
 
 
 if __name__ == "__main__":

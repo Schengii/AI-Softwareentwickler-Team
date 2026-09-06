@@ -158,6 +158,37 @@ class TestWorkspaceAuditCycle(unittest.TestCase):
         ticket_ids = {t.id for t in backlog_store.list_tickets()}
         self.assertEqual(ticket_ids, {"audit-proj_a", "audit-proj_b"})
 
+    def test_orphaned_ticket_of_deleted_project_is_pruned(self):
+        # Nutzerauftrag: automatisches Pruning für verwaiste Tickets gelöschter Projekte - siehe
+        # core/backlog_store.py.prune_orphaned_tickets()-Docstring für den vollen Kontext.
+        # "deleted_project" existiert NICHT in self.fake_workspace.list_projects() (nur
+        # "fastapi_app", siehe setUp) - das Ticket muss verschwinden, ohne dass es je erneut als
+        # "Verifikation fehlgeschlagen" für ein nicht mehr existierendes Projekt aufläuft.
+        backlog_store.upsert_ticket(
+            "audit-deleted_project", "Verifikation fehlgeschlagen: deleted_project",
+            "workspace_audit", "blocked", project_slug="deleted_project",
+        )
+
+        with self._patch_verifier(_passing_report()):
+            report = asyncio.run(run_workspace_audit_cycle())
+
+        self.assertEqual(report.pruned_ticket_ids, ["audit-deleted_project"])
+        ticket_ids = {t.id for t in backlog_store.list_tickets()}
+        self.assertNotIn("audit-deleted_project", ticket_ids)
+
+    def test_ticket_of_still_existing_project_is_not_pruned(self):
+        backlog_store.upsert_ticket(
+            "unresolved-governance-critical-fastapi_app", "Ungelöster kritischer Governance-Befund",
+            "orchestrator", "blocked", project_slug="fastapi_app",
+        )
+
+        with self._patch_verifier(_passing_report()):
+            report = asyncio.run(run_workspace_audit_cycle())
+
+        self.assertEqual(report.pruned_ticket_ids, [])
+        ticket_ids = {t.id for t in backlog_store.list_tickets()}
+        self.assertIn("unresolved-governance-critical-fastapi_app", ticket_ids)
+
 
 class TestTeamWideVerificationTrend(unittest.TestCase):
     """

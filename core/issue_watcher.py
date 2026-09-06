@@ -47,7 +47,7 @@ from config import (
     ISSUE_TRIGGER_LABEL,
     WORKSPACE_DIR,
 )
-from core.backlog_store import upsert_ticket
+from core.backlog_store import get_ticket, upsert_ticket
 from core.git_isolation import copy_worktree_changes_to_target, remove_worktree
 from core.merge_watcher import check_merged_tickets
 from core.notifier import notify_external
@@ -159,7 +159,18 @@ async def _process_single_issue(
     # CLI), nicht erst nach Abschluss - sonst würde ein noch laufendes Issue auf dem Board
     # gar nicht auftauchen. Der Ticket-ID-Präfix "issue-" hält sie eindeutig von CLI-/
     # Dashboard-Tickets getrennt, siehe core/backlog_store.py.
-    upsert_ticket(ticket_id=f"issue-{issue_number}", title=title, source="issue", status="in_progress")
+    # Team-Optimierung (dieselbe Fehlerklasse wie core/backlog_worker.py._process_single_ticket() -
+    # echter Fund: memory/backlog.json-Ticket `audit-service_bookmark_monitor` verwaist bei
+    # status="in_progress" UND detail=""): core/backlog_store.py.upsert_ticket()'s `detail` ist
+    # KEIN Sentinel-Parameter (fester Default "", kein "unverändert lassen") - ein Aufruf ohne
+    # explizites detail=... würde einen bereits vorhandenen Befund (z.B. aus einem vorherigen,
+    # nicht abgeschlossenen Bearbeitungsversuch desselben Issues) beim erneuten Aufgreifen sofort
+    # löschen. Bestehendes Detail explizit erhalten, statt es stillschweigend zu überschreiben.
+    existing_detail = getattr(get_ticket(f"issue-{issue_number}"), "detail", "") or ""
+    upsert_ticket(
+        ticket_id=f"issue-{issue_number}", title=title, source="issue",
+        status="in_progress", detail=existing_detail,
+    )
     # Realer Fund: das Arbeitsverzeichnis kann hier bereits auf einem "feat/"-Branch eines
     # VORHERIGEN Issues in diesem Poll-Zyklus stehen (seit dem entsprechenden Fix wird nach
     # einem PR-Workflow-Lauf NICHT mehr zurückgewechselt, siehe unten) - original_branch wäre

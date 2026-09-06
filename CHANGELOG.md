@@ -7,6 +7,35 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🎫 Dieselbe Detail-Löschung beim Aufgreifen auch im Issue-Watcher geschlossen
+
+Nutzeranfrage: Fortsetzung derselben Analyse - derselbe, bereits in `core/backlog_worker.py`
+behobene Fehler (siehe Eintrag weiter unten) trat identisch auch in `core/issue_watcher.py`
+auf: `_process_single_issue()` markierte ein Issue-Ticket beim Aufgreifen per
+`upsert_ticket(..., status="in_progress")` ohne `detail=...` - da `detail` in
+`core/backlog_store.py.upsert_ticket()` kein Sentinel-Parameter ist (fester Default `""`),
+hätte ein erneutes Aufgreifen desselben Issues (z.B. nach einer vorherigen offenen Rückfrage)
+den bereits bekannten Kontext sofort gelöscht. Rein durch Code-Lektüre nachgewiesen (dieselbe,
+bereits bestätigte Fehlerklasse), nicht durch einen weiteren Live-Vorfall.
+
+- **`core/issue_watcher.py`:** liest das bestehende Ticket-Detail per `get_ticket()` vor dem
+  Aufgreifen und gibt es explizit weiter, statt es stillschweigend zu überschreiben.
+- **`tests/test_issue_watcher.py`:** neuer Test bestätigt den Detail-Erhalt.
+
+Bei dieser Gelegenheit auch geprüft, ob core/issue_watcher.py/core/backlog_worker.py NACH dem
+Öffnen eines PRs zum Hauptbranch zurückwechseln sollten (das hätte den Git-Vorfall aus dem
+vorigen Eintrag verhindert) - bewusst NICHT geändert: der Code dokumentiert das explizit als
+gewollte Design-Entscheidung (Zeile bei `create_pull_request()`), da ein Zurückwechseln jede nur
+auf dem Feature-Branch committete Datei aus dem Arbeitsverzeichnis entfernen würde, bis der PR
+gemerged ist. Das eigentliche Risiko (siehe voriger Eintrag) ist `GitHubAgent.commit()`s
+`git add -A`, das bei GLEICHZEITIG offenen, unrelated Änderungen im Arbeitsverzeichnis
+sweep-artig mit eingesammelt wird - eine Betriebsregel (nicht parallel zu `--work-backlog`/
+`--check-issues` von Hand am Framework arbeiten), keine Code-Änderung.
+
+Volle Suite grün, `ruff check` clean.
+
+---
+
 ## ⏳ Tages-Kontingent vs. Minutenlimit: erschöpfte Modelle bekamen alle denselben kurzen Cooldown
 
 Nutzeranfrage: Fortsetzung derselben Analyse, ausgelöst durch zwei echte `--work-backlog`-Läufe

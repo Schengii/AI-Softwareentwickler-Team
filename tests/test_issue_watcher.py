@@ -144,6 +144,36 @@ class TestIssueWatcherOrchestration(unittest.TestCase):
         self.assertEqual(len(tickets), 1)
         self.assertEqual(tickets[0].status, "in_progress")
 
+    def test_in_progress_marking_preserves_existing_ticket_detail(self):
+        # Team-Optimierung (dieselbe Fehlerklasse wie core/backlog_worker.py._process_single_
+        # ticket() - echter Fund: memory/backlog.json-Ticket `audit-service_bookmark_monitor`
+        # verwaist bei status="in_progress" UND detail=""). Ein bereits vorhandenes Detail (z.B.
+        # aus einem vorherigen, nicht abgeschlossenen Bearbeitungsversuch desselben Issues) darf
+        # beim erneuten Aufgreifen nicht sofort gelöscht werden.
+        backlog_store.upsert_ticket(
+            "issue-1", "Health-Check-Endpoint bauen", "issue", "blocked",
+            detail="Vorheriger Versuch: Rückfrage zum Response-Format offen.",
+        )
+
+        started = asyncio.Event()
+
+        async def _slow_process(*_args, **_kwargs):
+            started.set()
+            await asyncio.sleep(3600)
+
+        self.fake_orchestrator.process = _slow_process
+
+        async def _run_and_check():
+            task = asyncio.ensure_future(run_issue_poll_cycle())
+            await started.wait()
+            ticket = backlog_store.get_ticket("issue-1")
+            task.cancel()
+            return ticket
+
+        ticket = asyncio.run(_run_and_check())
+        self.assertEqual(ticket.status, "in_progress")
+        self.assertEqual(ticket.detail, "Vorheriger Versuch: Rückfrage zum Response-Format offen.")
+
     def test_isolated_worktree_changes_are_merged_back_before_diff_check(self):
         """Bugfix, dieselbe Ursache wie in tests/test_backlog_worker.py.
         test_isolated_worktree_changes_are_merged_back_before_diff_check - siehe dort und

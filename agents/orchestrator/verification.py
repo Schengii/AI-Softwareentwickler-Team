@@ -37,6 +37,7 @@ from core.backlog_store import get_ticket, upsert_ticket
 from core.decision_log import log_decision
 from core.message_bus import AgentResult, AgentTask
 from core.notifier import notify_external
+from core.pre_flight_check import PreFlightIssue, run_pre_flight_check
 from core.review_gate import (
     find_critical_findings,
     find_permission_blocked_questions,
@@ -1098,6 +1099,103 @@ class VerificationMixin:
             had_prior_test_ticket = bool(test_ticket_id and get_ticket(test_ticket_id) is not None)
         except Exception:
             had_prior_test_ticket = False
+
+        # Deterministischer Pre-Flight-Check: ast-basiert, blitzschnell vor isolierter Testsuite.
+        # Erkennt fehlende __init__.py, Syntax-Fehler und nicht deklarierte Abhängigkeiten in
+        # requirements.txt.
+        #
+        # Realer Fund (Analyse 2026-09-06): core/pre_flight_check.py wurde eingeführt, aber nur
+        # für eine reine Notify-Anzeige verdrahtet - format_pre_flight_issues_for_fix() (extra
+        # dafür geschrieben) und has_blocking_issues wurden nie aufgerufen, jeder Fund blieb
+        # bis zum teuren, isolierten Testlauf liegen statt sofort behoben zu werden, obwohl er
+        # in Millisekunden ohne LLM erkannt wurde. Jetzt derselbe gezielte Fix-und-Retry-Loop
+        # (Owner-Routing über file_owners, Kein-Fortschritt-Zirkuitbrecher) wie beim Vorab-
+        # Import-Check direkt darunter.
+        previous_preflight_signature: frozenset[tuple[str, str]] | None = None
+        for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
+            if run_start_tokens is not None and (
+                self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+            ):
+                budget_aborted = True
+                notify("  🚫 [bold red]Budget erreicht[/bold red] – Pre-Flight-Check übersprungen.")
+                break
+            if cancel_requested and cancel_requested():
+                manually_cancelled = True
+                notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – Pre-Flight-Check übersprungen.")
+                break
+
+            try:
+                pre_flight_report = await asyncio.to_thread(run_pre_flight_check, project_dir)
+            except Exception as e:
+                notify(f"  ⚠️ [dim]Pre-Flight-Check übersprungen: {e}[/dim]")
+                break
+            if pre_flight_report.error:
+                notify(f"  ⚠️ [dim]Pre-Flight-Check übersprungen: {pre_flight_report.error}[/dim]")
+                break
+            if pre_flight_report.passed:
+                if attempt > 1:
+                    notify(f"  ✨ [bold green]Pre-Flight-Check nach Fix (Versuch {attempt}) bestanden.[/bold green]")
+                    summary_lines.append(f"- 🔍 Pre-Flight-Check: nach {attempt} Durchlauf/Durchläufen bestanden.")
+                else:
+                    notify(f"  ✨ [bold green]Pre-Flight-Check bestanden ({pre_flight_report.files_checked} Dateien geprüft).[/bold green]")
+                break
+
+            notify(f"  🔍 [bold yellow]Pre-Flight-Check:[/bold yellow] {len(pre_flight_report.issues)} Problem(e) in {pre_flight_report.files_checked} Dateien gefunden.")
+            for issue in pre_flight_report.issues[:3]:
+                notify(f"    ⚠️ [{issue.issue_type}] {issue.file}:{issue.line}: {issue.message}")
+
+            current_preflight_signature = _issue_signature(
+                pre_flight_report.issues, lambda i: (i.file, i.message[:300])
+            )
+            if _no_progress(previous_preflight_signature, current_preflight_signature):
+                notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Pre-Flight-Funde wie vor dem letzten Fixversuch – breche ab, weiter mit der regulären Testsuite.")
+                summary_lines.append(
+                    f"- 🔍 🛑 Pre-Flight-Check, Versuch {attempt}: dieselben {len(pre_flight_report.issues)} Fund(e) wie nach "
+                    "dem vorherigen Fixversuch (keine Veränderung) – Schleife abgebrochen statt einen wirkungslosen "
+                    "weiteren Versuch zu verbrauchen."
+                )
+                break
+            previous_preflight_signature = current_preflight_signature
+
+            agents_to_fix: dict[str, list[PreFlightIssue]] = {}
+            for issue in pre_flight_report.issues:
+                owner = file_owners.get(issue.file)
+                if owner and owner in self._agents:
+                    agents_to_fix.setdefault(owner, []).append(issue)
+
+            if not agents_to_fix:
+                summary_lines.append(f"- 🔍 ❌ Pre-Flight-Check: {len(pre_flight_report.issues)} Fund(e) blieben ungelöst (keinem Agenten eindeutig zuordenbar).")
+                break
+
+            fix_tasks = []
+            for agent_id, agent_issues in agents_to_fix.items():
+                issue_text = "\n".join(
+                    f"- [{i.issue_type}] {i.file}:{i.line} – {i.message}"
+                    + (f" Lösung: {i.suggestion}" if i.suggestion else "")
+                    for i in agent_issues
+                )
+                fix_tasks.append(AgentTask(
+                    task_id=f"verify_fix_preflight_{agent_id}_{attempt}",
+                    agent_id=agent_id,
+                    description=(
+                        "Ein statischer Pre-Flight-Check (VOR jeder Dependency-Installation und "
+                        "jedem Testlauf) hat Probleme gefunden, die einen Testlauf mit hoher "
+                        "Wahrscheinlichkeit zum Scheitern bringen. Behebe AUSSCHLIESSLICH diese "
+                        "Befunde, erstelle keine neuen Features.\n\n"
+                        f"{issue_text}"
+                    ),
+                    context="", project_dir=project_dir,
+                ))
+
+            notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix (Pre-Flight-Check):[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())}...")
+            fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+            self._update_file_owners(file_owners, fix_results)
+            all_results.extend(fix_results)
+            summary_lines.append(f"- 🔍 Pre-Flight-Check, Versuch {attempt}: {len(pre_flight_report.issues)} Problem(e) → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt.")
+
+            if attempt == MAX_VERIFICATION_ITERATIONS:
+                notify("  ⚠️ [yellow]Maximale Pre-Flight-Fixversuche erreicht – weiter mit der regulären Testsuite.[/yellow]")
+                summary_lines.append(f"- 🔍 ⚠️ Pre-Flight-Check nach {MAX_VERIFICATION_ITERATIONS} Versuchen weiterhin mit Funden – weiter mit der regulären Testsuite.")
 
         notify("🧪 [bold cyan]Verifikation:[/bold cyan] Installiere Abhängigkeiten in isolierter Umgebung...")
         install_log = await asyncio.to_thread(verifier.ensure_environment)

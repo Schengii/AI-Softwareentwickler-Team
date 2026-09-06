@@ -60,8 +60,23 @@ def record_lesson(project_slug: str, category: str, detail: str) -> None:
     Überspringt (fast-)identische Lektionen derselben Kategorie, die unter den zuletzt
     aufgezeichneten `_DEDUP_LOOKBACK` Einträgen schon vorkommen - eine wiederkehrende Regel
     (z.B. "vergisst CORS-Header bei FastAPI") soll das Muster bestätigen, nicht bei jedem
-    weiteren Fund denselben Prompt-Text erneut in format_team_lessons_for_agents() aufblähen."""
+    weiteren Fund denselben Prompt-Text erneut in format_team_lessons_for_agents() aufblähen.
+
+    Realer Fund (Analyse 2026-09-06): record_lesson() wurde mit leerem detail-String aufgerufen
+    und persistierte trotzdem einen wertlosen Eintrag (leeres {"detail": ""} in team_lessons.jsonl).
+    Der Selbstlern-Loop verpuffte dadurch: format_team_lessons_for_agents() sendete leere Bullet-
+    Points an die Agenten, agent_trainer/retrospective lernten nichts. Leere oder nur aus
+    Whitespace bestehende detail-Strings werden jetzt vor der Duplikat-Prüfung abgelehnt -
+    dieselbe Validierungsphilosophie wie core/backlog_store.py beim Titel eines Tickets."""
     detail = detail[:400]
+    # Kein Lerneffekt ohne Inhalt: leere/whitespace-only detail-Strings, fehlende category
+    # oder project_slug werden vor der teuren Duplikat-Prüfung (read_team_lessons) abgelehnt.
+    if not detail.strip():
+        return
+    if not category.strip():
+        return
+    if not project_slug.strip():
+        return
     normalized = _normalize(detail)
     for recent in read_team_lessons(limit=_DEDUP_LOOKBACK):
         if recent.get("category") == category and _normalize(recent.get("detail", "")) == normalized:

@@ -45,7 +45,19 @@ AVAILABLE_AGENTS = {
     "web_research": {
         "name": "Web-Recherche Specialist",
         "phase": 1,
-        "description": "Recherchiert aktuelle Framework-Dokumentationen, Best Practices, Open-Source-Pakete und Markttrends.",
+        # Realer Fund (Analyse 2026-09-06): web_research wurde in 200 Laeufen NIE gewaehlt.
+        # Ursache: die Beschreibung war zu abstrakt - wann genau einsetzen? Jetzt konkrete
+        # Trigger: neuer Tech-Stack (unbekannte Versionen), viele Abhaengigkeiten (CDN/NPM),
+        # oder wenn aktuelle Docs wichtig sind (Breaking Changes, neue API). Via Tavily-
+        # Live-Search liefert dieser Agent echte, aktuelle Package-Versionen statt veraltetes
+        # LLM-Wissen - besonders wertvoll bei Python-Paketen, die sich haeufig aendern.
+        "description": (
+            "Recherchiert via Tavily Live-Search aktuelle Package-Versionen, Breaking Changes "
+            "und CDN-Links. Einsetzen bei: (1) neuem Tech-Stack mit unbekannten Versionen, "
+            "(2) Abhaengigkeiten die sich haeufig aendern (FastAPI, Next.js, React, Pydantic), "
+            "(3) wenn aktuelle Dokumentation wichtiger ist als LLM-Wissensbasis. "
+            "Liefert verifizierte requirements.txt-Versionen statt veralteter Defaults."
+        ),
     },
 
     # ── Phase 2: Architektur & FinOps ─────────────────────
@@ -57,7 +69,16 @@ AVAILABLE_AGENTS = {
     "finops": {
         "name": "Cost & FinOps Engineer",
         "phase": 2,
-        "description": "Kalkuliert Cloud-Kosten (AWS/GCP/Hetzner), TCO, Serverless vs. VM und AI-Token-Budgets.",
+        # Realer Fund (Analyse 2026-09-06): finops wurde in 200 Laeufen NIE gewaehlt.
+        # Einsetzen wenn externe APIs, Cloud-Hosting oder AI-Modell-Aufrufe im Spiel sind -
+        # typischer Fall: ein Nutzer baut einen SaaS-Service und weiss nicht, ob Hetzner-VM,
+        # Railway oder Fly.io guenstiger ist, oder ob er lieber serverless (Vercel) geht.
+        "description": (
+            "Kalkuliert Cloud-Kosten (AWS/GCP/Hetzner/Railway/Fly.io), TCO, Serverless vs. "
+            "VM-Hosting und AI-Token-Budgets. Einsetzen bei: (1) Projekten mit externen "
+            "API-Aufrufen (OpenAI, Stripe, SendGrid), (2) wenn Hosting-Entscheidung offen ist, "
+            "(3) SaaS-Produkte mit vielen Nutzern. Liefert konkrete Kostenvergleiche."
+        ),
     },
 
     # ── Phase 2: Vorab-Design, UI/UX & Media ──────────────
@@ -121,14 +142,34 @@ AVAILABLE_AGENTS = {
     "performance": {
         "name": "Performance-Ingenieur",
         "phase": 3,
-        "description": "Load-Testing, Profiling, Query-Optimierung und Latenz-Minimierung.",
+        # Realer Fund (Analyse 2026-09-06): performance wurde in 200 Laeufen NIE gewaehlt.
+        # Einsetzen immer wenn eine REST-API mit mehr als 3 Endpunkten entsteht - generierte
+        # APIs werden nie auf echte Last getestet und brechen unter Echtzeitbedingungen zusammen.
+        # Locust/k6-Lasttests sind das Aequivalent von pytest fuer APIs - ohne sie ist
+        # "fertig" nur Code-Review, kein echter Qualitaetsnachweis.
+        "description": (
+            "Schreibt Locust- oder k6-Lasttests und analysiert Bottlenecks. Einsetzen bei: "
+            "(1) REST-APIs mit mehr als 3 Endpunkten, (2) Services mit Datenbankanbindung, "
+            "(3) wenn Antwortzeiten oder gleichzeitige Nutzer relevant sind. "
+            "Liefert tests/load/locustfile.py mit Szenarien fuer 50-100 gleichzeitige Nutzer."
+        ),
     },
 
     # ── Phase 4: Content, Doku & Barrierefreiheit ─────────
     "accessibility": {
         "name": "Accessibility & a11y Specialist",
         "phase": 4,
-        "description": "WCAG 2.2 AA/AAA Barrierefreiheit, ARIA-Attribute, Tastaturnavigation, Screenreader.",
+        # Realer Fund (Analyse 2026-09-06): accessibility wurde in 200 Laeufen NIE gewaehlt.
+        # Ursache: die Beschreibung klang wie ein Audit-Service, nicht wie ein Entwickler-
+        # Partner. Tatsaechlich pruefte dieser Agent bisher generierte HTML-Templates auf
+        # WCAG 2.2 und ergaenzte ARIA-Attribute - das ist bei JEDEM Frontend-Projekt
+        # sinnvoll, nicht nur bei explizitem Barrierefreiheits-Auftrag.
+        "description": (
+            "Prueft alle HTML-Templates auf WCAG 2.2 AA und ergaenzt ARIA-Attribute, "
+            "Tastaturnavigation und Screenreader-Labels. Einsetzen bei: JEDEM Projekt mit "
+            "HTML-Dateien oder React/Vue-Templates. Besonders wichtig bei: Login-Formulare, "
+            "Buttons, Tabellen, Modals und dynamischen Inhalten."
+        ),
     },
     "i18n": {
         "name": "Internationalisierungs-Spezialist",
@@ -291,6 +332,16 @@ Wichtige Regeln:
 - Wenn die Aufgabe ein bestehendes Projekt (oder einen Pfad wie 'workspace/<name>') nennt oder referenziert,
   nutze EXAKT diesen bestehenden 'project_slug'. Erfinde NIEMALS abgeleitete Slugs wie '<name>_repair',
   '<name>_fix' oder '<name>_patch'.
+- web_research einbeziehen, wenn ein neuer Tech-Stack gewählt wird (unbekannte Package-Versionen),
+  Abhängigkeiten sich häufig ändern (FastAPI, Pydantic, Next.js, React) oder aktuelle Docs wichtiger
+  sind als das LLM-Wissen - liefert verifizierte requirements.txt-Versionen via Tavily Live-Search
+- performance einbeziehen, sobald eine REST-API mit mehr als 3 Endpunkten entsteht oder ein Service
+  unter gleichzeitiger Last (>10 Nutzer) funktionieren muss - Locust/k6-Lasttests sind das pytest
+  für APIs und kein optionales Extra, sondern Qualitätsnachweis
+- accessibility einbeziehen, sobald HTML-Dateien oder React/Vue-Komponenten entstehen - WCAG 2.2
+  ARIA-Attribute und Tastaturnavigation gehören genauso zur Fertigstellung wie Tests
+- finops einbeziehen, wenn externe APIs (OpenAI, Stripe, SendGrid) genutzt werden, die Hosting-
+  Wahl offen ist oder ein SaaS-Produkt für viele Nutzer entstehen soll
 """
 
 

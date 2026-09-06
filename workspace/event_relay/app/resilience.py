@@ -6,6 +6,9 @@ from functools import wraps
 
 logger = logging.getLogger(__name__)
 
+class CircuitBreakerOpenException(Exception):
+    pass
+
 class ResilienceManager:
     """Circuit Breaker & Retry Logic with Exponential Backoff + Jitter."""
     
@@ -23,6 +26,8 @@ class ResilienceManager:
                 for i in range(retries):
                     try:
                         return await func(*args, **kwargs)
+                    except CircuitBreakerOpenException:
+                        raise
                     except Exception as e:
                         if i == retries - 1:
                             raise e
@@ -39,7 +44,7 @@ class ResilienceManager:
                 if (asyncio.get_event_loop().time() - self.last_failure_time) > self.recovery_timeout:
                     self.state = "HALF-OPEN"
                 else:
-                    raise Exception("Circuit Breaker is OPEN")
+                    raise CircuitBreakerOpenException("Circuit Breaker is OPEN")
             
             try:
                 result = await func(*args, **kwargs)
@@ -54,4 +59,4 @@ class ResilienceManager:
                 raise e
         return wrapper
 
-resilience = ResilienceManager()
+# Remove global instance

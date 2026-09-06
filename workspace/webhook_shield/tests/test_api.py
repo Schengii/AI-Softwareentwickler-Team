@@ -40,7 +40,7 @@ async def test_receive_webhook_404(client):
 async def test_receive_webhook_success(client):
     # Setup: Create a webhook endpoint in DB
     db = TestingSessionLocal()
-    webhook = Webhook(endpoint_path="test-endpoint")
+    webhook = Webhook(endpoint_path="test-endpoint", hmac_secret="test-secret")
     db.add(webhook)
     db.commit()
     db.close()

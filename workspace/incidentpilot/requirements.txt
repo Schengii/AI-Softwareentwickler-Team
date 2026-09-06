@@ -1,7 +1,7 @@
 fastapi
 uvicorn[standard]
 sqlalchemy
-psycopg2-binary
+asyncpg
 pydantic
 python-jwt
 redis
@@ -11,5 +11,4 @@ pytest-asyncio
 pytest-cov
 httpx
 aiosqlite
-tenacity
 tenacity

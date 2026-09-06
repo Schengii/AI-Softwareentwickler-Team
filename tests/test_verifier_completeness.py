@@ -882,6 +882,114 @@ class TestCompletenessCheck(unittest.TestCase):
             report = verifier.check_completeness()
             self.assertTrue(report.passed)
 
+    def test_detects_missing_sqlalchemy_dsn_driver_package(self):
+        # Zehnter realer Fund (incidentpilot-Projekt): die DSN "postgresql+asyncpg://..." nennt
+        # ihren Treiber nur als String-Literal - SQLAlchemy lädt ihn erst zur Laufzeit anhand
+        # des Schemas nach, es gibt nie ein statisches "import asyncpg". requirements.txt
+        # listete stattdessen nur den SYNCHRONEN Treiber `psycopg2-binary`.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            (app_dir / "database.py").write_text(
+                "import os\n"
+                "DATABASE_URL = os.getenv('DATABASE_URL', "
+                "'postgresql+asyncpg://user:pw@localhost/db')\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text(
+                "fastapi\nsqlalchemy\npsycopg2-binary\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any("asyncpg" in i.message for i in report.issues))
+
+    def test_sqlalchemy_dsn_driver_present_in_manifest_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            (app_dir / "database.py").write_text(
+                "DATABASE_URL = 'postgresql+asyncpg://user:pw@localhost/db'\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text(
+                "fastapi\nsqlalchemy\nasyncpg\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_sqlite_dsn_driver_message_names_correct_scheme(self):
+        # Regressionstest für einen Fehlalarm in der ersten Fassung dieses Checks: die
+        # Meldung hardcodierte "postgresql+<treiber>" unabhängig vom tatsächlichen Schema.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            (app_dir / "database.py").write_text(
+                "DATABASE_URL = 'sqlite+aiosqlite:///./x.db'\n", encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\nsqlalchemy\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            issue = next(i for i in report.issues if "aiosqlite" in i.message)
+            self.assertIn("sqlite+aiosqlite://", issue.message)
+            self.assertNotIn("postgresql+aiosqlite", issue.message)
+
+    def test_write_route_with_multiline_signature_and_background_task_not_flagged(self):
+        # Zwölfter realer Fund (incidentpilot-Projekt): eine mehrzeilige Funktionssignatur mit
+        # uneingerückter schließender "):"-Zeile ließ die Body-Erfassung abbrechen, bevor der
+        # eigentliche Funktionskörper (hier: Persistenz per `background_tasks.add_task(...)`,
+        # ein etabliertes FastAPI-Idiom) je gescannt wurde.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "main.py").write_text(
+                "from fastapi import FastAPI, BackgroundTasks, Header\n"
+                "app = FastAPI()\n\n"
+                "def save_incident(event_type, payload):\n"
+                "    pass\n\n"
+                "@app.post('/webhooks/receive')\n"
+                "async def receive_webhook(\n"
+                "    background_tasks: BackgroundTasks,\n"
+                "    x_signature: str = Header(None)\n"
+                "):\n"
+                "    \"\"\"Empfaengt Webhooks.\"\"\"\n"
+                "    background_tasks.add_task(save_incident, 'x', {})\n"
+                "    return {'status': 'accepted'}\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_write_route_with_multiline_signature_and_no_io_still_flagged(self):
+        # Gegenprobe: eine mehrzeilige Signatur darf den Check nicht komplett abschalten -
+        # ein Handler ohne jeden I/O-Aufruf muss weiterhin gemeldet werden.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "main.py").write_text(
+                "from fastapi import FastAPI, Header\n"
+                "app = FastAPI()\n\n"
+                "@app.post('/webhooks/receive')\n"
+                "async def receive_webhook(\n"
+                "    x_signature: str = Header(None)\n"
+                "):\n"
+                "    return {'status': 'accepted'}\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any("receive_webhook" in i.message for i in report.issues))
+
     def test_ignores_venv_and_node_modules(self):
         with tempfile.TemporaryDirectory() as tmp:
             project_dir = Path(tmp)

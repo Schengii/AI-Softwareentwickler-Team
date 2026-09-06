@@ -27,3 +27,8 @@ def get_db():
         yield db
     finally:
         db.close()
+
+def init_db():
+    """Legt alle in Base.metadata registrierten Tabellen an (idempotent)."""
+    from app import models  # noqa: F401 - registriert die Modelle bei Base, bevor create_all laeuft
+    Base.metadata.create_all(bind=engine)

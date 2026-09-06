@@ -48,7 +48,8 @@ def test_create_and_read_task(client):
     assert tasks[0]["name"] == "Test Task"
 
 def test_trigger_status_check(client):
-    # Test POST /status/check
-    response = client.post("/status/check?url=http://example.com")
+    # Test POST /status/check - Ziel-Host muss in settings.ALLOWED_CHECK_HOSTS gelistet sein
+    # (SSRF-Schutz: die App lehnt Checks gegen nicht erlaubte Hosts bewusst mit 400 ab).
+    response = client.post("/status/check?url=http://api.example.com")
     assert response.status_code == 200
     assert response.json() == {"message": "Check initiated"}

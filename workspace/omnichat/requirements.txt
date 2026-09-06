@@ -7,3 +7,6 @@ python-dotenv
 pydantic
 pydantic-settings
 websockets
+pytest
+pytest-asyncio
+httpx

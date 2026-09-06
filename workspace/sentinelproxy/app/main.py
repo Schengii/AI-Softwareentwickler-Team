@@ -38,7 +38,15 @@ async def proxy(path: str, request: Request, host: str = Header(default="interna
             headers=headers,
             content=await request.body()
         )
-        return JSONResponse(content=response.json(), status_code=response.status_code)
+        try:
+            body = response.json()
+        except ValueError:
+            # Upstream lieferte keinen (validen) JSON-Body - z.B. eine leere Fehlerantwort
+            # (500 ohne Body). `response.json()` schlug dann fehl und landete bisher im
+            # generischen `except Exception -> 502`-Zweig, der den ECHTEN Upstream-Status
+            # verschluckte - ein 500-Upstream-Fehler kam beim Client fälschlich als 502 an.
+            body = {"error": response.text} if response.text else {}
+        return JSONResponse(content=body, status_code=response.status_code)
     except CircuitBreakerError:
         return JSONResponse(content={"error": "service unavailable (circuit open)"}, status_code=503)
     except httpx.HTTPStatusError as e:

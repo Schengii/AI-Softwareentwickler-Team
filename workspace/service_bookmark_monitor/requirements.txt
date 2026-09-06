@@ -1,1 +1,10 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+aiosqlite
+pydantic
+pydantic-settings
 greenlet>=3.0.0
+pytest
+pytest-asyncio
+httpx

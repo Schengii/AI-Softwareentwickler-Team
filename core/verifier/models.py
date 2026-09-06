@@ -408,6 +408,13 @@ _IO_CALL_MARKERS = (
     "aiofiles", "read_text(", "write_text(", "read_bytes(", "write_bytes(",
     ".find(", ".find_one(", "select(", "commit(", "flush(", "orm", "prisma",
     "os.remove", "shutil.", "upload_fileobj",
+    # Elfter realer Fund (incidentpilot-Projekt, 2026-09-06): der Handler selbst enthielt keinen
+    # direkten I/O-Aufruf, delegierte die Persistenz aber korrekt per FastAPI-Idiom an
+    # `background_tasks.add_task(save_incident, ...)` - ein etablierter, verbreiteter Weg,
+    # I/O NACH dem Response-Versand auszuführen, kein Stub. Ohne diesen Marker meldete der Check
+    # einen Falsch-Positiv für jeden Handler, der Persistenz bewusst in einen Background-Task
+    # auslagert.
+    "add_task(",
 )
 # Zweite, eigene Markergruppe für die verbreitete In-Memory-Store-Persistenz kleiner Demo-Apps
 # (z.B. `notes_db[note_id] = note`, `monitor.checks.pop(id, None)`, `monitor.add_check(check)`)
@@ -501,10 +508,10 @@ _KNOWN_PACKAGE_NAMES = frozenset({
     "fastapi", "flask", "django", "uvicorn", "gunicorn",
     "sqlalchemy", "aiosqlite", "asyncpg", "psycopg2", "psycopg2-binary", "pymongo", "motor",
     "redis", "celery", "alembic",
-    "pytest", "pytest-asyncio", "pytest-cov", "httpx", "requests", "aiohttp",
+    "pytest", "pytest-asyncio", "pytest-cov", "httpx", "requests", "aiohttp", "respx",
     "boto3", "python-dotenv", "pyjwt", "python-jose", "passlib",
     "bcrypt", "cryptography", "pyyaml", "typer", "rich", "docker",
-    "python-multipart", "numpy", "pandas", "slowapi",
+    "python-multipart", "numpy", "pandas", "slowapi", "circuitbreaker", "pybreaker", "tenacity",
     # BEWUSST NICHT enthalten, obwohl sie oft direkt importiert werden: `starlette`/`pydantic`
     # (real beobachtet beim Live-Abgleich gegen ALLE workspace/-Projekte, Team-Retrospektive
     # 2026-09-05 - beide sind Pflicht-Abhängigkeiten von `fastapi` selbst, `pip install fastapi`
@@ -533,6 +540,29 @@ _SQLA_ASYNC_ENGINE_RE = re.compile(r"\bcreate_async_engine\s*\(")
 _SQLA_DECLARATIVE_BASE_RE = re.compile(
     r"\bdeclarative_base\s*\(|class\s+\w+\s*\(\s*(?:orm\.)?DeclarativeBase\s*\)"
 )
+
+# Zehnter realer Fund (incidentpilot-Projekt, 2026-09-06): `app/database.py` verwendete die DSN
+# `postgresql+asyncpg://...` als String-Literal, aber `requirements.txt` listete nur
+# `psycopg2-binary` (den SYNCHRONEN Treiber) statt `asyncpg` - SQLAlchemy lädt den Treiber erst
+# zur LAUFZEIT anhand des DSN-Schemas dynamisch nach (`__import__("asyncpg")` in
+# sqlalchemy/dialects/postgresql/asyncpg.py), es gibt also NIRGENDS ein statisches
+# `import asyncpg`, das _collect_third_party_imports()/_missing_known_packages_in_manifest()
+# hätte finden können. Diese Regex greift stattdessen direkt am DSN-Schema selbst an - jedes
+# `<dialekt>+<treiber>://`-Literal benennt seinen benötigten Treiber explizit im String selbst.
+_SQLA_DSN_DRIVER_RE = re.compile(
+    r"""["']((?:postgresql|mysql|mariadb|sqlite)\+(\w+))://"""
+)
+# DSN-Treibername -> tatsächlicher PyPI-Paketname, wo beide voneinander abweichen (sonst wird
+# der Treibername selbst als Paketname angenommen, z.B. "asyncpg" -> "asyncpg").
+_SQLA_DRIVER_TO_PACKAGE_NAME: dict[str, str] = {
+    "psycopg2": "psycopg2-binary",
+    "pysqlite": "",  # Teil der Python-Standardbibliothek, kein PyPI-Paket nötig
+    "aiosqlite": "aiosqlite",
+    "asyncpg": "asyncpg",
+    "aiomysql": "aiomysql",
+    "asyncmy": "asyncmy",
+    "pymysql": "pymysql",
+}
 
 # Fünfter realer Fund (Team-Retrospektive, taskpulse-Projekt): _missing_local_python_imports()
 # (siehe completeness.py) prüfte bisher NUR Python - dieselbe Fehlerklasse ("lokaler Import

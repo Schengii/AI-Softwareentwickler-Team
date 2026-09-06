@@ -55,6 +55,8 @@ from core.verifier.models import (
     _ROUTE_IO_EXEMPT_NAME_RE,
     _SQLA_ASYNC_ENGINE_RE,
     _SQLA_DECLARATIVE_BASE_RE,
+    _SQLA_DRIVER_TO_PACKAGE_NAME,
+    _SQLA_DSN_DRIVER_RE,
     _SQLA_SYNC_ENGINE_RE,
     _STDLIB_MODULES,
     _STUB_MARKER_RE,
@@ -111,6 +113,7 @@ class CompletenessMixin:
             issues.extend(self._missing_async_test_dependencies())
         issues.extend(self._conflicting_sqlalchemy_config(py_texts))
         issues.extend(self._double_router_prefix(py_texts))
+        issues.extend(self._missing_sqlalchemy_dsn_driver(py_texts))
 
         return CompletenessReport(attempted=True, passed=not issues, issues=issues)
 
@@ -169,8 +172,22 @@ class CompletenessMixin:
             func_name = def_match.group(1)
             if _ROUTE_IO_EXEMPT_NAME_RE.search(func_name):
                 continue
+            # Zwölfter realer Fund (incidentpilot-Projekt, 2026-09-06): eine mehrzeilige
+            # Funktionssignatur (ein sehr verbreiteter Stil bei FastAPI-Routen mit mehreren
+            # Depends()/Header()-Parametern) endet mit einer UNEINGERÜCKTEN `):`-Zeile - die
+            # bisherige, rein einrückungsbasierte Body-Erfassung brach GENAU DORT ab, weil diese
+            # Zeile nicht mit Leerzeichen/Tab beginnt. Der eigentliche Funktionskörper (inkl.
+            # jeder echten Persistenz) wurde dadurch nie gescannt, jeder so definierte Handler
+            # wurde fälschlich als I/O-los gemeldet. Klammertiefe verfolgen, um die Signatur
+            # (egal über wie viele Zeilen) sicher zu überspringen, BEVOR die Body-Erfassung
+            # beginnt.
+            sig_end = j
+            paren_depth = lines[j].count("(") - lines[j].count(")")
+            while paren_depth > 0 and sig_end + 1 < len(lines):
+                sig_end += 1
+                paren_depth += lines[sig_end].count("(") - lines[sig_end].count(")")
             body: list[str] = []
-            k = j + 1
+            k = sig_end + 1
             while k < len(lines) and (lines[k].strip() == "" or lines[k].startswith((" ", "\t"))):
                 body.append(lines[k])
                 k += 1
@@ -675,6 +692,42 @@ class CompletenessMixin:
                         f"gefunden - Modelle landen dann in getrennten Metadata-Registries, "
                         f"`Base.metadata.create_all()` legt nur einen Teil der Tabellen an.",
             ))
+        return issues
+
+    def _missing_sqlalchemy_dsn_driver(self, py_texts: dict[str, str]) -> list[CompletenessIssue]:
+        """Zehnter realer Fund (incidentpilot-Projekt, 2026-09-06): eine SQLAlchemy-DSN wie
+        `postgresql+asyncpg://...` benennt ihren DB-Treiber nur als STRING-LITERAL im Connection-
+        String, es gibt dafür nie ein statisches `import asyncpg` im Code (SQLAlchemy lädt den
+        Treiber selbst erst zur Laufzeit anhand des Schemas nach) - deshalb übersieht
+        _missing_known_packages_in_manifest() (die auf echte `import`-Statements angewiesen ist)
+        diese Fehlerklasse komplett. `requirements.txt` listete hier `psycopg2-binary` (den
+        SYNCHRONEN Treiber) statt des tatsächlich per DSN angeforderten `asyncpg` - jeder
+        `create_engine()`/`create_async_engine()`-Aufruf schlägt dann sofort mit
+        `ModuleNotFoundError: No module named 'asyncpg'` fehl, jede Testsuite bricht schon beim
+        Sammeln der Tests ab."""
+        manifest_text = self._read_manifest_texts()
+        if not manifest_text:
+            return []
+        issues: list[CompletenessIssue] = []
+        seen_drivers: set[str] = set()
+        for rel, text in sorted(py_texts.items()):
+            for match in _SQLA_DSN_DRIVER_RE.finditer(text):
+                scheme, driver = match.group(1), match.group(2)
+                if driver in seen_drivers:
+                    continue
+                package_name = _SQLA_DRIVER_TO_PACKAGE_NAME.get(driver, driver)
+                if not package_name or self._manifest_has_package(manifest_text, package_name):
+                    continue
+                seen_drivers.add(driver)
+                issues.append(CompletenessIssue(
+                    file_path=rel,
+                    message=f"SQLAlchemy-DSN verwendet den Treiber „{driver}“ (in "
+                            f"„{scheme}://...“), aber kein Dependency-Manifest listet das dafür "
+                            f"benötigte Paket `{package_name}` auf - SQLAlchemy lädt diesen "
+                            f"Treiber erst zur Laufzeit anhand der DSN nach, ein "
+                            f"`ModuleNotFoundError: No module named '{driver}'` bricht dann JEDE "
+                            f"echte DB-Verbindung (und damit jede Testsuite) sofort ab.",
+                ))
         return issues
 
     def _find_matching_paren(self, text: str, open_idx: int) -> int | None:

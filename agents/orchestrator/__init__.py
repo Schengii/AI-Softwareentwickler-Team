@@ -361,9 +361,10 @@ class Orchestrator(
         notify("⚡ [bold cyan]Phase 0/5:[/bold cyan] Hauptagent analysiert Aufgabe und weist Fachbereichs-Teamleiter zu...")
         self._history.add_user_message(user_request)
 
+        existing_projects = self._workspace.list_projects()
         context = self._history.get_context_string(max_messages=4)
         task_summary, project_slug, agent_tasks = await self._task_manager.decompose(
-            user_request, conversation_context=context
+            user_request, conversation_context=context, existing_projects=existing_projects
         )
         # Für die Commit-Message-Vorschau in interface/cli.py: eine ECHTE, vom Modell erstellte
         # Kurzfassung statt der rohen (oft konversationellen) Nutzereingabe. Wird auch bei einem
@@ -405,6 +406,16 @@ class Orchestrator(
             candidate_dir = forced_project_dir
             notify(f"📂 [dim]Arbeite im geladenen Projekt: {candidate_dir}[/dim]")
         else:
+            existing_projects = self._workspace.list_projects()
+            # Automatische Erkennung bestehender Projekte (verhindert _repair-Duplikate)
+            matched_project = self._match_existing_project(project_slug, user_request, existing_projects)
+            if matched_project and matched_project != project_slug:
+                notify(
+                    f"🎯 [bold cyan]Bestehendes Projekt erkannt:[/bold cyan] `{matched_project}` existiert bereits "
+                    f"und passt zur Anfrage – arbeite direkt darin statt neuen Ordner `{project_slug}` anzulegen."
+                )
+                project_slug = matched_project
+
             # Frühwarnung vor stillschweigend doppelter Arbeit: project_slug wird pro Lauf neu vom
             # Modell geraten und unterscheidet sich oft, selbst wenn die Aufgabe inhaltlich dieselbe
             # ist wie ein früherer Lauf – real beobachtet u.a. bei "calculator_service" vs.
@@ -412,7 +423,6 @@ class Orchestrator(
             # separat bezahlte Läufe für praktisch dieselbe Anwendung. Rein informativ (keine
             # Heuristik/kein LLM-Aufruf, also kostenlos) – der Mensch entscheidet, ob `/load <name>`
             # statt eines neuen Projekts die bessere Wahl gewesen wäre.
-            existing_projects = self._workspace.list_projects()
             if project_slug not in existing_projects and existing_projects:
                 # Realer Fund (Retrospektive zu vier separaten Läufen an praktisch derselben
                 # Aufgabe - "fastapi-task-mgmt", "fastapi_task_websocket", "kanban_board",
@@ -1183,6 +1193,36 @@ class Orchestrator(
         for existing in existing_projects:
             if existing != project_slug and cls._normalize_slug(existing) == normalized_new:
                 return existing
+        return None
+
+    @classmethod
+    def _match_existing_project(cls, project_slug: str, user_request: str, existing_projects: list[str]) -> str | None:
+        """Erkennt, ob ein Lauf sich auf ein bereits existierendes Projekt bezieht,
+        selbst wenn der generierte project_slug Suffixe/Präfixe wie _repair oder _fix trägt,
+        oder der Nutzer 'workspace/<name>' im Prompt erwähnt hat."""
+        import re
+
+        # 1. Explizite Pfadangabe wie "workspace/feature_pilot" oder "workspace\feature_pilot"
+        for proj in existing_projects:
+            if re.search(rf"(?:workspace[/\\]){re.escape(proj)}\b", user_request, re.IGNORECASE):
+                return proj
+
+        # 2. Suffix- oder Präfix-Ableitung: z.B. feature_pilot_repair, feature_pilot_fix, fix_feature_pilot
+        norm_slug = cls._normalize_slug(project_slug)
+        for proj in existing_projects:
+            norm_proj = cls._normalize_slug(proj)
+            for sfx in ("_repair", "_fix", "_patch", "_update", "_refactor", "_test"):
+                if norm_slug.endswith(sfx) and norm_slug[:-len(sfx)] == norm_proj:
+                    return proj
+            for pfx in ("repair_", "fix_", "patch_", "update_", "refactor_", "test_"):
+                if norm_slug.startswith(pfx) and norm_slug[len(pfx):] == norm_proj:
+                    return proj
+
+        # 3. Direkte Erwähnung des Slugs als ganzes Wort im Prompt
+        for proj in existing_projects:
+            if len(proj) >= 4 and re.search(rf"\b{re.escape(proj)}\b", user_request, re.IGNORECASE):
+                return proj
+
         return None
 
     async def _resolve_project_isolation(

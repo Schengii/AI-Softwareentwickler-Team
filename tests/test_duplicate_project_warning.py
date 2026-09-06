@@ -185,6 +185,25 @@ class TestDuplicateProjectWarning(unittest.TestCase):
         logs = self._run("mein_projekt")
         self.assertFalse(any("DIESER Sitzung" in line for line in logs))
 
+    def test_match_existing_project_binds_to_existing_slug(self):
+        """Realer Fund: Prompt forderte 'Repariere workspace/feature_pilot', Orchestrator erstellte
+        jedoch 'feature_pilot_repair' als neues Projekt. _match_existing_project muss das bestehende
+        Projekt erkennen und zurückgeben."""
+        from agents.orchestrator import Orchestrator
+
+        existing = ["feature_pilot", "api_health_monitor"]
+        # Fall 1: Suffix _repair
+        matched = Orchestrator._match_existing_project("feature_pilot_repair", "Etwas tun", existing)
+        self.assertEqual(matched, "feature_pilot")
+
+        # Fall 2: Pfadangabe im Prompt
+        matched2 = Orchestrator._match_existing_project("random_slug", "Repariere workspace/feature_pilot bitte", existing)
+        self.assertEqual(matched2, "feature_pilot")
+
+        # Fall 3: Präfix fix_
+        matched3 = Orchestrator._match_existing_project("fix_feature_pilot", "Fixing issues", existing)
+        self.assertEqual(matched3, "feature_pilot")
+
 
 if __name__ == "__main__":
     unittest.main()

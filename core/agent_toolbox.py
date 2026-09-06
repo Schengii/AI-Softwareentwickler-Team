@@ -256,10 +256,32 @@ class AgentToolbox:
             return [t for t in TOOL_SPECS if t["name"] in READ_ONLY_TOOL_NAMES or t["name"] == "run_tests"]
         return TOOL_SPECS
 
+    def _normalize_relative_path(self, clean: str) -> str:
+        """Entfernt redundante Präfixe, die Agenten versehentlich voranstellen.
+        Realer Fund: Agenten riefen write_file mit 'workspace/feature_pilot/app/main.py'
+        oder 'feature_pilot/app/main.py' auf, wodurch Dateien in doppelt verschachtelten
+        Ordnern (z.B. feature_pilot/workspace/feature_pilot/...) landeten."""
+        proj_name = self.project_dir.name
+        if clean.startswith(f"workspace/{proj_name}/"):
+            return clean[len(f"workspace/{proj_name}/"):]
+        if clean.startswith(f"{proj_name}/"):
+            return clean[len(f"{proj_name}/"):]
+        if clean.startswith("workspace/"):
+            parts = clean.split("/")
+            if len(parts) > 1:
+                norm_part = parts[1].lower().replace("-", "_")
+                norm_proj = proj_name.lower().replace("-", "_")
+                if norm_part in norm_proj or norm_proj in norm_part:
+                    return "/".join(parts[2:]) if len(parts) > 2 else ""
+                if parts[1] in ("app", "src", "tests", "docs", "static", "public", "api", "routers", "core", "models"):
+                    return "/".join(parts[1:])
+        return clean
+
     def _resolve(self, rel_path: str) -> Path:
         if not rel_path:
             raise ToolExecutionError("Es wurde kein Pfad angegeben.")
         clean = rel_path.replace("\\", "/").lstrip("/")
+        clean = self._normalize_relative_path(clean)
         target = (self.project_dir / clean).resolve()
         if target != self.project_dir and self.project_dir not in target.parents:
             raise ToolExecutionError(f"Pfad '{rel_path}' liegt außerhalb des Projektverzeichnisses – abgelehnt.")

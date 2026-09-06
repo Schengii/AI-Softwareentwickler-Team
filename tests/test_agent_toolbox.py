@@ -197,6 +197,16 @@ class TestAgentToolbox(unittest.TestCase):
         result = run(self.toolbox.dispatch("read_file", {"path": ".env.example"}))
         self.assertNotIn("error", result)
 
+    def test_normalize_redundant_workspace_prefix(self):
+        # Wenn ein Agent versehentlich "workspace/<project_name>/app/main.py" übergibt:
+        proj_name = Path(self.temp_dir).name
+        nested_rel = f"workspace/{proj_name}/app/main.py"
+        run(self.toolbox.dispatch("write_file", {"path": nested_rel, "content": "x = 42\n"}))
+        # Muss direkt unter app/main.py im temp_dir liegen, nicht doppelt verschachtelt
+        expected = Path(self.temp_dir) / "app" / "main.py"
+        self.assertTrue(expected.exists())
+        self.assertEqual(expected.read_text(encoding="utf-8"), "x = 42\n")
+
 
 if __name__ == "__main__":
     unittest.main()

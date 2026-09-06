@@ -280,6 +280,9 @@ Wichtige Regeln:
   Konfigurationsänderung, triviale Erweiterung um einen weiteren Endpunkt nach bereits
   etabliertem Muster) bleibt architect dagegen weiterhin weggelassen
 - project_cleaner einbeziehen, wenn Verzeichnisstrukturen aufgeräumt oder schlank gehalten werden sollen
+- Wenn die Aufgabe ein bestehendes Projekt (oder einen Pfad wie 'workspace/<name>') nennt oder referenziert,
+  nutze EXAKT diesen bestehenden 'project_slug'. Erfinde NIEMALS abgeleitete Slugs wie '<name>_repair',
+  '<name>_fix' oder '<name>_patch'.
 """
 
 
@@ -292,7 +295,8 @@ class TaskManager:
     async def decompose(
         self,
         user_request: str,
-        conversation_context: str | None = None
+        conversation_context: str | None = None,
+        existing_projects: list[str] | None = None,
     ) -> tuple[str, str, list[AgentTask]]:
         agents_description = "\n".join([
             f"- {agent_id} [Phase {info['phase']}]: {info['description']}"
@@ -304,11 +308,21 @@ class TaskManager:
         if conversation_context:
             context_section = f"\n\nVorheriger Kontext (gekürzt):\n{conversation_context[:1000]}"
 
+        existing_projects_section = ""
+        if existing_projects:
+            existing_projects_section = (
+                "\n\nBEREITS EXISTIERENDE PROJEKTE IM WORKSPACE:\n"
+                + ", ".join(sorted(existing_projects))
+                + "\nWICHTIG: Bezieht sich die Nutzeranfrage auf eines dieser Projekte, verwende EXAKT dessen "
+                "bestehenden 'project_slug' (kein Suffix wie '_repair' oder '_fix')!"
+            )
+
         prompt = f"""Analysiere folgende Nutzeranfrage und erstelle einen effizienten Aufgabenplan:
 
 NUTZERANFRAGE:
 {user_request}
 {context_section}
+{existing_projects_section}
 
 VERFÜGBARE AGENTEN:
 {agents_description}

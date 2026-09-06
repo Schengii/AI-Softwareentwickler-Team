@@ -348,6 +348,17 @@ class TestCompletenessCheck(unittest.TestCase):
                 "RateLimitMiddleware" in i.message and "rate_limit.py" in i.message
                 for i in report.issues
             ))
+            # Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive, echter Fund
+            # am event_relay-Lauf 2026-09-06): agents/orchestrator/verification.py filterte
+            # genau diese Fund-Klasse bisher per Substring-Suche `"existierendes lokales" in
+            # message` heraus, um sie VOR jedem Testlauf UND in den Governance-Fix-Prompt
+            # einzuspeisen - diese Meldung enthält die Zeichenfolge aber NIE ("... definiertes/
+            # importiertes Symbol"), der Fund fiel dadurch trotz korrekter Erkennung hier durch
+            # beide Filter. `kind="missing_local_import"` ist das stabile Ersatz-Tag dafür.
+            self.assertTrue(any(
+                i.kind == "missing_local_import" and "RateLimitMiddleware" in i.message
+                for i in report.issues
+            ))
 
     def test_existing_symbol_in_module_file_not_flagged(self):
         with tempfile.TemporaryDirectory() as tmp:

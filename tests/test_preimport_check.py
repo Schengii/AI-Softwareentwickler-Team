@@ -76,12 +76,31 @@ def _completeness_report_with_missing_import() -> CompletenessReport:
             file_path="app/main.py", line_number=10,
             message="Import „from . import models“ verweist auf kein existierendes lokales "
                     "Submodul (`app/models.py`).",
+            kind="missing_local_import",
         )],
     )
 
 
 def _clean_completeness_report() -> CompletenessReport:
     return CompletenessReport(attempted=True, passed=True, issues=[])
+
+
+def _completeness_report_with_missing_symbol() -> CompletenessReport:
+    # Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive, echter Fund am
+    # event_relay-Lauf 2026-09-06): core/verifier/completeness.py._check_symbols_in_module_file()
+    # formuliert einen fehlenden SYMBOL-Import bewusst OHNE die Zeichenfolge "existierendes
+    # lokales" (siehe CompletenessIssue.kind-Docstring) - dieselbe Meldungsform wie beim echten
+    # `from app.resilience import resilience`-Fund. Ohne kind="missing_local_import" würde die
+    # alte Substring-Suche in _run_verification_loop() diesen Fund NIE finden.
+    return CompletenessReport(
+        attempted=True, passed=False,
+        issues=[CompletenessIssue(
+            file_path="app/main.py", line_number=6,
+            message="Import „from app.resilience import resilience“ verweist auf kein in "
+                    "`app/resilience.py` definiertes/importiertes Symbol.",
+            kind="missing_local_import",
+        )],
+    )
 
 
 class TestPreimportCheck(unittest.TestCase):
@@ -133,6 +152,19 @@ class TestPreimportCheck(unittest.TestCase):
         self.assertTrue(any("Vorab-Import-Check" in line for line in logs))
         self.assertTrue(any("Beauftrage backend" in line and "Vorab-Import-Check" in line for line in logs))
         self.assertIn("Vorab-Import-Check", result)
+        self.assertTrue(self.orchestrator.last_verification_ok)
+
+    def test_missing_symbol_import_dispatched_before_test_suite_runs(self):
+        # Regressionstest für den event_relay-Fund: ein fehlendes SYMBOL (nicht nur ein
+        # fehlendes Modul/Submodul) muss GENAUSO vor der Testsuite zur Korrektur beauftragt
+        # werden - siehe _completeness_report_with_missing_symbol()-Docstring.
+        result, logs, mock_verifier = self._run([
+            _completeness_report_with_missing_symbol(),
+            _clean_completeness_report(),
+            _clean_completeness_report(),
+        ])
+
+        self.assertTrue(any("Beauftrage backend" in line and "Vorab-Import-Check" in line for line in logs))
         self.assertTrue(self.orchestrator.last_verification_ok)
 
     def test_no_missing_import_skips_dispatch_entirely(self):

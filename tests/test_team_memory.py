@@ -120,6 +120,27 @@ class TestTeamMemory(unittest.TestCase):
 
                 self.assertIn("Einziger Fund.", text)
 
+    def test_bulk_low_severity_lessons_do_not_crowd_out_critical_ones(self):
+        # Team-Optimierung (vollständige Umsetzung einer Retrospektive, echter Fund am
+        # event_relay-Lauf 2026-09-06): core/optimization_advisor.py schrieb 11 `unused_agent`-
+        # Lektionen in derselben Sekunde - ohne Gewichtung wären damit alle MAX_LESSONS_SHOWN-
+        # Plätze belegt gewesen, obwohl kurz zuvor eine `unresolved_governance_critical`-Lektion
+        # zum selben Lauf aufgezeichnet wurde.
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            fake_file = Path(d) / "team_lessons.jsonl"
+            with self._use_temp_file(fake_file):
+                team_memory.record_lesson(
+                    "event_relay", "unresolved_governance_critical", "Resilience-Manager nicht verdrahtet.",
+                )
+                for i in range(11):
+                    team_memory.record_lesson("_team", "unused_agent", f"Agent '{i}' nie ausgewählt.")
+
+                text = team_memory.format_team_lessons_for_agents(limit=5)
+
+                self.assertIn("Resilience-Manager nicht verdrahtet.", text)
+
     def test_record_lesson_never_raises_on_unwritable_path(self):
         from pathlib import Path
         # Ein Pfad, dessen Elternverzeichnis nicht angelegt werden kann (ungültiges Laufwerk) -
@@ -129,6 +150,70 @@ class TestTeamMemory(unittest.TestCase):
                 team_memory.record_lesson("x", "y", "z")
             except OSError:
                 self.fail("record_lesson() darf niemals eine OSError durchreichen (best-effort).")
+
+    # ─── Bug-Fix-Tests: leere Strings werden blockiert (Analyse 2026-09-06) ───
+
+    def test_record_lesson_empty_detail_is_not_persisted(self):
+        """Realer Bug: record_lesson() persistierte leere detail-Strings.
+        Der Selbstlern-Loop verpuffte, weil leere Bullet-Points an Agenten gesendet wurden."""
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            fake_file = Path(d) / "team_lessons.jsonl"
+            with self._use_temp_file(fake_file):
+                team_memory.record_lesson("project_a", "recurring_failure", "")
+                lessons = team_memory.read_team_lessons()
+                self.assertEqual(len(lessons), 0,
+                                 "Leerer detail-String darf nicht persistiert werden.")
+
+    def test_record_lesson_whitespace_only_detail_is_not_persisted(self):
+        """Whitespace-only detail-Strings (z.B. '   ' oder '\n\t') sind kein Lerninhalt."""
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            fake_file = Path(d) / "team_lessons.jsonl"
+            with self._use_temp_file(fake_file):
+                team_memory.record_lesson("project_a", "recurring_failure", "   \n\t  ")
+                lessons = team_memory.read_team_lessons()
+                self.assertEqual(len(lessons), 0,
+                                 "Whitespace-only detail darf nicht persistiert werden.")
+
+    def test_record_lesson_empty_category_is_not_persisted(self):
+        """Leere category signalisiert einen Programmierfehler im Aufrufer."""
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            fake_file = Path(d) / "team_lessons.jsonl"
+            with self._use_temp_file(fake_file):
+                team_memory.record_lesson("project_a", "", "Echter Lerninhalt.")
+                lessons = team_memory.read_team_lessons()
+                self.assertEqual(len(lessons), 0,
+                                 "Leere category darf nicht persistiert werden.")
+
+    def test_record_lesson_empty_project_slug_is_not_persisted(self):
+        """Leerer project_slug macht die Lektion nicht zuordbar."""
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            fake_file = Path(d) / "team_lessons.jsonl"
+            with self._use_temp_file(fake_file):
+                team_memory.record_lesson("", "recurring_failure", "Echter Lerninhalt.")
+                lessons = team_memory.read_team_lessons()
+                self.assertEqual(len(lessons), 0,
+                                 "Leerer project_slug darf nicht persistiert werden.")
+
+    def test_record_lesson_valid_nonempty_detail_still_persisted(self):
+        """Sicherheitstest: der Bug-Fix darf valide Inhalte NICHT blockieren."""
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            fake_file = Path(d) / "team_lessons.jsonl"
+            with self._use_temp_file(fake_file):
+                team_memory.record_lesson("project_a", "recurring_failure", "CORS vergessen.")
+                lessons = team_memory.read_team_lessons()
+                self.assertEqual(len(lessons), 1,
+                                 "Valide Lektion muss trotz Validierung persistiert werden.")
+                self.assertEqual(lessons[0]["detail"], "CORS vergessen.")
 
 
 if __name__ == "__main__":

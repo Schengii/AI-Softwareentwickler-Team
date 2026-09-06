@@ -410,6 +410,7 @@ class CompletenessMixin:
                             message=f"Import „import {alias.name}“ verweist auf ein nicht "
                                     f"existierendes lokales Modul (`{alias.name.replace('.', '/')}"
                                     f".py`) - der Import schlägt beim Start fehl.",
+                            kind="missing_local_import",
                         ))
         return issues
 
@@ -434,6 +435,7 @@ class CompletenessMixin:
                             f"existierendes lokales Modul/Paket "
                             f"(`{self._relative_or_raw(module_path)}.py`) - der Import schlägt "
                             f"beim Start fehl.",
+                    kind="missing_local_import",
                 )]
             if not module_path.is_dir():
                 return self._check_symbols_in_module_file(node, module_path.with_suffix(".py"), dotted, rel)
@@ -510,6 +512,7 @@ class CompletenessMixin:
                         f"Symbol - der Import schlägt vermutlich beim Start mit ImportError fehl "
                         f"(Namens-Tippfehler oder die Datei wurde umbenannt, ohne alle "
                         f"Importstellen anzupassen?).",
+                kind="missing_local_import",
             ))
         return issues
 
@@ -542,6 +545,7 @@ class CompletenessMixin:
                         f"existierendes lokales Submodul (`{self._relative_or_raw(base / alias.name)}.py`) "
                         f"und wird auch nicht in `{self._relative_or_raw(init_file)}` (re-)exportiert - "
                         f"der Import schlägt vermutlich beim Start fehl.",
+                kind="missing_local_import",
             ))
         return issues
 

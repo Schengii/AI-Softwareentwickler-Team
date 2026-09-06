@@ -45,7 +45,19 @@ AVAILABLE_AGENTS = {
     "web_research": {
         "name": "Web-Recherche Specialist",
         "phase": 1,
-        "description": "Recherchiert aktuelle Framework-Dokumentationen, Best Practices, Open-Source-Pakete und Markttrends.",
+        # Realer Fund (Analyse 2026-09-06): web_research wurde in 200 Laeufen NIE gewaehlt.
+        # Ursache: die Beschreibung war zu abstrakt - wann genau einsetzen? Jetzt konkrete
+        # Trigger: neuer Tech-Stack (unbekannte Versionen), viele Abhaengigkeiten (CDN/NPM),
+        # oder wenn aktuelle Docs wichtig sind (Breaking Changes, neue API). Via Tavily-
+        # Live-Search liefert dieser Agent echte, aktuelle Package-Versionen statt veraltetes
+        # LLM-Wissen - besonders wertvoll bei Python-Paketen, die sich haeufig aendern.
+        "description": (
+            "Recherchiert via Tavily Live-Search aktuelle Package-Versionen, Breaking Changes "
+            "und CDN-Links. Einsetzen bei: (1) neuem Tech-Stack mit unbekannten Versionen, "
+            "(2) Abhaengigkeiten die sich haeufig aendern (FastAPI, Next.js, React, Pydantic), "
+            "(3) wenn aktuelle Dokumentation wichtiger ist als LLM-Wissensbasis. "
+            "Liefert verifizierte requirements.txt-Versionen statt veralteter Defaults."
+        ),
     },
 
     # ── Phase 2: Architektur & FinOps ─────────────────────
@@ -57,7 +69,16 @@ AVAILABLE_AGENTS = {
     "finops": {
         "name": "Cost & FinOps Engineer",
         "phase": 2,
-        "description": "Kalkuliert Cloud-Kosten (AWS/GCP/Hetzner), TCO, Serverless vs. VM und AI-Token-Budgets.",
+        # Realer Fund (Analyse 2026-09-06): finops wurde in 200 Laeufen NIE gewaehlt.
+        # Einsetzen wenn externe APIs, Cloud-Hosting oder AI-Modell-Aufrufe im Spiel sind -
+        # typischer Fall: ein Nutzer baut einen SaaS-Service und weiss nicht, ob Hetzner-VM,
+        # Railway oder Fly.io guenstiger ist, oder ob er lieber serverless (Vercel) geht.
+        "description": (
+            "Kalkuliert Cloud-Kosten (AWS/GCP/Hetzner/Railway/Fly.io), TCO, Serverless vs. "
+            "VM-Hosting und AI-Token-Budgets. Einsetzen bei: (1) Projekten mit externen "
+            "API-Aufrufen (OpenAI, Stripe, SendGrid), (2) wenn Hosting-Entscheidung offen ist, "
+            "(3) SaaS-Produkte mit vielen Nutzern. Liefert konkrete Kostenvergleiche."
+        ),
     },
 
     # ── Phase 2: Vorab-Design, UI/UX & Media ──────────────
@@ -69,12 +90,30 @@ AVAILABLE_AGENTS = {
     "image_generator": {
         "name": "Bild- & Grafik-Designer",
         "phase": 2,
-        "description": "Erstellt SVG-Grafiken/Logos und optimierte Bild-Prompts für Imagen 3 / Midjourney.",
+        # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, unused_agent-Fund): war seit
+        # mind. 100 Laeufen nie gewaehlt - dieselbe Ursache wie bei accessibility/finops/
+        # web_research/performance: die Beschreibung nannte NUR die Faehigkeit, nicht WANN sie
+        # gebraucht wird. Jetzt konkrete Trigger statt "erstellt SVG-Grafiken" als reine
+        # Tätigkeitsbeschreibung.
+        "description": (
+            "Erstellt SVG-Logos, Icons und optimierte Bild-Prompts (Imagen 3/Midjourney) für "
+            "Hero-Bilder und Banner. Einsetzen bei: (1) Landingpages/Marketing-Seiten ohne "
+            "eigenes Branding, (2) UI mit Icon-Bedarf statt reinem Text, (3) explizitem "
+            "Logo-/Grafik-Wunsch. NICHT bei reinen Backend-/CLI-/API-Projekten ohne UI."
+        ),
     },
     "copywriter": {
         "name": "Copywriter & Content Specialist",
         "phase": 2,
-        "description": "Schreibt Landingpage-Texte, UI-Microcopy (Buttons, Errors), SEO-Texte und FAQs.",
+        # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, unused_agent-Fund): siehe
+        # image_generator oben - gleiche Ursache, gleicher Fix.
+        "description": (
+            "Schreibt Landingpage-Prosa, UI-Microcopy (Button-Labels, Fehlermeldungen, "
+            "Leerzustände) und SEO-Texte/FAQs. Einsetzen bei: (1) öffentlich sichtbaren "
+            "Seiten, die echten Fließtext statt Lorem-Ipsum/technischer Labels brauchen, "
+            "(2) Marketing-/Landingpages, (3) FAQ- oder Hilfe-Inhalten. NICHT bei internen "
+            "Tools/APIs ohne Endnutzer-Text."
+        ),
     },
 
     # ── Phase 3: Kern-Entwicklung ─────────────────────────
@@ -101,39 +140,102 @@ AVAILABLE_AGENTS = {
     "data_engineer": {
         "name": "Data Engineer",
         "phase": 3,
-        "description": "Event-Streaming (Kafka/RabbitMQ), Redis Caching-Layer und ETL-Pipelines.",
+        # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, unused_agent-Fund): siehe
+        # image_generator/copywriter oben - Abgrenzung zu 'backend' (reine CRUD-API) und
+        # 'database' (Schema/Migrationen) war bisher nicht explizit, der Planer griff bei
+        # Datenverarbeitung offenbar reflexhaft zu 'backend'.
+        "description": (
+            "Event-Streaming (Kafka/RabbitMQ), Redis-Caching-Layer und ETL-/Batch-Pipelines "
+            "mit mehreren Datenquellen. Einsetzen bei: (1) Message-Queues/Event-Bus statt "
+            "reinem Request-Response, (2) Caching-Layer für teure Berechnungen/Anfragen, "
+            "(3) Datenverarbeitung über mehrere Schritte/Quellen hinweg. Abgrenzung: einzelne "
+            "CRUD-Endpunkte macht 'backend', Schema/Migrationen macht 'database'."
+        ),
     },
     "mobile": {
         "name": "Mobile-Entwickler",
         "phase": 3,
-        "description": "Entwickelt Cross-Platform Apps mit Flutter, React Native, iOS & Android.",
+        # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, unused_agent-Fund): siehe oben -
+        # ohne explizite Trigger wählt der Planer bei unklarer Plattform reflexhaft 'frontend'
+        # (Web) statt eine native/Cross-Platform-App zu erkennen.
+        "description": (
+            "Cross-Platform Apps mit Flutter/React Native sowie natives iOS/Android. "
+            "Einsetzen bei: (1) explizitem Wunsch nach einer App statt einer Website, "
+            "(2) Offline-First-Anforderungen, (3) nativen Device-APIs (Kamera, Push-"
+            "Notifications, GPS). NICHT bei responsiven Web-Frontends - das macht 'frontend'."
+        ),
     },
     "ml": {
         "name": "KI/ML-Entwickler",
         "phase": 3,
-        "description": "LLM-APIs, RAG-Systeme, Embeddings, Vector Stores und ML-Pipelines.",
+        # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, unused_agent-Fund): Abgrenzung
+        # zu 'prompt_engineer' fehlte bisher (beide klangen wie derselbe Themenbereich) - macht
+        # es dem Planer schwer, den passenderen der beiden zu wählen.
+        "description": (
+            "Baut RAG-Pipelines, Embeddings/Vector-Stores und klassische ML-Modelle "
+            "(Klassifikation/Regression). Einsetzen bei: (1) Retrieval-Augmented Generation "
+            "über eigene Dokumente/Daten, (2) Vektor-Suche/Ähnlichkeitssuche, (3) eigenem "
+            "trainiertem/statistischem Modell. Abgrenzung zu 'prompt_engineer': dieser baut "
+            "keine eigene Pipeline, sondern gestaltet nur Prompts/Guardrails für LLM-Aufrufe."
+        ),
     },
     "prompt_engineer": {
         "name": "Prompt Engineer & AI Architect",
         "phase": 3,
-        "description": "System-Prompts für LLM-Apps, Few-Shot-Vorlagen, Guardrails und RAG-Prompting.",
+        # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, unused_agent-Fund): siehe ml
+        # oben - gleiche Abgrenzung, umgekehrte Richtung.
+        "description": (
+            "Entwirft System-Prompts, Few-Shot-Vorlagen und Guardrails FÜR die generierte "
+            "APP (nicht für das KI-Team selbst). Einsetzen bei: (1) die App macht selbst "
+            "LLM-Aufrufe (Chatbot, AI-Feature, Content-Generierung), (2) Schutz gegen Prompt-"
+            "Injection bei nutzergesteuerten Eingaben nötig ist. Abgrenzung zu 'ml': baut "
+            "selbst keine RAG-/Embedding-Pipeline, nur die Prompt-/Guardrail-Schicht darum."
+        ),
     },
     "performance": {
         "name": "Performance-Ingenieur",
         "phase": 3,
-        "description": "Load-Testing, Profiling, Query-Optimierung und Latenz-Minimierung.",
+        # Realer Fund (Analyse 2026-09-06): performance wurde in 200 Laeufen NIE gewaehlt.
+        # Einsetzen immer wenn eine REST-API mit mehr als 3 Endpunkten entsteht - generierte
+        # APIs werden nie auf echte Last getestet und brechen unter Echtzeitbedingungen zusammen.
+        # Locust/k6-Lasttests sind das Aequivalent von pytest fuer APIs - ohne sie ist
+        # "fertig" nur Code-Review, kein echter Qualitaetsnachweis.
+        "description": (
+            "Schreibt Locust- oder k6-Lasttests und analysiert Bottlenecks. Einsetzen bei: "
+            "(1) REST-APIs mit mehr als 3 Endpunkten, (2) Services mit Datenbankanbindung, "
+            "(3) wenn Antwortzeiten oder gleichzeitige Nutzer relevant sind. "
+            "Liefert tests/load/locustfile.py mit Szenarien fuer 50-100 gleichzeitige Nutzer."
+        ),
     },
 
     # ── Phase 4: Content, Doku & Barrierefreiheit ─────────
     "accessibility": {
         "name": "Accessibility & a11y Specialist",
         "phase": 4,
-        "description": "WCAG 2.2 AA/AAA Barrierefreiheit, ARIA-Attribute, Tastaturnavigation, Screenreader.",
+        # Realer Fund (Analyse 2026-09-06): accessibility wurde in 200 Laeufen NIE gewaehlt.
+        # Ursache: die Beschreibung klang wie ein Audit-Service, nicht wie ein Entwickler-
+        # Partner. Tatsaechlich pruefte dieser Agent bisher generierte HTML-Templates auf
+        # WCAG 2.2 und ergaenzte ARIA-Attribute - das ist bei JEDEM Frontend-Projekt
+        # sinnvoll, nicht nur bei explizitem Barrierefreiheits-Auftrag.
+        "description": (
+            "Prueft alle HTML-Templates auf WCAG 2.2 AA und ergaenzt ARIA-Attribute, "
+            "Tastaturnavigation und Screenreader-Labels. Einsetzen bei: JEDEM Projekt mit "
+            "HTML-Dateien oder React/Vue-Templates. Besonders wichtig bei: Login-Formulare, "
+            "Buttons, Tabellen, Modals und dynamischen Inhalten."
+        ),
     },
     "i18n": {
         "name": "Internationalisierungs-Spezialist",
         "phase": 4,
-        "description": "Mehrsprachigkeit (i18n/l10n), RTL-Unterstützung und Formatierungen.",
+        # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, unused_agent-Fund): dieselbe
+        # Ursache wie bei accessibility (siehe dort) - "Mehrsprachigkeit" klingt nach einem
+        # optionalen Zusatz statt einem Trigger, wann er gebraucht wird.
+        "description": (
+            "Mehrsprachigkeit (i18n/l10n), RTL-Unterstützung und locale-abhängige Formate "
+            "(Datum, Währung, Zahlen). Einsetzen bei: (1) explizitem Mehrsprachigkeits-Wunsch, "
+            "(2) öffentlich/global adressierten Produkten (SaaS, Landingpage) auch ohne "
+            "expliziten Wunsch, (3) RTL-Sprachen (Arabisch/Hebräisch) im Zielmarkt."
+        ),
     },
     "documentation": {
         "name": "Dokumentant",
@@ -291,6 +393,28 @@ Wichtige Regeln:
 - Wenn die Aufgabe ein bestehendes Projekt (oder einen Pfad wie 'workspace/<name>') nennt oder referenziert,
   nutze EXAKT diesen bestehenden 'project_slug'. Erfinde NIEMALS abgeleitete Slugs wie '<name>_repair',
   '<name>_fix' oder '<name>_patch'.
+- web_research einbeziehen, wenn ein neuer Tech-Stack gewählt wird (unbekannte Package-Versionen),
+  Abhängigkeiten sich häufig ändern (FastAPI, Pydantic, Next.js, React) oder aktuelle Docs wichtiger
+  sind als das LLM-Wissen - liefert verifizierte requirements.txt-Versionen via Tavily Live-Search
+- performance einbeziehen, sobald eine REST-API mit mehr als 3 Endpunkten entsteht oder ein Service
+  unter gleichzeitiger Last (>10 Nutzer) funktionieren muss - Locust/k6-Lasttests sind das pytest
+  für APIs und kein optionales Extra, sondern Qualitätsnachweis
+- accessibility einbeziehen, sobald HTML-Dateien oder React/Vue-Komponenten entstehen - WCAG 2.2
+  ARIA-Attribute und Tastaturnavigation gehören genauso zur Fertigstellung wie Tests
+- finops einbeziehen, wenn externe APIs (OpenAI, Stripe, SendGrid) genutzt werden, die Hosting-
+  Wahl offen ist oder ein SaaS-Produkt für viele Nutzer entstehen soll
+- data_engineer einbeziehen, sobald Message-Queues (Kafka, RabbitMQ), Event-Streaming, Redis-Caching-Layer
+  oder Multi-Source ETL-Pipelines entstehen (Abgrenzung: einfache CRUD-APIs macht backend)
+- mobile einbeziehen, sobald eine App für iOS, Android, Flutter oder React Native gewünscht ist oder
+  native Device-APIs/Offline-Fähigkeit gefordert sind (Abgrenzung: responsive Websites macht frontend)
+- ml einbeziehen, sobald RAG-Pipelines, Vector-Embeddings, Ähnlichkeitssuche oder klassische ML-Modelle
+  (Klassifikation, Regression) entstehen
+- prompt_engineer einbeziehen, sobald die zu bauende App selbst LLM-Aufrufe/Chatbots anbietet und
+  spezifische System-Prompts oder Schutz gegen Prompt-Injection benötigt
+- copywriter einbeziehen, sobald öffentliche Seiten/Landingpages echten Fließtext, UI-Microcopy
+  oder FAQ-Inhalte benötigen (verhindert unprofessionelles Lorem-Ipsum)
+- image_generator einbeziehen, sobald Icons, SVG-Logos oder Banner für UIs/Landingpages benötigt werden
+- i18n einbeziehen, sobald Mehrsprachigkeit, Lokalisierung oder RTL-Unterstützung relevant sind
 """
 
 

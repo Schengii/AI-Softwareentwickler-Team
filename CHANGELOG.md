@@ -7,6 +7,248 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔍 Workspace-Audit-Tickets trugen nur einen Zähler statt der bereits bekannten Testfehler-Details
+
+Nutzeranfrage: Fortsetzung derselben Analyse. Dieselbe Fehlerklasse wie beim vorigen
+Backlog-Detail-Fix, an einer zweiten Stelle: `core/workspace_audit.py` (`--audit-workspace`,
+Tickets `audit-<slug>`) schrieb bei einem echten Testfehlschlag bisher nur
+`"{len(result.failures)} echte(r) Testfehler"` als Ticket-Detail - ein reiner Zähler, obwohl
+`ProjectVerifier.run_tests()` bereits Test-ID, Fehlermeldung und betroffene Dateien kannte.
+Da `audit-`-Tickets über `core/backlog_worker.py._GOVERNANCE_RETRY_PREFIXES` selbst retry-fähig
+sind und `ticket.detail` der einzige Kontext ist, den `_process_single_ticket()` in den
+Fix-Auftrag mischt, hatte ein automatischer Retry dadurch strukturell weniger Information zur
+Verfügung, als längst berechnet vorlag.
+
+- **`core/workspace_audit.py`:** baut das Ticket-Detail bei einem echten Testfehlschlag jetzt
+  aus den tatsächlichen `TestFailure`-Objekten (Test-ID/Fehlermeldung/Dateien, dieselben Felder
+  wie im regulären Fix-Loop) statt aus einem bloßen Zähler - `reason_skipped` (z.B.
+  "Unvollständiges Projekt erkannt") bleibt unverändert die bevorzugte Quelle, wenn vorhanden.
+- **`tests/test_workspace_audit.py`:** neuer Test bestätigt, dass das Ticket-Detail Test-ID,
+  Fehlermeldung und Dateien enthält statt nur eines Zählers.
+
+Volle Suite grün, `ruff check` clean.
+
+---
+
+## 🎫 Backlog-Retry überschrieb den ursprünglichen Befund mit einer kontextlosen Ausgangs-Zeile
+
+Nutzeranfrage: Fortsetzung der Team-Analyse ("bis alle Fehler behoben sind"). Zwei reale,
+dauerhaft "blocked" hängende Tickets (`recurring-lint-sentinelproxy`,
+`recurring-failure-sentinelproxy`, beide `retries: 2`) trugen exakt denselben, komplett
+kontextlosen Detail-Text: "Ticket bearbeitet, dabei aber keine Datei geändert - vermutlich war
+der Titel nicht eindeutig genug." Ursache: `core/backlog_worker.py.run_backlog_poll_cycle()`
+überschrieb `ticket.detail` nach JEDEM Retry-Versuch bedingungslos mit der knappen
+Ausgangs-Zeile des Versuchs - für Governance-/Recurring-*-Tickets ist `detail` aber der EINZIGE
+Träger des ursprünglich erkannten Befunds, den `_process_single_ticket()` extra in den
+Fix-Auftrag mischt. Nach GENAU EINEM Fehlschlag ohne neue Information war dieser Kontext für
+jeden weiteren automatischen Retry unwiderbringlich weg - jeder folgende Versuch hatte dadurch
+WENIGER Information als der erste, garantiert kein besseres Ergebnis, bis
+`MAX_GOVERNANCE_TICKET_RETRIES` erreicht war und das Ticket für immer blockiert liegen blieb.
+
+- **`core/backlog_worker.py`:** ein Ausgang OHNE neue, verwertbare Information (`no_changes`,
+  `error`) behält `ticket.detail` nach einem Retry jetzt unverändert bei; ein Ausgang mit echtem
+  Erkenntnisgewinn (PR eröffnet, CI-Fehler, Rückfrage, gefundene Secrets) überschreibt ihn
+  weiterhin wie bisher.
+- **`tests/test_backlog_worker.py`:** zwei neue Tests - Detail bleibt nach einem kontextlosen
+  Fehlschlag erhalten bzw. wird bei echtem PR-Erfolg weiterhin aktualisiert.
+
+Volle Suite grün, `ruff check` clean.
+
+---
+
+## 🧪 "Ran 0 tests" / "NO TESTS RAN": fehlendes `pytest` in der Umgebung war die stille Ursache
+
+Nutzeranfrage: Fortsetzung derselben Analyse. Zwei weitere reale, dauerhaft "blocked" Tickets
+(`recurring-failure-event_relay`, `recurring-failure-service_bookmark_monitor`) zeigten
+identisch: "Fixversuch änderte nichts an 1 Testfehler(n) – vermutlich falscher/unzureichend
+instruierter Agent" mit der Fehlermeldung "Ran 0 tests in 0.000s / NO TESTS RAN" und
+"Betroffene Dateien: unbekannt". Root Cause gefunden: `core/verifier/testrunner.py._run_
+pytest_or_unittest()` prüft `import pytest` und fällt bei Fehlschlag STILLSCHWEIGEND auf
+`python -m unittest discover` zurück - das erkennt generierten, im pytest-Stil geschriebenen
+Testcode (einfache `def test_...()`-Funktionen ohne `unittest.TestCase`) aber gar nicht als
+Tests. Ohne Traceback (reine Testlauf-Diagnostik, kein Stacktrace) hatte der Fix-Loop keinen
+Datei-Bezug und beauftragte blind den `tester` - der konnte die tatsächliche, umgebungsbedingte
+Ursache (fehlendes `pytest` in requirements.txt/requirements-dev.txt) strukturell nie beheben.
+
+- **`core/verifier/environment.py`:** neue `_ensure_pytest_available()` - stellt `pytest` VOR
+  jedem Testlauf sicher, unabhängig davon, ob der jeweilige Agent daran gedacht hat, es als
+  Abhängigkeit in requirements.txt aufzunehmen (es ist das vom FRAMEWORK selbst gewählte
+  Test-Werkzeug, keine Produktabhängigkeit des generierten Projekts). Läuft nur, wenn überhaupt
+  eine venv angelegt wurde UND echte Python-Testdateien existieren, sonst unnötiger Zusatzaufruf.
+- **`agents/orchestrator/verification.py`:** zweite Verteidigungslinie für den Fall, dass die
+  Nachinstallation selbst fehlschlägt (z.B. kein Netzwerkzugriff) - neue `_diagnose_no_tests_ran()`
+  erkennt das "Ran 0 tests"/"NO TESTS RAN"/"collected 0 items"-Muster und liefert dem Fix-Agenten
+  eine konkrete Diagnose statt eines kontextlosen Tracebacks. Die Routing-Logik bevorzugt für
+  GENAU dieses Fehlerbild jetzt den Owner von requirements.txt (meist backend/database) vor dem
+  bisherigen blinden `tester`-Fallback.
+- **`tests/test_verifier.py`, `tests/test_no_tests_ran_diagnosis.py` (neu):** 5+4 Tests - Diagnose-
+  Erkennung, Nachinstallation (fehlend/bereits vorhanden), Routing-Präferenz, volle
+  `_run_verification_loop()`-Integration bis `verification_ok=True`.
+
+Volle Suite grün, `ruff check` clean.
+
+---
+
+## 🔀 Governance-Fix-Schleife eskaliert jetzt auch bei wechselnder Symptomatik derselben Ursache
+
+Nutzeranfrage: Fortsetzung der Team-Analyse, konkret Punkt 2 - der reale `event_relay`-Lauf vom
+06.09. zeigte denselben ungelösten Governance-Befund zweimal innerhalb von 23 Minuten
+(`.ai_team_decisions.jsonl`: 12:29 "ResilienceManager nicht in main.py verdrahtet" → nach einem
+Fixversuch, 12:49 "ImportError: `resilience` keine globale Instanz mehr in app/kafka_client.py").
+Derselbe Ursache-Bereich, aber ZWEI TEXTLICH UNTERSCHIEDLICHE kritische Befunde - der bereits
+bestehende Zirkuit-Breaker (`_no_progress()` in `agents/orchestrator/verification.py`) vergleicht
+Fund-Signaturen aber nur auf EXAKTE Wiederholung und griff deshalb nie. Der verpflichtende
+Re-Review nach dem letzten Fixversuch eröffnete dadurch direkt ein Backlog-Ticket, OHNE - anders
+als beim Zirkuit-Breaker-Pfad - je den zuständigen Fachbereichsleiter mit einer geänderten
+Strategie zu versuchen.
+
+- **`agents/orchestrator/verification.py`:** der verpflichtende finale Re-Review
+  (`attempt == MAX_REVIEW_ITERATIONS`) eskaliert bei weiterhin kritischem Befund jetzt EINMAL an
+  den zuständigen Fachbereichsleiter (dieselbe `escalation_attempted`-Sperre wie beim
+  `_no_progress()`-Pfad, verhindert eine doppelte Eskalation innerhalb desselben Laufs), bevor das
+  Ticket eröffnet wird. Bewusst OHNE die zusätzliche Modell-Eskalation (`_escalate_agent_models()`)
+  an dieser Stelle - die bräuchte einen echten Provider-Client
+  (`core/llm_factory.py.LLMFactory.create_for_model()`), den bestehende Tests für "unterschiedliche
+  Befunde" (`tests/test_governance_no_progress_breaker.py::test_different_critical_findings_do_not_trigger_breaker`)
+  bewusst NICHT mocken; die Modell-Eskalation bleibt dem bereits bestehenden `_no_progress()`-Pfad
+  vorbehalten.
+- **`tests/test_governance_final_reverification.py`:** zwei neue Tests - Eskalation löst das
+  Problem (kein Ticket) bzw. Eskalation löst es NICHT (Ticket wird wie bisher eröffnet, die
+  menschliche Prüfung bleibt das letzte Netz).
+
+Volle Suite (1328 Tests) grün, `ruff check` clean. Alle bereits bestehenden Governance-/
+Eskalations-Tests (inkl. der bewusst ungemockten `create_for_model`-Gegenprobe) unverändert grün.
+
+---
+
+## 💤 Ungenutzte Agentenrollen: von der stillen Lektion zum sichtbaren Backlog-Ticket
+
+Nutzeranfrage: Analyse des gesamten Agenten-Teams auf sinnvolle Verbesserungen, dann konkrete
+Umsetzung des priorisierten ersten Punkts. `memory/team_lessons.jsonl` zeigte am 06.09. einen
+über mehrere Sessions hinweg wiederkehrenden Fund: 11 von 33 Planer-wählbaren Rollen wurden
+über die letzten 100 Läufe kein einziges Mal ausgewählt (`unused_agent`-Kategorie aus
+`core/optimization_advisor.py`) - eine frühere Session hatte davon bereits `web_research`,
+`finops`, `performance` und `accessibility` durch konkretere "Einsetzen bei"-Trigger in ihrer
+Planer-Beschreibung behoben, aber (a) die verbleibenden 7 Rollen unbehandelt gelassen und (b)
+der Fund selbst blieb eine stille Zeile in einer JSONL-Datei, die niemand routinemäßig liest.
+
+1. **`core/task_manager.py`: dieselbe Beschreibungs-Schärfung für die verbleibenden 7 Rollen**
+   (`copywriter`, `image_generator`, `data_engineer`, `mobile`, `ml`, `prompt_engineer`,
+   `i18n`) - jede bisherige Beschreibung nannte nur WAS die Rolle kann, nie WANN man sie
+   gegenüber einer verwandten Rolle wählt (`ml` vs. `prompt_engineer`, `data_engineer` vs.
+   `backend`/`database`, `mobile` vs. `frontend`). Jetzt mit expliziten "Einsetzen bei"-Triggern
+   UND einer Abgrenzung zur nächstliegenden Rolle.
+2. **`core/optimization_advisor.py`: neue `record_unused_agent_tickets()`.** Öffnet/aktualisiert
+   pro betroffener Rolle ein stabiles Backlog-Ticket (`unused-agent-<id>`, `status="todo"`,
+   `source="optimization_advisor"`) - sichtbar und verfolgbar im Kanban-Board statt nur in
+   `team_lessons.jsonl`. `source="optimization_advisor"` ist bewusst NICHT in
+   `core/backlog_worker.py._AUTONOMOUS_SOURCES` enthalten: ob eine Rolle wirklich überflüssig
+   ist oder nur unklar beschrieben war, ist eine menschliche Abwägung, kein Fix, den
+   `--work-backlog` selbstständig übernehmen soll.
+3. **`agents/orchestrator/__init__.py`:** ruft `record_unused_agent_tickets()` direkt neben dem
+   bereits bestehenden `record_suggestions_as_lessons()`-Aufruf auf - derselbe Fund landet jetzt
+   an BEIDEN Stellen (Lektion fürs Agenten-Prompt-Gedächtnis UND Ticket fürs Board).
+4. **`tests/conftest.py`:** die bestehende `_no_real_team_lesson_writes`-Fixture patcht jetzt
+   zusätzlich `record_unused_agent_tickets` als No-Op - ohne diesen Patch hätte ein Testlauf mit
+   einem echten `unused_agent`-Befund in der Historie ein echtes Ticket in die VERSIONIERTE
+   `memory/backlog.json` geschrieben (dieselbe Fehlerklasse wie der bereits dokumentierte reale
+   Vorfall mit `team_lessons.jsonl`, nur eine Datei weiter).
+5. **`evals/tasks.py`: neue Referenzaufgabe `faq_rag_chatbot`.** Keine der bisherigen 5
+   Aufgaben verlangte RAG/Embeddings oder LLM-Prompting - `ml` und `prompt_engineer` hatten
+   dadurch strukturell nie eine passende Aufgabe, unabhängig von ihrer Beschreibung. Die neue
+   Aufgabe (FAQ-Chatbot mit lokaler Vektordatenbank + Prompt-Injection-Guardrails) braucht
+   beide Rollen fachlich echt, statt sie nur per Stichwort zu erzwingen.
+
+Volle Suite grün, `ruff check` clean.
+
+---
+
+## 🏗️ Fünf Framework-Lücken aus der event_relay-Retrospektive vollständig geschlossen
+
+Nutzeranfrage: die im vorigen Retrospektive-Eintrag identifizierten fünf Verbesserungen
+vollständig umsetzen und dabei ausschließlich das FRAMEWORK selbst (nicht die generierten
+Testprojekte) härten - Ziel: professioneller, autonomer, selbstoptimierend, mit einem
+Agenten-Loop, der bis zum Projektziel führt, statt bei der ersten Stagnation aufzugeben.
+
+1. **`core/optimization_advisor.py`: cross-projekt wiederkehrende Kategorien.**
+   `_find_recurring_lesson_categories()` gruppiert nach (project_slug, category) und sah daher
+   NIE das dominanteste real beobachtete Muster: `unresolved_governance_critical` trat in 9 von
+   15 Lektionen auf, aber an 9 VERSCHIEDENEN Projekten - kaum ein Slug kam zweimal vor. Neue
+   `_find_recurring_teamwide_categories()`/`RecurringTeamWideCategory` aggregieren zusätzlich
+   NUR nach `category` (projektübergreifend, `MIN_TEAMWIDE_LESSON_RECURRENCE = 5`) und schließen
+   `project_slug="_team"`-Meta-Funde aus - macht strukturelle FRAMEWORK-Lücken sichtbar, die
+   jedes neue Projekt gleichermaßen treffen, statt sie in fünfzehn Einzelfällen zu verstecken.
+2. **`core/team_memory.py`: Schweregrad-gewichtete Lektionen-Auswahl.**
+   `format_team_lessons_for_agents()` wählte bisher rein nach Rezenz aus `MAX_LESSONS_SHOWN=5`
+   Plätzen - ein einzelner Optimierungslauf schrieb real 11 `unused_agent`-Lektionen in
+   derselben Sekunde und hätte damit eine kurz zuvor aufgezeichnete
+   `unresolved_governance_critical`-Lektion aus dem Agenten-Kontext verdrängt. Neue
+   `_select_with_severity_reservation()` reserviert `_RESERVED_HIGH_SEVERITY_SLOTS = 2` Plätze
+   für nicht-niedrigschwellige Kategorien (`_LOW_SEVERITY_CATEGORIES`), unabhängig von ihrem Alter.
+3. **`core/verifier/models.py`/`completeness.py`: `CompletenessIssue.kind` ersetzt fragile
+   Substring-Filter.** `agents/orchestrator/verification.py` filterte "lokaler Import schlägt
+   fehl"-Funde bisher per `"existierendes lokales" in message` - `_check_symbols_in_module_file()`
+   formuliert einen fehlenden SYMBOL-Import (z.B. `from app.resilience import resilience`, wenn
+   `resilience` dort nicht mehr definiert ist) aber bewusst OHNE diese Zeichenfolge. Genau diese
+   Fehlerklasse (real: `RateLimitMiddleware`/`SimpleRateLimiter` bei zeiterfassung_app UND
+   `resilience` bei event_relay) fiel dadurch durch BEIDE Filter (Vorab-Import-Check UND
+   Governance-Fix-Prompt-Anreicherung), obwohl `check_completeness()` sie längst korrekt erkannte.
+   Ein neues `kind="missing_local_import"`-Tag ersetzt beide Substring-Filter durch einen
+   stabilen, maschinenlesbaren Vergleich.
+4. **`agents/orchestrator/verification.py`: harte strukturelle Gegenprobe im finalen
+   Governance-Re-Review.** Der verpflichtende Re-Review nach dem letzten Fix-Versuch verließ
+   sich bisher AUSSCHLIESSLICH auf die Einschätzung des LLM-Reviewers - real akzeptierte er
+   einen Fix als erledigt, der einen frischen `ImportError` einführte (die globale
+   `resilience`-Instanz wurde im selben Fix entfernt, der Import blieb). `check_completeness()`
+   läuft jetzt zusätzlich als deterministische Gegenprobe: ein struktureller Neu-Bruch gilt als
+   weiterhin kritisch, unabhängig vom LLM-Urteil.
+5. **`agents/orchestrator/verification.py`: Eskalationsleiter für die Governance-Fix-Schleife.**
+   `_run_verification_loop` eskaliert bei Stagnation bereits an den Fachbereichsleiter UND an
+   HEAVY_MODEL, bevor sie aufgibt - `_run_governance_fix_loop` brach bei "kein Fortschritt"
+   bisher nach GENAU EINEM Fixversuch direkt zum Ticket ab. Durchläuft jetzt dieselbe
+   Eskalationsleiter (Fachbereichsleiter mit geänderter Strategie, dann ein letzter Versuch mit
+   HEAVY_MODEL), bevor ein Backlog-Ticket eröffnet wird - der spätere `--work-backlog`-Retry
+   eskaliert zwar ebenfalls das Modell, aber erst im nächsten Scheduler-Zyklus.
+
+Nebenbefund beim Testen von Punkt 5: `tests/test_governance_no_progress_breaker.py` patchte
+`core.llm_factory.LLMFactory.create_for_model` bisher NICHT (anders als das Pendant
+`tests/test_verification_no_progress_breaker.py`) - ohne den Patch hätte die neue
+Modell-Eskalation einen ECHTEN Provider-Client konstruiert. Ergänzt, bevor es zu echten
+API-Aufrufen in der Testsuite kommen konnte.
+
+Volle Suite grün, `ruff check` clean.
+
+---
+
+## 🧪 Echter Team-Lauf gegen `event_relay` deckt Testisolations-Lücke im Optimization-Advisor auf
+
+Nutzeranfrage: volle Testsuite prüfen und die Session abschließen. Das Team baute im Rahmen
+dieser Session `workspace/event_relay` (Kafka-Event-Relay mit Resilience-Layer) neu auf - ein
+echter Lauf, kein synthetischer Test. `core/optimization_advisor.py` erkannte dabei über die
+`unused_agent`-Kategorie (siehe letzter Eintrag unten) 11 seit mindestens 20 Läufen nie vom
+Planer gewählte Rollen und schrieb sie als 11 Lektionen mit identischem `project_slug` ("_team")
+in `memory/team_lessons.jsonl` - genug, um `MIN_LESSON_RECURRENCE` in
+`_find_recurring_lesson_categories()` zu überschreiten.
+
+- **`tests/test_optimization_advisor.py`:** Die Basisklasse `TestOptimizationAdvisor` isolierte
+  bisher nur `memory/run_history.py` per temporärer Datei, nicht aber
+  `core/team_memory.TEAM_MEMORY_FILE` - andere Testklassen in derselben Datei patchen es
+  bereits korrekt. Dadurch las `_find_recurring_lesson_categories()` in Tests wie
+  `test_empty_history_yields_empty_report` und
+  `test_verification_trend_not_flagged_below_min_sample` ungefiltert die ECHTE,
+  repo-weite `team_lessons.jsonl` mit - sobald genug reale Team-Läufe wiederkehrende
+  Kategorien zum selben Projekt anhäuften (wie oben durch den `event_relay`-Lauf geschehen),
+  schlugen `report.is_empty()`-Erwartungen fehl, obwohl der jeweilige Test selbst keine
+  Lektion aufzeichnete. `setUp()` patcht `TEAM_MEMORY_FILE` jetzt zusätzlich auf eine
+  temporäre Datei, konsistent mit dem bereits etablierten Muster der anderen Testklassen.
+
+Volle Suite (1275 Tests) grün, `ruff check` clean. Der `event_relay`-Lauf selbst hinterließ
+außerdem einen kritischen Governance-Fund (`unresolved_governance_critical`, siehe
+`memory/team_lessons.jsonl`): der neue `ResilienceManager` aus `app/resilience.py` ist noch
+nicht in `app/main.py`s `create_event` verdrahtet - offen für einen Folgelauf.
+
+---
+
 ## 🌱 Team-Wachstums-Retrospektive: Scaffold-Werkzeug, Unterauslastungs-Erkennung & Fallback-Absicherung
 
 Nutzeranfrage: das Framework selbst (nicht die generierten Testprojekte) auf Verbesserungen

@@ -92,11 +92,19 @@ class TestGovernanceNoProgressBreaker(unittest.TestCase):
         self.orchestrator._agents["backend"]._llm = _ScriptedLLM(written_file="backend/db.py")
         self.orchestrator._agents["code_reviewer"]._llm = code_reviewer_llm
 
+        # Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive): die Governance-
+        # Fix-Schleife eskaliert bei Stagnation jetzt genauso an ein stärkeres Modell wie
+        # _run_verification_loop (siehe tests/test_verification_no_progress_breaker.py) - ohne
+        # diesen Patch würde `_escalate_agent_models()` einen ECHTEN Provider-Client konstruieren
+        # (core.llm_factory.LLMFactory.create_for_model) statt weiter mit einer kontrollierten
+        # Test-Double zu arbeiten.
+        @patch("core.llm_factory.LLMFactory.create_for_model")
         @patch("agents.orchestrator.verification.upsert_ticket")
         @patch("agents.orchestrator.verification.ProjectVerifier")
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")
-        def _inner(mock_synthesize, mock_decompose, mock_verifier_cls, mock_upsert_ticket):
+        def _inner(mock_synthesize, mock_decompose, mock_verifier_cls, mock_upsert_ticket, mock_create_for_model):
+            mock_create_for_model.side_effect = lambda model_name: _ScriptedLLM(written_file="backend/db.py")
             tasks = [
                 AgentTask(task_id="t1", agent_id="backend", description="Baue etwas"),
                 AgentTask(task_id="t2", agent_id="code_reviewer", description="Review durchführen"),
@@ -130,6 +138,45 @@ class TestGovernanceNoProgressBreaker(unittest.TestCase):
         # Der verpflichtende, teure finale Re-Review (nach MAX_REVIEW_ITERATIONS) darf durch den
         # frühen Abbruch NICHT mehr ausgelöst werden.
         self.assertNotIn("Verpflichtender Re-Review", "".join(logs))
+
+    def test_model_escalation_recovers_after_failed_lead_escalation(self):
+        # Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive, echter Fund am
+        # event_relay-Lauf 2026-09-06): schlägt sowohl der reguläre Fixversuch als auch die
+        # Eskalation an den Fachbereichsleiter fehl (identischer kritischer Befund), bekommt der
+        # stecken gebliebene Agent (hier: backend) für GENAU einen letzten Versuch HEAVY_MODEL,
+        # BEVOR aufgegeben und ein Ticket eröffnet wird - siehe
+        # tests/test_verification_no_progress_breaker.py.test_model_escalation_recovers_after_failed_lead_escalation
+        # für dasselbe Muster in der Test-Fix-Schleife. code_reviewer meldet: initial kritisch,
+        # nach dem regulären Fix weiterhin kritisch (Versuch 2 des äußeren Loops), nach der
+        # Fachbereichsleiter-Eskalation weiterhin kritisch, erst nach der Modell-Eskalation
+        # sauber.
+        class _SequencedLLM:
+            def __init__(self, texts: list[str]):
+                self._texts = texts
+                self._n = 0
+                self.model_name = "fake-model"
+
+            async def generate_with_tools(self, messages, system_prompt, tools, _allow_self_fallback=True):
+                text = self._texts[min(self._n, len(self._texts) - 1)]
+                self._n += 1
+                return LLMResponse(text=text, model_name=self.model_name,
+                                    prompt_tokens=10, completion_tokens=5, total_tokens=15, tool_calls=[])
+
+            async def generate_with_usage(self, prompt, system_prompt=None):
+                return LLMResponse(text=self._texts[0], model_name=self.model_name,
+                                    prompt_tokens=10, completion_tokens=5, total_tokens=15)
+
+        result, logs, mock_upsert_ticket = self._run(_SequencedLLM([
+            CRITICAL_CODE_REVIEWER_REPORT,  # initial Governance-Review (vor der Fix-Schleife)
+            CRITICAL_CODE_REVIEWER_REPORT,  # Recheck Versuch 2 (regulärer Fix wirkungslos)
+            CRITICAL_CODE_REVIEWER_REPORT,  # Recheck nach Fachbereichsleiter-Eskalation
+            "## Code-Review Report\n\nKeine kritischen Probleme gefunden.",  # Recheck nach Modell-Eskalation
+        ]))
+
+        self.assertTrue(any("Strategiewechsel" in line for line in logs))
+        self.assertTrue(any("stärkerem Modell" in line for line in logs))
+        self.assertTrue(any("Modell-Eskalation erfolgreich" in line for line in logs))
+        mock_upsert_ticket.assert_not_called()
 
     def test_different_critical_findings_do_not_trigger_breaker(self):
         # Erster Aufruf liefert Fund A, jeder weitere Aufruf Fund B - echter Fortschritt

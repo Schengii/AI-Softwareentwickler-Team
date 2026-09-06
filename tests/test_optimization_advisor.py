@@ -17,17 +17,21 @@ from pathlib import Path
 from unittest.mock import patch
 
 import config
+import core.backlog_store as backlog_store_module
 import core.team_memory as team_memory_module
 import memory.run_history as run_history_module
+from core.backlog_store import list_tickets
 from core.optimization_advisor import (
     MIN_LESSON_RECURRENCE,
     MIN_SAMPLE_SIZE,
     MIN_SUCCESS_RATE_GAP,
+    MIN_TEAMWIDE_LESSON_RECURRENCE,
     MIN_TOTAL_RUNS_FOR_UNUSED_CHECK,
     MIN_VERIFICATION_SAMPLE_SIZE,
     LowPerformingAgent,
     ModelSuggestion,
     OptimizationReport,
+    RecurringTeamWideCategory,
     UnusedAgent,
     analyze,
     apply_auto_tuning,
@@ -35,6 +39,7 @@ from core.optimization_advisor import (
     format_report_for_humans,
     get_recent_verification_trend_warning,
     record_suggestions_as_lessons,
+    record_unused_agent_tickets,
 )
 from core.team_memory import read_team_lessons
 from memory.run_history import record_run
@@ -46,6 +51,15 @@ class TestOptimizationAdvisor(unittest.TestCase):
         self._patcher = patch.object(run_history_module, "RUN_HISTORY_FILE", Path(self.temp_dir) / "run_history.json")
         self._patcher.start()
         self.addCleanup(self._patcher.stop)
+        # Isoliert von der ECHTEN memory/team_lessons.jsonl - _find_recurring_lesson_categories()
+        # liest sie ungefiltert, ein durch reale Team-Läufe gewachsener Bestand (z.B. mehrere
+        # "unused_agent"-Funde zum selben project_slug) würde sonst is_empty()-Erwartungen dieser
+        # Klasse verfälschen, obwohl die einzelnen Tests keine eigene Lektion aufzeichnen.
+        self._lessons_patcher = patch.object(
+            team_memory_module, "TEAM_MEMORY_FILE", Path(self.temp_dir) / "team_lessons.jsonl",
+        )
+        self._lessons_patcher.start()
+        self.addCleanup(self._lessons_patcher.stop)
 
     def _record(self, agent_id: str, model: str, success: bool, calls: int = 1, tokens: int = 100):
         for _ in range(calls):
@@ -413,6 +427,82 @@ class TestRecurringLessonCategories(unittest.TestCase):
         self.assertIn("mockforge", text)
 
 
+class TestRecurringTeamWideCategories(unittest.TestCase):
+    """
+    Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive, echter Fund am
+    event_relay-Lauf 2026-09-06): TestRecurringLessonCategories oben gruppiert nach
+    (project_slug, category) und sieht daher NIE das Muster, bei dem dieselbe Kategorie an VIELEN
+    VERSCHIEDENEN Projekten auftritt (real beobachtet: `unresolved_governance_critical` an 9 von
+    9 zuletzt betroffenen, unterschiedlichen Projekten). analyze() aggregiert dafür zusätzlich
+    NUR nach `category`, projektübergreifend.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self._patcher = patch.object(
+            team_memory_module, "TEAM_MEMORY_FILE", Path(self.temp_dir) / "team_lessons.jsonl",
+        )
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_flags_category_recurring_across_different_projects(self):
+        for i in range(MIN_TEAMWIDE_LESSON_RECURRENCE):
+            team_memory_module.record_lesson(f"project_{i}", "unresolved_governance_critical", f"Fund {i}")
+
+        report = analyze()
+
+        self.assertEqual(len(report.recurring_teamwide_categories), 1)
+        finding = report.recurring_teamwide_categories[0]
+        self.assertIsInstance(finding, RecurringTeamWideCategory)
+        self.assertEqual(finding.category, "unresolved_governance_critical")
+        self.assertEqual(finding.count, MIN_TEAMWIDE_LESSON_RECURRENCE)
+        self.assertEqual(len(finding.project_slugs), MIN_TEAMWIDE_LESSON_RECURRENCE)
+        self.assertFalse(report.is_empty())
+
+    def test_no_flag_below_teamwide_threshold(self):
+        for i in range(MIN_TEAMWIDE_LESSON_RECURRENCE - 1):
+            team_memory_module.record_lesson(f"project_{i}", "unresolved_governance_critical", f"Fund {i}")
+
+        report = analyze()
+
+        self.assertEqual(report.recurring_teamwide_categories, [])
+
+    def test_repeated_findings_at_same_project_count_once(self):
+        # Mehrere Funde derselben Kategorie AM SELBEN Projekt decken bereits
+        # RecurringLessonCategory ab - für dieses teamweite Signal zählt jedes Projekt nur einmal,
+        # sonst würde ein einzelnes, notorisch schlechtes Projekt fälschlich ein FRAMEWORK-weites
+        # Muster vortäuschen.
+        for i in range(MIN_TEAMWIDE_LESSON_RECURRENCE):
+            team_memory_module.record_lesson("mockforge", "unresolved_governance_critical", f"Fund {i}")
+
+        report = analyze()
+
+        self.assertEqual(report.recurring_teamwide_categories, [])
+
+    def test_team_meta_project_slug_excluded(self):
+        # project_slug="_team" (record_suggestions_as_lessons()-Meta-Funde) ist kein echter
+        # Code-Defekt an einem Projekt und darf dieses Signal nicht triggern.
+        for i in range(MIN_TEAMWIDE_LESSON_RECURRENCE):
+            team_memory_module.record_lesson("_team", "unused_agent", f"Agent {i} nie ausgewählt.")
+
+        report = analyze()
+
+        self.assertEqual(report.recurring_teamwide_categories, [])
+
+    def test_format_report_includes_teamwide_category(self):
+        for i in range(MIN_TEAMWIDE_LESSON_RECURRENCE):
+            team_memory_module.record_lesson(f"project_{i}", "unresolved_governance_critical", f"Fund {i}")
+
+        text = format_report_for_humans(analyze())
+
+        self.assertIn("Team-weites strukturelles Muster", text)
+        self.assertIn("unresolved_governance_critical", text)
+
+
 class TestUnusedAgents(unittest.TestCase):
     """
     Testet die neue Unterauslastungs-Erkennung (Team-Wachstums-Retrospektive 2026-09-06):
@@ -540,6 +630,66 @@ class TestRecordSuggestionsAsLessons(unittest.TestCase):
         record_suggestions_as_lessons(OptimizationReport())
 
         self.assertEqual(read_team_lessons(limit=10), [])
+
+
+class TestRecordUnusedAgentTickets(unittest.TestCase):
+    """
+    Testet die Fortsetzung der Team-Retrospektive (2026-09-06): unused_agent-Funde blieben
+    bisher NUR eine Zeile in team_lessons.jsonl (siehe TestRecordSuggestionsAsLessons oben) -
+    dort teilen sie sich mit jeder anderen Kategorie dieselben knappen MAX_LESSONS_SHOWN-
+    Anzeigeplätze und sind sonst nirgends nachverfolgbar sichtbar. record_unused_agent_tickets()
+    öffnet zusätzlich ein sichtbares, verfolgbares Backlog-Ticket je betroffener Rolle.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self._patcher = patch.object(backlog_store_module, "BACKLOG_FILE", Path(self.temp_dir) / "backlog.json")
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_opens_one_ticket_per_unused_agent(self):
+        unused = [
+            UnusedAgent(agent_id="ml", configured_model="claude-sonnet-5", sample_runs=100),
+            UnusedAgent(agent_id="mobile", configured_model="gemini-3.8-flash", sample_runs=100),
+        ]
+
+        ticket_ids = record_unused_agent_tickets(OptimizationReport(unused_agents=unused))
+
+        self.assertEqual(sorted(ticket_ids), ["unused-agent-ml", "unused-agent-mobile"])
+        tickets = list_tickets()
+        self.assertEqual(len(tickets), 2)
+        ml_ticket = next(t for t in tickets if t.id == "unused-agent-ml")
+        self.assertEqual(ml_ticket.status, "todo")
+        self.assertEqual(ml_ticket.source, "optimization_advisor")
+        self.assertEqual(ml_ticket.project_slug, "_team")
+        self.assertIn("ml", ml_ticket.detail)
+        self.assertIn("100", ml_ticket.detail)
+
+    def test_repeated_finding_updates_same_ticket_instead_of_duplicating(self):
+        unused = [UnusedAgent(agent_id="ml", configured_model="claude-sonnet-5", sample_runs=100)]
+
+        record_unused_agent_tickets(OptimizationReport(unused_agents=unused))
+        record_unused_agent_tickets(OptimizationReport(unused_agents=unused))
+
+        self.assertEqual(len(list_tickets()), 1)
+
+    def test_empty_report_opens_no_ticket(self):
+        ticket_ids = record_unused_agent_tickets(OptimizationReport())
+
+        self.assertEqual(ticket_ids, [])
+        self.assertEqual(list_tickets(), [])
+
+    def test_ticket_source_is_not_autonomously_worked_off(self):
+        """source='optimization_advisor' darf NICHT in core.backlog_worker._AUTONOMOUS_SOURCES
+        stehen - ob eine Rolle wirklich überflüssig ist, ist eine menschliche Abwägung, kein
+        mechanischer Fix, den --work-backlog selbstständig übernehmen sollte."""
+        from core.backlog_worker import _AUTONOMOUS_SOURCES
+
+        self.assertNotIn("optimization_advisor", _AUTONOMOUS_SOURCES)
 
 
 class TestVerificationTrendWarning(unittest.TestCase):

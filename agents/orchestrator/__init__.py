@@ -112,7 +112,11 @@ from core.git_isolation import (
 from core.message_bus import AgentTask
 from core.notifier import notify_external
 from core.optimization_advisor import analyze as analyze_optimization_potential
-from core.optimization_advisor import apply_auto_tuning, record_suggestions_as_lessons
+from core.optimization_advisor import (
+    apply_auto_tuning,
+    record_suggestions_as_lessons,
+    record_unused_agent_tickets,
+)
 from core.optimization_advisor import format_report_for_humans as format_optimization_report
 from core.project_constitution import format_constitution_for_agents, get_max_project_tokens
 from core.project_status import (
@@ -1037,7 +1041,22 @@ class Orchestrator(
         # deterministisch, kein zusätzlicher LLM-Aufruf; record_lesson() dedupliziert bereits
         # intern, ein wiederholter Fund bläht die Historie also nicht auf.
         record_suggestions_as_lessons(optimization_report)
+        # Team-Optimierung (Fortsetzung der Analyse 2026-09-06): unused_agent-Funde blieben
+        # bisher NUR eine Zeile in team_lessons.jsonl (siehe record_suggestions_as_lessons()
+        # oben) - dort teilen sie sich mit jeder anderen Kategorie dieselben knappen
+        # MAX_LESSONS_SHOWN-Anzeigeplätze und sind sonst nirgends nachverfolgbar sichtbar. Ein
+        # echter Lauf erzeugte 11 solcher Funde auf einmal, ohne dass das je auffiel. Öffnet
+        # jetzt zusätzlich ein sichtbares, verfolgbares Backlog-Ticket je betroffener Rolle -
+        # source="optimization_advisor" ist bewusst nicht in _AUTONOMOUS_SOURCES, das Team
+        # arbeitet es also NICHT automatisch ab (Rollen-Konsolidierung ist eine menschliche
+        # Abwägung), es bleibt aber sichtbar im Kanban-Board statt in einer JSONL-Datei begraben.
+        unused_agent_tickets = record_unused_agent_tickets(optimization_report)
         optimization_section = format_optimization_report(optimization_report)
+        if unused_agent_tickets:
+            notify(
+                f"  💤 [dim yellow]Ungenutzte Rollen als Backlog-Ticket vermerkt:[/dim yellow] "
+                f"{', '.join(t.removeprefix('unused-agent-') for t in unused_agent_tickets)}."
+            )
         if auto_tuned_agents:
             notify(
                 f"  🔧 [bold cyan]Selbstoptimierung angewendet:[/bold cyan] {', '.join(auto_tuned_agents)} "

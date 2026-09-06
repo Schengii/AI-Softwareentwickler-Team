@@ -37,6 +37,7 @@ from core.backlog_store import get_ticket, upsert_ticket
 from core.decision_log import log_decision
 from core.message_bus import AgentResult, AgentTask
 from core.notifier import notify_external
+from core.pre_flight_check import PreFlightIssue, run_pre_flight_check
 from core.review_gate import (
     find_critical_findings,
     find_permission_blocked_questions,
@@ -82,6 +83,34 @@ def _diagnose_import_failure(message: str) -> str | None:
             f"⚠️ KONKRETE URSACHE: `{name}` existiert nicht in `{as_path}.py` (Modul selbst ist "
             f"vorhanden, das importierte Symbol fehlt darin). Ergänze `{name}` (Klasse/Funktion/"
             f"Variable) in genau dieser Datei, statt nur die importierende Datei zu ändern."
+        )
+    return None
+
+
+# Team-Optimierung (echter Fund: memory/backlog.json-Tickets `recurring-failure-event_relay`/
+# `recurring-failure-service_bookmark_monitor`) - siehe _diagnose_no_tests_ran()-Docstring.
+_NO_TESTS_RAN_RE = re.compile(r"ran 0 tests\b|no tests ran\b|collected 0 items\b", re.IGNORECASE)
+
+
+def _diagnose_no_tests_ran(message: str) -> str | None:
+    """Erkennt das 'Ran 0 tests'/'NO TESTS RAN'/'collected 0 items'-Muster - der Testlauf startete
+    zwar, fand aber KEINEN einzigen Test, obwohl echte Testdateien existieren (core/verifier/
+    environment.py.ProjectVerifier._ensure_pytest_available() beugt der häufigsten Ursache davon -
+    fehlendes `pytest` in requirements.txt - inzwischen bereits VOR dem Testlauf vor; dieser
+    Diagnosehinweis bleibt die zweite Verteidigungslinie, z.B. wenn die Nachinstallation mangels
+    Netzwerkzugriffs fehlschlug). Ohne diesen Hinweis hatte der Fix-Loop hier KEINEN Datei-Bezug
+    im Traceback (kein `File \"...\", line N` - reine Testlauf-Diagnostik ohne Stacktrace) und
+    beauftragte blind den `tester`, der die eigentliche - meist umgebungsbedingte, nicht
+    testcode-bedingte - Ursache nie beheben konnte ('Fixversuch änderte nichts')."""
+    if _NO_TESTS_RAN_RE.search(message):
+        return (
+            "⚠️ KONKRETE URSACHE (vermutlich NICHT der Testcode selbst): Der Testlauf startete, "
+            "fand aber KEINEN einzigen Test, obwohl Testdateien existieren - typischste Ursache "
+            "ist eine fehlende Testabhängigkeit in der Umgebung (z.B. `pytest`/`pytest-asyncio` "
+            "fehlt in requirements.txt, wodurch auf `unittest discover` zurückgefallen wird, das "
+            "pytest-Stil-Testfunktionen ohne `unittest.TestCase` gar nicht erkennt). Prüfe ZUERST "
+            "requirements.txt/requirements-dev.txt auf fehlende Test-Abhängigkeiten, bevor du "
+            "Testdateien inhaltlich änderst."
         )
     return None
 
@@ -227,6 +256,19 @@ class VerificationMixin:
 
         Gibt (all_results, summary, budget_aborted, manually_cancelled) zurück - summary ist
         "", wenn nichts zu tun war (kein Rauschen im Normalfall, siehe process()).
+
+        Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive): bei "kein
+        Fortschritt" (identische kritische Befunde nach einem Fixversuch) durchläuft diese
+        Schleife jetzt dieselbe Eskalationsleiter wie _run_verification_loop unten, BEVOR ein
+        Backlog-Ticket eröffnet wird - erst Fachbereichsleiter (geänderte Strategie), dann ein
+        letzter Versuch mit HEAVY_MODEL für die stecken gebliebenen Agenten. Vorher gab diese
+        Schleife nach GENAU EINEM erfolglosen Fixversuch auf; der spätere `--work-backlog`-
+        Retry (core/backlog_worker.py) eskaliert zwar ebenfalls das Modell, aber erst Stunden/
+        Tage später im nächsten Scheduler-Zyklus. Zusätzlich läuft check_completeness() (core/
+        verifier/completeness.py) als harte, deterministische Gegenprobe zum finalen LLM-Re-
+        Review - ein struktureller Neu-Bruch (z.B. ein durch den Fix selbst eingeführter
+        `ImportError`, real beobachtet am event_relay-Lauf 2026-09-06) gilt damit als weiterhin
+        kritisch, UNABHÄNGIG davon, ob der LLM-Reviewer ihn bemerkt.
         """
         if not ENABLE_GOVERNANCE_FIX_LOOP:
             return all_results, "", False, False
@@ -250,6 +292,15 @@ class VerificationMixin:
         # MAX_REVIEW_ITERATIONS") wären dann reine Tokens/Zeit-Verschwendung. Bricht in diesem
         # Fall direkt zur Ticket-Eröffnung durch, ohne den zweiten Fix-Dispatch zu versuchen.
         previous_findings_signature: frozenset[tuple[str, str]] | None = None
+        # Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive): _run_verification_loop
+        # unten eskaliert bei Stagnation bereits an den Fachbereichsleiter UND an ein stärkeres
+        # Modell, BEVOR aufgegeben wird - diese Schleife hier brach bisher bei "kein Fortschritt"
+        # nach genau EINEM Fixversuch direkt zum Ticket ab, ohne dieselbe Eskalationsleiter zu
+        # durchlaufen (der spätere `--work-backlog`-Retry eskaliert zwar das Modell, aber erst
+        # Stunden/Tage später im nächsten Scheduler-Zyklus, siehe core/backlog_worker.py). Diese
+        # beiden Flags spiegeln escalation_attempted/model_escalation_attempted unten 1:1.
+        escalation_attempted = False
+        model_escalation_attempted = False
         # Dasselbe Cross-Run-Gedächtnis wie in _run_verification_loop (Team-Retrospektive nach
         # dem taskpulse-Lauf, zweite Runde).
         governance_ticket_id = f"unresolved-governance-critical-{self.last_project_slug}" if self.last_project_slug else None
@@ -332,10 +383,148 @@ class VerificationMixin:
 
             current_findings_signature = _issue_signature(findings, lambda f: (f[0], f[1][:300]))
             if _no_progress(previous_findings_signature, current_findings_signature):
-                notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische kritische Befunde wie vor dem letzten Fixversuch – überspringe weiteren Fixversuch, eröffne direkt ein Ticket.")
+                escalated_and_resolved = False
+                if not escalation_attempted and not (
+                    run_start_tokens is not None and (
+                        self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                    )
+                ):
+                    escalation_attempted = True
+                    stuck_agents_to_fix, _ = route_findings_to_owners(findings, file_owners)
+                    stuck_owner_ids = set(stuck_agents_to_fix.keys()) & set(self._agents.keys())
+                    lead_targets = {
+                        dept_id for dept_id, defn in DEPARTMENT_DEFINITIONS.items()
+                        if stuck_owner_ids & set(defn["members"]) and dept_id in self._dept_leads
+                    }
+                    findings_text = "\n\n".join(block for _agent_id, block in findings)[:3000]
+
+                    async def _rerun_review_agents(task_prefix: str) -> list[tuple[str, str]]:
+                        # Dieselbe Nur-Lese-Recheck-Logik wie beim regulären Zwischen-Versuch
+                        # oben (attempt > 1) - prüft NACH der Eskalation, ob die Governance-
+                        # Rollen jetzt noch etwas Kritisches melden, statt blind weiterzumachen.
+                        tasks = [
+                            AgentTask(
+                                task_id=f"{task_prefix}_{agent_id}",
+                                agent_id=agent_id,
+                                description=(
+                                    "Prüfe AUSSCHLIESSLICH, ob das zuvor gemeldete kritische Problem "
+                                    "jetzt tatsächlich behoben ist. Melde erneut mit klarer "
+                                    "Schweregrad-Markierung (\"Kritisch\"), falls es weiterhin besteht."
+                                ),
+                                context="", project_dir=project_dir, allow_tools=True, tools_read_only=True,
+                            )
+                            for agent_id in sorted(review_agent_ids)
+                        ]
+                        results = await self._run_agents_parallel(tasks, notify=notify)
+                        all_results.extend(results)
+                        return [
+                            (res.agent_id, block) for res in results if res.success and res.content
+                            for block in find_critical_findings(res.content)
+                        ]
+
+                    if lead_targets:
+                        notify(
+                            f"  🔀 [bold yellow]Strategiewechsel (Eskalation):[/bold yellow] Derselbe kritische "
+                            f"Governance-Befund nach einem wirkungslosen Fixversuch – ziehe Fachbereichsleiter "
+                            f"({', '.join(sorted(lead_targets))}) statt derselben Wiederholung hinzu..."
+                        )
+                        escalation_tasks = [
+                            AgentTask(
+                                task_id=f"governance_escalation_{dept_id}_{attempt}",
+                                agent_id=dept_id,
+                                description=(
+                                    "Ein vorheriger, gezielter Fixversuch deines Fachbereichs hat den folgenden "
+                                    "KRITISCHEN Governance-Befund NICHT behoben (identisch vor und nach dem "
+                                    "Versuch) - derselbe Ansatz hat also erkennbar nicht funktioniert. "
+                                    "Analysiere das Problem aus einer anderen Perspektive und weise dein Team "
+                                    f"mit einer GEÄNDERTEN Strategie an, statt denselben Fix zu wiederholen.\n\n{findings_text}"
+                                ),
+                                context="", project_dir=project_dir,
+                            )
+                            for dept_id in lead_targets
+                        ]
+                        fix_results = await self._run_agents_parallel(escalation_tasks, notify=notify)
+                        self._update_file_owners(file_owners, fix_results)
+                        all_results.extend(fix_results)
+                        summary_lines.append(
+                            f"- 🔀 Versuch {attempt}: kein Fortschritt beim vorherigen Fix → Eskalation an "
+                            f"Fachbereichsleiter ({', '.join(sorted(lead_targets))}) mit geänderter Strategie."
+                        )
+                        findings = await _rerun_review_agents(f"governance_escalation_recheck_{attempt}")
+                        if not findings:
+                            notify("  ✅ [bold green]Eskalation erfolgreich:[/bold green] keine kritischen Governance-Befunde mehr.")
+                            summary_lines.append("- ✅ Eskalation an Fachbereichsleiter behob den Befund – keine kritischen Governance-Funde mehr.")
+                            if had_prior_governance_ticket and governance_ticket_id:
+                                try:
+                                    upsert_ticket(
+                                        ticket_id=governance_ticket_id,
+                                        title=f"Ungelöster kritischer Governance-Befund: {self.last_project_slug}",
+                                        source="orchestrator", status="done", project_slug=self.last_project_slug,
+                                        detail="In einem späteren Lauf behoben - keine kritischen Befunde mehr.",
+                                    )
+                                except Exception as e:
+                                    notify(f"⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
+                            break
+                        escalated_and_resolved = True  # Eskalation lief, aber weiterhin kritisch - ggf. Modell-Eskalation unten.
+                        current_findings_signature = _issue_signature(findings, lambda f: (f[0], f[1][:300]))
+
+                    if not model_escalation_attempted and stuck_owner_ids:
+                        model_escalation_attempted = True
+                        escalated_agent_ids = self._escalate_agent_models(stuck_owner_ids)
+                        if escalated_agent_ids:
+                            notify(
+                                f"  ⬆️ [bold yellow]Letzter Versuch mit stärkerem Modell:[/bold yellow] "
+                                f"{', '.join(sorted(escalated_agent_ids))} laufen für diesen Governance-Fix "
+                                "auf HEAVY_MODEL, statt direkt aufzugeben."
+                            )
+                            findings_text = "\n\n".join(block for _agent_id, block in findings)[:3000]
+                            model_escalation_tasks = [
+                                AgentTask(
+                                    task_id=f"governance_model_escalation_{owner}_{attempt}",
+                                    agent_id=owner,
+                                    description=(
+                                        "Dein vorheriger, gezielter Fixversuch UND die Eskalation an deinen "
+                                        "Fachbereichsleiter haben den folgenden KRITISCHEN Governance-Befund "
+                                        "NICHT behoben - du bekommst jetzt für diesen letzten Versuch ein "
+                                        f"stärkeres Modell.\n\n{findings_text}"
+                                    ),
+                                    context="", project_dir=project_dir,
+                                )
+                                for owner in sorted(escalated_agent_ids)
+                            ]
+                            fix_results = await self._run_agents_parallel(model_escalation_tasks, notify=notify)
+                            self._update_file_owners(file_owners, fix_results)
+                            all_results.extend(fix_results)
+                            summary_lines.append(
+                                f"- ⬆️ Versuch {attempt}: kein Fortschritt auch nach Eskalation an den "
+                                f"Fachbereichsleiter → letzter Versuch mit HEAVY_MODEL für {', '.join(sorted(escalated_agent_ids))}."
+                            )
+                            findings = await _rerun_review_agents(f"governance_model_escalation_recheck_{attempt}")
+                            if not findings:
+                                notify("  ✅ [bold green]Modell-Eskalation erfolgreich:[/bold green] keine kritischen Governance-Befunde mehr.")
+                                summary_lines.append("- ✅ Fix mit HEAVY_MODEL behob den Befund – keine kritischen Governance-Funde mehr.")
+                                if had_prior_governance_ticket and governance_ticket_id:
+                                    try:
+                                        upsert_ticket(
+                                            ticket_id=governance_ticket_id,
+                                            title=f"Ungelöster kritischer Governance-Befund: {self.last_project_slug}",
+                                            source="orchestrator", status="done", project_slug=self.last_project_slug,
+                                            detail="In einem späteren Lauf behoben - keine kritischen Befunde mehr.",
+                                        )
+                                    except Exception as e:
+                                        notify(f"⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
+                                break
+                            escalated_and_resolved = True
+
+                notify(
+                    "  🛑 [bold red]Kein Fortschritt:[/bold red] identische kritische Befunde wie vor dem letzten "
+                    f"Fixversuch{' (auch nach Eskalation an den Fachbereichsleiter/stärkeres Modell)' if escalated_and_resolved else ''} "
+                    "– eröffne Backlog-Ticket, statt unverändert weiterzumachen."
+                )
                 summary_lines.append(
                     f"- 🛑 Versuch {attempt}: dieselben {len(findings)} kritische(n) Befund(e) wie nach dem vorherigen "
-                    "Fixversuch (keine Veränderung) – weiterer Fix-Dispatch übersprungen, Backlog-Ticket direkt eröffnet."
+                    "Fixversuch (keine Veränderung)" + (" - auch nach Eskalation" if escalated_and_resolved else "") +
+                    " – weiterer Fix-Dispatch übersprungen, Backlog-Ticket direkt eröffnet."
                 )
                 # Team-Optimierung (Retrospektive 2026-09-05): früher wurde dieselbe Zusammen-
                 # fassung an 3 Stellen (Ticket, Lernprotokoll, Entscheidungslog) JEWEILS separat
@@ -391,10 +580,16 @@ class VerificationMixin:
             # nur Prosa) - derselbe check_completeness()-Aufruf wie beim Vorab-Import-Check, hier
             # nur zusätzlich in den Fix-Prompt gemischt, läuft rein lokal (Millisekunden, kein
             # LLM-Aufruf) und kostet daher kein zusätzliches Budget.
+            # Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive, echter Fund
+            # am event_relay-Lauf 2026-09-06): dieser Filter nutzte bisher dieselbe fragile
+            # Substring-Suche `"existierendes lokales" in message` wie der Vorab-Import-Check
+            # unten - core/verifier/models.py.CompletenessIssue.kind ersetzt das durch ein
+            # stabiles, maschinenlesbares Tag (siehe dessen Docstring für den vollen Kontext,
+            # inkl. des `resilience`-Imports, den die alte Substring-Suche verpasste).
             try:
                 structural_report = ProjectVerifier(project_dir).check_completeness()
                 structural_import_issues = [
-                    i for i in structural_report.issues if "existierendes lokales" in i.message
+                    i for i in structural_report.issues if i.kind == "missing_local_import"
                 ] if structural_report.attempted else []
             except Exception:
                 structural_import_issues = []
@@ -496,6 +691,122 @@ class VerificationMixin:
                     block for res in final_recheck_results if res.success and res.content
                     for block in find_critical_findings(res.content)
                 ]
+                # Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive, echter
+                # Fund am event_relay-Lauf 2026-09-06): der Re-Review oben verlässt sich AUSSCHLIESSLICH
+                # auf die Einschätzung des LLM-Reviewers - genau das akzeptierte real einen Fix
+                # als erledigt ("Resilience-Manager verdrahtet"), der dabei einen frischen,
+                # garantierten `ImportError` einführte (`from app.resilience import resilience`,
+                # obwohl die globale Instanz im selben Fix entfernt wurde). Der Bruch fiel erst im
+                # NÄCHSTEN, unabhängigen Lauf per echtem pytest auf. check_completeness() erkennt
+                # genau diese Fund-Klasse bereits rein lokal (kein LLM-Aufruf, keine zusätzlichen
+                # Kosten) - läuft deshalb HIER zusätzlich als harte, deterministische Gegenprobe:
+                # ein struktureller Neu-Bruch gilt als weiterhin kritisch, UNABHÄNGIG davon, ob
+                # der LLM-Re-Review ihn bemerkt hat.
+                try:
+                    structural_recheck = ProjectVerifier(project_dir).check_completeness()
+                    structural_still_critical = [
+                        f"Statischer Check (ohne LLM-Bewertung): {i.file_path}:{i.line_number} – {i.message}"
+                        for i in structural_recheck.issues if i.kind == "missing_local_import"
+                    ] if structural_recheck.attempted else []
+                except Exception:
+                    structural_still_critical = []
+                if structural_still_critical:
+                    notify(f"  🧩 [bold red]Struktureller Neu-Bruch:[/bold red] {len(structural_still_critical)} lokale(r) Import(e) nach dem Fix nicht auflösbar - unabhängig vom LLM-Re-Review als weiterhin kritisch gewertet.")
+                still_critical = still_critical + structural_still_critical
+
+                # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, echter Fund am
+                # event_relay-Lauf): der `_no_progress()`-Zirkuit-Breaker oben eskaliert nur bei
+                # EXAKT WIEDERHOLTEM Befund - real blieb ein Fixversuch beim zweiten Fund derselben
+                # Ursache aber eine ANDERE Symptomatik zurück (Versuch 1: "ResilienceManager nicht
+                # verdrahtet" → Versuch 2, nach dem Fix: "ImportError: `resilience` keine globale
+                # Instanz mehr"), sodass `_no_progress()` NIE griff und der verpflichtende
+                # Re-Review hier direkt ein Ticket eröffnete, OHNE je den Fachbereichsleiter mit
+                # einer geänderten Strategie zu versuchen - dieselbe Eskalationsleiter wie oben,
+                # nur ohne die Modell-Eskalation (die bräuchte einen echten Provider-Client, siehe
+                # core/llm_factory.py.LLMFactory.create_for_model() - hier bewusst nicht riskiert,
+                # das ist bereits über den Zirkuit-Breaker-Pfad oben abgedeckt).
+                if still_critical and not escalation_attempted and not (
+                    run_start_tokens is not None and (
+                        self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                    )
+                ):
+                    escalation_attempted = True
+                    stuck_owner_ids = set(agents_to_fix.keys()) & set(self._agents.keys())
+                    lead_targets = {
+                        dept_id for dept_id, defn in DEPARTMENT_DEFINITIONS.items()
+                        if stuck_owner_ids & set(defn["members"]) and dept_id in self._dept_leads
+                    }
+                    if lead_targets:
+                        still_critical_text = "\n\n".join(still_critical)[:3000]
+                        notify(
+                            f"  🔀 [bold yellow]Strategiewechsel (Eskalation):[/bold yellow] Der "
+                            f"verpflichtende Re-Review meldet nach dem letzten Fixversuch weiterhin "
+                            f"ein kritisches Problem (ggf. eine andere Symptomatik derselben Ursache) "
+                            f"– ziehe Fachbereichsleiter ({', '.join(sorted(lead_targets))}) hinzu, "
+                            "statt direkt ein Ticket zu eröffnen..."
+                        )
+                        escalation_tasks = [
+                            AgentTask(
+                                task_id=f"governance_final_escalation_{dept_id}",
+                                agent_id=dept_id,
+                                description=(
+                                    "Der verpflichtende Abschluss-Review meldet nach dem letzten "
+                                    "Fixversuch deines Fachbereichs WEITERHIN ein kritisches Problem "
+                                    "(ggf. eine andere Symptomatik derselben Ursache, statt exakt "
+                                    "desselben Befunds) - derselbe Ansatz hat also erkennbar nicht "
+                                    "ausgereicht. Analysiere das Problem aus einer anderen "
+                                    "Perspektive und weise dein Team mit einer GEÄNDERTEN Strategie "
+                                    f"an.\n\n{still_critical_text}"
+                                ),
+                                context="", project_dir=project_dir,
+                            )
+                            for dept_id in lead_targets
+                        ]
+                        fix_results = await self._run_agents_parallel(escalation_tasks, notify=notify)
+                        self._update_file_owners(file_owners, fix_results)
+                        all_results.extend(fix_results)
+                        summary_lines.append(
+                            f"- 🔀 Nach {MAX_REVIEW_ITERATIONS} Versuch(en) weiterhin kritisch (andere "
+                            f"Symptomatik) → Eskalation an Fachbereichsleiter "
+                            f"({', '.join(sorted(lead_targets))}) vor der Ticket-Eröffnung."
+                        )
+                        escalation_recheck_agents = sorted(set(agents_to_fix.keys()) & review_agent_ids) or sorted(review_agent_ids)
+                        escalation_recheck_tasks = [
+                            AgentTask(
+                                task_id=f"governance_final_escalation_recheck_{agent_id}",
+                                agent_id=agent_id,
+                                description=(
+                                    "Prüfe AUSSCHLIESSLICH, ob das zuvor gemeldete kritische Problem "
+                                    "jetzt tatsächlich behoben ist. Melde erneut mit klarer "
+                                    "Schweregrad-Markierung (\"Kritisch\"), falls es weiterhin besteht."
+                                ),
+                                context="", project_dir=project_dir, allow_tools=True, tools_read_only=True,
+                            )
+                            for agent_id in escalation_recheck_agents
+                        ]
+                        escalation_recheck_results = await self._run_agents_parallel(escalation_recheck_tasks, notify=notify)
+                        all_results.extend(escalation_recheck_results)
+                        still_critical = [
+                            block for res in escalation_recheck_results if res.success and res.content
+                            for block in find_critical_findings(res.content)
+                        ]
+                        try:
+                            structural_after_escalation = ProjectVerifier(project_dir).check_completeness()
+                            still_critical += [
+                                f"Statischer Check (ohne LLM-Bewertung): {i.file_path}:{i.line_number} – {i.message}"
+                                for i in structural_after_escalation.issues if i.kind == "missing_local_import"
+                            ] if structural_after_escalation.attempted else []
+                        except Exception:
+                            pass
+                        if still_critical:
+                            summary_lines.append(
+                                "- 🛑 Eskalation an Fachbereichsleiter behob den Befund NICHT – "
+                                "weiterhin kritisch."
+                            )
+                        else:
+                            notify("  ✅ [bold green]Eskalation erfolgreich:[/bold green] keine kritischen Governance-Befunde mehr.")
+                            summary_lines.append("- ✅ Eskalation an Fachbereichsleiter (nach dem verpflichtenden Re-Review) behob den Befund – keine kritischen Governance-Funde mehr.")
+
                 if still_critical:
                     notify("  🛑 [bold red]Fix nicht bestätigt:[/bold red] Re-Review meldet weiterhin kritische Befunde – Backlog-Ticket für menschliche Prüfung eröffnet.")
                     summary_lines.append(
@@ -911,6 +1222,103 @@ class VerificationMixin:
         except Exception:
             had_prior_test_ticket = False
 
+        # Deterministischer Pre-Flight-Check: ast-basiert, blitzschnell vor isolierter Testsuite.
+        # Erkennt fehlende __init__.py, Syntax-Fehler und nicht deklarierte Abhängigkeiten in
+        # requirements.txt.
+        #
+        # Realer Fund (Analyse 2026-09-06): core/pre_flight_check.py wurde eingeführt, aber nur
+        # für eine reine Notify-Anzeige verdrahtet - format_pre_flight_issues_for_fix() (extra
+        # dafür geschrieben) und has_blocking_issues wurden nie aufgerufen, jeder Fund blieb
+        # bis zum teuren, isolierten Testlauf liegen statt sofort behoben zu werden, obwohl er
+        # in Millisekunden ohne LLM erkannt wurde. Jetzt derselbe gezielte Fix-und-Retry-Loop
+        # (Owner-Routing über file_owners, Kein-Fortschritt-Zirkuitbrecher) wie beim Vorab-
+        # Import-Check direkt darunter.
+        previous_preflight_signature: frozenset[tuple[str, str]] | None = None
+        for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
+            if run_start_tokens is not None and (
+                self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+            ):
+                budget_aborted = True
+                notify("  🚫 [bold red]Budget erreicht[/bold red] – Pre-Flight-Check übersprungen.")
+                break
+            if cancel_requested and cancel_requested():
+                manually_cancelled = True
+                notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – Pre-Flight-Check übersprungen.")
+                break
+
+            try:
+                pre_flight_report = await asyncio.to_thread(run_pre_flight_check, project_dir)
+            except Exception as e:
+                notify(f"  ⚠️ [dim]Pre-Flight-Check übersprungen: {e}[/dim]")
+                break
+            if pre_flight_report.error:
+                notify(f"  ⚠️ [dim]Pre-Flight-Check übersprungen: {pre_flight_report.error}[/dim]")
+                break
+            if pre_flight_report.passed:
+                if attempt > 1:
+                    notify(f"  ✨ [bold green]Pre-Flight-Check nach Fix (Versuch {attempt}) bestanden.[/bold green]")
+                    summary_lines.append(f"- 🔍 Pre-Flight-Check: nach {attempt} Durchlauf/Durchläufen bestanden.")
+                else:
+                    notify(f"  ✨ [bold green]Pre-Flight-Check bestanden ({pre_flight_report.files_checked} Dateien geprüft).[/bold green]")
+                break
+
+            notify(f"  🔍 [bold yellow]Pre-Flight-Check:[/bold yellow] {len(pre_flight_report.issues)} Problem(e) in {pre_flight_report.files_checked} Dateien gefunden.")
+            for issue in pre_flight_report.issues[:3]:
+                notify(f"    ⚠️ [{issue.issue_type}] {issue.file}:{issue.line}: {issue.message}")
+
+            current_preflight_signature = _issue_signature(
+                pre_flight_report.issues, lambda i: (i.file, i.message[:300])
+            )
+            if _no_progress(previous_preflight_signature, current_preflight_signature):
+                notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Pre-Flight-Funde wie vor dem letzten Fixversuch – breche ab, weiter mit der regulären Testsuite.")
+                summary_lines.append(
+                    f"- 🔍 🛑 Pre-Flight-Check, Versuch {attempt}: dieselben {len(pre_flight_report.issues)} Fund(e) wie nach "
+                    "dem vorherigen Fixversuch (keine Veränderung) – Schleife abgebrochen statt einen wirkungslosen "
+                    "weiteren Versuch zu verbrauchen."
+                )
+                break
+            previous_preflight_signature = current_preflight_signature
+
+            agents_to_fix: dict[str, list[PreFlightIssue]] = {}
+            for issue in pre_flight_report.issues:
+                owner = file_owners.get(issue.file)
+                if owner and owner in self._agents:
+                    agents_to_fix.setdefault(owner, []).append(issue)
+
+            if not agents_to_fix:
+                summary_lines.append(f"- 🔍 ❌ Pre-Flight-Check: {len(pre_flight_report.issues)} Fund(e) blieben ungelöst (keinem Agenten eindeutig zuordenbar).")
+                break
+
+            fix_tasks = []
+            for agent_id, agent_issues in agents_to_fix.items():
+                issue_text = "\n".join(
+                    f"- [{i.issue_type}] {i.file}:{i.line} – {i.message}"
+                    + (f" Lösung: {i.suggestion}" if i.suggestion else "")
+                    for i in agent_issues
+                )
+                fix_tasks.append(AgentTask(
+                    task_id=f"verify_fix_preflight_{agent_id}_{attempt}",
+                    agent_id=agent_id,
+                    description=(
+                        "Ein statischer Pre-Flight-Check (VOR jeder Dependency-Installation und "
+                        "jedem Testlauf) hat Probleme gefunden, die einen Testlauf mit hoher "
+                        "Wahrscheinlichkeit zum Scheitern bringen. Behebe AUSSCHLIESSLICH diese "
+                        "Befunde, erstelle keine neuen Features.\n\n"
+                        f"{issue_text}"
+                    ),
+                    context="", project_dir=project_dir,
+                ))
+
+            notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix (Pre-Flight-Check):[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())}...")
+            fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+            self._update_file_owners(file_owners, fix_results)
+            all_results.extend(fix_results)
+            summary_lines.append(f"- 🔍 Pre-Flight-Check, Versuch {attempt}: {len(pre_flight_report.issues)} Problem(e) → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt.")
+
+            if attempt == MAX_VERIFICATION_ITERATIONS:
+                notify("  ⚠️ [yellow]Maximale Pre-Flight-Fixversuche erreicht – weiter mit der regulären Testsuite.[/yellow]")
+                summary_lines.append(f"- 🔍 ⚠️ Pre-Flight-Check nach {MAX_VERIFICATION_ITERATIONS} Versuchen weiterhin mit Funden – weiter mit der regulären Testsuite.")
+
         notify("🧪 [bold cyan]Verifikation:[/bold cyan] Installiere Abhängigkeiten in isolierter Umgebung...")
         install_log = await asyncio.to_thread(verifier.ensure_environment)
         if install_log:
@@ -953,7 +1361,15 @@ class VerificationMixin:
                 # ein MagicMock().issues wäre dagegen nicht iterierbar und würde crashen).
                 if not pre_report.attempted or pre_report.passed:
                     break
-                import_issues = [i for i in pre_report.issues if "existierendes lokales" in i.message]
+                # Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive, echter
+                # Fund am event_relay-Lauf 2026-09-06): dieselbe fragile Substring-Suche wie
+                # oben (structural_import_issues) - core/verifier/models.py.CompletenessIssue.
+                # kind == "missing_local_import" erfasst jetzt auch einen fehlenden SYMBOL-Import
+                # (z.B. `from app.resilience import resilience`), den die alte Suche nach
+                # "existierendes lokales" NIE fand, obwohl check_completeness() ihn bereits
+                # korrekt erkannte - der Vorab-Check brach damit still ab, statt den längst
+                # erkannten Fund zur Korrektur weiterzureichen.
+                import_issues = [i for i in pre_report.issues if i.kind == "missing_local_import"]
                 if not import_issues:
                     if attempt > 1:
                         notify(f"  🧩 [bold green]Vorab-Import-Check nach Fix (Versuch {attempt}) bestanden.[/bold green]")
@@ -1288,6 +1704,16 @@ class VerificationMixin:
             agents_to_fix: dict[str, list] = {}
             for failure in report.failures:
                 owners = {file_owners[f] for f in failure.files if f in file_owners}
+                # Team-Optimierung (echter Fund: memory/backlog.json-Tickets `recurring-failure-
+                # event_relay`/`recurring-failure-service_bookmark_monitor`) - ein "Ran 0 tests"/
+                # "NO TESTS RAN"-Befund hat NIE einen Datei-Bezug im Traceback (reine Testlauf-
+                # Diagnostik, kein Stacktrace), landete deshalb blind beim `tester` (siehe Fallback
+                # unten) - der konnte die meist umgebungsbedingte Ursache (fehlende Testabhängigkeit
+                # in requirements.txt) strukturell nie beheben. Bevorzugt jetzt den Owner von
+                # requirements.txt (meist backend/database) für GENAU dieses Fehlerbild, bevor der
+                # generische tester-Fallback greift.
+                if not owners and _NO_TESTS_RAN_RE.search(failure.message) and "requirements.txt" in file_owners:
+                    owners = {file_owners["requirements.txt"]}
                 if not owners and any(r.agent_id == "tester" for r in all_results):
                     owners = {"tester"}
                 for owner in owners:
@@ -1303,7 +1729,7 @@ class VerificationMixin:
             for agent_id, fails in agents_to_fix.items():
                 failure_text = "\n\n".join(
                     f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(f.files) or 'unbekannt'}"
-                    + (f"\n{diag}" if (diag := _diagnose_import_failure(f.message)) else "")
+                    + (f"\n{diag}" if (diag := (_diagnose_import_failure(f.message) or _diagnose_no_tests_ran(f.message))) else "")
                     for f in fails
                 )
                 fix_tasks.append(AgentTask(

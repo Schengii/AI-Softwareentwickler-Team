@@ -35,6 +35,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import config
+from core.backlog_store import upsert_ticket
 from core.task_manager import _DECOMPOSE_EXCLUDED_AGENT_IDS, AVAILABLE_AGENTS
 from core.team_memory import read_team_lessons, record_lesson
 from memory.run_history import (
@@ -75,6 +76,15 @@ MIN_LESSON_RECURRENCE = 3
 # begrenzt (dieselbe Überlegung wie team_memory._DEDUP_LOOKBACK), kein voller Datei-Scan bei
 # beliebig wachsender Historie.
 LESSON_RECURRENCE_LOOKBACK = 200
+# Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive, echter Fund am
+# event_relay-Lauf 2026-09-06): _find_recurring_lesson_categories() oben gruppiert nach
+# (project_slug, category) und sieht daher NIE das größte real beobachtete Muster - dieselbe
+# Kategorie (`unresolved_governance_critical`) trat in 9 von 15 Lektionen auf, aber an 9
+# VERSCHIEDENEN project_slugs, weil jedes Projekt nur ein- oder zweimal vorkommt. Höher als
+# MIN_LESSON_RECURRENCE, weil hier über beliebig viele verschiedene Projekte hinweg gezählt
+# wird und daher mehr zufällige Kategorie-Überschneidungen zu erwarten sind, bevor ein echtes,
+# strukturelles Muster im FRAMEWORK selbst (nicht nur an einem Projekt) vorliegt.
+MIN_TEAMWIDE_LESSON_RECURRENCE = 5
 # Nutzeranfrage (Team-Wachstums-Retrospektive 2026-09-06): "warum bestimmte Agentenrollen
 # selten/nie zum Einsatz kommen" fehlte bisher als eigene Auswertungskategorie - analyze()
 # erkannte bisher nur Agenten, die AUFGERUFEN wurden, aber schlecht abschnitten
@@ -136,6 +146,25 @@ class RecurringLessonCategory:
 
 
 @dataclass
+class RecurringTeamWideCategory:
+    """Dieselbe team_lessons.jsonl-Kategorie tritt an MEHREREN VERSCHIEDENEN Projekten auf -
+    anders als RecurringLessonCategory (dieselbe Kategorie wiederholt sich an EINEM Projekt, das
+    der reguläre Fix-Loop dort nicht dauerhaft behebt) deutet dieses Muster auf eine strukturelle
+    Lücke im FRAMEWORK selbst hin (z.B. im Scaffolding, im Governance-Review oder im
+    Verifikations-Loop), die jedes NEUE Projekt gleichermaßen trifft. Team-Retrospektive, echter
+    Fund (2026-09-06): 9 von 15 Lektionen waren `unresolved_governance_critical`, aber an 9
+    verschiedenen project_slugs - RecurringLessonCategory sah dieses dominante Muster nie, weil
+    kaum ein Slug zweimal vorkam. `project_slugs` listet ALLE betroffenen Projekte (für die
+    Nachvollziehbarkeit im Bericht), `count` ist bewusst die Anzahl VERSCHIEDENER Projekte, nicht
+    die Gesamtzahl der Lektionen (mehrfache Funde am selben Projekt zählen für dieses
+    teamweite Signal nur einmal - das deckt bereits RecurringLessonCategory ab)."""
+    category: str
+    count: int
+    project_slugs: list[str]
+    latest_detail: str
+
+
+@dataclass
 class UnusedAgent:
     """Eine im Planer wählbare Rolle (core.task_manager.AVAILABLE_AGENTS), die über die
     letzten `sample_runs` Läufe kein einziges Mal von der Aufgabenzerlegung ausgewählt wurde -
@@ -155,6 +184,7 @@ class OptimizationReport:
     low_performing_agents: list[LowPerformingAgent] = field(default_factory=list)
     verification_trend: VerificationTrend | None = None
     recurring_lesson_categories: list[RecurringLessonCategory] = field(default_factory=list)
+    recurring_teamwide_categories: list[RecurringTeamWideCategory] = field(default_factory=list)
     unused_agents: list[UnusedAgent] = field(default_factory=list)
     sample_runs: int = 0
 
@@ -164,6 +194,7 @@ class OptimizationReport:
             and not self.low_performing_agents
             and self.verification_trend is None
             and not self.recurring_lesson_categories
+            and not self.recurring_teamwide_categories
             and not self.unused_agents
         )
 
@@ -237,6 +268,7 @@ def analyze(limit_runs: int = 100) -> OptimizationReport:
         )
 
     report.recurring_lesson_categories = _find_recurring_lesson_categories()
+    report.recurring_teamwide_categories = _find_recurring_teamwide_categories()
 
     total_runs_examined = len(get_recent_runs(limit_runs))
     if total_runs_examined >= MIN_TOTAL_RUNS_FOR_UNUSED_CHECK:
@@ -292,6 +324,42 @@ def _find_recurring_lesson_categories() -> list[RecurringLessonCategory]:
     return findings
 
 
+def _find_recurring_teamwide_categories() -> list[RecurringTeamWideCategory]:
+    """Gruppiert die letzten LESSON_RECURRENCE_LOOKBACK Team-Lektionen NUR nach `category`
+    (projektübergreifend - project_slug wird nur zur Aufzählung betroffener Projekte
+    mitgeführt) und meldet Kategorien, die an MIN_TEAMWIDE_LESSON_RECURRENCE oder mehr
+    VERSCHIEDENEN Projekten auftreten - siehe RecurringTeamWideCategory-Docstring.
+    project_slug="_team" (core.optimization_advisor.record_suggestions_as_lessons()-Meta-Funde
+    wie `unused_agent`/`model_performance`) wird ausgeschlossen: das sind bereits Team-
+    Selbstoptimierungs-Funde, kein wiederkehrender CODE-Defekt an echten Projekten, den dieser
+    Detector aufdecken soll."""
+    lessons = read_team_lessons(limit=LESSON_RECURRENCE_LOOKBACK)
+    slugs_by_category: dict[str, list[str]] = {}
+    latest_detail: dict[str, str] = {}
+    for entry in lessons:
+        project_slug = entry.get("project_slug", "?")
+        if project_slug == "_team":
+            continue
+        category = entry.get("category", "?")
+        slugs = slugs_by_category.setdefault(category, [])
+        if project_slug not in slugs:
+            slugs.append(project_slug)
+        # lessons ist neueste zuerst - der erste Treffer je Kategorie ist damit bereits das
+        # jüngste Vorkommen, spätere Treffer dürfen ihn nicht überschreiben.
+        latest_detail.setdefault(category, entry.get("detail", ""))
+
+    findings = [
+        RecurringTeamWideCategory(
+            category=category, count=len(slugs), project_slugs=slugs,
+            latest_detail=latest_detail[category],
+        )
+        for category, slugs in slugs_by_category.items()
+        if len(slugs) >= MIN_TEAMWIDE_LESSON_RECURRENCE
+    ]
+    findings.sort(key=lambda f: f.count, reverse=True)
+    return findings
+
+
 def format_report_for_humans(report: OptimizationReport) -> str:
     """
     Formatiert den Bericht als lesbaren Markdown-Abschnitt – leer, wenn es nichts zu berichten
@@ -332,6 +400,16 @@ def format_report_for_humans(report: OptimizationReport) -> str:
             f"- 🔁 **Wiederkehrende Lektionen-Kategorie** `{r.category}` bei **{r.project_slug}**: "
             f"{r.count}× aufgezeichnet – jüngster Fund: {r.latest_detail[:120]}. Deutet auf eine "
             "Ursache hin, die der reguläre Fix-/Governance-Loop an diesem Projekt nicht dauerhaft behebt."
+        )
+    for t in report.recurring_teamwide_categories:
+        shown_slugs = ", ".join(t.project_slugs[:5])
+        more = f" (+{len(t.project_slugs) - 5} weitere)" if len(t.project_slugs) > 5 else ""
+        lines.append(
+            f"- 🏗️ **Team-weites strukturelles Muster** `{t.category}`: an {t.count} "
+            f"VERSCHIEDENEN Projekten aufgetreten ({shown_slugs}{more}) – jüngster Fund: "
+            f"{t.latest_detail[:120]}. Deutet auf eine Lücke im FRAMEWORK selbst hin (z.B. "
+            "Scaffolding, Governance-Review oder Verifikations-Loop), die jedes neue Projekt "
+            "gleichermaßen trifft - nicht auf einen Einzelfall."
         )
     for u in report.unused_agents:
         lines.append(
@@ -403,6 +481,59 @@ def record_suggestions_as_lessons(report: OptimizationReport) -> None:
                 "Planer-Prompt-Beschreibung oder Aufgabenzuschnitt prüfen."
             ),
         )
+
+
+def record_unused_agent_tickets(report: OptimizationReport) -> list[str]:
+    """
+    Team-Optimierung (Fortsetzung der Analyse 2026-09-06): record_suggestions_as_lessons()
+    schrieb `unused_agent`-Funde bisher NUR in memory/team_lessons.jsonl - dort teilen sie sich
+    mit jeder anderen Kategorie dieselben MAX_LESSONS_SHOWN=5 Anzeigeplätze im Agenten-Prompt
+    (core/team_memory.py) und sind sonst nirgends sichtbar. Ein realer Lauf (06.09.) erzeugte
+    11 solcher Lektionen auf einmal - ohne diese Funktion blieben sie eine stille Zeile in einer
+    JSONL-Datei, die niemand routinemäßig liest, statt ein sichtbares, verfolgbares Ticket wie
+    bei `unresolved_governance_critical` (siehe agents/orchestrator/verification.py).
+
+    Legt pro betroffener agent_id ein stabiles Ticket an/aktualisiert es (`unused-agent-<id>`,
+    status="todo", source="optimization_advisor") - stabil, damit ein wiederholter Fund
+    dasselbe Ticket nur auffrischt statt es zu duplizieren. `source="optimization_advisor"`
+    ist bewusst NICHT in core/backlog_worker.py._AUTONOMOUS_SOURCES enthalten: ob eine Rolle
+    wirklich überflüssig ist oder nur eine unklare Beschreibung hat, ist eine Abwägung, die ein
+    Mensch treffen soll - das Ticket macht den Fund nur sichtbar und verfolgbar, statt ihn
+    automatisch (und ggf. falsch) zu "beheben".
+
+    Gibt die Liste der angelegten/aktualisierten Ticket-IDs zurück (für eine Erfolgsmeldung im
+    Abschlussbericht, analog zu apply_auto_tuning()).
+    """
+    ticket_ids: list[str] = []
+    for u in report.unused_agents:
+        ticket_id = f"unused-agent-{u.agent_id}"
+        try:
+            upsert_ticket(
+                ticket_id=ticket_id,
+                title=f"Ungenutzte Agentenrolle: {u.agent_id}",
+                source="optimization_advisor",
+                status="todo",
+                project_slug="_team",
+                detail=(
+                    f"Agent '{u.agent_id}' (Modell '{u.configured_model}') wurde über die "
+                    f"letzten {u.sample_runs} Läufe kein einziges Mal vom Planer ausgewählt. "
+                    "Prüfen: (1) ist die Rolle im Planer-Prompt (core/task_manager.py."
+                    "AVAILABLE_AGENTS) konkret genug beschrieben - nennt sie WANN man sie "
+                    "einsetzt, nicht nur WAS sie kann?, (2) kommen reale Aufgaben für diese "
+                    "Rolle überhaupt vor, oder überschneidet sie sich mit einer anderen Rolle?, "
+                    "(3) falls strukturell nie gebraucht: Konsolidierung mit einer verwandten "
+                    "Rolle erwägen, statt weiterhin Wartungsaufwand ohne Nutzen zu binden."
+                ),
+            )
+            ticket_ids.append(ticket_id)
+        except Exception:
+            # Dasselbe Prinzip wie beim Ticket für unresolved_governance_critical in
+            # agents/orchestrator/verification.py: ein fehlgeschlagenes Ticket darf einen
+            # laufenden Orchestrator-Lauf nie zum Absturz bringen - die Lektion in
+            # team_lessons.jsonl (record_suggestions_as_lessons()) bleibt in dem Fall die
+            # einzige Spur des Fundes.
+            continue
+    return ticket_ids
 
 
 def _load_auto_tuned_models() -> dict:

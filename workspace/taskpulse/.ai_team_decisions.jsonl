@@ -1,3 +1,0 @@
-{"timestamp": "2026-09-03T09:07:44.431557+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 1: 1 kritische(r) Befund(e) → security"}
-{"timestamp": "2026-09-03T09:09:34.614752+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 2: 3 kritische(r) Befund(e) → security"}
-{"timestamp": "2026-09-03T09:11:51.781307+00:00", "event": "unresolved_governance_critical_ticket_opened", "detail": "🔴 Kritische Probleme (müssen sofort behoben werden)\n1. **Fehlende Datenbank‑Modelle**  \n   *Problem*: `app/main.py` referenziert `models.Task` und `models.EndpointStatus`, aber im Projekt gibt es keine `app/models.py` bzw. entsprechende SQL‑Alchemy‑Klassen. Ohne diese kann die API nicht starten und "}

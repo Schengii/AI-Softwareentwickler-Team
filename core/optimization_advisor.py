@@ -35,10 +35,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import config
+from core.task_manager import _DECOMPOSE_EXCLUDED_AGENT_IDS, AVAILABLE_AGENTS
 from core.team_memory import read_team_lessons, record_lesson
 from memory.run_history import (
     get_agent_model_performance,
     get_agent_success_rates,
+    get_recent_runs,
     get_verification_success_rate,
 )
 
@@ -73,6 +75,16 @@ MIN_LESSON_RECURRENCE = 3
 # begrenzt (dieselbe Überlegung wie team_memory._DEDUP_LOOKBACK), kein voller Datei-Scan bei
 # beliebig wachsender Historie.
 LESSON_RECURRENCE_LOOKBACK = 200
+# Nutzeranfrage (Team-Wachstums-Retrospektive 2026-09-06): "warum bestimmte Agentenrollen
+# selten/nie zum Einsatz kommen" fehlte bisher als eigene Auswertungskategorie - analyze()
+# erkannte bisher nur Agenten, die AUFGERUFEN wurden, aber schlecht abschnitten
+# (LowPerformingAgent), nicht Agenten, die der Planer nie auswählt. Bei einem wachsenden Team
+# (immer mehr Rollen) wird das relevanter, nicht weniger: eine neue Rolle ohne Nutzen bindet
+# trotzdem Wartungsaufwand (Modellzuweisung, Fachbereichszugehörigkeit, System-Prompt-Pflege),
+# ohne dass das je auffiele. Braucht eine deutlich GRÖSSERE Mindest-Lauf-Anzahl als
+# MIN_SAMPLE_SIZE (das zählt AUFRUFE eines bereits gewählten Agenten) - bei wenigen Läufen
+# insgesamt wäre "noch nie gewählt" für JEDE selten gebrauchte Rolle triviales Rauschen.
+MIN_TOTAL_RUNS_FOR_UNUSED_CHECK = 20
 
 
 @dataclass
@@ -124,6 +136,18 @@ class RecurringLessonCategory:
 
 
 @dataclass
+class UnusedAgent:
+    """Eine im Planer wählbare Rolle (core.task_manager.AVAILABLE_AGENTS), die über die
+    letzten `sample_runs` Läufe kein einziges Mal von der Aufgabenzerlegung ausgewählt wurde -
+    anders als LowPerformingAgent (wird gewählt, schneidet aber schlecht ab) geht es hier um
+    eine Rolle, die dem Team faktisch NIE Nutzen bringt, aber weiterhin Wartungsaufwand bindet
+    (Modellzuweisung, Fachbereichszugehörigkeit, System-Prompt)."""
+    agent_id: str
+    configured_model: str
+    sample_runs: int
+
+
+@dataclass
 class OptimizationReport:
     """Ergebnis der datenbasierten Selbstoptimierungs-Analyse – reine Empfehlungen, keine
     automatisch angewandten Änderungen an config.py."""
@@ -131,6 +155,7 @@ class OptimizationReport:
     low_performing_agents: list[LowPerformingAgent] = field(default_factory=list)
     verification_trend: VerificationTrend | None = None
     recurring_lesson_categories: list[RecurringLessonCategory] = field(default_factory=list)
+    unused_agents: list[UnusedAgent] = field(default_factory=list)
     sample_runs: int = 0
 
     def is_empty(self) -> bool:
@@ -139,6 +164,7 @@ class OptimizationReport:
             and not self.low_performing_agents
             and self.verification_trend is None
             and not self.recurring_lesson_categories
+            and not self.unused_agents
         )
 
 
@@ -212,7 +238,31 @@ def analyze(limit_runs: int = 100) -> OptimizationReport:
 
     report.recurring_lesson_categories = _find_recurring_lesson_categories()
 
+    total_runs_examined = len(get_recent_runs(limit_runs))
+    if total_runs_examined >= MIN_TOTAL_RUNS_FOR_UNUSED_CHECK:
+        report.unused_agents = _find_unused_agents(limit_runs, total_runs_examined)
+
     return report
+
+
+def _find_unused_agents(limit_runs: int, total_runs_examined: int) -> list[UnusedAgent]:
+    """Meldet jede im Planer wählbare Rolle, die über `limit_runs` Läufe (mindestens
+    MIN_TOTAL_RUNS_FOR_UNUSED_CHECK insgesamt, sonst zu früh für eine belastbare Aussage) kein
+    einziges Mal aufgerufen wurde - siehe UnusedAgent-Docstring. Fachbereichsleiter und die
+    bewusst nicht direkt wählbaren Rollen (_DECOMPOSE_EXCLUDED_AGENT_IDS, z.B. `agent_trainer`,
+    `retrospective` - werden intern/manuell statt vom Planer ausgelöst) sind kein Fund, wenn sie
+    nie in agent_results auftauchen, und deshalb hier ausgenommen."""
+    called_ids = {a["agent_id"] for a in get_agent_success_rates(limit_runs)}
+    selectable_ids = set(AVAILABLE_AGENTS.keys()) - set(_DECOMPOSE_EXCLUDED_AGENT_IDS)
+    unused_ids = sorted(selectable_ids - called_ids)
+    return [
+        UnusedAgent(
+            agent_id=agent_id,
+            configured_model=config.get_model_for_agent(agent_id),
+            sample_runs=total_runs_examined,
+        )
+        for agent_id in unused_ids
+    ]
 
 
 def _find_recurring_lesson_categories() -> list[RecurringLessonCategory]:
@@ -283,6 +333,13 @@ def format_report_for_humans(report: OptimizationReport) -> str:
             f"{r.count}× aufgezeichnet – jüngster Fund: {r.latest_detail[:120]}. Deutet auf eine "
             "Ursache hin, die der reguläre Fix-/Governance-Loop an diesem Projekt nicht dauerhaft behebt."
         )
+    for u in report.unused_agents:
+        lines.append(
+            f"- 💤 **{u.agent_id}** (Modell `{u.configured_model}`): über die letzten "
+            f"{u.sample_runs} Läufe kein einziges Mal vom Planer ausgewählt – prüfen, ob die "
+            "Rolle noch gebraucht wird, ihre Beschreibung im Planer-Prompt zu unspezifisch ist, "
+            "oder ob echte Aufgaben dafür bisher schlicht nicht vorkamen."
+        )
     return "\n".join(lines)
 
 
@@ -334,6 +391,16 @@ def record_suggestions_as_lessons(report: OptimizationReport) -> None:
             detail=(
                 f"Agent '{a.agent_id}' liegt mit {a.success_rate}% Erfolgsquote über {a.calls} Aufrufe "
                 f"deutlich unter dem Team-Durchschnitt ({a.team_average}%) - Prompt/Aufgabenzuschnitt prüfen."
+            ),
+        )
+    for u in report.unused_agents:
+        record_lesson(
+            project_slug="_team",
+            category="unused_agent",
+            detail=(
+                f"Agent '{u.agent_id}' (Modell '{u.configured_model}') wurde über die letzten "
+                f"{u.sample_runs} Läufe kein einziges Mal vom Planer ausgewählt - Rollenbedarf, "
+                "Planer-Prompt-Beschreibung oder Aufgabenzuschnitt prüfen."
             ),
         )
 

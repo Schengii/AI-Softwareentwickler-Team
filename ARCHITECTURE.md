@@ -40,7 +40,30 @@ Das Gesamtsystem gliedert sich in **6 Fachbereiche**, die jeweils von einem eige
 Jede der 33 Rollen ist an **vier unabhängig gepflegten Stellen** registriert - keine ist von
 den anderen automatisch ableitbar. `tests/test_agent_registry_consistency.py` prüft nach jeder
 Änderung, ob alle vier noch zusammenpassen; seine Fehlermeldungen sind absichtlich als
-Checkliste formuliert. Vorgehen für eine neue Rolle `<neue_rolle>`:
+Checkliste formuliert.
+
+**Empfohlen: `scripts/new_agent.py`** automatisiert alle vier Schritte in einem Aufruf:
+
+```
+python scripts/new_agent.py <neue_rolle> \
+    --name "Anzeigename" \
+    --description "Kurzbeschreibung für den Planer-Prompt" \
+    --phase 3 --department dev --tier standard
+```
+
+Legt `agents/<neue_rolle>_agent.py` als Gerüst an (System-Prompt mit TODO-Markierungen - eine
+fachlich gute Rollenbeschreibung lässt sich nicht generisch erzeugen), ergänzt Import +
+`self._agents`-Eintrag in `agents/orchestrator/__init__.py`, den `AVAILABLE_AGENTS`-Eintrag in
+`core/task_manager.py` sowie `AGENT_MODELS`- und `DEPARTMENT_*_AGENTS`-Eintrag in `config.py`,
+und lässt danach `ruff check --fix` laufen. Bricht mit klarer Fehlermeldung ab, falls die
+Rolle an einer der vier Stellen bereits existiert. `--department` akzeptiert `planning`,
+`design`, `dev`, `content`, `qa`, `governance` (NICHT `creative` - das ist in `config.py` eine
+abgeleitete Vereinigung aus `design`+`content`, kein eigenständiges Ziel). Danach den
+generierten System-Prompt ausformulieren und `pytest tests/test_agent_registry_consistency.py`
+laufen lassen.
+
+**Manuell** (z.B. um die einzelnen Schritte zu verstehen, oder für Detail-Anpassungen nach dem
+Scaffold-Aufruf) für eine neue Rolle `<neue_rolle>`:
 
 1. **`agents/<neue_rolle>_agent.py`**: neue Agentenklasse (System-Prompt, ggf. Tool-Zugriff) -
    orientiere dich an einer bestehenden Rolle ähnlicher Komplexität (z.B. `copywriter_agent.py`

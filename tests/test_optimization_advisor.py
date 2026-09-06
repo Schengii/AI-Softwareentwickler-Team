@@ -23,10 +23,12 @@ from core.optimization_advisor import (
     MIN_LESSON_RECURRENCE,
     MIN_SAMPLE_SIZE,
     MIN_SUCCESS_RATE_GAP,
+    MIN_TOTAL_RUNS_FOR_UNUSED_CHECK,
     MIN_VERIFICATION_SAMPLE_SIZE,
     LowPerformingAgent,
     ModelSuggestion,
     OptimizationReport,
+    UnusedAgent,
     analyze,
     apply_auto_tuning,
     apply_single_suggestion,
@@ -409,6 +411,88 @@ class TestRecurringLessonCategories(unittest.TestCase):
 
         self.assertIn("unresolved_governance_critical", text)
         self.assertIn("mockforge", text)
+
+
+class TestUnusedAgents(unittest.TestCase):
+    """
+    Testet die neue Unterauslastungs-Erkennung (Team-Wachstums-Retrospektive 2026-09-06):
+    core/optimization_advisor.py.analyze() erkannte bisher nur AUFGERUFENE Agenten mit
+    schlechter Erfolgsquote (LowPerformingAgent), nicht Rollen, die der Planer über viele
+    Läufe hinweg NIE auswählt - relevant vor allem für ein wachsendes Team mit immer mehr
+    Rollen, bei dem eine ungenutzte Rolle sonst unbemerkt Wartungsaufwand bindet.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self._run_history_patcher = patch.object(
+            run_history_module, "RUN_HISTORY_FILE", Path(self.temp_dir) / "run_history.json",
+        )
+        self._run_history_patcher.start()
+        self.addCleanup(self._run_history_patcher.stop)
+
+        # Deterministisch: nur zwei "wählbare" Rollen statt aller 33, damit die Tests nicht
+        # von der echten AVAILABLE_AGENTS-Liste abhängen.
+        self._agents_patcher = patch(
+            "core.optimization_advisor.AVAILABLE_AGENTS",
+            {
+                "backend": {"name": "Backend", "phase": 3, "description": "..."},
+                "readme": {"name": "Readme", "phase": 6, "description": "..."},
+            },
+        )
+        self._agents_patcher.start()
+        self.addCleanup(self._agents_patcher.stop)
+
+    def _record(self, agent_id: str):
+        record_run(
+            project_slug="p", task_summary="x", verification_ok=True, total_tokens=1, duration_seconds=1,
+            agent_results=[{"agent_id": agent_id, "success": True, "total_tokens": 100, "model_used": "m"}],
+        )
+
+    def test_flags_agent_never_selected_over_enough_runs(self):
+        for _ in range(MIN_TOTAL_RUNS_FOR_UNUSED_CHECK):
+            self._record("backend")  # "readme" wird in keinem der Läufe aufgerufen
+
+        report = analyze()
+
+        self.assertEqual(len(report.unused_agents), 1)
+        self.assertEqual(report.unused_agents[0].agent_id, "readme")
+        self.assertFalse(report.is_empty())
+
+    def test_no_flag_when_every_selectable_agent_was_used(self):
+        for _ in range(MIN_TOTAL_RUNS_FOR_UNUSED_CHECK):
+            self._record("backend")
+            self._record("readme")
+
+        report = analyze()
+
+        self.assertEqual(report.unused_agents, [])
+
+    def test_no_flag_below_minimum_total_runs(self):
+        # Nur wenige Läufe insgesamt - "nie gewählt" wäre hier noch reines Rauschen.
+        for _ in range(MIN_TOTAL_RUNS_FOR_UNUSED_CHECK - 1):
+            self._record("backend")
+
+        report = analyze()
+
+        self.assertEqual(report.unused_agents, [])
+
+    def test_format_report_includes_unused_agent(self):
+        for _ in range(MIN_TOTAL_RUNS_FOR_UNUSED_CHECK):
+            self._record("backend")
+
+        text = format_report_for_humans(analyze())
+
+        self.assertIn("readme", text)
+        self.assertIn("kein einziges Mal vom Planer ausgewählt", text)
+
+    def test_record_suggestions_as_lessons_writes_unused_agent_lesson(self):
+        unused = UnusedAgent(agent_id="readme", configured_model="gemini-3.1-flash-lite", sample_runs=20)
+        with patch.object(team_memory_module, "TEAM_MEMORY_FILE", Path(self.temp_dir) / "team_lessons.jsonl"):
+            record_suggestions_as_lessons(OptimizationReport(unused_agents=[unused]))
+            lessons = read_team_lessons(limit=10)
+        self.assertEqual(len(lessons), 1)
+        self.assertEqual(lessons[0]["category"], "unused_agent")
+        self.assertIn("readme", lessons[0]["detail"])
 
 
 class TestRecordSuggestionsAsLessons(unittest.TestCase):

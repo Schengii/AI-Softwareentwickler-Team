@@ -108,7 +108,6 @@ AGENT_MODELS: dict[str, str] = {
     "tester":            os.getenv("TESTER_MODEL",          STANDARD_MODEL),
     "resilience_guard":  os.getenv("RESILIENCE_MODEL",      STANDARD_MODEL),
     "performance":       os.getenv("PERFORMANCE_MODEL",     STANDARD_MODEL),
-    "compliance":        os.getenv("COMPLIANCE_MODEL",      STANDARD_MODEL),
     "retrospective":     os.getenv("RETROSPECTIVE_MODEL",   STANDARD_MODEL),
 
     # ── Sicherheits-/Qualitäts-Entscheidungen mit echten Trade-offs -> HEAVY ──
@@ -116,6 +115,12 @@ AGENT_MODELS: dict[str, str] = {
     "code_reviewer":     os.getenv("CODE_REVIEWER_MODEL",   HEAVY_MODEL),
     "refactoring":       os.getenv("REFACTORING_MODEL",     HEAVY_MODEL),
     "agent_trainer":     os.getenv("AGENT_TRAINER_MODEL",   HEAVY_MODEL),
+    # Nutzeranfrage (Team-Wachstums-Retrospektive 2026-09-06): compliance stand bisher bei
+    # STANDARD, obwohl seine Aufgabe (DSGVO/GDPR-Audits, Lizenzprüfung GPL vs. MIT) genau
+    # dieselbe Kategorie echter, konsequenzenreicher Trade-off-Entscheidungen ist wie die
+    # direkt daneben bei HEAVY eingestuften security/code_reviewer - eine falsche
+    # Lizenz-/DSGVO-Einschätzung ist ein reales rechtliches Risiko, kein bloßer Stilfehler.
+    "compliance":        os.getenv("COMPLIANCE_MODEL",      HEAVY_MODEL),
 
     # ── Kleine, klar umrissene Aufgaben -> LITE ──
     "image_generator":   os.getenv("IMAGE_GEN_MODEL",       LITE_MODEL),

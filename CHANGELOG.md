@@ -7,6 +7,49 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🌱 Team-Wachstums-Retrospektive: Scaffold-Werkzeug, Unterauslastungs-Erkennung & Fallback-Absicherung
+
+Nutzeranfrage: das Framework selbst (nicht die generierten Testprojekte) auf Verbesserungen
+für das weitere Wachsen des Agenten-Teams prüfen und die Modellzuweisungen gegen die
+tatsächlichen Aufgabenbereiche der Agenten abgleichen.
+
+- **`scripts/new_agent.py` (neu):** automatisiert alle vier bisher von Hand gepflegten
+  Registrierungsstellen einer neuen Fachrolle (`agents/orchestrator/__init__.py`-Instanziierung,
+  `core.task_manager.AVAILABLE_AGENTS`, `config.AGENT_MODELS`, genau eine
+  `config.DEPARTMENT_*_AGENTS`-Menge) in einem CLI-Aufruf, legt das Agenten-Klassen-Gerüst an
+  und lässt `ruff check --fix` laufen. Die reinen String-Transformationen sind isoliert testbar
+  (`tests/test_new_agent_scaffold.py`, inkl. eines End-to-End-Tests gegen Kopien der echten
+  Zieldateien). Siehe ARCHITECTURE.md Abschnitt 1.1.
+- **`core/task_manager.py`:** die im Planer-System-Prompt gesendete Liste "Verfügbare
+  Agenten-IDs" war ein von Hand gepflegter, zweiter String, unabhängig von der
+  programmatisch aus `AVAILABLE_AGENTS` gebauten Beschreibungsliste - beide waren bereits real
+  auseinandergelaufen (`agent_trainer` stand als wählbar in der ID-Liste, obwohl bewusst ohne
+  Beschreibung ausgeschlossen). `_DECOMPOSE_EXCLUDED_AGENT_IDS` ist jetzt die eine Quelle für
+  beide.
+- **`tests/test_agent_registry_consistency.py` (neu):** 5 Tests gleichen die vier Register
+  gegeneinander ab - verhindert künftiges Auseinanderlaufen beim Wachsen des Teams, statt es
+  nur einmalig richtigzustellen.
+- **`core/optimization_advisor.py`:** neue `UnusedAgent`-Kategorie meldet Rollen, die über
+  mindestens `MIN_TOTAL_RUNS_FOR_UNUSED_CHECK` (20) Läufe kein einziges Mal vom Planer
+  ausgewählt wurden - bisher erkannte `analyze()` nur AUFGERUFENE Agenten mit schlechter
+  Erfolgsquote, nicht Rollen, die dem Team faktisch nie Nutzen bringen, aber weiterhin
+  Wartungsaufwand binden.
+- **`tests/test_agent_model_fallback_coverage.py` (neu):** stellt sicher, dass JEDER
+  konfigurierte Agent (inkl. `ORCHESTRATOR_MODEL`) mindestens zwei erreichbare Modelle hat,
+  falls eines ausfällt - prüft `config.AGENT_MODELS`/`ORCHESTRATOR_MODEL` strukturell gegen
+  `core.llm_factory.MODEL_FALLBACKS` bzw. die fest einprogrammierten Fallback-Hops der
+  Nicht-Gemini-Clients. Ergebnis: bereits vollständig abgedeckt, jetzt regressionssicher.
+- **`config.py`:** `compliance` von STANDARD auf HEAVY hochgestuft - dieselbe Kategorie echter,
+  konsequenzenreicher Trade-off-Entscheidungen (DSGVO/GDPR-Audits, Lizenzprüfung GPL vs. MIT)
+  wie die direkt daneben bereits bei HEAVY eingestuften `security`/`code_reviewer`-Rollen. Der
+  Hauptagent (`ORCHESTRATOR_MODEL = CLAUDE_HEAVY_MODEL`) bleibt die einzige Rolle mit der
+  stärksten Modellstufe - alle übrigen Zuordnungen wurden geprüft und als bereits sinnvoll
+  nach Aufgabenkomplexität gestaffelt bestätigt.
+
+Volle Suite (1275 Tests) grün, `ruff check` clean.
+
+---
+
 ## 🔧 Team-Retrospektive: 5 Selbstoptimierungs-Lücken im Goal-Loop & Optimization-Advisor geschlossen
 
 Nutzeranfrage: Analyse der jüngsten Team-Arbeit auf sinnvolle Optimierungen für Tokennutzung,

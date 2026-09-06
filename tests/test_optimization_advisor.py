@@ -17,17 +17,24 @@ from pathlib import Path
 from unittest.mock import patch
 
 import config
+import core.team_memory as team_memory_module
 import memory.run_history as run_history_module
 from core.optimization_advisor import (
+    MIN_LESSON_RECURRENCE,
     MIN_SAMPLE_SIZE,
     MIN_SUCCESS_RATE_GAP,
     MIN_VERIFICATION_SAMPLE_SIZE,
+    LowPerformingAgent,
     ModelSuggestion,
     OptimizationReport,
     analyze,
     apply_auto_tuning,
+    apply_single_suggestion,
     format_report_for_humans,
+    get_recent_verification_trend_warning,
+    record_suggestions_as_lessons,
 )
+from core.team_memory import read_team_lessons
 from memory.run_history import record_run
 
 
@@ -290,6 +297,191 @@ class TestApplyAutoTuning(unittest.TestCase):
              patch.dict(config.DEPARTMENT_MODELS, {"dev": ""}), \
              patch.dict("os.environ", {"BACKEND_MODEL": ""}):
             self.assertEqual(config.get_model_for_agent("backend"), config.STANDARD_MODEL)
+
+    def test_apply_single_suggestion_writes_only_the_named_agent(self):
+        """Punkt 4 der Team-Retrospektive (2026-09-06): /apply-tuning <agent_id> übernimmt
+        GEZIELT genau einen Vorschlag, nicht alle - unabhängig von ENABLE_AUTO_MODEL_TUNING."""
+        with patch.object(config, "ENABLE_AUTO_MODEL_TUNING", False):
+            report = OptimizationReport(model_suggestions=[
+                self._suggestion(agent_id="backend"),
+                self._suggestion(agent_id="frontend", suggested_model="model-f"),
+            ])
+            applied = apply_single_suggestion(report, "backend")
+
+        self.assertIsNotNone(applied)
+        self.assertEqual(applied.agent_id, "backend")
+        data = json.loads(self.auto_tuned_file.read_text(encoding="utf-8"))
+        self.assertIn("backend", data)
+        self.assertNotIn("frontend", data)
+        self.assertTrue(data["backend"]["manual"])
+
+    def test_apply_single_suggestion_returns_none_for_unknown_agent(self):
+        report = OptimizationReport(model_suggestions=[self._suggestion(agent_id="backend")])
+        applied = apply_single_suggestion(report, "does-not-exist")
+
+        self.assertIsNone(applied)
+        self.assertFalse(self.auto_tuned_file.exists())
+
+    def test_manual_entry_applies_even_when_auto_tuning_disabled(self):
+        """Der ganze Sinn von apply_single_suggestion(): eine explizite Einzel-Bestätigung wirkt
+        auch dann, wenn der globale ENABLE_AUTO_MODEL_TUNING-Schalter aus bleibt - anders als
+        eine automatisch (apply_auto_tuning()) geschriebene Zeile, siehe
+        test_auto_tuning_disabled_ignores_the_file_entirely oben."""
+        with patch.object(config, "ENABLE_AUTO_MODEL_TUNING", False):
+            report = OptimizationReport(model_suggestions=[self._suggestion(agent_id="backend")])
+            apply_single_suggestion(report, "backend")
+
+            with patch.object(config, "AGENT_MODELS", {**config.AGENT_MODELS, "backend": config.STANDARD_MODEL}), \
+                 patch.dict(config.DEPARTMENT_MODELS, {"dev": ""}), \
+                 patch.dict("os.environ", {"BACKEND_MODEL": ""}):
+                self.assertEqual(config.get_model_for_agent("backend"), "model-b")
+
+    def test_auto_applied_entry_still_ignored_when_disabled_afterwards(self):
+        """Gegenprobe: ein von apply_auto_tuning() (nicht manuell) geschriebener Eintrag bleibt
+        weiterhin an ENABLE_AUTO_MODEL_TUNING gebunden - `manual` unterscheidet die beiden
+        Schreibwege, keine unbeabsichtigte globale Aufweichung der bestehenden Opt-in-Regel."""
+        apply_auto_tuning(OptimizationReport(model_suggestions=[self._suggestion(agent_id="backend")]))
+
+        with patch.object(config, "ENABLE_AUTO_MODEL_TUNING", False), \
+             patch.object(config, "AGENT_MODELS", {**config.AGENT_MODELS, "backend": config.STANDARD_MODEL}), \
+             patch.dict(config.DEPARTMENT_MODELS, {"dev": ""}), \
+             patch.dict("os.environ", {"BACKEND_MODEL": ""}):
+            self.assertEqual(config.get_model_for_agent("backend"), config.STANDARD_MODEL)
+
+
+class TestRecurringLessonCategories(unittest.TestCase):
+    """
+    Testet Punkt 5 der Team-Retrospektive (2026-09-06): core/optimization_advisor.py.analyze()
+    erkennt jetzt zusätzlich, wenn dieselbe team_lessons.jsonl-Kategorie am selben Projekt
+    MIN_LESSON_RECURRENCE-mal oder öfter auftritt - ein Muster, das der reguläre
+    Fix-/Governance-Loop an diesem Projekt offenbar nicht dauerhaft behebt.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self._patcher = patch.object(
+            team_memory_module, "TEAM_MEMORY_FILE", Path(self.temp_dir) / "team_lessons.jsonl",
+        )
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_flags_recurring_category_at_same_project(self):
+        for i in range(MIN_LESSON_RECURRENCE):
+            team_memory_module.record_lesson("mockforge", "unresolved_governance_critical", f"Fund Nr. {i}")
+
+        report = analyze()
+
+        self.assertEqual(len(report.recurring_lesson_categories), 1)
+        finding = report.recurring_lesson_categories[0]
+        self.assertEqual(finding.project_slug, "mockforge")
+        self.assertEqual(finding.category, "unresolved_governance_critical")
+        self.assertEqual(finding.count, MIN_LESSON_RECURRENCE)
+        self.assertFalse(report.is_empty())
+
+    def test_no_flag_below_recurrence_threshold(self):
+        for i in range(MIN_LESSON_RECURRENCE - 1):
+            team_memory_module.record_lesson("mockforge", "unresolved_governance_critical", f"Fund Nr. {i}")
+
+        report = analyze()
+
+        self.assertEqual(report.recurring_lesson_categories, [])
+
+    def test_different_projects_are_not_conflated(self):
+        for i in range(MIN_LESSON_RECURRENCE):
+            team_memory_module.record_lesson("mockforge", "unresolved_governance_critical", f"Fund A {i}")
+        for i in range(MIN_LESSON_RECURRENCE - 1):
+            team_memory_module.record_lesson("logpulse", "unresolved_governance_critical", f"Fund B {i}")
+
+        report = analyze()
+
+        projects_flagged = {f.project_slug for f in report.recurring_lesson_categories}
+        self.assertEqual(projects_flagged, {"mockforge"})
+
+    def test_format_report_includes_recurring_category(self):
+        for i in range(MIN_LESSON_RECURRENCE):
+            team_memory_module.record_lesson("mockforge", "unresolved_governance_critical", f"Fund Nr. {i}")
+
+        text = format_report_for_humans(analyze())
+
+        self.assertIn("unresolved_governance_critical", text)
+        self.assertIn("mockforge", text)
+
+
+class TestRecordSuggestionsAsLessons(unittest.TestCase):
+    """
+    Testet Punkt 2 der Team-Retrospektive (2026-09-06): record_suggestions_as_lessons() macht
+    Modell-/Underperformer-Funde auch dann teamweit sichtbar, wenn ENABLE_AUTO_MODEL_TUNING
+    (bewusst) aus ist und niemand den Abschlussbericht dieses einen Laufs liest.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self._patcher = patch.object(
+            team_memory_module, "TEAM_MEMORY_FILE", Path(self.temp_dir) / "team_lessons.jsonl",
+        )
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_records_a_lesson_for_each_model_suggestion(self):
+        suggestion = ModelSuggestion(
+            agent_id="backend", current_model="model-a", current_success_rate=20.0,
+            current_calls=5, current_avg_tokens=100.0, suggested_model="model-b",
+            suggested_success_rate=80.0, suggested_calls=5, suggested_avg_tokens=100.0,
+        )
+        record_suggestions_as_lessons(OptimizationReport(model_suggestions=[suggestion]))
+
+        lessons = read_team_lessons(limit=10)
+        self.assertEqual(len(lessons), 1)
+        self.assertEqual(lessons[0]["category"], "model_performance")
+        self.assertIn("backend", lessons[0]["detail"])
+
+    def test_records_a_lesson_for_each_low_performing_agent(self):
+        low_performer = LowPerformingAgent(agent_id="frontend", success_rate=20.0, calls=5, team_average=85.0)
+        record_suggestions_as_lessons(OptimizationReport(low_performing_agents=[low_performer]))
+
+        lessons = read_team_lessons(limit=10)
+        self.assertEqual(len(lessons), 1)
+        self.assertEqual(lessons[0]["category"], "low_performing_agent")
+        self.assertIn("frontend", lessons[0]["detail"])
+
+    def test_empty_report_records_nothing(self):
+        record_suggestions_as_lessons(OptimizationReport())
+
+        self.assertEqual(read_team_lessons(limit=10), [])
+
+
+class TestVerificationTrendWarning(unittest.TestCase):
+    """Testet Punkt 3 der Team-Retrospektive (2026-09-06): get_recent_verification_trend_warning()
+    liefert den kurzen, einzeiligen Hinweis für core/goal_loop.py's Eval-Prompt."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self._patcher = patch.object(run_history_module, "RUN_HISTORY_FILE", Path(self.temp_dir) / "run_history.json")
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_empty_history_yields_no_warning(self):
+        self.assertEqual(get_recent_verification_trend_warning(), "")
+
+    def test_persistent_failures_yield_warning(self):
+        for _ in range(MIN_VERIFICATION_SAMPLE_SIZE):
+            record_run(project_slug="p", task_summary="x", verification_ok=False, total_tokens=1, duration_seconds=1, agent_results=[])
+
+        warning = get_recent_verification_trend_warning()
+
+        self.assertIn("Verifikations-Trend", warning)
 
 
 if __name__ == "__main__":

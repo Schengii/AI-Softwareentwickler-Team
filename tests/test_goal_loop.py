@@ -176,6 +176,81 @@ async def test_goal_loop_stagnation_aborts_early(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_goal_loop_stagnation_detects_near_duplicate_failure(tmp_path):
+    """
+    Realer Fund (Team-Retrospektive 2026-09-06): der bisherige Stagnations-Vergleich verlangte
+    exakte String-Gleichheit von failure_detail - ein Traceback mit leicht verschobener
+    Zeilennummer (beim iterativen Fixen derselben Ursache real häufig) umging die Erkennung
+    komplett. Muss auch dann abbrechen, wenn sich nur die Zeilennummer im sonst identischen
+    Fehler unterscheidet.
+    """
+    mock_orchestrator = MagicMock()
+    mock_orchestrator.process = AsyncMock(return_value="Testfehler weiterhin vorhanden.")
+    mock_orchestrator.last_task_summary = "Fix-Versuch"
+    mock_orchestrator.get_workspace_manager = MagicMock()
+
+    runner = GoalLoopRunner(orchestrator=mock_orchestrator)
+
+    failures = [
+        {"verification_ok": False, "failure_detail": "Assert 200 == 404 in test_api.py:42"},
+        {"verification_ok": False, "failure_detail": "Assert 200 == 404 in test_api.py:57"},
+    ]
+    eval_result = {"goal_reached": False, "reason": "Testfehler weiterhin vorhanden", "next_prompt": "Repariere erneut"}
+
+    def _status(project_dir):
+        return [failures.pop(0)] if failures else [{"verification_ok": False, "failure_detail": "x"}]
+
+    with patch("core.goal_loop.read_status", side_effect=_status), \
+         patch.object(runner, "_evaluate_and_synthesize_next_step", new_callable=AsyncMock) as mock_eval:
+        mock_eval.return_value = eval_result
+
+        res = await runner.run(
+            goal="Erstelle eine Notizen-API",
+            project_dir=str(tmp_path / "notizen_api"),
+            max_iterations=5,
+        )
+
+        assert res.total_iterations == 2
+        assert "stagnier" in res.final_message.lower()
+
+
+@pytest.mark.anyio
+async def test_goal_loop_no_stagnation_when_failures_are_structurally_different(tmp_path):
+    """Gegenprobe: zwei tatsächlich unterschiedliche Fehler (nicht nur andere Zeilennummer)
+    dürfen NICHT als Stagnation gewertet werden - der Loop soll normal weiterlaufen."""
+    mock_orchestrator = MagicMock()
+    mock_orchestrator.process = AsyncMock(return_value="Weiterer Versuch.")
+    mock_orchestrator.last_task_summary = "Fix-Versuch"
+    mock_orchestrator.get_workspace_manager = MagicMock()
+
+    runner = GoalLoopRunner(orchestrator=mock_orchestrator)
+
+    failures = [
+        {"verification_ok": False, "failure_detail": "Assert 200 == 404 in test_api.py:42"},
+        {"verification_ok": False, "failure_detail": "ImportError: keine Modul namens flask"},
+        {"verification_ok": True, "failure_detail": ""},
+    ]
+    eval_results = [
+        {"goal_reached": False, "reason": "r1", "next_prompt": "weiter"},
+        {"goal_reached": False, "reason": "r2", "next_prompt": "weiter"},
+        {"goal_reached": True, "reason": "fertig", "next_prompt": ""},
+    ]
+
+    with patch("core.goal_loop.read_status", side_effect=lambda project_dir: [failures.pop(0)]), \
+         patch.object(runner, "_evaluate_and_synthesize_next_step", new_callable=AsyncMock) as mock_eval:
+        mock_eval.side_effect = eval_results
+
+        res = await runner.run(
+            goal="Erstelle eine Notizen-API",
+            project_dir=str(tmp_path / "notizen_api"),
+            max_iterations=5,
+        )
+
+        assert res.total_iterations == 3
+        assert res.success is True
+
+
+@pytest.mark.anyio
 async def test_goal_loop_cumulative_token_budget_aborts(tmp_path, monkeypatch):
     """
     GOAL_LOOP_MAX_TOTAL_TOKENS begrenzt den Gesamtverbrauch ÜBER ALLE Iterationen hinweg -
@@ -283,3 +358,56 @@ async def test_goal_loop_exception_reports_crash_not_generic_max_iterations_mess
     assert res.total_iterations == 1
     assert "unerwarteter fehler" in res.final_message.lower()
     assert "Provider-Kette komplett erschöpft" in res.final_message
+
+
+@pytest.mark.anyio
+async def test_eval_prompt_includes_verification_trend_warning(tmp_path):
+    """
+    Punkt 3 der Team-Retrospektive (2026-09-06): core/optimization_advisor.py erkennt einen
+    teamweiten Verifikations-Trend bereits - der Goal-Loop soll diesen proaktiv in seinen
+    Eval-Prompt aufnehmen, statt ihn zu ignorieren und erst am eigenen Scheitern zu erkennen.
+    """
+    runner = GoalLoopRunner(orchestrator=MagicMock())
+    mock_llm = MagicMock()
+    mock_llm.generate = AsyncMock(return_value='{"goal_reached": false, "reason": "x", "next_prompt": "y"}')
+
+    with patch("core.goal_loop.get_recent_verification_trend_warning", return_value="⚠️ Team-weiter Verifikations-Trend: nur 1/3 grün."), \
+         patch("core.goal_loop.LLMFactory.create_for_model", return_value=mock_llm):
+        await runner._evaluate_and_synthesize_next_step(
+            goal="Erstelle eine Notizen-API",
+            project_dir=str(tmp_path),
+            iteration=1,
+            max_iterations=5,
+            summary="x",
+            verification_ok=False,
+            failure_detail="x",
+            result_text="x",
+        )
+
+    sent_prompt = mock_llm.generate.call_args[0][0]
+    assert "Team-weiter Verifikations-Trend" in sent_prompt
+
+
+@pytest.mark.anyio
+async def test_eval_prompt_omits_trend_line_when_no_warning(tmp_path):
+    """Gegenprobe: der Normalfall ohne Trend darf keine leere/kaputte Zeile in den Prompt
+    einschleusen."""
+    runner = GoalLoopRunner(orchestrator=MagicMock())
+    mock_llm = MagicMock()
+    mock_llm.generate = AsyncMock(return_value='{"goal_reached": false, "reason": "x", "next_prompt": "y"}')
+
+    with patch("core.goal_loop.get_recent_verification_trend_warning", return_value=""), \
+         patch("core.goal_loop.LLMFactory.create_for_model", return_value=mock_llm):
+        await runner._evaluate_and_synthesize_next_step(
+            goal="Erstelle eine Notizen-API",
+            project_dir=str(tmp_path),
+            iteration=1,
+            max_iterations=5,
+            summary="x",
+            verification_ok=False,
+            failure_detail="x",
+            result_text="x",
+        )
+
+    sent_prompt = mock_llm.generate.call_args[0][0]
+    assert "Team-weiter Verifikations-Trend" not in sent_prompt

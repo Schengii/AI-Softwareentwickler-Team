@@ -7,6 +7,57 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔧 Team-Retrospektive: 5 Selbstoptimierungs-Lücken im Goal-Loop & Optimization-Advisor geschlossen
+
+Nutzeranfrage: Analyse der jüngsten Team-Arbeit auf sinnvolle Optimierungen für Tokennutzung,
+Agenteneinsatz und den Selbstoptimierungs-Loop. Fünf konkrete Lücken identifiziert und behoben:
+
+1. **Stagnationserkennung im Goal-Loop war zu strikt** (`core/goal_loop.py`): verlangte exakte
+   String-Gleichheit von `failure_detail` zwischen zwei Iterationen. Ein Traceback mit leicht
+   verschobener Zeilennummer (beim iterativen Fixen derselben Ursache real häufig) umging das
+   komplett – der Loop drehte sich bis `max_iterations` weiter und verbrannte nur Tokens.
+   `_normalize_failure_detail()` vergleicht jetzt normalisiert (Groß-/Kleinschreibung,
+   Interpunktion UND Zahlen ignoriert).
+2. **Optimierungsvorschläge blieben unsichtbar ohne `ENABLE_AUTO_MODEL_TUNING`**
+   (`core/optimization_advisor.py.record_suggestions_as_lessons()`): schreibt Modell- und
+   Underperformer-Funde jetzt zusätzlich ins teamweite Lektionen-Gedächtnis
+   (`core/team_memory.py`), damit sie auch bei autonomen `--work-backlog`/Cron-Läufen ohne
+   menschlichen Betrachter sichtbar bleiben. Wird direkt im Orchestrator-Lauf aufgerufen.
+3. **Goal-Loop ignorierte bereits erkannte teamweite Verifikations-Trends**: neue
+   `get_recent_verification_trend_warning()` fließt jetzt in den Eval-Prompt jeder Iteration
+   ein – der Loop plant vorsichtiger, statt erst am eigenen Scheitern zu erkennen, dass das Team
+   gerade häufig scheitert.
+4. **Kein Mittelweg zwischen Vorschlag ignorieren und globalem Auto-Tuning-Schalter**: neuer
+   CLI-Befehl `/apply-tuning <agent_id>` (`core/optimization_advisor.py.apply_single_suggestion()`)
+   übernimmt GEZIELT genau einen Modell-Vorschlag, unabhängig von `ENABLE_AUTO_MODEL_TUNING` –
+   dafür markiert ein neues `manual`-Feld in `memory/auto_tuned_models.json`, dass
+   `config.get_model_for_agent()` diesen Eintrag auch bei deaktiviertem globalem Schalter
+   anwendet (automatisch geschriebene Einträge bleiben wie bisher daran gebunden).
+5. **Wiederkehrende Lektionen-Kategorien am selben Projekt wurden nie ausgewertet**: neue
+   `RecurringLessonCategory`-Auswertung in `analyze()` meldet, wenn dieselbe
+   `team_lessons.jsonl`-Kategorie (z.B. `unresolved_governance_critical`) 3+ mal am selben
+   Projekt auftritt – ein Hinweis auf eine Ursache, die der reguläre Fix-/Governance-Loop dort
+   nicht dauerhaft behebt.
+
+24 neue/erweiterte Tests (`tests/test_goal_loop.py`, `tests/test_optimization_advisor.py`,
+`tests/test_cli_optimize_command.py`); volle Test-Suite (1243 Tests) grün, `ruff check` clean.
+
+**Zwei echte Bugs bei der Verifikation gefunden und behoben:**
+- Punkt 2 machte `record_suggestions_as_lessons()` unbedingt bei JEDEM `Orchestrator.process()`-
+  Lauf scharf – Dutzende bestehender Tests lassen `process()` ohne Mock von
+  `optimization_advisor` durchlaufen und schrieben dadurch einen echten, aus der tatsächlichen
+  `memory/run_history.json` gelesenen Befund in die VERSIONIERTE `memory/team_lessons.jsonl`.
+  Neue `tests/conftest.py` patcht `record_suggestions_as_lessons` zentral als No-Op für die
+  gesamte Testsuite (reine Testisolation, kein Produktionsverhalten geändert).
+- `tests/test_dashboard_concurrency.py.test_independent_orchestrator_instances_dont_mix_
+  conversation_history` verglich `id()` zweier `ConversationHistory`-Objekte, ohne beide
+  gleichzeitig am Leben zu halten – nach GC des ersten Objekts konnte CPython dessen Adresse
+  für das zweite wiederverwenden, was den Test einmal real (abhängig von Timing/Testreihenfolge)
+  fälschlich fehlschlagen ließ. Sammelt jetzt die Objekte selbst statt ihrer `id()` und
+  vergleicht mit `assertIsNot()` – unabhängig vom GC-Timing korrekt.
+
+---
+
 ## 🛠️ CI-Fehlschläge auf GitHub Actions behoben (Groq-Fallback-Tests & Workspace-Checks)
 
 Realer Fund bei GitHub Actions PR-Checks (#35): die CI schlug mit 3 fehlerhaften Jobs fehl:

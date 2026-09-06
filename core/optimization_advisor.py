@@ -29,11 +29,13 @@ ein Mensch bei einer manuellen Modellwahl ohnehin anstellen würde.
 """
 
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 import config
+from core.team_memory import read_team_lessons, record_lesson
 from memory.run_history import (
     get_agent_model_performance,
     get_agent_success_rates,
@@ -60,6 +62,17 @@ SIGNIFICANT_SUCCESS_RATE_GAP = 30.0
 MIN_VERIFICATION_SAMPLE_SIZE = 3
 VERIFICATION_SUCCESS_RATE_THRESHOLD = 50.0
 VERIFICATION_TREND_WINDOW = 10
+# Punkt 5 der Team-Retrospektive (2026-09-06): wie oft dieselbe Lektionen-Kategorie am selben
+# Projekt in core/team_memory.py.team_lessons.jsonl wiederkehrt, bevor das als strukturelles
+# Muster gemeldet wird (statt als isolierter Einzelfund, den record_lesson() ohnehin schon
+# dedupliziert). 3, weil ein einmaliges Auftreten + eine Bestätigung noch kein verlässliches
+# Muster ist - erst der DRITTE Fund derselben Kategorie am selben Projekt deutet auf eine
+# Ursache hin, die der reguläre Fix-/Governance-Loop offenbar nicht dauerhaft behebt.
+MIN_LESSON_RECURRENCE = 3
+# Wie viele der jüngsten Lektionen für die Häufigkeitsauswertung herangezogen werden - bewusst
+# begrenzt (dieselbe Überlegung wie team_memory._DEDUP_LOOKBACK), kein voller Datei-Scan bei
+# beliebig wachsender Historie.
+LESSON_RECURRENCE_LOOKBACK = 200
 
 
 @dataclass
@@ -99,16 +112,34 @@ class VerificationTrend:
 
 
 @dataclass
+class RecurringLessonCategory:
+    """Dieselbe team_lessons.jsonl-Kategorie (z.B. `unresolved_governance_critical`) tritt am
+    SELBEN Projekt mehrfach auf - anders als VerificationTrend (teamweiter Testerfolg über
+    Läufe hinweg) oder LowPerformingAgent (ein Agent) geht es hier um ein Muster, das der
+    reguläre Fix-/Governance-Loop an genau diesem Projekt offenbar nicht dauerhaft behebt."""
+    project_slug: str
+    category: str
+    count: int
+    latest_detail: str
+
+
+@dataclass
 class OptimizationReport:
     """Ergebnis der datenbasierten Selbstoptimierungs-Analyse – reine Empfehlungen, keine
     automatisch angewandten Änderungen an config.py."""
     model_suggestions: list[ModelSuggestion] = field(default_factory=list)
     low_performing_agents: list[LowPerformingAgent] = field(default_factory=list)
     verification_trend: VerificationTrend | None = None
+    recurring_lesson_categories: list[RecurringLessonCategory] = field(default_factory=list)
     sample_runs: int = 0
 
     def is_empty(self) -> bool:
-        return not self.model_suggestions and not self.low_performing_agents and self.verification_trend is None
+        return (
+            not self.model_suggestions
+            and not self.low_performing_agents
+            and self.verification_trend is None
+            and not self.recurring_lesson_categories
+        )
 
 
 def analyze(limit_runs: int = 100) -> OptimizationReport:
@@ -179,7 +210,36 @@ def analyze(limit_runs: int = 100) -> OptimizationReport:
             runs=verification["runs"], passed=verification["passed"], rate=verification["rate"],
         )
 
+    report.recurring_lesson_categories = _find_recurring_lesson_categories()
+
     return report
+
+
+def _find_recurring_lesson_categories() -> list[RecurringLessonCategory]:
+    """Gruppiert die letzten LESSON_RECURRENCE_LOOKBACK Team-Lektionen nach (project_slug,
+    category) und meldet Gruppen, die MIN_LESSON_RECURRENCE oder öfter auftreten - siehe
+    RecurringLessonCategory-Docstring. Ergebnis absteigend nach Häufigkeit sortiert, damit das
+    auffälligste Muster im Bericht zuerst erscheint."""
+    lessons = read_team_lessons(limit=LESSON_RECURRENCE_LOOKBACK)
+    counts: Counter[tuple[str, str]] = Counter()
+    latest_detail: dict[tuple[str, str], str] = {}
+    for entry in lessons:
+        key = (entry.get("project_slug", "?"), entry.get("category", "?"))
+        counts[key] += 1
+        # read_team_lessons() liefert neueste zuerst - der erste Treffer je Key ist damit
+        # bereits das jüngste Vorkommen, spätere Treffer dürfen ihn nicht überschreiben.
+        latest_detail.setdefault(key, entry.get("detail", ""))
+
+    findings = [
+        RecurringLessonCategory(
+            project_slug=project_slug, category=category, count=count,
+            latest_detail=latest_detail[(project_slug, category)],
+        )
+        for (project_slug, category), count in counts.items()
+        if count >= MIN_LESSON_RECURRENCE
+    ]
+    findings.sort(key=lambda f: f.count, reverse=True)
+    return findings
 
 
 def format_report_for_humans(report: OptimizationReport) -> str:
@@ -217,7 +277,65 @@ def format_report_for_humans(report: OptimizationReport) -> str:
             "Deutet eher auf ein strukturelles Problem hin (z.B. zu ambitionierte Aufgaben, ein "
             "systematisch fehlender Agenten-Fähigkeitsbereich) als auf einzelne Projekt-Ausreißer."
         )
+    for r in report.recurring_lesson_categories:
+        lines.append(
+            f"- 🔁 **Wiederkehrende Lektionen-Kategorie** `{r.category}` bei **{r.project_slug}**: "
+            f"{r.count}× aufgezeichnet – jüngster Fund: {r.latest_detail[:120]}. Deutet auf eine "
+            "Ursache hin, die der reguläre Fix-/Governance-Loop an diesem Projekt nicht dauerhaft behebt."
+        )
     return "\n".join(lines)
+
+
+def get_recent_verification_trend_warning() -> str:
+    """Kurzer, einzeiliger Warnhinweis für Kontexte außerhalb des vollen Berichts (z.B.
+    core/goal_loop.py's Eval-Prompt) - leer, wenn kein teamweiter Verifikations-Trend
+    vorliegt. Rein deterministisch, kein zusätzlicher LLM-Aufruf. Reagiert bewusst NUR auf
+    verification_trend (nicht die anderen Report-Teile): der Goal-Loop arbeitet an EINEM
+    Projekt und braucht hier nur das teamweite "Vorsicht, wir scheitern gerade häufig"-Signal,
+    nicht die vollen Modell-/Agenten-Detailvorschläge, die den Eval-Prompt nur aufblähen
+    würden."""
+    trend = analyze().verification_trend
+    if trend is None:
+        return ""
+    return (
+        f"⚠️ Team-weiter Verifikations-Trend: nur {trend.passed}/{trend.runs} der letzten Läufe "
+        f"(projektübergreifend, nicht nur dieses Projekt) endeten mit grüner Verifikation "
+        f"({trend.rate}%). Plane entsprechend vorsichtiger (kleinere, klar abgegrenzte Schritte, "
+        "explizite Tests je Änderung) statt große Sprünge zu riskieren."
+    )
+
+
+def record_suggestions_as_lessons(report: OptimizationReport) -> None:
+    """Überführt Modell- und Underperformer-Vorschläge in das teamweite Lektionen-Gedächtnis
+    (core/team_memory.py), damit ein erkanntes Muster auch dann sichtbar bleibt, wenn
+    config.ENABLE_AUTO_MODEL_TUNING (bewusst) aus ist und niemand den Abschlussbericht eines
+    einzelnen Laufs liest - insbesondere bei autonomen --work-backlog/Cron-Läufen ohne
+    menschlichen Betrachter. record_lesson() dedupliziert intern bereits fast identische
+    Einträge, ein wiederholter Aufruf mit demselben Fund bläht die Historie also nicht auf.
+    project_slug="_team" markiert bewusst KEIN echtes Projekt (die Vorschläge sind
+    teamweit/agentenweit, nicht projektspezifisch) - format_team_lessons_for_agents()
+    priorisiert Lektionen des aktuell bearbeiteten Projekts ohnehin nur zusätzlich, verdrängt
+    andere Kategorien also nicht."""
+    for s in report.model_suggestions:
+        record_lesson(
+            project_slug="_team",
+            category="model_performance",
+            detail=(
+                f"Agent '{s.agent_id}' lief mit '{s.suggested_model}' empirisch besser "
+                f"({s.suggested_success_rate}% Erfolgsquote, ⌀{s.suggested_avg_tokens:.0f} Tokens/Aufruf) "
+                f"als mit dem aktuell überwiegend genutzten '{s.current_model}' "
+                f"({s.current_success_rate}%, ⌀{s.current_avg_tokens:.0f} Tokens/Aufruf) - Modellzuweisung prüfen."
+            ),
+        )
+    for a in report.low_performing_agents:
+        record_lesson(
+            project_slug="_team",
+            category="low_performing_agent",
+            detail=(
+                f"Agent '{a.agent_id}' liegt mit {a.success_rate}% Erfolgsquote über {a.calls} Aufrufe "
+                f"deutlich unter dem Team-Durchschnitt ({a.team_average}%) - Prompt/Aufgabenzuschnitt prüfen."
+            ),
+        )
 
 
 def _load_auto_tuned_models() -> dict:
@@ -254,28 +372,68 @@ def apply_auto_tuning(report: OptimizationReport) -> list[str]:
         return []
 
     data = _load_auto_tuned_models()
-    applied: list[str] = []
     now_iso = datetime.now(UTC).isoformat(timespec="seconds")
     for s in report.model_suggestions:
-        data[s.agent_id] = {
-            "model": s.suggested_model,
-            "previous_model": s.current_model,
-            "success_rate": s.suggested_success_rate,
-            "avg_tokens": s.suggested_avg_tokens,
-            "applied_at": now_iso,
-            "reason": (
-                f"Empirisch bessere Erfolgsquote ({s.suggested_success_rate}% vs. "
-                f"{s.current_success_rate}% über {s.suggested_calls} bzw. {s.current_calls} "
-                f"Aufrufe) bei vertretbarem Tokenverbrauch (⌀{s.suggested_avg_tokens:.0f} vs. "
-                f"⌀{s.current_avg_tokens:.0f} Tokens/Aufruf)."
-            ),
-        }
-        applied.append(s.agent_id)
+        data[s.agent_id] = _suggestion_to_entry(s, now_iso)
 
+    if not _save_auto_tuned_models(data):
+        return []
+    return [s.agent_id for s in report.model_suggestions]
+
+
+def _suggestion_to_entry(s: ModelSuggestion, now_iso: str, manual: bool = False) -> dict:
+    """Baut den memory/auto_tuned_models.json-Eintrag für einen Vorschlag - gemeinsame Logik
+    für apply_auto_tuning() (alle Vorschläge auf einmal, manual=False) und
+    apply_single_suggestion() (gezielt EIN Agent, manual=True). `manual` lässt
+    config.py.get_model_for_agent() den Eintrag auch dann anwenden, wenn
+    config.ENABLE_AUTO_MODEL_TUNING (bewusst) aus ist - siehe dessen Docstring."""
+    return {
+        "model": s.suggested_model,
+        "previous_model": s.current_model,
+        "success_rate": s.suggested_success_rate,
+        "avg_tokens": s.suggested_avg_tokens,
+        "applied_at": now_iso,
+        "manual": manual,
+        "reason": (
+            f"Empirisch bessere Erfolgsquote ({s.suggested_success_rate}% vs. "
+            f"{s.current_success_rate}% über {s.suggested_calls} bzw. {s.current_calls} "
+            f"Aufrufe) bei vertretbarem Tokenverbrauch (⌀{s.suggested_avg_tokens:.0f} vs. "
+            f"⌀{s.current_avg_tokens:.0f} Tokens/Aufruf)."
+        ),
+    }
+
+
+def _save_auto_tuned_models(data: dict) -> bool:
+    """Schreibt memory/auto_tuned_models.json - True bei Erfolg, False bei einem I/O-Fehler
+    (der Aufrufer meldet dann keine fälschlich 'angewendeten' agent_id zurück)."""
     try:
         path = Path(config.AUTO_TUNED_MODELS_FILE)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        return True
     except OSError:
-        return []
-    return applied
+        return False
+
+
+def apply_single_suggestion(report: OptimizationReport, agent_id: str) -> ModelSuggestion | None:
+    """Übernimmt GEZIELT genau einen Modell-Vorschlag aus `report` in
+    config.AUTO_TUNED_MODELS_FILE - der manuelle Mittelweg zwischen "alles ignorieren" und dem
+    Alles-oder-nichts-Schalter config.ENABLE_AUTO_MODEL_TUNING (siehe /apply-tuning in
+    interface/cli.py): der Nutzer behält die Kontrolle über JEDEN einzelnen Agenten, ohne dafür
+    erst global automatische Selbstumkonfiguration erlauben zu müssen. Wirkt bewusst UNABHÄNGIG
+    von config.ENABLE_AUTO_MODEL_TUNING - eine explizite, einzelne Bestätigung per Kommando ist
+    per Definition kein überraschendes automatisches Verhalten.
+
+    Gibt den angewendeten ModelSuggestion zurück (für eine Erfolgsmeldung), oder None, wenn
+    kein Vorschlag für diese agent_id vorliegt oder das Schreiben fehlschlug.
+    """
+    suggestion = next((s for s in report.model_suggestions if s.agent_id == agent_id), None)
+    if suggestion is None:
+        return None
+
+    data = _load_auto_tuned_models()
+    now_iso = datetime.now(UTC).isoformat(timespec="seconds")
+    data[suggestion.agent_id] = _suggestion_to_entry(suggestion, now_iso, manual=True)
+    if not _save_auto_tuned_models(data):
+        return None
+    return suggestion

@@ -13,6 +13,7 @@ Ermöglicht vollautomatische Softwareentwicklung in Feedback-Schleifen:
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,10 +28,30 @@ from config import (
 )
 from core.backlog_store import new_ticket_id, upsert_ticket
 from core.llm_factory import LLMFactory
+from core.optimization_advisor import get_recent_verification_trend_warning
 from core.project_status import read_status
 from core.token_guard import token_guard
 
 logger = logging.getLogger(__name__)
+
+_FAILURE_NORMALIZE_RE = re.compile(r"[^\w]+")
+_FAILURE_DIGITS_RE = re.compile(r"\d+")
+
+
+def _normalize_failure_detail(detail: str) -> str:
+    """Grobe Normalisierung für den Stagnations-Vergleich zwischen zwei Iterationen.
+
+    Realer Fund: der bisherige Vergleich verlangte exakte String-Gleichheit von
+    `failure_detail` zwischen zwei Iterationen, um Stagnation zu erkennen. Ein Traceback mit
+    leicht verschobener Zeilennummer oder Variablenname (beim iterativen Fixen derselben
+    Ursache real häufig) umging das dadurch vollständig - der Loop drehte sich dann bis
+    max_iterations weiter, ohne echten Fortschritt, und verbrannte dabei nur Tokens. Ignoriert
+    deshalb Groß-/Kleinschreibung, Interpunktion UND Zahlen (Zeilennummern/IDs) - dieselbe
+    Grundidee wie core/team_memory.py._normalize() für die Lektionen-Duplikatserkennung, hier
+    zusätzlich mit Ziffern-Vereinheitlichung, weil Tracebacks fast immer Zeilennummern tragen."""
+    normalized = _FAILURE_NORMALIZE_RE.sub(" ", detail.lower())
+    normalized = _FAILURE_DIGITS_RE.sub("#", normalized)
+    return normalized.strip()[:200]
 
 StatusCallback = Callable[[str], None]
 CancelCallback = Callable[[], bool]
@@ -241,22 +262,24 @@ class GoalLoopRunner:
                 emit(f"🎉 [bold green]Ziel vollständig erreicht in Iteration {iteration}![/bold green] ({evaluation_reason})")
                 break
 
-            # Stagnations-Erkennung: liefert die Verifikation zwei Iterationen in Folge exakt
-            # denselben Fehler, dreht sich der Loop im Kreis (ein Bug, den das Team offenbar
-            # nicht selbst löst) - weitere Runden verbrennen nur Tokens ohne Fortschritt.
+            # Stagnations-Erkennung: liefert die Verifikation zwei Iterationen in Folge denselben
+            # STRUKTURELLEN Fehler (nach Normalisierung, siehe _normalize_failure_detail() oben),
+            # dreht sich der Loop im Kreis (ein Bug, den das Team offenbar nicht selbst löst) -
+            # weitere Runden verbrennen nur Tokens ohne Fortschritt.
+            normalized_failure = _normalize_failure_detail(failure_detail) if failure_detail else None
             if (
                 not verification_ok
-                and failure_detail
+                and normalized_failure
                 and previous_failure_detail is not None
-                and failure_detail == previous_failure_detail
+                and normalized_failure == previous_failure_detail
             ):
                 emit(
-                    "🛑 [bold red]Stagnation erkannt:[/bold red] derselbe Verifikationsfehler wie in der "
+                    "🛑 [bold red]Stagnation erkannt:[/bold red] strukturell derselbe Verifikationsfehler wie in der "
                     f"Vorrunde ({failure_detail[:100]}) – breche ab, statt Iterationen zu verschwenden."
                 )
                 stagnated = True
                 break
-            previous_failure_detail = failure_detail or None
+            previous_failure_detail = normalized_failure
 
             # Kumulatives Token-Budget über alle bisherigen Iterationen dieses Loops.
             if GOAL_LOOP_MAX_TOTAL_TOKENS > 0:
@@ -342,6 +365,14 @@ class GoalLoopRunner:
                 if f.is_file() and not any(part.startswith((".", "__pycache__", "node_modules")) for part in f.parts):
                     file_list.append(str(f.relative_to(p_path)))
 
+        # Punkt 3 der Team-Retrospektive (2026-09-06): core/optimization_advisor.py sammelt
+        # bereits teamweite (projektübergreifende) Verifikations-Trends, aber der Goal-Loop
+        # bewertete bisher NUR den lokalen Status dieses einen Projekts - ein bereits erkanntes
+        # "wir scheitern gerade häufig"-Muster floss nirgends proaktiv in die Planung des
+        # nächsten Schritts ein. Rein deterministisch, kein zusätzlicher LLM-Aufruf; leerer
+        # String, wenn kein Trend vorliegt (der Normalfall).
+        trend_warning = get_recent_verification_trend_warning()
+
         eval_prompt = f"""Du bist der leitende Product Owner und Quality Gate Lead des KI-Softwareentwickler-Teams.
 
 Deine Aufgabe ist es, den aktuellen Arbeitsstand eines Projekts gegen das vorgegebene Gesamtziel zu prüfen und zu entscheiden, ob das Ziel vollständig erreicht ist oder welcher präzise Folge-Prompt für die nächste Entwicklungsrunde erforderlich ist.
@@ -354,6 +385,7 @@ Deine Aufgabe ist es, den aktuellen Arbeitsstand eines Projekts gegen das vorgeg
 - Verifikations-Status (Tests): {'✅ GRÜN (Bestanden)' if verification_ok else '❌ ROT (Fehlgeschlagen / Ausstehend)'}
 - Verifikations-Details / Fehler: {failure_detail or 'Keine'}
 - Vorhandene Projektdateien ({len(file_list)}): {', '.join(file_list[:30])}
+{f"- {trend_warning}" if trend_warning else ""}
 
 ### Regeln:
 1. 'goal_reached' darf NUR dann true sein, wenn:

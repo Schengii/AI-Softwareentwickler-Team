@@ -86,7 +86,8 @@ HELP_TEXT = """
 | `/audit-projekt [projekt]` | Lässt den Projekt-Hygiene-Agenten das Framework (oder ein Projekt) wirklich durchsehen; Löschungen nur nach Bestätigung |
 | `/prune-worktrees` | Räumt verwaiste, vom KI-Team angelegte Git-Isolations-Worktrees auf (gemergt oder seit 7+ Tagen inaktiv) |
 | `/learnings` | Zeigt alle von den Agenten gelernten Regeln (persistentes Gedächtnis) mit Nummer je Agent an |
-| `/optimize` | Zeigt datenbasierte Selbstoptimierungs-Vorschläge über alle bisherigen Läufe hinweg (Modellzuweisung, auffällig niedrige Erfolgsquoten) – rein informativ, keine automatische Änderung |
+| `/optimize` | Zeigt datenbasierte Selbstoptimierungs-Vorschläge über alle bisherigen Läufe hinweg (Modellzuweisung, auffällig niedrige Erfolgsquoten, wiederkehrende Lektionen-Kategorien) – rein informativ, keine automatische Änderung |
+| `/apply-tuning <agent_id>` | Übernimmt GEZIELT genau einen der bei `/optimize` angezeigten Modell-Vorschläge für einen einzelnen Agenten – unabhängig von `ENABLE_AUTO_MODEL_TUNING` |
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
 | `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/design-system [projekt]` | Zeigt/bearbeitet feste visuelle Präferenzen (Farbpalette, Typografie, Spacing-Skala, Tonalität, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
@@ -926,6 +927,46 @@ class CLIInterface:
             return
         console.print(Panel(Markdown(format_report_for_humans(report)), title="🔧 Selbstoptimierungs-Vorschläge", border_style="cyan"))
 
+    def _apply_single_tuning_suggestion(self, agent_id: str | None) -> None:
+        """
+        Punkt 4 der Team-Retrospektive (2026-09-06): manueller Mittelweg zwischen "Vorschlag
+        ignorieren" und dem Alles-oder-nichts-Schalter config.ENABLE_AUTO_MODEL_TUNING. `/optimize`
+        zeigt nur an, ändert aber nie config.py; `/apply-tuning <agent>` übernimmt GEZIELT genau
+        EINEN der dort angezeigten Modell-Vorschläge nach core/optimization_advisor.py.
+        apply_single_suggestion() - wirkt unabhängig vom globalen Flag, weil eine explizite,
+        einzelne Bestätigung per Kommando per Definition kein überraschendes automatisches
+        Verhalten ist.
+        """
+        from core.optimization_advisor import analyze, apply_single_suggestion
+
+        if not agent_id:
+            console.print(
+                "⚠️ Bitte gib eine Agenten-ID an: `/apply-tuning <agent_id>` (siehe `/optimize` "
+                "für die aktuell verfügbaren Vorschläge).",
+                style="yellow",
+            )
+            return
+
+        report = analyze()
+        if not any(s.agent_id == agent_id for s in report.model_suggestions):
+            available = ", ".join(s.agent_id for s in report.model_suggestions) or "keine"
+            console.print(
+                f"📭 Kein Modell-Vorschlag für '{agent_id}' vorhanden. Verfügbar: {available}.",
+                style="dim",
+            )
+            return
+
+        applied = apply_single_suggestion(report, agent_id)
+        if applied is None:
+            console.print(f"❌ Konnte den Vorschlag für '{agent_id}' nicht schreiben (siehe Log).", style="red")
+            return
+        console.print(
+            f"✅ [bold green]Übernommen:[/bold green] '{applied.agent_id}' läuft ab dem nächsten Aufruf mit "
+            f"'{applied.suggested_model}' ({applied.suggested_success_rate}% Erfolgsquote statt "
+            f"{applied.current_success_rate}% mit '{applied.current_model}'). Gespeichert in "
+            "memory/auto_tuned_models.json."
+        )
+
     async def _run_goal_loop_command(self, args: list[str]) -> None:
         """
         Startet den autonomen Ziel- und Feedback-Loop (/goal, /autoloop).
@@ -1488,6 +1529,9 @@ class CLIInterface:
 
         elif cmd in ("/optimize", "/optimierung", "/self-optimize"):
             self._show_optimization_report()
+
+        elif cmd in ("/apply-tuning", "/tuning-anwenden"):
+            self._apply_single_tuning_suggestion(args[0] if args else None)
 
         elif cmd in ("/backlog", "/board", "/kanban", "/tickets"):
             await self._show_backlog()

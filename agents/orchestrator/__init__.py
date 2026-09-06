@@ -112,7 +112,7 @@ from core.git_isolation import (
 from core.message_bus import AgentTask
 from core.notifier import notify_external
 from core.optimization_advisor import analyze as analyze_optimization_potential
-from core.optimization_advisor import apply_auto_tuning
+from core.optimization_advisor import apply_auto_tuning, record_suggestions_as_lessons
 from core.optimization_advisor import format_report_for_humans as format_optimization_report
 from core.project_constitution import format_constitution_for_agents, get_max_project_tokens
 from core.project_status import (
@@ -1030,6 +1030,13 @@ class Orchestrator(
         # zurück, solange das Flag aus ist (Standard) - dieselbe Zeile läuft für JEDEN Lauf.
         optimization_report = analyze_optimization_potential()
         auto_tuned_agents = apply_auto_tuning(optimization_report)
+        # Punkt 2 der Team-Retrospektive (2026-09-06): schreibt Modell-/Underperformer-Funde in
+        # das teamweite Lektionen-Gedächtnis (core/team_memory.py) - bleibt so auch dann
+        # wirksam sichtbar, wenn ENABLE_AUTO_MODEL_TUNING (bewusst) aus ist und niemand diesen
+        # einzelnen Abschlussbericht liest (z.B. autonome --work-backlog/Cron-Läufe). Rein
+        # deterministisch, kein zusätzlicher LLM-Aufruf; record_lesson() dedupliziert bereits
+        # intern, ein wiederholter Fund bläht die Historie also nicht auf.
+        record_suggestions_as_lessons(optimization_report)
         optimization_section = format_optimization_report(optimization_report)
         if auto_tuned_agents:
             notify(

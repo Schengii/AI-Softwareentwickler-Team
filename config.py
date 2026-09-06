@@ -171,31 +171,38 @@ def get_model_for_agent(agent_id: str) -> str:
     if agent_id in DEPARTMENT_GOVERNANCE_AGENTS and DEPARTMENT_MODELS["governance"]:
         return DEPARTMENT_MODELS["governance"]
 
-    # 3. Datenbasierte Selbstoptimierung (opt-in, siehe ENABLE_AUTO_MODEL_TUNING oben) - NUR
-    # wenn weder ein Rollen- noch ein Fachbereichs-Override explizit gesetzt ist, greift eine
-    # zuvor von core/optimization_advisor.py empirisch ermittelte, bessere Modellzuweisung.
-    if ENABLE_AUTO_MODEL_TUNING:
-        auto_tuned = _read_auto_tuned_model(agent_id)
-        if auto_tuned:
-            return auto_tuned
+    # 3. Datenbasierte Selbstoptimierung - NUR wenn weder ein Rollen- noch ein
+    # Fachbereichs-Override explizit gesetzt ist, greift eine zuvor von
+    # core/optimization_advisor.py empirisch ermittelte, bessere Modellzuweisung. Ein Eintrag
+    # greift, wenn ENABLE_AUTO_MODEL_TUNING global aktiv ist (opt-in, siehe oben) ODER wenn er
+    # ausdrücklich als "manual" markiert ist - das ist der Fall für einzeln per `/apply-tuning
+    # <agent_id>` bestätigte Vorschläge (core/optimization_advisor.py.apply_single_suggestion()):
+    # eine explizite, einzelne Bestätigung soll auch dann wirken, wenn der globale
+    # Alles-oder-nichts-Schalter aus bleibt.
+    auto_tuned_entry = _read_auto_tuned_entry(agent_id)
+    if auto_tuned_entry and (ENABLE_AUTO_MODEL_TUNING or auto_tuned_entry.get("manual")):
+        model = auto_tuned_entry.get("model", "")
+        if model:
+            return model
 
     # 4. Standard-Zuordnung aus AGENT_MODELS oder Fallback
     return AGENT_MODELS.get(agent_id, DEFAULT_AGENT_MODEL)
 
 
-def _read_auto_tuned_model(agent_id: str) -> str:
-    """Liest eine zuvor automatisch vorgeschlagene Modellzuweisung für `agent_id` aus
-    AUTO_TUNED_MODELS_FILE - leerer String, falls keine existiert oder die Datei fehlt/beschädigt
-    ist (nie ein Absturz nur wegen dieser rein optionalen Optimierung)."""
+def _read_auto_tuned_entry(agent_id: str) -> dict:
+    """Liest den zuvor (automatisch oder manuell per `/apply-tuning`) vorgeschlagenen
+    Selbstoptimierungs-Eintrag für `agent_id` aus AUTO_TUNED_MODELS_FILE - leeres Dict, falls
+    keiner existiert oder die Datei fehlt/beschädigt ist (nie ein Absturz nur wegen dieser rein
+    optionalen Optimierung)."""
     path = Path(AUTO_TUNED_MODELS_FILE)
     if not path.exists():
-        return ""
+        return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return ""
+        return {}
     entry = data.get(agent_id) if isinstance(data, dict) else None
-    return entry.get("model", "") if isinstance(entry, dict) else ""
+    return entry if isinstance(entry, dict) else {}
 
 
 # ──────────────────────────────────────────

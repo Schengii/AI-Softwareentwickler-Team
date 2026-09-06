@@ -131,10 +131,19 @@ class TestDashboardConcurrency(unittest.TestCase):
     def test_independent_orchestrator_instances_dont_mix_conversation_history(self):
         """Der eigentliche Grund für die frühere Serialisierung war eine geteilte
         ConversationHistory - jeder Job muss jetzt sein eigenes, unvermischtes Gespräch haben."""
-        seen_histories: list[int] = []
+        # Realer Fund (Team-Retrospektive 2026-09-06): id(self._history) statt des Objekts
+        # selbst gesammelt - Job A ist beim Start von Job B längst abgeschlossen, sein
+        # _history-Objekt damit unreferenziert und für den GC freigegeben. CPython kann die
+        # freigewordene Adresse für das NEUE _history-Objekt von Job B wiederverwenden, was
+        # zwei tatsächlich verschiedene Objekte fälschlich als "identisch" (gleiche id())
+        # erscheinen lässt - ein seltener, aber realer Flake, der einmal während einer
+        # Verifikation nicht zusammenhängender Änderungen auftrat. Die Objekte selbst (statt
+        # ihrer id()) zu sammeln hält beide bis zum Vergleich am Leben und macht assertIsNot()
+        # unabhängig von GC-Timing korrekt.
+        seen_histories: list[object] = []
 
         async def _capture_history_identity(self, prompt, status_callback=None, cancel_requested=None):
-            seen_histories.append(id(self._history))
+            seen_histories.append(self._history)
             return f"Ergebnis fuer: {prompt}"
 
         with patch.object(Orchestrator, "process", _capture_history_identity):
@@ -144,7 +153,7 @@ class TestDashboardConcurrency(unittest.TestCase):
             self._wait_for_status(id_b, ("done", "error"))
 
         self.assertEqual(len(seen_histories), 2)
-        self.assertNotEqual(seen_histories[0], seen_histories[1])  # zwei verschiedene Objekte
+        self.assertIsNot(seen_histories[0], seen_histories[1])  # zwei verschiedene Objekte
 
 
 if __name__ == "__main__":

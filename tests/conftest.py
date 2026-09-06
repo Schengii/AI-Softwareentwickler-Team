@@ -19,6 +19,12 @@ statt jeden der zahlreichen betroffenen Testdateien einzeln anzupassen - reine T
 ändert kein Produktionsverhalten. Wirkt auch für unittest.TestCase-basierte Tests (der in
 diesem Projekt übliche Stil), da pytest autouse-Fixtures unabhängig vom Testfall-Stil anwendet.
 
+Dieselbe Gefahr gilt seit der Fortsetzung der Analyse 2026-09-06 für
+core.optimization_advisor.record_unused_agent_tickets(): findet analyze() bei einem process()-
+Lauf ohne gemockte Historie einen echten unused_agent-Befund, würde das ohne Patch ein echtes
+Ticket in die VERSIONIERTE memory/backlog.json schreiben - dieselbe Klasse von Fehler wie oben
+bei team_lessons.jsonl, nur eine Datei weiter.
+
 Realer Fund (Analyse 2026-09-06, voller Suite-Lauf statt Einzeltest): core/llm_factory.py hält
 mit `_gemini_rate_limiter` einen EINZIGEN, prozessweiten `RateLimiter` (Sliding-Window,
 standardmäßig 12 Aufrufe/Minute) - dessen `acquire()` läuft auch dann echt (kein Mock), wenn nur
@@ -38,6 +44,9 @@ import pytest
 def _no_real_team_lesson_writes(monkeypatch):
     monkeypatch.setattr(
         "agents.orchestrator.record_suggestions_as_lessons", lambda *a, **k: None, raising=False,
+    )
+    monkeypatch.setattr(
+        "agents.orchestrator.record_unused_agent_tickets", lambda *a, **k: [], raising=False,
     )
 
 

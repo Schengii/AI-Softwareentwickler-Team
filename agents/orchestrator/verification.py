@@ -685,6 +685,100 @@ class VerificationMixin:
                 if structural_still_critical:
                     notify(f"  🧩 [bold red]Struktureller Neu-Bruch:[/bold red] {len(structural_still_critical)} lokale(r) Import(e) nach dem Fix nicht auflösbar - unabhängig vom LLM-Re-Review als weiterhin kritisch gewertet.")
                 still_critical = still_critical + structural_still_critical
+
+                # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, echter Fund am
+                # event_relay-Lauf): der `_no_progress()`-Zirkuit-Breaker oben eskaliert nur bei
+                # EXAKT WIEDERHOLTEM Befund - real blieb ein Fixversuch beim zweiten Fund derselben
+                # Ursache aber eine ANDERE Symptomatik zurück (Versuch 1: "ResilienceManager nicht
+                # verdrahtet" → Versuch 2, nach dem Fix: "ImportError: `resilience` keine globale
+                # Instanz mehr"), sodass `_no_progress()` NIE griff und der verpflichtende
+                # Re-Review hier direkt ein Ticket eröffnete, OHNE je den Fachbereichsleiter mit
+                # einer geänderten Strategie zu versuchen - dieselbe Eskalationsleiter wie oben,
+                # nur ohne die Modell-Eskalation (die bräuchte einen echten Provider-Client, siehe
+                # core/llm_factory.py.LLMFactory.create_for_model() - hier bewusst nicht riskiert,
+                # das ist bereits über den Zirkuit-Breaker-Pfad oben abgedeckt).
+                if still_critical and not escalation_attempted and not (
+                    run_start_tokens is not None and (
+                        self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                    )
+                ):
+                    escalation_attempted = True
+                    stuck_owner_ids = set(agents_to_fix.keys()) & set(self._agents.keys())
+                    lead_targets = {
+                        dept_id for dept_id, defn in DEPARTMENT_DEFINITIONS.items()
+                        if stuck_owner_ids & set(defn["members"]) and dept_id in self._dept_leads
+                    }
+                    if lead_targets:
+                        still_critical_text = "\n\n".join(still_critical)[:3000]
+                        notify(
+                            f"  🔀 [bold yellow]Strategiewechsel (Eskalation):[/bold yellow] Der "
+                            f"verpflichtende Re-Review meldet nach dem letzten Fixversuch weiterhin "
+                            f"ein kritisches Problem (ggf. eine andere Symptomatik derselben Ursache) "
+                            f"– ziehe Fachbereichsleiter ({', '.join(sorted(lead_targets))}) hinzu, "
+                            "statt direkt ein Ticket zu eröffnen..."
+                        )
+                        escalation_tasks = [
+                            AgentTask(
+                                task_id=f"governance_final_escalation_{dept_id}",
+                                agent_id=dept_id,
+                                description=(
+                                    "Der verpflichtende Abschluss-Review meldet nach dem letzten "
+                                    "Fixversuch deines Fachbereichs WEITERHIN ein kritisches Problem "
+                                    "(ggf. eine andere Symptomatik derselben Ursache, statt exakt "
+                                    "desselben Befunds) - derselbe Ansatz hat also erkennbar nicht "
+                                    "ausgereicht. Analysiere das Problem aus einer anderen "
+                                    "Perspektive und weise dein Team mit einer GEÄNDERTEN Strategie "
+                                    f"an.\n\n{still_critical_text}"
+                                ),
+                                context="", project_dir=project_dir,
+                            )
+                            for dept_id in lead_targets
+                        ]
+                        fix_results = await self._run_agents_parallel(escalation_tasks, notify=notify)
+                        self._update_file_owners(file_owners, fix_results)
+                        all_results.extend(fix_results)
+                        summary_lines.append(
+                            f"- 🔀 Nach {MAX_REVIEW_ITERATIONS} Versuch(en) weiterhin kritisch (andere "
+                            f"Symptomatik) → Eskalation an Fachbereichsleiter "
+                            f"({', '.join(sorted(lead_targets))}) vor der Ticket-Eröffnung."
+                        )
+                        escalation_recheck_agents = sorted(set(agents_to_fix.keys()) & review_agent_ids) or sorted(review_agent_ids)
+                        escalation_recheck_tasks = [
+                            AgentTask(
+                                task_id=f"governance_final_escalation_recheck_{agent_id}",
+                                agent_id=agent_id,
+                                description=(
+                                    "Prüfe AUSSCHLIESSLICH, ob das zuvor gemeldete kritische Problem "
+                                    "jetzt tatsächlich behoben ist. Melde erneut mit klarer "
+                                    "Schweregrad-Markierung (\"Kritisch\"), falls es weiterhin besteht."
+                                ),
+                                context="", project_dir=project_dir, allow_tools=True, tools_read_only=True,
+                            )
+                            for agent_id in escalation_recheck_agents
+                        ]
+                        escalation_recheck_results = await self._run_agents_parallel(escalation_recheck_tasks, notify=notify)
+                        all_results.extend(escalation_recheck_results)
+                        still_critical = [
+                            block for res in escalation_recheck_results if res.success and res.content
+                            for block in find_critical_findings(res.content)
+                        ]
+                        try:
+                            structural_after_escalation = ProjectVerifier(project_dir).check_completeness()
+                            still_critical += [
+                                f"Statischer Check (ohne LLM-Bewertung): {i.file_path}:{i.line_number} – {i.message}"
+                                for i in structural_after_escalation.issues if i.kind == "missing_local_import"
+                            ] if structural_after_escalation.attempted else []
+                        except Exception:
+                            pass
+                        if still_critical:
+                            summary_lines.append(
+                                "- 🛑 Eskalation an Fachbereichsleiter behob den Befund NICHT – "
+                                "weiterhin kritisch."
+                            )
+                        else:
+                            notify("  ✅ [bold green]Eskalation erfolgreich:[/bold green] keine kritischen Governance-Befunde mehr.")
+                            summary_lines.append("- ✅ Eskalation an Fachbereichsleiter (nach dem verpflichtenden Re-Review) behob den Befund – keine kritischen Governance-Funde mehr.")
+
                 if still_critical:
                     notify("  🛑 [bold red]Fix nicht bestätigt:[/bold red] Re-Review meldet weiterhin kritische Befunde – Backlog-Ticket für menschliche Prüfung eröffnet.")
                     summary_lines.append(

@@ -59,6 +59,34 @@ BENCHMARK_TASKS: dict[str, BenchmarkTask] = {
         expected_files=["cleaner.py", "requirements.txt", "test_cleaner.py"],
         description="Prüft Datenverarbeitungs-Logik, Parsing und statistische Berechnungen.",
     ),
+    # Team-Optimierung (Fortsetzung der Analyse 2026-09-06): core/optimization_advisor.py
+    # erkennt seit MIN_TOTAL_RUNS_FOR_UNUSED_CHECK=20 Läufen `ml`/`prompt_engineer` (u.a.) als
+    # nie vom Planer gewählt (unused_agent). Root Cause: keine der bisherigen 5 Referenz-
+    # aufgaben verlangt RAG/Embeddings/LLM-Prompting - der Planer hatte für diese Rollen also
+    # nie eine passende Aufgabe. Diese Aufgabe braucht beide Rollen fachlich echt (nicht nur
+    # per Stichwort erzwungen), damit ein Benchmark-Lauf misst, ob die geschärften Trigger in
+    # core/task_manager.py.AVAILABLE_AGENTS tatsächlich zu ihrer Auswahl führen.
+    "faq_rag_chatbot": BenchmarkTask(
+        slug="faq_rag_chatbot",
+        name="FAQ-Chatbot mit RAG (KI/ML)",
+        category="ai",
+        prompt=(
+            "Erstelle einen Python-Service 'faq_chatbot', der eine kleine FAQ-Wissensbasis "
+            "(mitgelieferte JSON/Text-Dateien) per Embeddings in einer lokalen Vektordatenbank "
+            "indexiert und über einen REST-Endpunkt POST /ask Fragen dazu per Retrieval-"
+            "Augmented Generation beantwortet. Ergänze Guardrails gegen Prompt-Injection in "
+            "nutzergesteuerten Fragen, eine requirements.txt und pytest-Tests, die die "
+            "Retrieval-Logik OHNE echten externen LLM-Aufruf testen (gemockt)."
+        ),
+        expected_project_name="faq_chatbot",
+        expected_files=["main.py", "requirements.txt", "test_main.py"],
+        description=(
+            "Prüft, ob 'ml' (RAG/Embeddings-Pipeline) und 'prompt_engineer' (Guardrails gegen "
+            "Prompt-Injection) bei einer Aufgabe, die beide fachlich echt braucht, tatsächlich "
+            "vom Planer ausgewählt werden - beide galten laut core/optimization_advisor.py als "
+            "unused_agent, da keine bisherige Referenzaufgabe LLM-/RAG-Funktionalität verlangte."
+        ),
+    ),
     "html_dashboard_ui": BenchmarkTask(
         slug="html_dashboard_ui",
         name="Modernes Dark-Mode Dashboard (Frontend/Fullstack)",

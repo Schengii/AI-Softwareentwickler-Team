@@ -90,12 +90,30 @@ AVAILABLE_AGENTS = {
     "image_generator": {
         "name": "Bild- & Grafik-Designer",
         "phase": 2,
-        "description": "Erstellt SVG-Grafiken/Logos und optimierte Bild-Prompts für Imagen 3 / Midjourney.",
+        # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, unused_agent-Fund): war seit
+        # mind. 100 Laeufen nie gewaehlt - dieselbe Ursache wie bei accessibility/finops/
+        # web_research/performance: die Beschreibung nannte NUR die Faehigkeit, nicht WANN sie
+        # gebraucht wird. Jetzt konkrete Trigger statt "erstellt SVG-Grafiken" als reine
+        # Tätigkeitsbeschreibung.
+        "description": (
+            "Erstellt SVG-Logos, Icons und optimierte Bild-Prompts (Imagen 3/Midjourney) für "
+            "Hero-Bilder und Banner. Einsetzen bei: (1) Landingpages/Marketing-Seiten ohne "
+            "eigenes Branding, (2) UI mit Icon-Bedarf statt reinem Text, (3) explizitem "
+            "Logo-/Grafik-Wunsch. NICHT bei reinen Backend-/CLI-/API-Projekten ohne UI."
+        ),
     },
     "copywriter": {
         "name": "Copywriter & Content Specialist",
         "phase": 2,
-        "description": "Schreibt Landingpage-Texte, UI-Microcopy (Buttons, Errors), SEO-Texte und FAQs.",
+        # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, unused_agent-Fund): siehe
+        # image_generator oben - gleiche Ursache, gleicher Fix.
+        "description": (
+            "Schreibt Landingpage-Prosa, UI-Microcopy (Button-Labels, Fehlermeldungen, "
+            "Leerzustände) und SEO-Texte/FAQs. Einsetzen bei: (1) öffentlich sichtbaren "
+            "Seiten, die echten Fließtext statt Lorem-Ipsum/technischer Labels brauchen, "
+            "(2) Marketing-/Landingpages, (3) FAQ- oder Hilfe-Inhalten. NICHT bei internen "
+            "Tools/APIs ohne Endnutzer-Text."
+        ),
     },
 
     # ── Phase 3: Kern-Entwicklung ─────────────────────────
@@ -122,22 +140,57 @@ AVAILABLE_AGENTS = {
     "data_engineer": {
         "name": "Data Engineer",
         "phase": 3,
-        "description": "Event-Streaming (Kafka/RabbitMQ), Redis Caching-Layer und ETL-Pipelines.",
+        # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, unused_agent-Fund): siehe
+        # image_generator/copywriter oben - Abgrenzung zu 'backend' (reine CRUD-API) und
+        # 'database' (Schema/Migrationen) war bisher nicht explizit, der Planer griff bei
+        # Datenverarbeitung offenbar reflexhaft zu 'backend'.
+        "description": (
+            "Event-Streaming (Kafka/RabbitMQ), Redis-Caching-Layer und ETL-/Batch-Pipelines "
+            "mit mehreren Datenquellen. Einsetzen bei: (1) Message-Queues/Event-Bus statt "
+            "reinem Request-Response, (2) Caching-Layer für teure Berechnungen/Anfragen, "
+            "(3) Datenverarbeitung über mehrere Schritte/Quellen hinweg. Abgrenzung: einzelne "
+            "CRUD-Endpunkte macht 'backend', Schema/Migrationen macht 'database'."
+        ),
     },
     "mobile": {
         "name": "Mobile-Entwickler",
         "phase": 3,
-        "description": "Entwickelt Cross-Platform Apps mit Flutter, React Native, iOS & Android.",
+        # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, unused_agent-Fund): siehe oben -
+        # ohne explizite Trigger wählt der Planer bei unklarer Plattform reflexhaft 'frontend'
+        # (Web) statt eine native/Cross-Platform-App zu erkennen.
+        "description": (
+            "Cross-Platform Apps mit Flutter/React Native sowie natives iOS/Android. "
+            "Einsetzen bei: (1) explizitem Wunsch nach einer App statt einer Website, "
+            "(2) Offline-First-Anforderungen, (3) nativen Device-APIs (Kamera, Push-"
+            "Notifications, GPS). NICHT bei responsiven Web-Frontends - das macht 'frontend'."
+        ),
     },
     "ml": {
         "name": "KI/ML-Entwickler",
         "phase": 3,
-        "description": "LLM-APIs, RAG-Systeme, Embeddings, Vector Stores und ML-Pipelines.",
+        # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, unused_agent-Fund): Abgrenzung
+        # zu 'prompt_engineer' fehlte bisher (beide klangen wie derselbe Themenbereich) - macht
+        # es dem Planer schwer, den passenderen der beiden zu wählen.
+        "description": (
+            "Baut RAG-Pipelines, Embeddings/Vector-Stores und klassische ML-Modelle "
+            "(Klassifikation/Regression). Einsetzen bei: (1) Retrieval-Augmented Generation "
+            "über eigene Dokumente/Daten, (2) Vektor-Suche/Ähnlichkeitssuche, (3) eigenem "
+            "trainiertem/statistischem Modell. Abgrenzung zu 'prompt_engineer': dieser baut "
+            "keine eigene Pipeline, sondern gestaltet nur Prompts/Guardrails für LLM-Aufrufe."
+        ),
     },
     "prompt_engineer": {
         "name": "Prompt Engineer & AI Architect",
         "phase": 3,
-        "description": "System-Prompts für LLM-Apps, Few-Shot-Vorlagen, Guardrails und RAG-Prompting.",
+        # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, unused_agent-Fund): siehe ml
+        # oben - gleiche Abgrenzung, umgekehrte Richtung.
+        "description": (
+            "Entwirft System-Prompts, Few-Shot-Vorlagen und Guardrails FÜR die generierte "
+            "APP (nicht für das KI-Team selbst). Einsetzen bei: (1) die App macht selbst "
+            "LLM-Aufrufe (Chatbot, AI-Feature, Content-Generierung), (2) Schutz gegen Prompt-"
+            "Injection bei nutzergesteuerten Eingaben nötig ist. Abgrenzung zu 'ml': baut "
+            "selbst keine RAG-/Embedding-Pipeline, nur die Prompt-/Guardrail-Schicht darum."
+        ),
     },
     "performance": {
         "name": "Performance-Ingenieur",
@@ -174,7 +227,15 @@ AVAILABLE_AGENTS = {
     "i18n": {
         "name": "Internationalisierungs-Spezialist",
         "phase": 4,
-        "description": "Mehrsprachigkeit (i18n/l10n), RTL-Unterstützung und Formatierungen.",
+        # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, unused_agent-Fund): dieselbe
+        # Ursache wie bei accessibility (siehe dort) - "Mehrsprachigkeit" klingt nach einem
+        # optionalen Zusatz statt einem Trigger, wann er gebraucht wird.
+        "description": (
+            "Mehrsprachigkeit (i18n/l10n), RTL-Unterstützung und locale-abhängige Formate "
+            "(Datum, Währung, Zahlen). Einsetzen bei: (1) explizitem Mehrsprachigkeits-Wunsch, "
+            "(2) öffentlich/global adressierten Produkten (SaaS, Landingpage) auch ohne "
+            "expliziten Wunsch, (3) RTL-Sprachen (Arabisch/Hebräisch) im Zielmarkt."
+        ),
     },
     "documentation": {
         "name": "Dokumentant",
@@ -342,6 +403,18 @@ Wichtige Regeln:
   ARIA-Attribute und Tastaturnavigation gehören genauso zur Fertigstellung wie Tests
 - finops einbeziehen, wenn externe APIs (OpenAI, Stripe, SendGrid) genutzt werden, die Hosting-
   Wahl offen ist oder ein SaaS-Produkt für viele Nutzer entstehen soll
+- data_engineer einbeziehen, sobald Message-Queues (Kafka, RabbitMQ), Event-Streaming, Redis-Caching-Layer
+  oder Multi-Source ETL-Pipelines entstehen (Abgrenzung: einfache CRUD-APIs macht backend)
+- mobile einbeziehen, sobald eine App für iOS, Android, Flutter oder React Native gewünscht ist oder
+  native Device-APIs/Offline-Fähigkeit gefordert sind (Abgrenzung: responsive Websites macht frontend)
+- ml einbeziehen, sobald RAG-Pipelines, Vector-Embeddings, Ähnlichkeitssuche oder klassische ML-Modelle
+  (Klassifikation, Regression) entstehen
+- prompt_engineer einbeziehen, sobald die zu bauende App selbst LLM-Aufrufe/Chatbots anbietet und
+  spezifische System-Prompts oder Schutz gegen Prompt-Injection benötigt
+- copywriter einbeziehen, sobald öffentliche Seiten/Landingpages echten Fließtext, UI-Microcopy
+  oder FAQ-Inhalte benötigen (verhindert unprofessionelles Lorem-Ipsum)
+- image_generator einbeziehen, sobald Icons, SVG-Logos oder Banner für UIs/Landingpages benötigt werden
+- i18n einbeziehen, sobald Mehrsprachigkeit, Lokalisierung oder RTL-Unterstützung relevant sind
 """
 
 

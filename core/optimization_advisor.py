@@ -35,6 +35,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import config
+from core.backlog_store import upsert_ticket
 from core.task_manager import _DECOMPOSE_EXCLUDED_AGENT_IDS, AVAILABLE_AGENTS
 from core.team_memory import read_team_lessons, record_lesson
 from memory.run_history import (
@@ -480,6 +481,59 @@ def record_suggestions_as_lessons(report: OptimizationReport) -> None:
                 "Planer-Prompt-Beschreibung oder Aufgabenzuschnitt prüfen."
             ),
         )
+
+
+def record_unused_agent_tickets(report: OptimizationReport) -> list[str]:
+    """
+    Team-Optimierung (Fortsetzung der Analyse 2026-09-06): record_suggestions_as_lessons()
+    schrieb `unused_agent`-Funde bisher NUR in memory/team_lessons.jsonl - dort teilen sie sich
+    mit jeder anderen Kategorie dieselben MAX_LESSONS_SHOWN=5 Anzeigeplätze im Agenten-Prompt
+    (core/team_memory.py) und sind sonst nirgends sichtbar. Ein realer Lauf (06.09.) erzeugte
+    11 solcher Lektionen auf einmal - ohne diese Funktion blieben sie eine stille Zeile in einer
+    JSONL-Datei, die niemand routinemäßig liest, statt ein sichtbares, verfolgbares Ticket wie
+    bei `unresolved_governance_critical` (siehe agents/orchestrator/verification.py).
+
+    Legt pro betroffener agent_id ein stabiles Ticket an/aktualisiert es (`unused-agent-<id>`,
+    status="todo", source="optimization_advisor") - stabil, damit ein wiederholter Fund
+    dasselbe Ticket nur auffrischt statt es zu duplizieren. `source="optimization_advisor"`
+    ist bewusst NICHT in core/backlog_worker.py._AUTONOMOUS_SOURCES enthalten: ob eine Rolle
+    wirklich überflüssig ist oder nur eine unklare Beschreibung hat, ist eine Abwägung, die ein
+    Mensch treffen soll - das Ticket macht den Fund nur sichtbar und verfolgbar, statt ihn
+    automatisch (und ggf. falsch) zu "beheben".
+
+    Gibt die Liste der angelegten/aktualisierten Ticket-IDs zurück (für eine Erfolgsmeldung im
+    Abschlussbericht, analog zu apply_auto_tuning()).
+    """
+    ticket_ids: list[str] = []
+    for u in report.unused_agents:
+        ticket_id = f"unused-agent-{u.agent_id}"
+        try:
+            upsert_ticket(
+                ticket_id=ticket_id,
+                title=f"Ungenutzte Agentenrolle: {u.agent_id}",
+                source="optimization_advisor",
+                status="todo",
+                project_slug="_team",
+                detail=(
+                    f"Agent '{u.agent_id}' (Modell '{u.configured_model}') wurde über die "
+                    f"letzten {u.sample_runs} Läufe kein einziges Mal vom Planer ausgewählt. "
+                    "Prüfen: (1) ist die Rolle im Planer-Prompt (core/task_manager.py."
+                    "AVAILABLE_AGENTS) konkret genug beschrieben - nennt sie WANN man sie "
+                    "einsetzt, nicht nur WAS sie kann?, (2) kommen reale Aufgaben für diese "
+                    "Rolle überhaupt vor, oder überschneidet sie sich mit einer anderen Rolle?, "
+                    "(3) falls strukturell nie gebraucht: Konsolidierung mit einer verwandten "
+                    "Rolle erwägen, statt weiterhin Wartungsaufwand ohne Nutzen zu binden."
+                ),
+            )
+            ticket_ids.append(ticket_id)
+        except Exception:
+            # Dasselbe Prinzip wie beim Ticket für unresolved_governance_critical in
+            # agents/orchestrator/verification.py: ein fehlgeschlagenes Ticket darf einen
+            # laufenden Orchestrator-Lauf nie zum Absturz bringen - die Lektion in
+            # team_lessons.jsonl (record_suggestions_as_lessons()) bleibt in dem Fall die
+            # einzige Spur des Fundes.
+            continue
+    return ticket_ids
 
 
 def _load_auto_tuned_models() -> dict:

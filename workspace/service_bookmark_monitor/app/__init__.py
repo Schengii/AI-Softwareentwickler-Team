@@ -1,1 +1,0 @@
-"""service_bookmark_monitor – Backend-Paket."""

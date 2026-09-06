@@ -7,6 +7,80 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔀 Governance-Fix-Schleife eskaliert jetzt auch bei wechselnder Symptomatik derselben Ursache
+
+Nutzeranfrage: Fortsetzung der Team-Analyse, konkret Punkt 2 - der reale `event_relay`-Lauf vom
+06.09. zeigte denselben ungelösten Governance-Befund zweimal innerhalb von 23 Minuten
+(`.ai_team_decisions.jsonl`: 12:29 "ResilienceManager nicht in main.py verdrahtet" → nach einem
+Fixversuch, 12:49 "ImportError: `resilience` keine globale Instanz mehr in app/kafka_client.py").
+Derselbe Ursache-Bereich, aber ZWEI TEXTLICH UNTERSCHIEDLICHE kritische Befunde - der bereits
+bestehende Zirkuit-Breaker (`_no_progress()` in `agents/orchestrator/verification.py`) vergleicht
+Fund-Signaturen aber nur auf EXAKTE Wiederholung und griff deshalb nie. Der verpflichtende
+Re-Review nach dem letzten Fixversuch eröffnete dadurch direkt ein Backlog-Ticket, OHNE - anders
+als beim Zirkuit-Breaker-Pfad - je den zuständigen Fachbereichsleiter mit einer geänderten
+Strategie zu versuchen.
+
+- **`agents/orchestrator/verification.py`:** der verpflichtende finale Re-Review
+  (`attempt == MAX_REVIEW_ITERATIONS`) eskaliert bei weiterhin kritischem Befund jetzt EINMAL an
+  den zuständigen Fachbereichsleiter (dieselbe `escalation_attempted`-Sperre wie beim
+  `_no_progress()`-Pfad, verhindert eine doppelte Eskalation innerhalb desselben Laufs), bevor das
+  Ticket eröffnet wird. Bewusst OHNE die zusätzliche Modell-Eskalation (`_escalate_agent_models()`)
+  an dieser Stelle - die bräuchte einen echten Provider-Client
+  (`core/llm_factory.py.LLMFactory.create_for_model()`), den bestehende Tests für "unterschiedliche
+  Befunde" (`tests/test_governance_no_progress_breaker.py::test_different_critical_findings_do_not_trigger_breaker`)
+  bewusst NICHT mocken; die Modell-Eskalation bleibt dem bereits bestehenden `_no_progress()`-Pfad
+  vorbehalten.
+- **`tests/test_governance_final_reverification.py`:** zwei neue Tests - Eskalation löst das
+  Problem (kein Ticket) bzw. Eskalation löst es NICHT (Ticket wird wie bisher eröffnet, die
+  menschliche Prüfung bleibt das letzte Netz).
+
+Volle Suite (1328 Tests) grün, `ruff check` clean. Alle bereits bestehenden Governance-/
+Eskalations-Tests (inkl. der bewusst ungemockten `create_for_model`-Gegenprobe) unverändert grün.
+
+---
+
+## 💤 Ungenutzte Agentenrollen: von der stillen Lektion zum sichtbaren Backlog-Ticket
+
+Nutzeranfrage: Analyse des gesamten Agenten-Teams auf sinnvolle Verbesserungen, dann konkrete
+Umsetzung des priorisierten ersten Punkts. `memory/team_lessons.jsonl` zeigte am 06.09. einen
+über mehrere Sessions hinweg wiederkehrenden Fund: 11 von 33 Planer-wählbaren Rollen wurden
+über die letzten 100 Läufe kein einziges Mal ausgewählt (`unused_agent`-Kategorie aus
+`core/optimization_advisor.py`) - eine frühere Session hatte davon bereits `web_research`,
+`finops`, `performance` und `accessibility` durch konkretere "Einsetzen bei"-Trigger in ihrer
+Planer-Beschreibung behoben, aber (a) die verbleibenden 7 Rollen unbehandelt gelassen und (b)
+der Fund selbst blieb eine stille Zeile in einer JSONL-Datei, die niemand routinemäßig liest.
+
+1. **`core/task_manager.py`: dieselbe Beschreibungs-Schärfung für die verbleibenden 7 Rollen**
+   (`copywriter`, `image_generator`, `data_engineer`, `mobile`, `ml`, `prompt_engineer`,
+   `i18n`) - jede bisherige Beschreibung nannte nur WAS die Rolle kann, nie WANN man sie
+   gegenüber einer verwandten Rolle wählt (`ml` vs. `prompt_engineer`, `data_engineer` vs.
+   `backend`/`database`, `mobile` vs. `frontend`). Jetzt mit expliziten "Einsetzen bei"-Triggern
+   UND einer Abgrenzung zur nächstliegenden Rolle.
+2. **`core/optimization_advisor.py`: neue `record_unused_agent_tickets()`.** Öffnet/aktualisiert
+   pro betroffener Rolle ein stabiles Backlog-Ticket (`unused-agent-<id>`, `status="todo"`,
+   `source="optimization_advisor"`) - sichtbar und verfolgbar im Kanban-Board statt nur in
+   `team_lessons.jsonl`. `source="optimization_advisor"` ist bewusst NICHT in
+   `core/backlog_worker.py._AUTONOMOUS_SOURCES` enthalten: ob eine Rolle wirklich überflüssig
+   ist oder nur unklar beschrieben war, ist eine menschliche Abwägung, kein Fix, den
+   `--work-backlog` selbstständig übernehmen soll.
+3. **`agents/orchestrator/__init__.py`:** ruft `record_unused_agent_tickets()` direkt neben dem
+   bereits bestehenden `record_suggestions_as_lessons()`-Aufruf auf - derselbe Fund landet jetzt
+   an BEIDEN Stellen (Lektion fürs Agenten-Prompt-Gedächtnis UND Ticket fürs Board).
+4. **`tests/conftest.py`:** die bestehende `_no_real_team_lesson_writes`-Fixture patcht jetzt
+   zusätzlich `record_unused_agent_tickets` als No-Op - ohne diesen Patch hätte ein Testlauf mit
+   einem echten `unused_agent`-Befund in der Historie ein echtes Ticket in die VERSIONIERTE
+   `memory/backlog.json` geschrieben (dieselbe Fehlerklasse wie der bereits dokumentierte reale
+   Vorfall mit `team_lessons.jsonl`, nur eine Datei weiter).
+5. **`evals/tasks.py`: neue Referenzaufgabe `faq_rag_chatbot`.** Keine der bisherigen 5
+   Aufgaben verlangte RAG/Embeddings oder LLM-Prompting - `ml` und `prompt_engineer` hatten
+   dadurch strukturell nie eine passende Aufgabe, unabhängig von ihrer Beschreibung. Die neue
+   Aufgabe (FAQ-Chatbot mit lokaler Vektordatenbank + Prompt-Injection-Guardrails) braucht
+   beide Rollen fachlich echt, statt sie nur per Stichwort zu erzwingen.
+
+Volle Suite grün, `ruff check` clean.
+
+---
+
 ## 🏗️ Fünf Framework-Lücken aus der event_relay-Retrospektive vollständig geschlossen
 
 Nutzeranfrage: die im vorigen Retrospektive-Eintrag identifizierten fünf Verbesserungen

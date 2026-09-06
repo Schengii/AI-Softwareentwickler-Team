@@ -17,8 +17,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import config
+import core.backlog_store as backlog_store_module
 import core.team_memory as team_memory_module
 import memory.run_history as run_history_module
+from core.backlog_store import list_tickets
 from core.optimization_advisor import (
     MIN_LESSON_RECURRENCE,
     MIN_SAMPLE_SIZE,
@@ -37,6 +39,7 @@ from core.optimization_advisor import (
     format_report_for_humans,
     get_recent_verification_trend_warning,
     record_suggestions_as_lessons,
+    record_unused_agent_tickets,
 )
 from core.team_memory import read_team_lessons
 from memory.run_history import record_run
@@ -627,6 +630,66 @@ class TestRecordSuggestionsAsLessons(unittest.TestCase):
         record_suggestions_as_lessons(OptimizationReport())
 
         self.assertEqual(read_team_lessons(limit=10), [])
+
+
+class TestRecordUnusedAgentTickets(unittest.TestCase):
+    """
+    Testet die Fortsetzung der Team-Retrospektive (2026-09-06): unused_agent-Funde blieben
+    bisher NUR eine Zeile in team_lessons.jsonl (siehe TestRecordSuggestionsAsLessons oben) -
+    dort teilen sie sich mit jeder anderen Kategorie dieselben knappen MAX_LESSONS_SHOWN-
+    Anzeigeplätze und sind sonst nirgends nachverfolgbar sichtbar. record_unused_agent_tickets()
+    öffnet zusätzlich ein sichtbares, verfolgbares Backlog-Ticket je betroffener Rolle.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self._patcher = patch.object(backlog_store_module, "BACKLOG_FILE", Path(self.temp_dir) / "backlog.json")
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_opens_one_ticket_per_unused_agent(self):
+        unused = [
+            UnusedAgent(agent_id="ml", configured_model="claude-sonnet-5", sample_runs=100),
+            UnusedAgent(agent_id="mobile", configured_model="gemini-3.8-flash", sample_runs=100),
+        ]
+
+        ticket_ids = record_unused_agent_tickets(OptimizationReport(unused_agents=unused))
+
+        self.assertEqual(sorted(ticket_ids), ["unused-agent-ml", "unused-agent-mobile"])
+        tickets = list_tickets()
+        self.assertEqual(len(tickets), 2)
+        ml_ticket = next(t for t in tickets if t.id == "unused-agent-ml")
+        self.assertEqual(ml_ticket.status, "todo")
+        self.assertEqual(ml_ticket.source, "optimization_advisor")
+        self.assertEqual(ml_ticket.project_slug, "_team")
+        self.assertIn("ml", ml_ticket.detail)
+        self.assertIn("100", ml_ticket.detail)
+
+    def test_repeated_finding_updates_same_ticket_instead_of_duplicating(self):
+        unused = [UnusedAgent(agent_id="ml", configured_model="claude-sonnet-5", sample_runs=100)]
+
+        record_unused_agent_tickets(OptimizationReport(unused_agents=unused))
+        record_unused_agent_tickets(OptimizationReport(unused_agents=unused))
+
+        self.assertEqual(len(list_tickets()), 1)
+
+    def test_empty_report_opens_no_ticket(self):
+        ticket_ids = record_unused_agent_tickets(OptimizationReport())
+
+        self.assertEqual(ticket_ids, [])
+        self.assertEqual(list_tickets(), [])
+
+    def test_ticket_source_is_not_autonomously_worked_off(self):
+        """source='optimization_advisor' darf NICHT in core.backlog_worker._AUTONOMOUS_SOURCES
+        stehen - ob eine Rolle wirklich überflüssig ist, ist eine menschliche Abwägung, kein
+        mechanischer Fix, den --work-backlog selbstständig übernehmen sollte."""
+        from core.backlog_worker import _AUTONOMOUS_SOURCES
+
+        self.assertNotIn("optimization_advisor", _AUTONOMOUS_SOURCES)
 
 
 class TestVerificationTrendWarning(unittest.TestCase):

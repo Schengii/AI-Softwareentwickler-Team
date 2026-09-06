@@ -1,5 +1,0 @@
-[tool.ruff.lint]
-# B008: FastAPI's `Depends(...)` in argument defaults is the documented,
-# idiomatic dependency-injection pattern, not the mutable-default-argument
-# bug this rule targets. Safe to ignore here.
-ignore = ["B008"]

@@ -241,6 +241,16 @@ TEST_RUN_TIMEOUT_SECONDS: float = float(os.getenv("TEST_RUN_TIMEOUT_SECONDS", "6
 # verification_ok explizit auf False, wenn die Schwelle unterschritten wird - anders als ein
 # Lint-Fund (rein informativ) ist eine EXPLIZIT konfigurierte Schwelle als echte Anforderung
 # gemeint, kein bloßes FYI.
+#
+# KI-Team-Optimierungs-Session, echter Fund: ein von 0 abweichender Standardwert wurde hier
+# testweise gesetzt und brach dabei 57 bestehende Tests (u.a. test_lint_integration.py,
+# test_sast_integration.py, test_docker_build_integration.py) mit
+# "TypeError: '>=' not supported between instances of 'MagicMock' and 'float'" - diese Tests
+# mocken den Verifier ohne `check_coverage()` zu konfigurieren, weil sie zu Recht davon
+# ausgehen, dass der Zweig bei deaktivierter Schwelle nie erreicht wird. Ein risikoloser
+# Default ist damit nicht möglich, ohne alle betroffenen Test-Doubles anzufassen - bleibt
+# daher bewusst opt-in (0), wie ursprünglich entschieden. Einzelne Projekte/Umgebungen können
+# die Schwelle weiterhin gezielt per MIN_TEST_COVERAGE-Umgebungsvariable aktivieren.
 MIN_TEST_COVERAGE: float = float(os.getenv("MIN_TEST_COVERAGE", "0"))
 # Realer Fund: der performance-Agent schreibt vollständige k6-/Locust-Lastentest-Skripte, die
 # aber NIE ausgeführt werden - anders als run_tests() landen sie ungeprüft im Projekt, niemand

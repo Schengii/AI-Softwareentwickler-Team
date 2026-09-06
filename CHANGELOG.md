@@ -7,6 +7,58 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🧪 Testisolations-Lücke: `token_guard`-Erschöpfungszustand sickerte zwischen Tests durch
+
+Nutzeranfrage: Fortsetzung derselben Analyse. Ein voller Suite-Lauf (nicht der isolierte
+Einzeltest) zeigte `tests/test_llm_routing.py::
+test_claude_candidate_is_skipped_entirely_without_anthropic_api_key` als einzigen Fehlschlag
+(`1 failed, 1343 passed`). Root Cause: `core/token_guard.py` hält mit dem Modul-Singleton
+`token_guard` einen EINZIGEN, prozessweiten Erschöpfungszustand (`_exhausted_models`) - mehrere
+Tests markieren darüber gezielt Modelle als "erschöpft" (teils mit `cooldown_seconds=999.0`,
+fast 17 Minuten). Einzelne Testklassen räumen das bereits in ihrer eigenen `tearDown()` auf,
+aber jeweils nur für eine fest verdrahtete, eigene Liste bekannter Modellnamen - ein Test in
+einer anderen Klasse ohne solche Aufräum-Logik lässt den Zustand trotzdem in später laufende,
+komplett unabhängige Tests durchsickern. Dieselbe Fehlerklasse wie der bereits dokumentierte
+`_gemini_rate_limiter`-Fund (siehe `tests/conftest.py`).
+
+- **`tests/conftest.py`:** neue autouse-Fixture `_reset_token_guard_exhaustion` - leert
+  `token_guard._exhausted_models` zentral vor UND nach jedem Test, unabhängig davon, welcher
+  konkrete Test den Zustand hinterlässt (deckt auch künftige, noch ungeschriebene Tests ab,
+  dieselbe Linie wie die bereits bestehende Rate-Limiter-Fixture).
+
+Volle Suite grün, `ruff check` clean.
+
+---
+
+## 🔁 Verwaiste "in_progress"-Tickets: doppelte Ursache für dauerhaft unsichtbare Backlog-Einträge
+
+Nutzeranfrage: Fortsetzung derselben Analyse, diesmal ausgelöst durch einen echten
+`--work-backlog`-Lauf während dieser Session. `memory/backlog.json` zeigte ein reales Ticket
+(`audit-service_bookmark_monitor`) seit über 15 Stunden unverändert bei `status="in_progress"`
+UND `detail=""`. Zwei zusammenhängende Ursachen gefunden:
+
+1. **`core/backlog_worker.py._process_single_ticket()`** markierte ein Ticket beim Aufgreifen
+   bisher per `upsert_ticket(..., status="in_progress")` OHNE `detail=...` - anders als
+   `project_slug`/`priority`/`estimate`/`epic`/`retries` ist `detail` in
+   `core/backlog_store.py.upsert_ticket()` KEIN Sentinel-Parameter (fester Default `""`, kein
+   "unverändert lassen"), das löschte den bereits bekannten Befund also sofort beim Aufgreifen -
+   lange bevor überhaupt ein Ergebnis vorliegt. Behoben: `detail=ticket.detail` wird jetzt
+   explizit mitgegeben.
+2. Stürzt der Prozess DANACH ab (Rechner-Neustart, harter Abbruch - echt beobachtet), bleibt das
+   Ticket für IMMER bei `status="in_progress"` hängen: weder `ready_todo` (nur `"todo"`) noch
+   `_governance_retry_pool()` (nur `"blocked"`) picken diesen Status je wieder auf. Neue
+   `_recover_stale_in_progress_tickets()` setzt ein seit `STALE_IN_PROGRESS_HOURS` (3h)
+   unverändertes `"in_progress"`-Ticket auf seinen vermutlichen Vorher-Status zurück
+   (Governance-/Audit-Retry-Tickets → `"blocked"`, respektiert damit weiterhin
+   `MAX_GOVERNANCE_TICKET_RETRIES`; alle anderen → `"todo"`) - läuft VOR dem WIP-Limit-Check,
+   damit ein längst abgestürzter Prozess nicht auf unbestimmte Zeit echte neue Arbeit blockiert.
+
+`tests/test_backlog_worker.py`: 3 neue Tests (Detail-Erhalt beim Aufgreifen, verwaistes Ticket
+wird wieder aufgreifbar, ein GERADE ERST aufgegriffenes Ticket bleibt unangetastet). Volle Suite
+grün, `ruff check` clean.
+
+---
+
 ## 🔍 Workspace-Audit-Tickets trugen nur einen Zähler statt der bereits bekannten Testfehler-Details
 
 Nutzeranfrage: Fortsetzung derselben Analyse. Dieselbe Fehlerklasse wie beim vorigen

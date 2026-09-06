@@ -35,6 +35,21 @@ im selben Prozess hatten das 60-Sekunden-Fenster bereits mit eigenen `acquire()`
 sodass dieser Test unerwartet oft auf das (gemockte) `asyncio.sleep(0.01)` der Rate-Limiter-
 Warteschleife traf, statt wie erwartet nur den EINEN Exhaustion-Wait auszulösen. Dieselbe
 Lösung wie oben: die interne Aufruf-Historie wird vor jedem Test zentral geleert.
+
+Dieselbe Fehlerklasse, echt beobachtet bei einem weiteren vollen Suite-Lauf (Fortsetzung der
+Analyse 2026-09-06): `core/token_guard.py` hält mit dem Modul-Singleton `token_guard` ebenfalls
+EINEN prozessweiten Zustand (`_exhausted_models`) - mehrere Tests in tests/test_llm_routing.py
+markieren darüber gezielt Modelle als "erschöpft", teils mit `cooldown_seconds=999.0` (fast 17
+Minuten). Einzelne Testklassen räumen das bereits selbst in ihrer eigenen tearDown() auf (siehe
+tests/test_llm_routing.py.TestLLMRouting/TestClaudeFreeHeavyFallback), aber jeweils nur für eine
+fest verdrahtete, eigene Liste bekannter Modellnamen - ein Test, der ein ANDERES Modell markiert
+(oder in einer Klasse OHNE eigene Aufräum-Logik läuft), kann den Zustand trotzdem in spätere,
+komplett unabhängige Tests durchsickern lassen. `tests/test_llm_routing.py::
+test_claude_candidate_is_skipped_entirely_without_anthropic_api_key` schlug dadurch NUR im
+vollen Suite-Lauf fehl (`1 failed, 1343 passed`), isoliert lief er sauber durch - dieselbe
+strukturelle Lösung wie beim Rate-Limiter oben (zentral statt einzeln, deckt auch künftige,
+noch ungeschriebene Tests ab) schließt die Lücke unabhängig davon, welcher konkrete Test den
+Zustand hinterlässt.
 """
 
 import pytest
@@ -56,3 +71,11 @@ def _reset_gemini_rate_limiter():
     _gemini_rate_limiter._call_times.clear()
     yield
     _gemini_rate_limiter._call_times.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_token_guard_exhaustion():
+    from core.token_guard import token_guard
+    token_guard._exhausted_models.clear()
+    yield
+    token_guard._exhausted_models.clear()

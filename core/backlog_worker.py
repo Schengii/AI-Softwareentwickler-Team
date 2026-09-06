@@ -45,6 +45,7 @@ import asyncio
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from agents.github_agent import GitHubAgent
 from agents.orchestrator import Orchestrator
@@ -163,6 +164,45 @@ _OUTCOME_TO_TICKET_STATUS = {
 # Information für die nächste Bearbeitung, kein kontextloser Fehlschlag.
 _NON_INFORMATIVE_RETRY_OUTCOMES = ("no_changes", "error")
 
+# Team-Optimierung (echter Fund: memory/backlog.json-Ticket `audit-service_bookmark_monitor`,
+# seit über 15 Stunden unverändert "in_progress" hängend): _process_single_ticket() markiert ein
+# Ticket "in_progress", BEVOR die eigentliche Arbeit beginnt - stürzt der Prozess danach ab
+# (Rechner-Neustart, Absturz, harter Abbruch), bleibt es für IMMER in diesem Zustand: weder
+# `ready_todo` (nur "todo") noch `_governance_retry_pool()` (nur "blocked") picken "in_progress"
+# je wieder auf. Grosszügig bemessen (deutlich länger als ein realistischer Lauf - laut echten
+# Läufen typischerweise Minuten, siehe CHANGELOG.md), damit ein tatsächlich noch laufendes
+# Ticket nicht fälschlich als verwaist behandelt wird.
+STALE_IN_PROGRESS_HOURS = 3.0
+
+
+def _recover_stale_in_progress_tickets(all_tickets: list[Ticket]) -> list[str]:
+    """
+    Setzt Tickets, die seit STALE_IN_PROGRESS_HOURS unverändert "in_progress" sind, auf ihren
+    vermutlichen Status VOR dem Aufgreifen zurück - siehe Moduldocstring-Ergänzung oben für den
+    vollen Kontext. Governance-/Audit-Retry-Tickets (_GOVERNANCE_RETRY_PREFIXES) waren vorher
+    "blocked" (respektiert damit weiterhin `retries`/MAX_GOVERNANCE_TICKET_RETRIES über
+    _governance_retry_pool() - kein Umgehen des Wiederholungslimits durch einen Absturz), alle
+    anderen (cli/dashboard) waren "todo". Gibt die IDs der wiederhergestellten Tickets zurück.
+    """
+    now = datetime.now(UTC)
+    recovered: list[str] = []
+    for t in all_tickets:
+        if t.status != "in_progress":
+            continue
+        try:
+            updated = datetime.fromisoformat(t.updated_at)
+        except ValueError:
+            continue
+        if (now - updated).total_seconds() < STALE_IN_PROGRESS_HOURS * 3600:
+            continue
+        recovered_status = "blocked" if t.id.startswith(_GOVERNANCE_RETRY_PREFIXES) else "todo"
+        upsert_ticket(
+            ticket_id=t.id, title=t.title, source=t.source, status=recovered_status,
+            detail=t.detail, project_slug=t.project_slug,
+        )
+        recovered.append(t.id)
+    return recovered
+
 
 @dataclass
 class BacklogRunResult:
@@ -203,6 +243,18 @@ async def run_backlog_poll_cycle(
     # Merge-Erkennung fürs Backlog (core/merge_watcher.py) opportunistisch mitnehmen, exakt
     # wie core/issue_watcher.py es tut - kein zusätzlicher Cron-Eintrag nötig.
     report.merged_ticket_ids = check_merged_tickets(github_agent)
+
+    # Verwaiste "in_progress"-Tickets zuerst zurücksetzen (siehe _recover_stale_in_progress_
+    # tickets()-Docstring) - VOR dem WIP-Limit-Check unten, sonst würde ein längst abgestürzter
+    # Prozess über count_by_status("in_progress") auf unbestimmte Zeit echte neue Arbeit
+    # blockieren, obwohl niemand mehr daran arbeitet.
+    recovered_stale_tickets = _recover_stale_in_progress_tickets(list_tickets())
+    if recovered_stale_tickets and status_callback:
+        status_callback(
+            f"🔁 {len(recovered_stale_tickets)} verwaiste(s) 'in_progress'-Ticket(s) "
+            f"(länger als {STALE_IN_PROGRESS_HOURS:.0f}h unverändert - vermutlich abgestürzter "
+            f"Lauf) wieder aufgreifbar gemacht: {', '.join(recovered_stale_tickets)}."
+        )
 
     if BACKLOG_WORKER_WIP_LIMIT > 0 and count_by_status("in_progress") >= BACKLOG_WORKER_WIP_LIMIT:
         report.skipped_reason = (
@@ -295,7 +347,21 @@ async def _process_single_ticket(
     # Sofort sichtbar im Backlog/Kanban-Board, nicht erst nach Abschluss - sonst würde ein noch
     # laufendes Ticket auf dem Board gar nicht auftauchen (dasselbe Prinzip wie
     # core/issue_watcher.py._process_single_issue()).
-    upsert_ticket(ticket_id=ticket.id, title=ticket.title, source=ticket.source, status="in_progress")
+    # Team-Optimierung (echter Fund: memory/backlog.json-Ticket `audit-service_bookmark_
+    # monitor`, seit über 15 Stunden verwaist bei status="in_progress" UND detail=""): anders
+    # als project_slug/priority/estimate/epic/retries ist `detail` in core/backlog_store.py.
+    # upsert_ticket() KEIN Sentinel-Parameter (fester Default `""`, kein "None = unverändert
+    # lassen") - dieser Aufruf ohne explizites `detail=` löschte den bereits bekannten Befund
+    # damit SOFORT beim Aufgreifen, lange bevor überhaupt ein Ergebnis vorliegt. Stürzt der
+    # Prozess danach ab (z.B. Rechner-Neustart mitten im Lauf, echt beobachtet), bleibt das
+    # Ticket für immer "in_progress" MIT LEEREM Detail zurück - unsichtbar für jeden künftigen
+    # Poll-Zyklus (weder `ready_todo` noch `_governance_retry_pool()` picken "in_progress" auf)
+    # UND ohne jeden Kontext für eine spätere manuelle Prüfung. `ticket.detail` explizit
+    # mitgeben, damit der bereits bekannte Befund diesen Zwischenschritt unbeschadet übersteht.
+    upsert_ticket(
+        ticket_id=ticket.id, title=ticket.title, source=ticket.source,
+        status="in_progress", detail=ticket.detail,
+    )
 
     original_branch = github_agent.get_current_branch()
     base_branch = original_branch if original_branch in GIT_PROTECTED_BRANCHES else (GIT_PROTECTED_BRANCHES[0] if GIT_PROTECTED_BRANCHES else "main")

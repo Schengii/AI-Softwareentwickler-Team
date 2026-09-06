@@ -93,6 +93,59 @@ class TestBacklogWorkerOrchestration(unittest.TestCase):
         self.assertIn("Kein abhängigkeitsfreies", report.skipped_reason)
         self.fake_orchestrator.process.assert_not_called()
 
+    def test_in_progress_marking_preserves_existing_detail(self):
+        # Team-Optimierung (echter Fund: memory/backlog.json `audit-service_bookmark_monitor`,
+        # nach einem abgestürzten Lauf seit über 15 Stunden status="in_progress" UND detail=""
+        # hängend - siehe backlog_worker._recover_stale_in_progress_tickets()-Docstring für den
+        # vollen Kontext). _process_single_ticket() markierte "in_progress" bisher OHNE
+        # detail=..., core/backlog_store.py.upsert_ticket()'s Default (`""`, kein Sentinel wie
+        # bei project_slug/priority) löschte den bereits bekannten Befund damit sofort beim
+        # Aufgreifen - lange bevor überhaupt ein Ergebnis vorliegt.
+        backlog_store.upsert_ticket(
+            "cli-1", "Login-Seite bauen", "cli", "todo", detail="Ausführliche Spezifikation hier.",
+        )
+
+        with patch("core.backlog_worker.upsert_ticket", wraps=backlog_store.upsert_ticket) as mock_upsert:
+            asyncio.run(run_backlog_poll_cycle())
+
+        in_progress_calls = [c for c in mock_upsert.call_args_list if c.kwargs.get("status") == "in_progress"]
+        self.assertEqual(len(in_progress_calls), 1)
+        self.assertEqual(in_progress_calls[0].kwargs.get("detail"), "Ausführliche Spezifikation hier.")
+
+    def test_stale_in_progress_ticket_is_recovered_and_picked_up_again(self):
+        # Derselbe echte Fund wie oben, hier die zweite Hälfte: ein Ticket, das bereits VOR
+        # diesem Fix in "in_progress" mit leerem Detail hängen geblieben ist (z.B. Rechner-
+        # Neustart mitten im Lauf), muss auch rückwirkend wieder aufgreifbar werden - sonst
+        # bleibt es trotz des obigen Fixes für immer unsichtbar für jeden künftigen Poll-Zyklus.
+        from datetime import UTC, datetime, timedelta
+
+        old_ts = (datetime.now(UTC) - timedelta(hours=5)).isoformat(timespec="seconds")
+        backlog_store._save_raw([{
+            "id": "cli-stale", "title": "Verwaistes Ticket", "source": "cli", "status": "in_progress",
+            "created_at": old_ts, "updated_at": old_ts, "detail": "wichtiger Kontext",
+            "project_slug": "", "priority": 2, "estimate": "", "epic": "", "depends_on": [], "retries": 0,
+        }])
+
+        report = asyncio.run(run_backlog_poll_cycle())
+
+        self.assertEqual(len(report.results), 1)
+        self.fake_orchestrator.process.assert_called_once()
+        ticket = backlog_store.get_ticket("cli-stale")
+        self.assertEqual(ticket.status, "review")  # fake_github liefert überall Erfolg -> pr_opened
+
+    def test_recent_in_progress_ticket_is_not_treated_as_stale(self):
+        # Gegenprobe: ein GERADE ERST aufgegriffenes "in_progress"-Ticket (z.B. ein parallel
+        # laufender zweiter Poll-Zyklus) darf NICHT als verwaist zurückgesetzt und dadurch
+        # doppelt bearbeitet werden.
+        backlog_store.upsert_ticket("cli-active", "Gerade in Arbeit", "cli", "in_progress", detail="läuft noch")
+
+        asyncio.run(run_backlog_poll_cycle())
+
+        ticket = backlog_store.get_ticket("cli-active")
+        self.assertEqual(ticket.status, "in_progress")
+        self.assertEqual(ticket.detail, "läuft noch")
+        self.fake_orchestrator.process.assert_not_called()
+
     def test_issue_and_pr_review_sourced_tickets_are_ignored(self):
         # Beide Quellen werden von JEWEILS eigenen, spezialisierten Zyklen verwaltet (siehe
         # Modul-Docstring core/backlog_worker.py) - ein zweiter Aufgreif-Mechanismus für

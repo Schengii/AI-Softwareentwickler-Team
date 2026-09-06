@@ -31,10 +31,11 @@ playwright>=1.40.0,<2.0.0
 # test_mcp_server_extended.py) importieren pytest direkt (Fixtures/@pytest.mark.anyio) statt
 # reinem unittest - bisher nur über pytest-cov in requirements-dev.txt transitiv vorhanden.
 # .github/workflows/ci.yml installiert im "Tests"-Job aber bewusst NUR requirements.txt (nicht
-# requirements-dev.txt) und lässt die Suite über `unittest discover` laufen - ohne dieses
-# Paket hier brach der Import dieser Module den gesamten Lauf mit ModuleNotFoundError ab.
-# Bekannte Einschränkung, NICHT durch diese Zeile behoben: `unittest discover` sammelt nur
-# unittest.TestCase-Subklassen ein - die reinen Pytest-Fixture-Tests in den genannten Dateien
-# werden dadurch zwar importierbar, aber vom CI-Runner weiterhin nicht tatsächlich AUSGEFÜHRT
-# (der CI-"Tests"-Job müsste dafür auf `pytest` statt `unittest discover` umgestellt werden).
+# requirements-dev.txt) - ohne dieses Paket hier bräche der Import dieser Module den gesamten
+# Lauf mit ModuleNotFoundError ab.
+# Die früher hier dokumentierte Einschränkung ("unittest discover sammelt nur TestCase-
+# Subklassen ein, reine Pytest-Fixture-Tests liefen dadurch nie wirklich") ist behoben: der
+# CI-"Tests"-Job läuft seit Commit 7dbafe5 ("CI-Testrunner von unittest discover auf pytest
+# umgestellt") über `python -m pytest tests/ -v` (siehe .github/workflows/ci.yml) - der
+# Kommentar hier war seitdem nur nicht nachgezogen worden.
 pytest>=8.0.0,<9.0.0

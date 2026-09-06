@@ -87,6 +87,34 @@ def _diagnose_import_failure(message: str) -> str | None:
     return None
 
 
+# Team-Optimierung (echter Fund: memory/backlog.json-Tickets `recurring-failure-event_relay`/
+# `recurring-failure-service_bookmark_monitor`) - siehe _diagnose_no_tests_ran()-Docstring.
+_NO_TESTS_RAN_RE = re.compile(r"ran 0 tests\b|no tests ran\b|collected 0 items\b", re.IGNORECASE)
+
+
+def _diagnose_no_tests_ran(message: str) -> str | None:
+    """Erkennt das 'Ran 0 tests'/'NO TESTS RAN'/'collected 0 items'-Muster - der Testlauf startete
+    zwar, fand aber KEINEN einzigen Test, obwohl echte Testdateien existieren (core/verifier/
+    environment.py.ProjectVerifier._ensure_pytest_available() beugt der häufigsten Ursache davon -
+    fehlendes `pytest` in requirements.txt - inzwischen bereits VOR dem Testlauf vor; dieser
+    Diagnosehinweis bleibt die zweite Verteidigungslinie, z.B. wenn die Nachinstallation mangels
+    Netzwerkzugriffs fehlschlug). Ohne diesen Hinweis hatte der Fix-Loop hier KEINEN Datei-Bezug
+    im Traceback (kein `File \"...\", line N` - reine Testlauf-Diagnostik ohne Stacktrace) und
+    beauftragte blind den `tester`, der die eigentliche - meist umgebungsbedingte, nicht
+    testcode-bedingte - Ursache nie beheben konnte ('Fixversuch änderte nichts')."""
+    if _NO_TESTS_RAN_RE.search(message):
+        return (
+            "⚠️ KONKRETE URSACHE (vermutlich NICHT der Testcode selbst): Der Testlauf startete, "
+            "fand aber KEINEN einzigen Test, obwohl Testdateien existieren - typischste Ursache "
+            "ist eine fehlende Testabhängigkeit in der Umgebung (z.B. `pytest`/`pytest-asyncio` "
+            "fehlt in requirements.txt, wodurch auf `unittest discover` zurückgefallen wird, das "
+            "pytest-Stil-Testfunktionen ohne `unittest.TestCase` gar nicht erkennt). Prüfe ZUERST "
+            "requirements.txt/requirements-dev.txt auf fehlende Test-Abhängigkeiten, bevor du "
+            "Testdateien inhaltlich änderst."
+        )
+    return None
+
+
 _T = TypeVar("_T")
 
 # Vier der Fix-Schleifen unten (Test-, Governance-, Vorab-Import-, Vollständigkeits-Schleife)
@@ -1676,6 +1704,16 @@ class VerificationMixin:
             agents_to_fix: dict[str, list] = {}
             for failure in report.failures:
                 owners = {file_owners[f] for f in failure.files if f in file_owners}
+                # Team-Optimierung (echter Fund: memory/backlog.json-Tickets `recurring-failure-
+                # event_relay`/`recurring-failure-service_bookmark_monitor`) - ein "Ran 0 tests"/
+                # "NO TESTS RAN"-Befund hat NIE einen Datei-Bezug im Traceback (reine Testlauf-
+                # Diagnostik, kein Stacktrace), landete deshalb blind beim `tester` (siehe Fallback
+                # unten) - der konnte die meist umgebungsbedingte Ursache (fehlende Testabhängigkeit
+                # in requirements.txt) strukturell nie beheben. Bevorzugt jetzt den Owner von
+                # requirements.txt (meist backend/database) für GENAU dieses Fehlerbild, bevor der
+                # generische tester-Fallback greift.
+                if not owners and _NO_TESTS_RAN_RE.search(failure.message) and "requirements.txt" in file_owners:
+                    owners = {file_owners["requirements.txt"]}
                 if not owners and any(r.agent_id == "tester" for r in all_results):
                     owners = {"tester"}
                 for owner in owners:
@@ -1691,7 +1729,7 @@ class VerificationMixin:
             for agent_id, fails in agents_to_fix.items():
                 failure_text = "\n\n".join(
                     f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(f.files) or 'unbekannt'}"
-                    + (f"\n{diag}" if (diag := _diagnose_import_failure(f.message)) else "")
+                    + (f"\n{diag}" if (diag := (_diagnose_import_failure(f.message) or _diagnose_no_tests_ran(f.message))) else "")
                     for f in fails
                 )
                 fix_tasks.append(AgentTask(

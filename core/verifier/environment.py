@@ -47,8 +47,16 @@ class EnvironmentMixin:
         ein reines Textprojekt ohne requirements.txt/package.json).
         """
         logs: list[str] = []
-        for req_file in self._requirements_files():
+        req_files = self._requirements_files()
+        for req_file in req_files:
             logs.append(self._ensure_python_environment(req_file, timeout_seconds))
+        # Team-Optimierung (echter Fund, `recurring-failure-event_relay`/
+        # `recurring-failure-service_bookmark_monitor`-Tickets in memory/backlog.json): siehe
+        # _ensure_pytest_available()-Docstring - nur relevant, wenn überhaupt eine venv angelegt
+        # wurde (req_files nicht leer) UND echte pytest-Testdateien existieren, sonst unnötiger
+        # zusätzlicher pip-Aufruf für Projekte ohne Python-Tests.
+        if req_files and self._find_python_test_files():
+            logs.append(self._ensure_pytest_available(timeout_seconds))
         for node_dir in self._find_node_projects():
             logs.append(self._ensure_node_environment(node_dir, timeout_seconds))
         if self._has_rust_project():
@@ -97,6 +105,47 @@ class EnvironmentMixin:
         status = "✅" if install_result.exit_code == 0 else "⚠️"
         tail = (install_result.stdout + install_result.stderr).strip()[-800:]
         return f"{status} pip install -r {req_file.name} (exit_code={install_result.exit_code})" + (f"\n{tail}" if install_result.exit_code != 0 else "")
+
+    def _ensure_pytest_available(self, timeout_seconds: float) -> str:
+        """
+        Team-Optimierung (echter Fund: memory/backlog.json-Tickets `recurring-failure-
+        event_relay` und `recurring-failure-service_bookmark_monitor`). core/verifier/
+        testrunner.py._run_pytest_or_unittest() prüft vor jedem Testlauf `import pytest` und
+        fällt bei Fehlschlag STILLSCHWEIGEND auf `python -m unittest discover` zurück - das
+        findet dabei aber fast IMMER 0 Tests ("Ran 0 tests in 0.000s / NO TESTS RAN"), weil
+        generierter Testcode praktisch ausschließlich im pytest-Stil geschrieben wird (einfache
+        `def test_...()`-Funktionen ohne `unittest.TestCase`-Basisklasse), die unittests eigene
+        Discovery gar nicht als Tests erkennt. Der anschließende Fix-Loop
+        (agents/orchestrator/verification.py) konnte diesem "Testfehler" mangels Traceback/
+        Datei-Bezug keinen Agenten sinnvoll zuordnen und beauftragte blind den `tester` (siehe
+        dortiger Fallback `if not owners: owners = {"tester"}`) - der konnte das Problem nie
+        lösen ("Fixversuch änderte nichts"), weil die eigentliche Ursache (fehlendes `pytest` in
+        requirements.txt/requirements-dev.txt) außerhalb seiner Zuständigkeit liegt: er kann
+        Testdateien schreiben, aber nicht wissen, dass die Umgebung sie gar nicht ausführen kann.
+
+        `pytest` ist das vom FRAMEWORK selbst gewählte Test-Werkzeug (core/verifier/testrunner.py
+        entscheidet sich dafür, nicht der generierte Code) - stellt seine Verfügbarkeit deshalb
+        unabhängig davon sicher, ob der jeweilige Agent daran gedacht hat, es als Abhängigkeit
+        aufzunehmen, statt das strukturell nie lösbare Symptom im Fix-Loop zu bekämpfen. Ein
+        Installationsfehlschlag (z.B. kein Netzwerkzugriff) lässt run_tests() bewusst unverändert
+        auf den bereits bestehenden `import pytest`-Check/unittest-Fallback zurückfallen, statt
+        den gesamten Lauf zu blockieren.
+        """
+        target_python = self._venv_python() if self._venv_python().exists() else Path(sys.executable)
+        check = CodeSandbox.run_command(
+            [str(target_python), "-c", "import pytest"], cwd=self.project_dir, timeout_seconds=10.0,
+        )
+        if check.exit_code == 0:
+            return ""
+        install_result = CodeSandbox.run_command(
+            [str(target_python), "-m", "pip", "install", "-q", "pytest"],
+            cwd=self.project_dir, timeout_seconds=timeout_seconds,
+        )
+        status = "✅" if install_result.exit_code == 0 else "⚠️"
+        return (
+            f"{status} `pytest` fehlte in der Umgebung (nicht in requirements.txt/"
+            f"requirements-dev.txt) - nachinstalliert (exit_code={install_result.exit_code})"
+        )
 
     def _ensure_node_environment(self, node_dir: Path, timeout_seconds: float) -> str:
         rel = self._relative_label(node_dir)

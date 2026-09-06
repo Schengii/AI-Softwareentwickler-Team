@@ -249,6 +249,41 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
         self.assertEqual(ticket.status, "blocked")
         self.assertEqual(ticket.retries, 1)
 
+    def test_failed_retry_without_new_information_preserves_original_finding_detail(self):
+        # Team-Optimierung (echter Fund: memory/backlog.json-Tickets `recurring-lint-
+        # sentinelproxy`/`recurring-failure-sentinelproxy`, beide dauerhaft "blocked" mit
+        # identischem, kontextlosem Detail nach retries=2): ein "no_changes"-Ausgang überschrieb
+        # `detail` bisher IMMER mit der knappen Ausgangs-Zeile - der ursprünglich erkannte
+        # Befund (der einzige Kontext für den NÄCHSTEN Retry, siehe
+        # test_governance_ticket_detail_is_forwarded_to_orchestrator_as_task_text oben) war nach
+        # GENAU EINEM erfolglosen Versuch unwiderbringlich weg.
+        self.fake_github.get_status.return_value = ""  # keine Änderung -> "no_changes"
+        backlog_store.upsert_ticket(
+            "recurring-lint-sentinelproxy", "Wiederkehrender Lint-Fund: sentinelproxy",
+            "orchestrator", "blocked", project_slug="sentinelproxy",
+            detail="ruff F821: `db` in app/proxy.py:42 ist nicht definiert.",
+        )
+        asyncio.run(run_backlog_poll_cycle())
+
+        ticket = backlog_store.get_ticket("recurring-lint-sentinelproxy")
+        self.assertEqual(ticket.detail, "ruff F821: `db` in app/proxy.py:42 ist nicht definiert.")
+        self.assertNotIn("keine Datei geändert", ticket.detail)
+
+    def test_pr_opened_outcome_still_updates_detail_with_new_information(self):
+        # Gegenprobe: ein Ausgang mit echtem neuem Erkenntnisgewinn (hier: PR eröffnet) darf den
+        # Ticket-Text weiterhin wie bisher aktualisieren - nur der kontextlose Fehlschlag soll
+        # den ursprünglichen Befund bewahren.
+        backlog_store.upsert_ticket(
+            "recurring-lint-sentinelproxy", "Wiederkehrender Lint-Fund: sentinelproxy",
+            "orchestrator", "blocked", project_slug="sentinelproxy",
+            detail="ruff F821: `db` in app/proxy.py:42 ist nicht definiert.",
+        )
+        asyncio.run(run_backlog_poll_cycle())  # fake_github.get_status liefert "M app/middleware.py" -> pr_opened
+
+        ticket = backlog_store.get_ticket("recurring-lint-sentinelproxy")
+        self.assertEqual(ticket.status, "review")
+        self.assertNotEqual(ticket.detail, "ruff F821: `db` in app/proxy.py:42 ist nicht definiert.")
+
     def test_first_governance_retry_does_not_escalate_model(self):
         # Team-Optimierung (Retrospektive 2026-09-04): retries=0 beim Aufgreifen (Standardwert
         # eines frisch eröffneten Tickets) ist der ERSTE automatische Backlog-Retry - noch kein

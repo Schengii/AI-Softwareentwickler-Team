@@ -104,6 +104,61 @@ class TestProjectVerifier(unittest.TestCase):
         result = verifier.ensure_environment()
         self.assertEqual(result, "")
 
+    def test_ensure_environment_skips_pytest_check_without_python_test_files(self):
+        # Team-Optimierung (echter Fund: memory/backlog.json `recurring-failure-event_relay`/
+        # `recurring-failure-service_bookmark_monitor`) - _ensure_pytest_available() darf nur
+        # laufen, wenn überhaupt echte Python-Testdateien existieren, sonst unnötiger
+        # zusätzlicher pip-Aufruf für Projekte ohne Python-Tests.
+        (self.project_dir / "requirements.txt").write_text("flask\n")
+        (self.project_dir / "app.py").write_text("x = 1\n")
+        verifier = ProjectVerifier(self.project_dir)
+        with patch.object(ProjectVerifier, "_ensure_python_environment", return_value="") as mock_env, \
+             patch.object(ProjectVerifier, "_ensure_pytest_available") as mock_pytest:
+            verifier.ensure_environment()
+        mock_env.assert_called_once()
+        mock_pytest.assert_not_called()
+
+    def test_ensure_environment_checks_pytest_when_python_test_files_present(self):
+        (self.project_dir / "requirements.txt").write_text("flask\n")
+        (self.project_dir / "test_app.py").write_text("def test_ok():\n    assert True\n")
+        verifier = ProjectVerifier(self.project_dir)
+        with patch.object(ProjectVerifier, "_ensure_python_environment", return_value=""), \
+             patch.object(ProjectVerifier, "_ensure_pytest_available", return_value="✅ ok") as mock_pytest:
+            result = verifier.ensure_environment()
+        mock_pytest.assert_called_once()
+        self.assertIn("✅ ok", result)
+
+    def test_ensure_pytest_available_noop_when_already_importable(self):
+        verifier = ProjectVerifier(self.project_dir)
+        with patch("core.verifier.environment.CodeSandbox.run_command", return_value=ExecutionResult(
+            exit_code=0, stdout="", stderr="", duration_seconds=0.01,
+        )) as mock_run:
+            result = verifier._ensure_pytest_available(timeout_seconds=10.0)
+        self.assertEqual(result, "")
+        mock_run.assert_called_once()  # nur der `import pytest`-Check, KEIN pip install
+
+    def test_ensure_pytest_available_installs_missing_pytest(self):
+        # Realer Fund: core/verifier/testrunner.py._run_pytest_or_unittest() fällt bei fehlendem
+        # `pytest` still auf `unittest discover` zurück, das generierten pytest-Stil-Testcode
+        # (einfache def test_...()-Funktionen ohne unittest.TestCase) nicht erkennt und "Ran 0
+        # tests" meldet - der Fix-Loop konnte das bisher keinem Agenten sinnvoll zuordnen.
+        verifier = ProjectVerifier(self.project_dir)
+        calls = []
+
+        def _fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if "import pytest" in cmd:
+                return ExecutionResult(exit_code=1, stdout="", stderr="ModuleNotFoundError", duration_seconds=0.01)
+            return ExecutionResult(exit_code=0, stdout="Successfully installed pytest", stderr="", duration_seconds=0.5)
+
+        with patch("core.verifier.environment.CodeSandbox.run_command", side_effect=_fake_run):
+            result = verifier._ensure_pytest_available(timeout_seconds=10.0)
+
+        self.assertIn("nachinstalliert", result)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("pip", calls[1])
+        self.assertIn("pytest", calls[1])
+
     def test_docker_build_skipped_without_dockerfile(self):
         verifier = ProjectVerifier(self.project_dir)
         report = verifier.check_docker_build()

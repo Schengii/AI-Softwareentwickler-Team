@@ -156,6 +156,13 @@ _OUTCOME_TO_TICKET_STATUS = {
     "pr_opened_needs_clarification": "blocked",
 }
 
+# Ausgänge OHNE neuen, verwertbaren Erkenntnisgewinn gegenüber dem, was das Ticket vor diesem
+# Versuch schon wusste - siehe Kommentar bei ihrer Verwendung in run_backlog_poll_cycle() für
+# den vollen Kontext (echter Fund: dauerhaft "blocked" hängende Tickets ohne jeden Ticket-Text).
+# "blocked_secret" ist bewusst NICHT enthalten - ein Secret-Fund IST eine neue, wichtige
+# Information für die nächste Bearbeitung, kein kontextloser Fehlschlag.
+_NON_INFORMATIVE_RETRY_OUTCOMES = ("no_changes", "error")
+
 
 @dataclass
 class BacklogRunResult:
@@ -240,6 +247,29 @@ async def run_backlog_poll_cycle(
         elif status_callback:
             status_callback(f"🎫 Backlog-Ticket `{ticket.id}` '{ticket.title}' wird eigenständig aufgegriffen...")
         result = await _process_single_ticket(github_agent, ticket, status_callback)
+        # Team-Optimierung (echter Fund: memory/backlog.json-Tickets `recurring-lint-
+        # sentinelproxy`/`recurring-failure-sentinelproxy`, beide dauerhaft "blocked" mit
+        # identischem, kontextlosem Detail nach retries=2): ein "no_changes"/"error"-Ausgang
+        # überschrieb `detail` bisher IMMER mit der knappen, generischen Ausgangs-Zeile ("Ticket
+        # bearbeitet, dabei aber keine Datei geändert...") - für Governance-/Recurring-*-Retry-
+        # Tickets ist `ticket.detail` aber der EINZIGE Träger des ursprünglich erkannten Befunds,
+        # den _process_single_ticket() oben extra in den Fix-Auftrag mischt (siehe dortiger
+        # Kommentar zu `task_text`). Nach GENAU EINEM Fehlschlag ohne neue Erkenntnis war dieser
+        # Kontext für JEDEN weiteren automatischen Retry unwiderbringlich weg - jeder folgende
+        # Versuch hatte dadurch WENIGER Information als der erste, garantiert kein besseres
+        # Ergebnis, bis MAX_GOVERNANCE_TICKET_RETRIES erreicht war und das Ticket für immer
+        # "blocked" liegen blieb. Ein Ausgang OHNE neue, verwertbare Information behält den
+        # ursprünglichen Befundtext jetzt bei; ein Ausgang mit echtem neuem Erkenntnisgewinn (PR
+        # eröffnet, CI-Fehler, Rückfrage, gefundene Secrets) überschreibt ihn wie bisher.
+        preserved_detail = (
+            ticket.detail
+            if (
+                ticket.id.startswith(_GOVERNANCE_RETRY_PREFIXES)
+                and ticket.detail
+                and result.outcome in _NON_INFORMATIVE_RETRY_OUTCOMES
+            )
+            else result.detail
+        )
         # Terminal-Status im Backlog nachziehen (der "in_progress"-Stand wurde bereits beim
         # Aufgreifen geschrieben, siehe _process_single_ticket()) - EIN Mapping-Ort statt an
         # jedem der mehreren Rückgabepunkte dort. Ein Governance-Retry, der erneut nicht
@@ -248,7 +278,7 @@ async def run_backlog_poll_cycle(
         # core/backlog_store.py.upsert_ticket()-Sentinel-Verhalten).
         upsert_ticket(
             ticket_id=ticket.id, title=ticket.title, source=ticket.source,
-            status=_OUTCOME_TO_TICKET_STATUS.get(result.outcome, "blocked"), detail=result.detail,
+            status=_OUTCOME_TO_TICKET_STATUS.get(result.outcome, "blocked"), detail=preserved_detail,
         )
         if result.outcome != "pr_opened":
             await asyncio.to_thread(

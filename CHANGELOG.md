@@ -7,6 +7,65 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🎫 Backlog-Retry überschrieb den ursprünglichen Befund mit einer kontextlosen Ausgangs-Zeile
+
+Nutzeranfrage: Fortsetzung der Team-Analyse ("bis alle Fehler behoben sind"). Zwei reale,
+dauerhaft "blocked" hängende Tickets (`recurring-lint-sentinelproxy`,
+`recurring-failure-sentinelproxy`, beide `retries: 2`) trugen exakt denselben, komplett
+kontextlosen Detail-Text: "Ticket bearbeitet, dabei aber keine Datei geändert - vermutlich war
+der Titel nicht eindeutig genug." Ursache: `core/backlog_worker.py.run_backlog_poll_cycle()`
+überschrieb `ticket.detail` nach JEDEM Retry-Versuch bedingungslos mit der knappen
+Ausgangs-Zeile des Versuchs - für Governance-/Recurring-*-Tickets ist `detail` aber der EINZIGE
+Träger des ursprünglich erkannten Befunds, den `_process_single_ticket()` extra in den
+Fix-Auftrag mischt. Nach GENAU EINEM Fehlschlag ohne neue Information war dieser Kontext für
+jeden weiteren automatischen Retry unwiderbringlich weg - jeder folgende Versuch hatte dadurch
+WENIGER Information als der erste, garantiert kein besseres Ergebnis, bis
+`MAX_GOVERNANCE_TICKET_RETRIES` erreicht war und das Ticket für immer blockiert liegen blieb.
+
+- **`core/backlog_worker.py`:** ein Ausgang OHNE neue, verwertbare Information (`no_changes`,
+  `error`) behält `ticket.detail` nach einem Retry jetzt unverändert bei; ein Ausgang mit echtem
+  Erkenntnisgewinn (PR eröffnet, CI-Fehler, Rückfrage, gefundene Secrets) überschreibt ihn
+  weiterhin wie bisher.
+- **`tests/test_backlog_worker.py`:** zwei neue Tests - Detail bleibt nach einem kontextlosen
+  Fehlschlag erhalten bzw. wird bei echtem PR-Erfolg weiterhin aktualisiert.
+
+Volle Suite grün, `ruff check` clean.
+
+---
+
+## 🧪 "Ran 0 tests" / "NO TESTS RAN": fehlendes `pytest` in der Umgebung war die stille Ursache
+
+Nutzeranfrage: Fortsetzung derselben Analyse. Zwei weitere reale, dauerhaft "blocked" Tickets
+(`recurring-failure-event_relay`, `recurring-failure-service_bookmark_monitor`) zeigten
+identisch: "Fixversuch änderte nichts an 1 Testfehler(n) – vermutlich falscher/unzureichend
+instruierter Agent" mit der Fehlermeldung "Ran 0 tests in 0.000s / NO TESTS RAN" und
+"Betroffene Dateien: unbekannt". Root Cause gefunden: `core/verifier/testrunner.py._run_
+pytest_or_unittest()` prüft `import pytest` und fällt bei Fehlschlag STILLSCHWEIGEND auf
+`python -m unittest discover` zurück - das erkennt generierten, im pytest-Stil geschriebenen
+Testcode (einfache `def test_...()`-Funktionen ohne `unittest.TestCase`) aber gar nicht als
+Tests. Ohne Traceback (reine Testlauf-Diagnostik, kein Stacktrace) hatte der Fix-Loop keinen
+Datei-Bezug und beauftragte blind den `tester` - der konnte die tatsächliche, umgebungsbedingte
+Ursache (fehlendes `pytest` in requirements.txt/requirements-dev.txt) strukturell nie beheben.
+
+- **`core/verifier/environment.py`:** neue `_ensure_pytest_available()` - stellt `pytest` VOR
+  jedem Testlauf sicher, unabhängig davon, ob der jeweilige Agent daran gedacht hat, es als
+  Abhängigkeit in requirements.txt aufzunehmen (es ist das vom FRAMEWORK selbst gewählte
+  Test-Werkzeug, keine Produktabhängigkeit des generierten Projekts). Läuft nur, wenn überhaupt
+  eine venv angelegt wurde UND echte Python-Testdateien existieren, sonst unnötiger Zusatzaufruf.
+- **`agents/orchestrator/verification.py`:** zweite Verteidigungslinie für den Fall, dass die
+  Nachinstallation selbst fehlschlägt (z.B. kein Netzwerkzugriff) - neue `_diagnose_no_tests_ran()`
+  erkennt das "Ran 0 tests"/"NO TESTS RAN"/"collected 0 items"-Muster und liefert dem Fix-Agenten
+  eine konkrete Diagnose statt eines kontextlosen Tracebacks. Die Routing-Logik bevorzugt für
+  GENAU dieses Fehlerbild jetzt den Owner von requirements.txt (meist backend/database) vor dem
+  bisherigen blinden `tester`-Fallback.
+- **`tests/test_verifier.py`, `tests/test_no_tests_ran_diagnosis.py` (neu):** 5+4 Tests - Diagnose-
+  Erkennung, Nachinstallation (fehlend/bereits vorhanden), Routing-Präferenz, volle
+  `_run_verification_loop()`-Integration bis `verification_ok=True`.
+
+Volle Suite grün, `ruff check` clean.
+
+---
+
 ## 🔀 Governance-Fix-Schleife eskaliert jetzt auch bei wechselnder Symptomatik derselben Ursache
 
 Nutzeranfrage: Fortsetzung der Team-Analyse, konkret Punkt 2 - der reale `event_relay`-Lauf vom

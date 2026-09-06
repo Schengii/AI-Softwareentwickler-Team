@@ -7,6 +7,35 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🧪 Echter Team-Lauf gegen `event_relay` deckt Testisolations-Lücke im Optimization-Advisor auf
+
+Nutzeranfrage: volle Testsuite prüfen und die Session abschließen. Das Team baute im Rahmen
+dieser Session `workspace/event_relay` (Kafka-Event-Relay mit Resilience-Layer) neu auf - ein
+echter Lauf, kein synthetischer Test. `core/optimization_advisor.py` erkannte dabei über die
+`unused_agent`-Kategorie (siehe letzter Eintrag unten) 11 seit mindestens 20 Läufen nie vom
+Planer gewählte Rollen und schrieb sie als 11 Lektionen mit identischem `project_slug` ("_team")
+in `memory/team_lessons.jsonl` - genug, um `MIN_LESSON_RECURRENCE` in
+`_find_recurring_lesson_categories()` zu überschreiten.
+
+- **`tests/test_optimization_advisor.py`:** Die Basisklasse `TestOptimizationAdvisor` isolierte
+  bisher nur `memory/run_history.py` per temporärer Datei, nicht aber
+  `core/team_memory.TEAM_MEMORY_FILE` - andere Testklassen in derselben Datei patchen es
+  bereits korrekt. Dadurch las `_find_recurring_lesson_categories()` in Tests wie
+  `test_empty_history_yields_empty_report` und
+  `test_verification_trend_not_flagged_below_min_sample` ungefiltert die ECHTE,
+  repo-weite `team_lessons.jsonl` mit - sobald genug reale Team-Läufe wiederkehrende
+  Kategorien zum selben Projekt anhäuften (wie oben durch den `event_relay`-Lauf geschehen),
+  schlugen `report.is_empty()`-Erwartungen fehl, obwohl der jeweilige Test selbst keine
+  Lektion aufzeichnete. `setUp()` patcht `TEAM_MEMORY_FILE` jetzt zusätzlich auf eine
+  temporäre Datei, konsistent mit dem bereits etablierten Muster der anderen Testklassen.
+
+Volle Suite (1275 Tests) grün, `ruff check` clean. Der `event_relay`-Lauf selbst hinterließ
+außerdem einen kritischen Governance-Fund (`unresolved_governance_critical`, siehe
+`memory/team_lessons.jsonl`): der neue `ResilienceManager` aus `app/resilience.py` ist noch
+nicht in `app/main.py`s `create_event` verdrahtet - offen für einen Folgelauf.
+
+---
+
 ## 🌱 Team-Wachstums-Retrospektive: Scaffold-Werkzeug, Unterauslastungs-Erkennung & Fallback-Absicherung
 
 Nutzeranfrage: das Framework selbst (nicht die generierten Testprojekte) auf Verbesserungen

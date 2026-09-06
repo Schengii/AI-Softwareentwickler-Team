@@ -46,6 +46,15 @@ class TestOptimizationAdvisor(unittest.TestCase):
         self._patcher = patch.object(run_history_module, "RUN_HISTORY_FILE", Path(self.temp_dir) / "run_history.json")
         self._patcher.start()
         self.addCleanup(self._patcher.stop)
+        # Isoliert von der ECHTEN memory/team_lessons.jsonl - _find_recurring_lesson_categories()
+        # liest sie ungefiltert, ein durch reale Team-Läufe gewachsener Bestand (z.B. mehrere
+        # "unused_agent"-Funde zum selben project_slug) würde sonst is_empty()-Erwartungen dieser
+        # Klasse verfälschen, obwohl die einzelnen Tests keine eigene Lektion aufzeichnen.
+        self._lessons_patcher = patch.object(
+            team_memory_module, "TEAM_MEMORY_FILE", Path(self.temp_dir) / "team_lessons.jsonl",
+        )
+        self._lessons_patcher.start()
+        self.addCleanup(self._lessons_patcher.stop)
 
     def _record(self, agent_id: str, model: str, success: bool, calls: int = 1, tokens: int = 100):
         for _ in range(calls):

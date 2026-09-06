@@ -1,18 +1,32 @@
-from collections.abc import AsyncGenerator
+"""Datenbank-Konfiguration für service_bookmark_monitor.
 
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
+- Default: sqlite+aiosqlite in-memory (eine gemeinsame DB über alle Verbindungen
+  via `StaticPool`, da `:memory:` pro Verbindung sonst eine eigene DB wäre).
+- Stellt `Base` (declarative Basis), `engine`, `SessionLocal` und die
+  FastAPI-Dependency `get_db` bereit.
+"""
+from collections.abc import AsyncIterator
 
-DATABASE_URL: str = "sqlite+aiosqlite:///:memory:"
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import StaticPool
 
-engine = create_async_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-AsyncSessionLocal = sessionmaker(
-    engine, class_=AsyncSession, expire_on_commit=False
+DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+
+engine = create_async_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,   # EINE gemeinsame :memory:-DB über alle Verbindungen
 )
-Base = declarative_base()
 
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """Dependency to provide a database session."""
-    async with AsyncSessionLocal() as session:
+SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+class Base(DeclarativeBase):
+    """Basisklasse für alle ORM-Modelle."""
+
+
+async def get_db() -> AsyncIterator[AsyncSession]:
+    """FastAPI-Dependency: yieldet eine Session und schließt sie zuverlässig."""
+    async with SessionLocal() as session:
         yield session
-        await session.close()

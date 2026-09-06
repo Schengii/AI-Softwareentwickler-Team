@@ -35,6 +35,33 @@ Das Gesamtsystem gliedert sich in **6 Fachbereiche**, die jeweils von einem eige
 
 ---
 
+### 1.1 Eine neue Fachrolle hinzufügen
+
+Jede der 33 Rollen ist an **vier unabhängig gepflegten Stellen** registriert - keine ist von
+den anderen automatisch ableitbar. `tests/test_agent_registry_consistency.py` prüft nach jeder
+Änderung, ob alle vier noch zusammenpassen; seine Fehlermeldungen sind absichtlich als
+Checkliste formuliert. Vorgehen für eine neue Rolle `<neue_rolle>`:
+
+1. **`agents/<neue_rolle>_agent.py`**: neue Agentenklasse (System-Prompt, ggf. Tool-Zugriff) -
+   orientiere dich an einer bestehenden Rolle ähnlicher Komplexität (z.B. `copywriter_agent.py`
+   für eine kleine, klar umrissene Aufgabe; `backend_agent.py` für echte Architektur-Trade-offs).
+2. **`agents/orchestrator/__init__.py`**: Import ergänzen und `"<neue_rolle>": NeueRolleAgent()`
+   in `self._agents` eintragen (in der Phase, zu der sie fachlich gehört).
+3. **`core/task_manager.py`**: Eintrag in `AVAILABLE_AGENTS` (Name, Phase, Beschreibung) -
+   die Beschreibung UND die dem Planer-Modell gesendete ID-Liste werden automatisch daraus
+   abgeleitet (`_DECOMPOSE_EXCLUDED_AGENT_IDS`, falls die Rolle bewusst NICHT direkt vom
+   Planer wählbar sein soll, z.B. weil sie nur intern ausgelöst wird).
+4. **`config.py`**: Eintrag in `AGENT_MODELS` (Modellstufe LITE/STANDARD/HEAVY nach
+   tatsächlichem Aufgabenbedarf, siehe Kommentar dort) UND in GENAU einer
+   `DEPARTMENT_*_AGENTS`-Menge.
+
+Schritt 4 fehlt am schnellsten, weil er keinen sofort sichtbaren Fehler erzeugt -
+`config.get_model_for_agent()` fällt bei einer fehlenden `AGENT_MODELS`-Zuordnung lautlos auf
+`DEFAULT_AGENT_MODEL` zurück, statt die für die Rolle bewusst gewählte Komplexitätsstufe zu
+nutzen. `pytest tests/test_agent_registry_consistency.py` nach jeder neuen Rolle laufen lassen.
+
+---
+
 ## 2. Der Orchestrierungs- & Ausführungszyklus
 
 Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:

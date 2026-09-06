@@ -2,15 +2,18 @@
 tests/test_core.py – Tests für TaskManager, Workspace, Sandbox & TokenGuard
 """
 
+import asyncio
+import json
 import os
 import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from core.code_sandbox import CodeSandbox
-from core.task_manager import AVAILABLE_AGENTS
+from core.task_manager import _DECOMPOSE_EXCLUDED_AGENT_IDS, AVAILABLE_AGENTS, DECOMPOSE_SYSTEM_PROMPT, TaskManager
 from core.token_guard import TokenGuard
 from core.workspace import WorkspaceManager
 
@@ -34,6 +37,35 @@ class TestCoreModules(unittest.TestCase):
             self.assertIn("description", data)
             self.assertIsInstance(data["phase"], int)
             self.assertTrue(1 <= data["phase"] <= 6)
+
+    def test_decompose_system_prompt_agent_id_placeholder_gets_substituted(self):
+        """Realer Fund (Team-Retrospektive 2026-09-06): die im System-Prompt gesendete Liste
+        "Verfügbare Agenten-IDs" war früher ein von Hand gepflegter, zweiter String, komplett
+        unabhängig von AVAILABLE_AGENTS - bereits real gedriftet (`agent_trainer` stand dort
+        als wählbar, obwohl bewusst ohne Beschreibung ausgeschlossen). decompose() muss den
+        Platzhalter durch GENAU die Agenten-IDs ersetzen, die auch die Beschreibungsliste
+        speisen - dieselbe Ausschlussliste, eine einzige Quelle."""
+        self.assertIn("__AVAILABLE_AGENT_IDS__", DECOMPOSE_SYSTEM_PROMPT)
+
+        task_manager = TaskManager(model_name="gemini-3.6-flash")
+        task_manager._llm = AsyncMock()
+        task_manager._llm.generate_json.return_value = json.dumps({
+            "needs_clarification": False,
+            "clarifying_questions": [],
+            "task_summary": "Test",
+            "project_slug": "test",
+            "required_agents": [],
+        })
+
+        asyncio.run(task_manager.decompose("Baue etwas"))
+
+        sent_system_prompt = task_manager._llm.generate_json.call_args[0][1]
+        self.assertNotIn("__AVAILABLE_AGENT_IDS__", sent_system_prompt)
+        for agent_id in AVAILABLE_AGENTS:
+            if agent_id in _DECOMPOSE_EXCLUDED_AGENT_IDS:
+                self.assertNotIn(agent_id, sent_system_prompt)
+            else:
+                self.assertIn(agent_id, sent_system_prompt)
 
     def test_token_guard_recording_and_warnings(self):
         """Prüft, dass TokenGuard Verbräuche misst und Warnungen auslöst."""

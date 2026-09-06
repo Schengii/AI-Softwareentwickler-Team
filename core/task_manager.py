@@ -13,6 +13,18 @@ from core.message_bus import AgentTask
 # Alle verfügbaren Agenten (30 Spezialisten)
 # ──────────────────────────────────────────────────────────
 
+# Realer Fund (Team-Retrospektive 2026-09-06): die Liste "Verfügbare Agenten-IDs" im
+# DECOMPOSE_SYSTEM_PROMPT unten war bisher ein von Hand gepflegter, zweiter, vom `agents_
+# description`-Aufbau in decompose() komplett UNABHÄNGIGER String - beim Live-Abgleich hatte
+# sie bereits real gedriftet: `agent_trainer` stand dort als wählbare ID, obwohl er (wie
+# `retrospective`) bewusst aus der Beschreibungsliste ausgeschlossen ist und deshalb nie eine
+# Erklärung bekam, WANN man ihn einsetzt - das Modell hätte ihn blind wählen können. Jede neue
+# Agentenrolle hätte bisher ZWEI unabhängige Stellen erfordert (hier UND diesen String), ohne
+# dass ein Vergessen der zweiten je auffiele. `_DECOMPOSE_EXCLUDED_AGENT_IDS` ist jetzt die
+# EINE Stelle, die beide Listen (Beschreibung unten in decompose() UND die ID-Liste im
+# System-Prompt) gemeinsam speist.
+_DECOMPOSE_EXCLUDED_AGENT_IDS = ("retrospective", "agent_trainer")
+
 AVAILABLE_AGENTS = {
     # ── Phase 1: Führung, Planung & Recherche ─────────────
     "team_lead": {
@@ -255,11 +267,7 @@ entscheiden würde (z.B. Styling-Details, exakte Bibliotheksversion) - im Zweife
 vernünftige Annahme treffen und im task_summary kurz erwähnen, statt nachzufragen.
 
 Verfügbare Agenten-IDs:
-team_lead, product_owner, business_analyst, web_research,
-architect, finops,
-frontend, backend, database, api_integration, data_engineer, mobile, ml, prompt_engineer, performance,
-image_generator, copywriter, ui_ux, accessibility, i18n, documentation, devops, tester, security, resilience_guard,
-code_reviewer, refactoring, compliance, project_cleaner, agent_trainer, readme, github
+__AVAILABLE_AGENT_IDS__
 
 Wichtige Regeln:
 - Wähle NUR die zwingend erforderlichen Agenten aus (Token-Sparsamkeit)
@@ -301,8 +309,14 @@ class TaskManager:
         agents_description = "\n".join([
             f"- {agent_id} [Phase {info['phase']}]: {info['description']}"
             for agent_id, info in AVAILABLE_AGENTS.items()
-            if agent_id not in ("retrospective", "agent_trainer")
+            if agent_id not in _DECOMPOSE_EXCLUDED_AGENT_IDS
         ])
+        available_agent_ids = ", ".join(
+            agent_id for agent_id in AVAILABLE_AGENTS if agent_id not in _DECOMPOSE_EXCLUDED_AGENT_IDS
+        )
+        decompose_system_prompt = DECOMPOSE_SYSTEM_PROMPT.replace(
+            "__AVAILABLE_AGENT_IDS__", available_agent_ids,
+        )
 
         context_section = ""
         if conversation_context:
@@ -330,7 +344,7 @@ VERFÜGBARE AGENTEN:
 Erstelle jetzt das JSON mit den Teilaufgaben."""
 
         try:
-            raw_json = await self._llm.generate_json(prompt, DECOMPOSE_SYSTEM_PROMPT)
+            raw_json = await self._llm.generate_json(prompt, decompose_system_prompt)
         except Exception as e:
             # Wie in ResultAggregator.synthesize(): nicht crashen, sondern einen klaren,
             # nutzerverständlichen Grund liefern statt eines rohen Stacktraces. Orchestrator.

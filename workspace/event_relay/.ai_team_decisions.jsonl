@@ -1,0 +1,3 @@
+{"timestamp": "2026-09-06T16:17:33.242433+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 1: 1 kritische(r) Befund(e) → tester"}
+{"timestamp": "2026-09-06T16:18:59.691458+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 2: 1 kritische(r) Befund(e) → tester"}
+{"timestamp": "2026-09-06T16:20:34.875339+00:00", "event": "missing_tests_fix_dispatched", "detail": "Keine Testdateien (test_*.py), kein npm-Test-Skript und kein Rust/Go-Projekt gefunden – Verifikation übersprungen."}

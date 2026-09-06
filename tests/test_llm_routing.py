@@ -72,6 +72,52 @@ class TestLLMRouting(unittest.TestCase):
         self.assertNotIn("claude-sonnet-5", called_models)
         self.assertTrue(all(m.startswith("gemini") for m in called_models), called_models)
 
+    @patch("core.llm_factory.ANTHROPIC_API_KEY", "")
+    @patch("core.llm_factory.GROQ_API_KEY", "")
+    @patch("core.llm_factory.OPENROUTER_API_KEY", "")
+    @patch("core.llm_factory.DEEPSEEK_API_KEY", "")
+    @patch("core.llm_factory.asyncio.sleep")
+    @patch("core.llm_factory._gemini_client")
+    def test_daily_quota_error_gets_long_cooldown_not_short_default(
+        self, mock_gemini_client, mock_sleep, mock_deepseek_key=None, mock_openrouter_key=None,
+        mock_groq_key=None, mock_anthropic_key=None,
+    ):
+        """
+        Team-Optimierung (echter Fund, echter --work-backlog-Lauf 2026-09-06): Gemini meldet
+        Kontingent-Erschöpfung strukturiert mit einer `quotaId` - z.B. "GenerateRequestsPerDay
+        ProjectPerModel-FreeTier" (echt beobachtet: ein TAGES-Kontingent von 20 Anfragen), NICHT
+        ein kurzes Minutenlimit. Vor diesem Fix bekam JEDES 429 denselben generischen 60s-
+        Cooldown - jeder weitere Agent im selben Lauf versuchte das für Stunden erschöpfte Modell
+        trotzdem sofort wieder erneut.
+        """
+        from core.llm_factory import DAILY_QUOTA_COOLDOWN_SECONDS
+        from core.token_guard import token_guard as real_token_guard
+
+        real_daily_quota_error = (
+            "429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your "
+            "current quota, please check your plan and billing details.', 'status': "
+            "'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc."
+            "QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/"
+            "generate_content_free_tier_requests', 'quotaId': "
+            "'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaValue': '20'}]}]}}"
+        )
+
+        def fake_generate_content(model, contents, config):
+            raise RuntimeError(real_daily_quota_error)
+        mock_gemini_client.models.generate_content = fake_generate_content
+
+        client = GeminiClient(model_name="gemini-3.6-flash")
+
+        async def run():
+            with self.assertRaises(RuntimeError):
+                await client.generate_with_usage("Sag nur 'ok'.", None)
+
+        import asyncio
+        asyncio.run(run())
+
+        info = real_token_guard._exhausted_models["gemini-3.6-flash"]
+        self.assertEqual(info.cooldown_seconds, DAILY_QUOTA_COOLDOWN_SECONDS)
+
     @patch("core.llm_factory.OPENROUTER_API_KEY", "sk-or-dummy-test-key")
     @patch("core.llm_factory.DEEPSEEK_API_KEY", "sk-dummy-test-key")
     @patch("core.llm_factory.asyncio.sleep")

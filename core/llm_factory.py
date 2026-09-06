@@ -139,6 +139,28 @@ RETRY_DELAY_SECONDS = 1.5
 # damit ein Lauf dadurch nie unbegrenzt hängt.
 MAX_EXHAUSTION_WAIT_SECONDS = 20.0
 
+# Team-Optimierung (echter Fund, echter --work-backlog-Lauf 2026-09-06): Gemini meldet bei
+# Kontingent-Erschöpfung strukturiert ein `quotaId` - z.B. "GenerateRequestsPerDayPerProjectPer
+# Model-FreeTier" (echt beobachtet: `quotaValue: '20'`, also ein TAGES-Kontingent von 20
+# Anfragen) statt eines kurzen Minutenlimits. Bisher bekam JEDES 429 denselben generischen
+# `default_cooldown_seconds`-Cooldown (60s, core/token_guard.py) - jeder weitere Agent im selben
+# Lauf (und jeder Retry-Poll-Zyklus danach) versuchte das erkennbar für Stunden erschöpfte Modell
+# trotzdem sofort wieder, statt es zuverlässig zu überspringen. Erkennt das TAGES-Signal am
+# Fehlertext (kein API-Zugriff/Parsing nötig, der Marker steht bereits im rohen Fehlertext) und
+# nutzt einen deutlich längeren Cooldown statt eines echten, exakten Countdowns bis Mitternacht
+# (unnötig kompliziert für denselben Zweck: EINEN Lauf zuverlässig nicht mehr auf diesem Modell
+# hängen zu lassen, ohne den Prozess bei einem schneller zurückgesetzten Kontingent unnötig lang
+# zu blockieren).
+_DAILY_QUOTA_MARKER = "PerDay"
+DAILY_QUOTA_COOLDOWN_SECONDS = 4 * 3600.0
+
+
+def _exhaustion_cooldown_seconds(err_str: str) -> float | None:
+    """None (Standard-Cooldown des Aufrufers bleibt gültig), außer der Fehlertext deutet auf ein
+    TAGES- statt ein Minuten-Kontingent hin (siehe Konstanten-Kommentar oben) - dann
+    DAILY_QUOTA_COOLDOWN_SECONDS."""
+    return DAILY_QUOTA_COOLDOWN_SECONDS if _DAILY_QUOTA_MARKER in err_str else None
+
 # Proaktive Rate-Begrenzung (core/rate_limiter.py): reduziert, WIE OFT ein Minutenlimit
 # überhaupt erst erreicht wird – ergänzt MAX_EXHAUSTION_WAIT_SECONDS oben (das nur REAGIERT,
 # nachdem das Limit schon erreicht ist). Realer Fund: 3+-Mitglieder-Fachbereiche schicken über
@@ -714,7 +736,9 @@ class GeminiClient:
                         continue
 
                     if is_rate_limit:
-                        token_guard.mark_model_exhausted(model, "429 Quota Exceeded")
+                        token_guard.mark_model_exhausted(
+                            model, "429 Quota Exceeded", cooldown_seconds=_exhaustion_cooldown_seconds(err_str),
+                        )
                     elif is_unavailable:
                         token_guard.mark_model_exhausted(model, "503 High Demand", cooldown_seconds=20.0)
                     break
@@ -877,7 +901,9 @@ class GeminiClient:
                         continue
 
                     if is_rate_limit:
-                        token_guard.mark_model_exhausted(model, "429 Quota Exceeded")
+                        token_guard.mark_model_exhausted(
+                            model, "429 Quota Exceeded", cooldown_seconds=_exhaustion_cooldown_seconds(err_str),
+                        )
                     elif is_unavailable:
                         token_guard.mark_model_exhausted(model, "503 High Demand", cooldown_seconds=20.0)
                     break

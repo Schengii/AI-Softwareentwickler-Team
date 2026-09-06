@@ -7,6 +7,29 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## ⏳ Tages-Kontingent vs. Minutenlimit: erschöpfte Modelle bekamen alle denselben kurzen Cooldown
+
+Nutzeranfrage: Fortsetzung derselben Analyse, ausgelöst durch zwei echte `--work-backlog`-Läufe
+in dieser Session. Google meldete dabei strukturiert: `quotaId:
+"GenerateRequestsPerDayPerProjectPerModel-FreeTier", quotaValue: "20"` - ein TAGES-Kontingent
+von 20 Anfragen, kein kurzes Minutenlimit. `core/token_guard.py.mark_model_exhausted()` vergibt
+aber für JEDES 429 denselben generischen `default_cooldown_seconds` (60s) - jeder weitere Agent
+im selben Lauf (und jeder spätere `--work-backlog`-Retry) versuchte das für Stunden erkennbar
+erschöpfte Modell trotzdem sofort wieder, statt es zuverlässig zu überspringen. Live beobachtet:
+in einem einzigen Lauf scheiterten dadurch nacheinander Backend-Entwickler, QA-Tester,
+GitHub-Agent und Code-Reviewer jeweils erneut an derselben, bereits bekannten Erschöpfung.
+
+- **`core/llm_factory.py`:** neue `_exhaustion_cooldown_seconds()` erkennt das `"PerDay"`-Signal
+  im rohen Fehlertext (kein zusätzlicher API-Zugriff/Parsing nötig) und vergibt dafür
+  `DAILY_QUOTA_COOLDOWN_SECONDS` (4h) statt des kurzen Standard-Cooldowns - an beiden Stellen,
+  die ein Gemini-429 behandeln (`generate_with_tools()`, `_call_with_retry_and_usage()`).
+- **`tests/test_llm_routing.py`:** neuer Test mit dem ECHTEN, real beobachteten Fehlertext
+  bestätigt den langen Cooldown; bestehende Tests (kurzes Limit) bleiben unverändert grün.
+
+Volle Suite grün, `ruff check` clean.
+
+---
+
 ## 🧪 Testisolations-Lücke: `token_guard`-Erschöpfungszustand sickerte zwischen Tests durch
 
 Nutzeranfrage: Fortsetzung derselben Analyse. Ein voller Suite-Lauf (nicht der isolierte

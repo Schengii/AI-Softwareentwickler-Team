@@ -103,6 +103,27 @@ class TestGovernanceFinalReverification(unittest.TestCase):
         self.assertNotIn("Fix nicht bestätigt", summary)
         mock_ticket.assert_not_called()
 
+    def test_llm_confirms_but_structural_check_still_broken_opens_ticket(self):
+        # Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive, echter Fund am
+        # event_relay-Lauf 2026-09-06): der LLM-Re-Review hat real einen Fix als erledigt
+        # akzeptiert, der einen frischen ImportError einführte (`from app.resilience import
+        # resilience`, obwohl die globale Instanz im selben Fix entfernt wurde) - der Bruch fiel
+        # erst im NÄCHSTEN, unabhängigen Lauf per echtem pytest auf. check_completeness() muss
+        # das jetzt SELBST erkennen und ein Ticket eröffnen, auch wenn der LLM-Reviewer
+        # (hier: CLEAN_CODE_REVIEWER_REPORT) "keine kritischen Probleme" meldet.
+        app_dir = Path(self.temp_workspace) / "app"
+        app_dir.mkdir()
+        (app_dir / "resilience.py").write_text("class ResilienceManager:\n    pass\n", encoding="utf-8")
+        (app_dir / "main.py").write_text("from app.resilience import resilience\n", encoding="utf-8")
+
+        with patch("agents.orchestrator.verification.upsert_ticket") as mock_ticket:
+            results, summary, budget_aborted, cancelled = self._run(CLEAN_CODE_REVIEWER_REPORT)
+
+        self.assertIn("bestätigt der Re-Review WEITERHIN", summary)
+        self.assertIn("Backlog-Ticket", summary)
+        mock_ticket.assert_called_once()
+        self.assertIn("resilience", mock_ticket.call_args.kwargs["detail"])
+
     def test_oversized_fix_task_stops_loop_before_final_recheck(self):
         # Punkt 2 einer Team-Retrospektive: ein einzelner ausufernder Fix-Task darf nicht
         # unbegrenzt weiter eskalieren (auch nicht bis zum verpflichtenden Re-Review) - das

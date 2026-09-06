@@ -23,11 +23,13 @@ from core.optimization_advisor import (
     MIN_LESSON_RECURRENCE,
     MIN_SAMPLE_SIZE,
     MIN_SUCCESS_RATE_GAP,
+    MIN_TEAMWIDE_LESSON_RECURRENCE,
     MIN_TOTAL_RUNS_FOR_UNUSED_CHECK,
     MIN_VERIFICATION_SAMPLE_SIZE,
     LowPerformingAgent,
     ModelSuggestion,
     OptimizationReport,
+    RecurringTeamWideCategory,
     UnusedAgent,
     analyze,
     apply_auto_tuning,
@@ -420,6 +422,82 @@ class TestRecurringLessonCategories(unittest.TestCase):
 
         self.assertIn("unresolved_governance_critical", text)
         self.assertIn("mockforge", text)
+
+
+class TestRecurringTeamWideCategories(unittest.TestCase):
+    """
+    Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive, echter Fund am
+    event_relay-Lauf 2026-09-06): TestRecurringLessonCategories oben gruppiert nach
+    (project_slug, category) und sieht daher NIE das Muster, bei dem dieselbe Kategorie an VIELEN
+    VERSCHIEDENEN Projekten auftritt (real beobachtet: `unresolved_governance_critical` an 9 von
+    9 zuletzt betroffenen, unterschiedlichen Projekten). analyze() aggregiert dafür zusätzlich
+    NUR nach `category`, projektübergreifend.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self._patcher = patch.object(
+            team_memory_module, "TEAM_MEMORY_FILE", Path(self.temp_dir) / "team_lessons.jsonl",
+        )
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_flags_category_recurring_across_different_projects(self):
+        for i in range(MIN_TEAMWIDE_LESSON_RECURRENCE):
+            team_memory_module.record_lesson(f"project_{i}", "unresolved_governance_critical", f"Fund {i}")
+
+        report = analyze()
+
+        self.assertEqual(len(report.recurring_teamwide_categories), 1)
+        finding = report.recurring_teamwide_categories[0]
+        self.assertIsInstance(finding, RecurringTeamWideCategory)
+        self.assertEqual(finding.category, "unresolved_governance_critical")
+        self.assertEqual(finding.count, MIN_TEAMWIDE_LESSON_RECURRENCE)
+        self.assertEqual(len(finding.project_slugs), MIN_TEAMWIDE_LESSON_RECURRENCE)
+        self.assertFalse(report.is_empty())
+
+    def test_no_flag_below_teamwide_threshold(self):
+        for i in range(MIN_TEAMWIDE_LESSON_RECURRENCE - 1):
+            team_memory_module.record_lesson(f"project_{i}", "unresolved_governance_critical", f"Fund {i}")
+
+        report = analyze()
+
+        self.assertEqual(report.recurring_teamwide_categories, [])
+
+    def test_repeated_findings_at_same_project_count_once(self):
+        # Mehrere Funde derselben Kategorie AM SELBEN Projekt decken bereits
+        # RecurringLessonCategory ab - für dieses teamweite Signal zählt jedes Projekt nur einmal,
+        # sonst würde ein einzelnes, notorisch schlechtes Projekt fälschlich ein FRAMEWORK-weites
+        # Muster vortäuschen.
+        for i in range(MIN_TEAMWIDE_LESSON_RECURRENCE):
+            team_memory_module.record_lesson("mockforge", "unresolved_governance_critical", f"Fund {i}")
+
+        report = analyze()
+
+        self.assertEqual(report.recurring_teamwide_categories, [])
+
+    def test_team_meta_project_slug_excluded(self):
+        # project_slug="_team" (record_suggestions_as_lessons()-Meta-Funde) ist kein echter
+        # Code-Defekt an einem Projekt und darf dieses Signal nicht triggern.
+        for i in range(MIN_TEAMWIDE_LESSON_RECURRENCE):
+            team_memory_module.record_lesson("_team", "unused_agent", f"Agent {i} nie ausgewählt.")
+
+        report = analyze()
+
+        self.assertEqual(report.recurring_teamwide_categories, [])
+
+    def test_format_report_includes_teamwide_category(self):
+        for i in range(MIN_TEAMWIDE_LESSON_RECURRENCE):
+            team_memory_module.record_lesson(f"project_{i}", "unresolved_governance_critical", f"Fund {i}")
+
+        text = format_report_for_humans(analyze())
+
+        self.assertIn("Team-weites strukturelles Muster", text)
+        self.assertIn("unresolved_governance_critical", text)
 
 
 class TestUnusedAgents(unittest.TestCase):

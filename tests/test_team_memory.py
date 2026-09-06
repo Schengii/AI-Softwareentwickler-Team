@@ -120,6 +120,27 @@ class TestTeamMemory(unittest.TestCase):
 
                 self.assertIn("Einziger Fund.", text)
 
+    def test_bulk_low_severity_lessons_do_not_crowd_out_critical_ones(self):
+        # Team-Optimierung (vollständige Umsetzung einer Retrospektive, echter Fund am
+        # event_relay-Lauf 2026-09-06): core/optimization_advisor.py schrieb 11 `unused_agent`-
+        # Lektionen in derselben Sekunde - ohne Gewichtung wären damit alle MAX_LESSONS_SHOWN-
+        # Plätze belegt gewesen, obwohl kurz zuvor eine `unresolved_governance_critical`-Lektion
+        # zum selben Lauf aufgezeichnet wurde.
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            fake_file = Path(d) / "team_lessons.jsonl"
+            with self._use_temp_file(fake_file):
+                team_memory.record_lesson(
+                    "event_relay", "unresolved_governance_critical", "Resilience-Manager nicht verdrahtet.",
+                )
+                for i in range(11):
+                    team_memory.record_lesson("_team", "unused_agent", f"Agent '{i}' nie ausgewählt.")
+
+                text = team_memory.format_team_lessons_for_agents(limit=5)
+
+                self.assertIn("Resilience-Manager nicht verdrahtet.", text)
+
     def test_record_lesson_never_raises_on_unwritable_path(self):
         from pathlib import Path
         # Ein Pfad, dessen Elternverzeichnis nicht angelegt werden kann (ungültiges Laufwerk) -

@@ -7,6 +7,63 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🏗️ Fünf Framework-Lücken aus der event_relay-Retrospektive vollständig geschlossen
+
+Nutzeranfrage: die im vorigen Retrospektive-Eintrag identifizierten fünf Verbesserungen
+vollständig umsetzen und dabei ausschließlich das FRAMEWORK selbst (nicht die generierten
+Testprojekte) härten - Ziel: professioneller, autonomer, selbstoptimierend, mit einem
+Agenten-Loop, der bis zum Projektziel führt, statt bei der ersten Stagnation aufzugeben.
+
+1. **`core/optimization_advisor.py`: cross-projekt wiederkehrende Kategorien.**
+   `_find_recurring_lesson_categories()` gruppiert nach (project_slug, category) und sah daher
+   NIE das dominanteste real beobachtete Muster: `unresolved_governance_critical` trat in 9 von
+   15 Lektionen auf, aber an 9 VERSCHIEDENEN Projekten - kaum ein Slug kam zweimal vor. Neue
+   `_find_recurring_teamwide_categories()`/`RecurringTeamWideCategory` aggregieren zusätzlich
+   NUR nach `category` (projektübergreifend, `MIN_TEAMWIDE_LESSON_RECURRENCE = 5`) und schließen
+   `project_slug="_team"`-Meta-Funde aus - macht strukturelle FRAMEWORK-Lücken sichtbar, die
+   jedes neue Projekt gleichermaßen treffen, statt sie in fünfzehn Einzelfällen zu verstecken.
+2. **`core/team_memory.py`: Schweregrad-gewichtete Lektionen-Auswahl.**
+   `format_team_lessons_for_agents()` wählte bisher rein nach Rezenz aus `MAX_LESSONS_SHOWN=5`
+   Plätzen - ein einzelner Optimierungslauf schrieb real 11 `unused_agent`-Lektionen in
+   derselben Sekunde und hätte damit eine kurz zuvor aufgezeichnete
+   `unresolved_governance_critical`-Lektion aus dem Agenten-Kontext verdrängt. Neue
+   `_select_with_severity_reservation()` reserviert `_RESERVED_HIGH_SEVERITY_SLOTS = 2` Plätze
+   für nicht-niedrigschwellige Kategorien (`_LOW_SEVERITY_CATEGORIES`), unabhängig von ihrem Alter.
+3. **`core/verifier/models.py`/`completeness.py`: `CompletenessIssue.kind` ersetzt fragile
+   Substring-Filter.** `agents/orchestrator/verification.py` filterte "lokaler Import schlägt
+   fehl"-Funde bisher per `"existierendes lokales" in message` - `_check_symbols_in_module_file()`
+   formuliert einen fehlenden SYMBOL-Import (z.B. `from app.resilience import resilience`, wenn
+   `resilience` dort nicht mehr definiert ist) aber bewusst OHNE diese Zeichenfolge. Genau diese
+   Fehlerklasse (real: `RateLimitMiddleware`/`SimpleRateLimiter` bei zeiterfassung_app UND
+   `resilience` bei event_relay) fiel dadurch durch BEIDE Filter (Vorab-Import-Check UND
+   Governance-Fix-Prompt-Anreicherung), obwohl `check_completeness()` sie längst korrekt erkannte.
+   Ein neues `kind="missing_local_import"`-Tag ersetzt beide Substring-Filter durch einen
+   stabilen, maschinenlesbaren Vergleich.
+4. **`agents/orchestrator/verification.py`: harte strukturelle Gegenprobe im finalen
+   Governance-Re-Review.** Der verpflichtende Re-Review nach dem letzten Fix-Versuch verließ
+   sich bisher AUSSCHLIESSLICH auf die Einschätzung des LLM-Reviewers - real akzeptierte er
+   einen Fix als erledigt, der einen frischen `ImportError` einführte (die globale
+   `resilience`-Instanz wurde im selben Fix entfernt, der Import blieb). `check_completeness()`
+   läuft jetzt zusätzlich als deterministische Gegenprobe: ein struktureller Neu-Bruch gilt als
+   weiterhin kritisch, unabhängig vom LLM-Urteil.
+5. **`agents/orchestrator/verification.py`: Eskalationsleiter für die Governance-Fix-Schleife.**
+   `_run_verification_loop` eskaliert bei Stagnation bereits an den Fachbereichsleiter UND an
+   HEAVY_MODEL, bevor sie aufgibt - `_run_governance_fix_loop` brach bei "kein Fortschritt"
+   bisher nach GENAU EINEM Fixversuch direkt zum Ticket ab. Durchläuft jetzt dieselbe
+   Eskalationsleiter (Fachbereichsleiter mit geänderter Strategie, dann ein letzter Versuch mit
+   HEAVY_MODEL), bevor ein Backlog-Ticket eröffnet wird - der spätere `--work-backlog`-Retry
+   eskaliert zwar ebenfalls das Modell, aber erst im nächsten Scheduler-Zyklus.
+
+Nebenbefund beim Testen von Punkt 5: `tests/test_governance_no_progress_breaker.py` patchte
+`core.llm_factory.LLMFactory.create_for_model` bisher NICHT (anders als das Pendant
+`tests/test_verification_no_progress_breaker.py`) - ohne den Patch hätte die neue
+Modell-Eskalation einen ECHTEN Provider-Client konstruiert. Ergänzt, bevor es zu echten
+API-Aufrufen in der Testsuite kommen konnte.
+
+Volle Suite grün, `ruff check` clean.
+
+---
+
 ## 🧪 Echter Team-Lauf gegen `event_relay` deckt Testisolations-Lücke im Optimization-Advisor auf
 
 Nutzeranfrage: volle Testsuite prüfen und die Session abschließen. Das Team baute im Rahmen

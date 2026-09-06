@@ -615,10 +615,27 @@ _JS_IO_MUTATION_RE = re.compile(
 
 @dataclass
 class CompletenessIssue:
-    """Ein einzelner Stub-/Platzhalter-Fund oder ein fehlender, in README referenzierter Pfad."""
+    """Ein einzelner Stub-/Platzhalter-Fund oder ein fehlender, in README referenzierter Pfad.
+
+    `kind` (Team-Optimierung, vollständige Umsetzung einer KI-Team-Retrospektive, echter Fund
+    am event_relay-Lauf 2026-09-06): agents/orchestrator/verification.py filterte die "lokaler
+    Import schlägt fehl"-Funde bisher per Substring-Suche `"existierendes lokales" in message`
+    heraus, um sie VOR jedem Testlauf UND in den Governance-Fix-Prompt gezielt einzuspeisen.
+    core/verifier/completeness.py._check_symbols_in_module_file() formuliert einen fehlenden
+    SYMBOL-Import (z.B. `from app.resilience import resilience`, wenn `resilience` dort gar
+    nicht mehr definiert ist) aber bewusst als "... verweist auf kein ... definiertes/
+    importiertes Symbol" - OHNE die Zeichenfolge "existierendes lokales". Genau diese
+    Fehlerklasse (real beobachtet: `RateLimitMiddleware`/`SimpleRateLimiter` bei
+    zeiterfassung_app UND `resilience` bei event_relay) fiel dadurch durch beide Filter, obwohl
+    check_completeness() sie bereits korrekt erkannte - ein rein textueller Filter auf
+    freihändig formulierte deutsche Fehlermeldungen ist von Natur aus fragil. `kind` ist ein
+    stabiles, maschinenlesbares Tag für genau diese Fund-KLASSE ("missing_local_import" für
+    alle drei Varianten: fehlendes Modul/Paket, fehlendes Submodul, fehlendes Symbol in einer
+    existierenden Datei) - leer ("") für jede andere, nicht dafür gedachte Fund-Art."""
     file_path: str
     line_number: int = 0
     message: str = ""
+    kind: str = ""
 
 
 @dataclass

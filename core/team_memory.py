@@ -27,6 +27,22 @@ MAX_LESSONS_SHOWN = 5
 _DEDUP_LOOKBACK = 50
 _NORMALIZE_RE = re.compile(r"[^\w]+")
 
+# Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive, echter Fund): diese
+# Kategorien markieren reine Team-Selbstoptimierungs-Buchführung
+# (core/optimization_advisor.py.record_suggestions_as_lessons()) - KEINEN konkreten Code-Defekt
+# an einem echten Projekt. Ein einzelner Optimierungslauf kann davon viele auf einmal schreiben
+# (real beobachtet: 11 `unused_agent`-Funde in derselben Sekunde) und hätte damit ohne Gewichtung
+# die knappen MAX_LESSONS_SHOWN-Plätze in format_team_lessons_for_agents() rein wegen ihrer
+# Rezenz für seltenere, wichtigere Befunde (echte Governance-/Verifikations-Blocker wie
+# `unresolved_governance_critical`) verdrängt - genau das ist nach dem event_relay-Lauf am
+# 2026-09-06 passiert.
+_LOW_SEVERITY_CATEGORIES = frozenset({"model_performance", "low_performing_agent", "unused_agent"})
+# Wie viele der MAX_LESSONS_SHOWN-Plätze mindestens für die jüngsten NICHT-niedrigschwelligen
+# Lektionen reserviert sind (siehe _LOW_SEVERITY_CATEGORIES-Docstring und
+# _select_with_severity_reservation()) - der Rest wird ganz normal der Reihe nach aufgefüllt,
+# auch mit niedrigschwelligen Lektionen, falls nicht genug hochschwellige vorhanden sind.
+_RESERVED_HIGH_SEVERITY_SLOTS = 2
+
 
 def _normalize(detail: str) -> str:
     """Grobe Normalisierung für den Ähnlichkeitsvergleich - Groß/Kleinschreibung und
@@ -99,19 +115,52 @@ def format_team_lessons_for_agents(limit: int = MAX_LESSONS_SHOWN, prioritize_sl
     Verhalten unverändert) stellt Lektionen DESSELBEN project_slug voran (jeweils intern nach
     Aktualität sortiert), der Rest der `limit` Plätze wird mit den übrigen jüngsten Lektionen
     aufgefüllt - eine bereits einmal für dieses Projekt gemachte Lektion geht so nicht mehr im
-    allgemeinen Rauschen unter."""
+    allgemeinen Rauschen unter.
+
+    Reserviert zusätzlich Plätze für nicht-niedrigschwellige Lektionen (siehe
+    _select_with_severity_reservation()), damit ein Schwall Team-Meta-Funde (z.B. viele
+    `unused_agent`-Einträge aus einem einzigen Optimierungslauf) nicht die knappen Plätze für
+    seltenere, wichtigere Befunde verdrängt."""
+    # read_team_lessons(limit=0) wäre "keine" (Slice-Semantik), nicht "alle" - deshalb hier ein
+    # bewusst großzügiger, aber endlicher Deckel statt limit für die volle Vorauswahl, aus der
+    # anschließend sowohl nach project_slug als auch nach Schweregrad ausgewählt wird.
+    pool = read_team_lessons(limit=max(limit * 20, 200))
     if not prioritize_slug:
-        lessons = read_team_lessons(limit)
+        candidates = pool
     else:
-        # read_team_lessons(limit=0) wäre "keine" (Slice-Semantik), nicht "alle" - deshalb hier
-        # ein bewusst großzügiger, aber endlicher Deckel statt limit für die volle Vorauswahl.
-        all_recent = read_team_lessons(limit=max(limit * 20, 200))
-        own_project = [entry for entry in all_recent if entry.get("project_slug") == prioritize_slug]
-        others = [entry for entry in all_recent if entry.get("project_slug") != prioritize_slug]
-        lessons = (own_project + others)[:limit]
+        own_project = [entry for entry in pool if entry.get("project_slug") == prioritize_slug]
+        others = [entry for entry in pool if entry.get("project_slug") != prioritize_slug]
+        candidates = own_project + others
+    lessons = _select_with_severity_reservation(candidates, limit)
     if not lessons:
         return ""
     lines = ["## 🧠 Team-weite Lektionen aus früheren Projekten (nicht nur diesem hier):"]
     for lesson in lessons:
         lines.append(f"- [{lesson.get('project_slug', '?')}] {lesson.get('detail', '')}")
     return "\n".join(lines)
+
+
+def _select_with_severity_reservation(candidates: list[dict], limit: int) -> list[dict]:
+    """Wählt bis zu `limit` Lektionen aus `candidates` (bereits nach Priorität/Rezenz sortiert)
+    aus - reserviert dabei zuerst bis zu _RESERVED_HIGH_SEVERITY_SLOTS Plätze für die jüngsten
+    NICHT-niedrigschwelligen Lektionen (siehe _LOW_SEVERITY_CATEGORIES-Docstring), füllt die
+    restlichen Plätze dann ganz normal der Reihe nach auf (auch mit niedrigschwelligen, falls
+    nicht genug hochschwellige vorhanden sind). Die Ausgabe bleibt in der ursprünglichen
+    Reihenfolge von `candidates` (Priorität/Rezenz) - nur die AUSWAHL ist gewichtet, kein
+    zusätzliches Umsortieren, das die bestehende prioritize_slug-Reihenfolge durcheinanderbringen
+    würde."""
+    if limit <= 0 or not candidates:
+        return []
+    selected_indices: set[int] = set()
+    reserved_remaining = _RESERVED_HIGH_SEVERITY_SLOTS
+    for i, entry in enumerate(candidates):
+        if len(selected_indices) >= limit or reserved_remaining <= 0:
+            break
+        if entry.get("category") not in _LOW_SEVERITY_CATEGORIES:
+            selected_indices.add(i)
+            reserved_remaining -= 1
+    for i in range(len(candidates)):
+        if len(selected_indices) >= limit:
+            break
+        selected_indices.add(i)
+    return [candidates[i] for i in sorted(selected_indices)]

@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* Fokus-Indikator für alle interaktiven Elemente */
+  :focus-visible {
+    outline: 3px solid #4f46e5;
+    outline-offset: 2px;
+  }
+
+  /* Skip-Link für Tastatur-Nutzer */
+  .skip-link {
+    position: absolute;
+    top: -40px;
+    left: 0;
+    background: #4f46e5;
+    color: white;
+    padding: 8px;
+    z-index: 100;
+  }
+  .skip-link:focus { top: 0; }
+}

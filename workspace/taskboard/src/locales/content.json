@@ -1,0 +1,16 @@
+{
+  "kanban": {
+    "add_task": "Aufgabe hinzufügen",
+    "empty_state": "Keine Aufgaben in dieser Spalte.",
+    "drag_hint": "Ziehe Aufgaben hierher, um den Status zu ändern."
+  },
+  "timer": {
+    "start": "Zeiterfassung starten",
+    "stop": "Zeiterfassung stoppen",
+    "running": "Timer läuft..."
+  },
+  "errors": {
+    "save_failed": "Speichern fehlgeschlagen. Bitte versuche es erneut.",
+    "network_error": "Verbindung unterbrochen. Deine Daten werden lokal zwischengespeichert."
+  }
+}

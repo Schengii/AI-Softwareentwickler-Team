@@ -1,0 +1,23 @@
+openapi: 3.0.3
+info:
+  title: Aufgaben- & Zeiterfassungs-API
+  version: 1.0.0
+  description: API für das Kanban-Board und die Zeiterfassung.
+paths:
+  /tasks:
+    get:
+      summary: Alle Aufgaben abrufen
+      responses:
+        '200':
+          description: Liste der Aufgaben
+    post:
+      summary: Neue Aufgabe erstellen
+      responses:
+        '201':
+          description: Aufgabe erstellt
+  /time-entries:
+    post:
+      summary: Zeiterfassung starten/stoppen
+      responses:
+        '200':
+          description: Zeiteintrag aktualisiert

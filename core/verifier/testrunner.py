@@ -26,6 +26,8 @@ from core.verifier.models import (
     VerificationReport,
 )
 
+_MODULE_NOT_FOUND_RE = re.compile(r"ModuleNotFoundError: No module named ['\"]([\w.]+)['\"]")
+
 
 class TestRunnerMixin:
     """Führt die reale Testsuite eines Projekts aus (kein Keyword-Raten)."""
@@ -59,6 +61,18 @@ class TestRunnerMixin:
             if not any(part in _IGNORED_DIRS for part in f.parts)
         ]
         if not python_files:
+            has_specs_only = (self.project_dir / "docs" / "adr").exists() or any(
+                f for f in self.project_dir.rglob("*.md")
+                if not any(part in _IGNORED_DIRS for part in f.parts)
+            )
+            has_other_code = self._find_node_projects() or self._has_rust_project() or self._has_go_project()
+            if has_specs_only and not has_other_code:
+                return (
+                    "Es existieren Architektur-/ADR-/Doku-Dateien (docs/, docs/adr/), aber KEIN "
+                    "einziger Quellcode (kein *.py, kein Node/Rust/Go-Projekt) - die Generierung "
+                    "wurde offenbar nach der Planungs-/Architekturphase abgebrochen, bevor Backend- "
+                    "und Tester-Agent tatsächlich Code geliefert haben."
+                )
             return ""
 
         has_manifest = any(
@@ -132,6 +146,11 @@ class TestRunnerMixin:
         if python_test_files:
             python_exe = self._resolve_python()
             exec_result = self._run_pytest_or_unittest(python_exe, timeout_seconds)
+            if exec_result.exit_code != 0:
+                fallback_log = self._fallback_install_missing_modules(exec_result, python_exe, timeout_seconds)
+                if fallback_log:
+                    stdout_chunks.append(fallback_log)
+                    exec_result = self._run_pytest_or_unittest(python_exe, timeout_seconds)
             stdout_chunks.append(f"--- Python (pytest/unittest) ---\n{exec_result.stdout}")
             stderr_chunks.append(exec_result.stderr)
             if exec_result.exit_code != 0:
@@ -192,6 +211,41 @@ class TestRunnerMixin:
         return CodeSandbox.run_command(
             [python_exe, "-m", "unittest", "discover", "-s", str(self.project_dir), "-p", "test_*.py"],
             cwd=self.project_dir, timeout_seconds=timeout_seconds,
+        )
+
+    def _fallback_install_missing_modules(
+        self, exec_result: ExecutionResult, python_exe: str, timeout_seconds: float,
+    ) -> str:
+        """
+        Realer Fund: der Tester-Agent importiert legitime Testwerkzeuge (httpx,
+        pytest-asyncio, ...), trägt sie aber manchmal nur in requirements-dev.txt statt in
+        JEDE tatsächlich installierte requirements-Datei ein (oder vergisst den Eintrag ganz).
+        `ensure_environment()` installiert zwar bereits alle gefundenen requirements*.txt
+        (siehe core/verifier/environment.py), das deckt diesen vergessenen Fall aber nicht ab.
+        Best-effort-Fallback: parst ModuleNotFoundError aus dem fehlgeschlagenen Testlauf und
+        installiert das fehlende Top-Level-Paket einmalig direkt in die Sandbox-Umgebung, statt
+        den Testlauf an einem künstlichen Abhängigkeitsfehler scheitern zu lassen. Gibt eine
+        Statuszeile für den Verifikationsbericht zurück, oder "" wenn nichts zu tun war.
+        """
+        output = f"{exec_result.stdout}\n{exec_result.stderr}"
+        missing = {m.group(1).split(".")[0] for m in _MODULE_NOT_FOUND_RE.finditer(output)}
+        # Lokale Projekt-Module herausfiltern - das sind echte Code-/Import-Bugs, keine
+        # fehlenden Abhängigkeiten, und sollen weiterhin als Testfehler gemeldet werden.
+        missing = {
+            m for m in missing
+            if not (self.project_dir / f"{m}.py").exists() and not (self.project_dir / m).is_dir()
+        }
+        if not missing:
+            return ""
+        install_result = CodeSandbox.run_command(
+            [python_exe, "-m", "pip", "install", "-q", *sorted(missing)],
+            cwd=self.project_dir, timeout_seconds=timeout_seconds,
+        )
+        status = "✅" if install_result.exit_code == 0 else "⚠️"
+        return (
+            f"{status} Zur Laufzeit fehlende Module erkannt und nachinstalliert: "
+            f"{', '.join(sorted(missing))} - sollten dauerhaft in requirements.txt/"
+            "requirements-dev.txt ergänzt werden."
         )
 
     def _parse_python_failures(self, exec_result: ExecutionResult) -> list[TestFailure]:

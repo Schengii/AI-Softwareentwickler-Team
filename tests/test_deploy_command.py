@@ -54,10 +54,15 @@ class TestDeployCommand(unittest.TestCase):
         asyncio.run(self.cli._deploy_project_with_confirmation("demo_project"))
         mock_deploy.assert_not_called()
 
+    @patch("core.production_monitor._check_url", return_value=(True, "HTTP 200"))
     @patch("core.deployment.deploy_project")
     @patch("interface.cli.Confirm.ask", return_value=True)
     @patch("interface.cli.console.print")
-    def test_accepting_confirmation_deploys_and_reports_success(self, mock_print, _mock_confirm, mock_deploy):
+    def test_accepting_confirmation_deploys_and_reports_success(self, mock_print, _mock_confirm, mock_deploy, _mock_check_url):
+        # core.production_monitor._check_url() gemockt statt des sofortigen Post-Deploy-
+        # Health-Checks selbst (interface/cli.py._run_post_deploy_health_check(), KI-Team-
+        # Analyse 07.09.2026, Punkt 8) - ohne diesen Mock würde real (mehrfach wiederholt)
+        # gegen die nie wirklich laufende URL http://localhost:8000 verbunden.
         mock_deploy.return_value = DeploymentResult(
             attempted=True, success=True, method="docker", urls=["http://localhost:8000"],
         )

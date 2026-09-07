@@ -87,6 +87,76 @@ BENCHMARK_TASKS: dict[str, BenchmarkTask] = {
             "unused_agent, da keine bisherige Referenzaufgabe LLM-/RAG-Funktionalität verlangte."
         ),
     ),
+    # KI-Team-Analyse 07.09.2026, Punkt 4: 'mobile', 'i18n', 'data_engineer' und
+    # 'image_generator' hatten trotz geschärfter Planer-Beschreibungen (siehe
+    # core/task_manager.py.AVAILABLE_AGENTS) weiterhin KEINE einzige Referenzaufgabe, die sie
+    # fachlich wirklich braucht - derselbe Root Cause wie beim faq_rag_chatbot-Fix oben
+    # (ml/prompt_engineer), hier für die 4 verbleibenden, laut team_lessons.jsonl nie gewählten
+    # Rollen (accessibility ist hier zusätzlich mit abgedeckt, da JEDES HTML-Frontend-Projekt
+    # laut dessen Trigger-Beschreibung relevant ist).
+    "multilang_expense_app": BenchmarkTask(
+        slug="multilang_expense_app",
+        name="Mehrsprachige Cross-Platform Ausgaben-App (Mobile/i18n)",
+        category="mobile",
+        prompt=(
+            "Erstelle eine Cross-Platform-Mobile-App 'expense_tracker' (Flutter oder React "
+            "Native, offline-first mit lokaler Speicherung) zum Erfassen von Ausgaben in "
+            "mehreren Währungen. Die App muss vollständig internationalisiert sein (mindestens "
+            "Deutsch und Englisch umschaltbar, locale-abhängige Datums-/Währungsformate) und "
+            "barrierefrei bedienbar sein (Screenreader-Labels, ausreichende Kontraste). Liefere "
+            "eine README mit Setup-Anleitung und Tests für die Kernlogik (Ausgaben summieren, "
+            "Währungsumrechnung)."
+        ),
+        expected_project_name="expense_tracker",
+        expected_files=["README.md"],
+        description=(
+            "Prüft, ob 'mobile' (Cross-Platform-App statt reflexhaft 'frontend'), 'i18n' "
+            "(echte Mehrsprachigkeit/locale-Formate) und 'accessibility' bei einer Aufgabe, "
+            "die alle drei fachlich echt braucht, tatsächlich vom Planer ausgewählt werden."
+        ),
+    ),
+    "streaming_cost_pipeline": BenchmarkTask(
+        slug="streaming_cost_pipeline",
+        name="Event-Streaming-Pipeline mit Kosten- & Lastanalyse (Data Engineering)",
+        category="data",
+        prompt=(
+            "Erstelle einen Python-Service 'stream_pipeline', der Events über eine Message-"
+            "Queue (Kafka oder RabbitMQ) aus mehreren simulierten Quellen konsumiert, sie über "
+            "eine Redis-Caching-Schicht aggregiert und die Ergebnisse in einer REST-API "
+            "bereitstellt. Recherchiere vorab die aktuell empfohlenen, stabilen Paketversionen "
+            "für den gewählten Message-Broker-Client. Vergleiche außerdem die monatlichen "
+            "Hosting-Kosten von mindestens zwei Cloud-Anbietern für diesen Workload und "
+            "dokumentiere sie. Liefere requirements.txt, pytest-Tests (Broker gemockt) und "
+            "einen Lasttest für die REST-API."
+        ),
+        expected_project_name="stream_pipeline",
+        expected_files=["requirements.txt"],
+        description=(
+            "Prüft, ob 'data_engineer' (Event-Streaming/Caching-Pipeline statt reflexhaft "
+            "'backend'), 'web_research' (aktuelle Paketversionen), 'finops' (Cloud-Kosten-"
+            "vergleich) und 'performance' (Lasttest) bei einer Aufgabe, die alle vier fachlich "
+            "echt braucht, tatsächlich vom Planer ausgewählt werden."
+        ),
+    ),
+    "branded_landing_page": BenchmarkTask(
+        slug="branded_landing_page",
+        name="SaaS-Landingpage mit eigenem Branding (Copywriting/Grafik)",
+        category="fullstack",
+        prompt=(
+            "Erstelle eine öffentliche Marketing-Landingpage 'brandflow_landing' für ein neues "
+            "SaaS-Produkt namens 'BrandFlow' OHNE bestehendes Branding. Die Seite braucht ein "
+            "eigenes Logo/Icon-Set, überzeugende deutsche Marketingtexte (Hero-Headline, "
+            "Feature-Beschreibungen, FAQ, Call-to-Action-Buttons) statt Lorem-Ipsum/technischer "
+            "Platzhalter, und modernes responsives HTML/CSS."
+        ),
+        expected_project_name="brandflow_landing",
+        expected_files=["index.html"],
+        description=(
+            "Prüft, ob 'image_generator' (Logo/Icons ohne bestehendes Branding) und "
+            "'copywriter' (echte Marketingtexte statt Platzhalter) bei einer Aufgabe, die "
+            "beide fachlich echt braucht, tatsächlich vom Planer ausgewählt werden."
+        ),
+    ),
     "html_dashboard_ui": BenchmarkTask(
         slug="html_dashboard_ui",
         name="Modernes Dark-Mode Dashboard (Frontend/Fullstack)",

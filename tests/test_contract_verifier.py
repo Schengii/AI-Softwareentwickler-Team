@@ -9,8 +9,10 @@ from pathlib import Path
 from core.contract_verifier import (
     extract_backend_endpoints,
     extract_frontend_api_calls,
+    extract_python_client_calls,
     normalize_path,
     verify_api_contracts,
+    verify_cross_project_contract,
 )
 
 
@@ -160,6 +162,80 @@ fetch("/api/items", { method: "DELETE" });
         self.assertFalse(report.passed)
         self.assertEqual(len(report.mismatches), 1)
         self.assertEqual(report.mismatches[0].mismatch_type, "METHOD_MISMATCH")
+
+
+# KI-Team-Analyse 07.09.2026, Punkt 9 "Fehlende Interoperabilitäts-Tests zwischen generierten
+# Projekten": core/contract_verifier.py.verify_cross_project_contract() gleicht ausgehende
+# HTTP-Aufrufe EINES Workspace-Projekts gegen die Endpunkte eines ANDEREN ab.
+class TestCrossProjectContract(unittest.TestCase):
+    def setUp(self):
+        self._caller_tmp = tempfile.TemporaryDirectory()
+        self._provider_tmp = tempfile.TemporaryDirectory()
+        self.caller_dir = Path(self._caller_tmp.name)
+        self.provider_dir = Path(self._provider_tmp.name)
+
+    def tearDown(self):
+        self._caller_tmp.cleanup()
+        self._provider_tmp.cleanup()
+
+    def test_extract_python_client_calls_finds_literal_and_fstring_paths(self):
+        (self.caller_dir / "client.py").write_text(
+            'import requests\n'
+            'BASE_URL = "http://taskpulse:8000"\n\n'
+            'def notify():\n'
+            '    requests.post(f"{BASE_URL}/api/events", json={})\n'
+            '    requests.get("/api/notes")\n',
+            encoding="utf-8",
+        )
+        calls = extract_python_client_calls(self.caller_dir)
+        paths = {(c.method, c.raw_path) for c in calls}
+        self.assertIn(("POST", "/api/events"), paths)
+        self.assertIn(("GET", "/api/notes"), paths)
+
+    def test_matching_endpoint_across_projects_passes(self):
+        (self.caller_dir / "client.py").write_text(
+            'import requests\n\ndef fetch():\n    requests.get("/api/notes")\n', encoding="utf-8",
+        )
+        (self.provider_dir / "main.py").write_text(
+            'from fastapi import FastAPI\napp = FastAPI()\n\n'
+            '@app.get("/api/notes")\ndef list_notes():\n    return []\n',
+            encoding="utf-8",
+        )
+        report = verify_cross_project_contract(self.caller_dir, self.provider_dir)
+        self.assertTrue(report.passed)
+        self.assertEqual(report.mismatches, [])
+
+    def test_missing_endpoint_in_provider_is_flagged(self):
+        (self.caller_dir / "client.py").write_text(
+            'import requests\n\ndef notify():\n    requests.post("/api/events")\n', encoding="utf-8",
+        )
+        (self.provider_dir / "main.py").write_text(
+            'from fastapi import FastAPI\napp = FastAPI()\n\n'
+            '@app.get("/api/notes")\ndef list_notes():\n    return []\n',
+            encoding="utf-8",
+        )
+        report = verify_cross_project_contract(self.caller_dir, self.provider_dir)
+        self.assertFalse(report.passed)
+        self.assertEqual(len(report.mismatches), 1)
+        self.assertEqual(report.mismatches[0].mismatch_type, "MISSING_ENDPOINT")
+
+    def test_method_mismatch_across_projects_is_flagged(self):
+        (self.caller_dir / "client.py").write_text(
+            'import requests\n\ndef remove():\n    requests.delete("/api/notes")\n', encoding="utf-8",
+        )
+        (self.provider_dir / "main.py").write_text(
+            'from fastapi import FastAPI\napp = FastAPI()\n\n'
+            '@app.get("/api/notes")\ndef list_notes():\n    return []\n',
+            encoding="utf-8",
+        )
+        report = verify_cross_project_contract(self.caller_dir, self.provider_dir)
+        self.assertFalse(report.passed)
+        self.assertEqual(report.mismatches[0].mismatch_type, "METHOD_MISMATCH")
+
+    def test_no_client_calls_or_no_endpoints_skips_silently(self):
+        report = verify_cross_project_contract(self.caller_dir, self.provider_dir)
+        self.assertTrue(report.passed)
+        self.assertEqual(report.mismatches, [])
 
 
 if __name__ == "__main__":

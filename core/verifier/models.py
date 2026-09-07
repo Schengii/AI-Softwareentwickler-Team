@@ -390,6 +390,25 @@ _README_FILE_REF_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Team-Optimierung (KI-Team-Analyse 07.09.2026, Punkt 3 "Stub-Completeness-Check erkennt keine
+# logisch unvollständigen Implementierungen"): erkennt im README dokumentierte API-Endpunkte
+# ("GET /users/{id}", auch in Code-Spans/Tabellenzeilen). Bewusst nur GROSSGESCHRIEBENE HTTP-
+# Methoden direkt vor einem `/`-Pfad - normale Fließtext-Prosa schreibt "get"/"post" so gut wie
+# nie in Großbuchstaben, das vermeidet die meisten Fehlalarme aus Marketing-/Beschreibungstext.
+_README_ENDPOINT_RE = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)\b\s*`?\s*(/[A-Za-z0-9_\-{}/.]*)")
+
+# Dasselbe Prinzip wie _PY_WRITE_ROUTE_DECORATOR_RE, aber für ALLE HTTP-Methoden (inkl. GET) MIT
+# Erfassung des Pfad-Literals (Gruppe 4) und des Router-/App-Variablennamens (Gruppe 1) - Letzterer
+# wird gebraucht, um einen ggf. bekannten APIRouter(prefix=...) korrekt voranzustellen.
+_PY_ROUTE_PATH_RE = re.compile(
+    r"@([A-Za-z_]\w*)\.(get|post|put|patch|delete)\(\s*(['\"])([^'\"]*)\3",
+    re.IGNORECASE,
+)
+
+# Normalisiert einen Pfadparameter-Platzhalter (`{id}`, `{note_id}`, ...) auf `{}`, da README und
+# Implementierung oft unterschiedliche Parameternamen für dieselbe Route verwenden.
+_PATH_PARAM_RE = re.compile(r"\{[^}/]*\}")
+
 # Zweiter realer Fund im selben cloudvault-Projekt, den die reine Stub-Kommentar-Suche NICHT
 # erfasst hätte: `list_files()` gab hart `return []` zurück und `get_tags()` eine hartcodierte
 # Konstantenliste - kein "Hier würde..."-Kommentar, trotzdem keine echte Persistenz/Anbindung.

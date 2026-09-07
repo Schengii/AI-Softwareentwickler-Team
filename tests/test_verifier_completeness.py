@@ -1082,6 +1082,51 @@ class TestCompletenessCheck(unittest.TestCase):
             report = verifier.check_completeness()
             self.assertTrue(report.passed)
 
+    # KI-Team-Analyse 07.09.2026, Punkt 3: semantischer README-zu-Implementierung-Abgleich für
+    # dokumentierte API-Endpunkte (core/verifier/completeness.py._readme_endpoints_not_implemented()).
+    def test_readme_endpoint_without_matching_route_is_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "README.md").write_text(
+                "Endpoints:\n- `GET /notes`\n- `DELETE /notes/{note_id}`\n", encoding="utf-8",
+            )
+            (project_dir / "main.py").write_text(
+                "from fastapi import FastAPI\napp = FastAPI()\n\n"
+                "@app.get(\"/notes\")\ndef list_notes():\n    return []\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            messages = [i.message for i in report.issues]
+            self.assertTrue(any("DELETE /notes/{note_id}" in m for m in messages))
+            self.assertFalse(any("GET /notes" in m and "README dokumentiert" in m for m in messages))
+
+    def test_readme_endpoint_matching_route_with_router_prefix_is_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "README.md").write_text("- `GET /api/v1/logs`\n", encoding="utf-8")
+            (project_dir / "logs.py").write_text(
+                "from fastapi import APIRouter\n"
+                "router = APIRouter(prefix=\"/api/v1/logs\")\n\n"
+                "@router.get(\"/\")\ndef list_logs():\n    return []\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_no_readme_endpoint_mentions_no_issue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "README.md").write_text("Ein Projekt ohne dokumentierte Endpunkte.\n", encoding="utf-8")
+            (project_dir / "main.py").write_text("def main():\n    pass\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
 
 if __name__ == "__main__":
     unittest.main()

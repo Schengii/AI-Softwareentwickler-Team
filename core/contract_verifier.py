@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 _IGNORED_DIRS = {
     ".venv", "venv", ".ai_team_venv", "node_modules", "__pycache__",
@@ -48,6 +49,17 @@ _FETCH_CALL_PATTERN = re.compile(
 # axios.get("/api/items"), axios.post("/api/items", ...), axios.delete(`/api/items/${id}`)
 _AXIOS_CALL_PATTERN = re.compile(
     r'axios\.(get|post|put|delete|patch)\s*\(\s*(?:["\']([^"\']+)["\']|`([^`]+)`)',
+    re.IGNORECASE,
+)
+
+# KI-Team-Analyse 07.09.2026, Punkt 9 "Fehlende Interoperabilitäts-Tests zwischen generierten
+# Projekten": Regex für Python-HTTP-Client-Aufrufe (requests/httpx), mit denen EIN generiertes
+# Projekt (z.B. event_relay) einen HTTP-Endpunkt eines ANDEREN generierten Projekts (z.B.
+# taskpulse) aufruft - das Server-zu-Server-Pendant zu _FETCH_CALL_PATTERN/_AXIOS_CALL_PATTERN
+# oben (die nur Browser-seitige Frontend-Aufrufe erfassen). Erfasst sowohl reine String-Literale
+# als auch f-Strings mit einer führenden Variablen-Interpolation (`f"{BASE_URL}/events"`).
+_PYTHON_HTTP_CLIENT_CALL_PATTERN = re.compile(
+    r'\b(?:requests|httpx|client|session)\.(get|post|put|delete|patch)\s*\(\s*f?["\']([^"\']+)["\']',
     re.IGNORECASE,
 )
 
@@ -348,6 +360,114 @@ def verify_api_contracts(project_dir: Path | str) -> ContractReport:
                 frontend_call=fc,
                 details=f"Frontend nutzt {fc.method}, Backend unterstützt für '{target_norm}' jedoch nur: [{available}].",
                 suggested_fix=f"Ändere die Frontend-Methode zu {list(methods_for_path.keys())[0]} oder ergänze Backend-Route.",
+            ))
+            report.passed = False
+
+    return report
+
+
+def _strip_python_fstring_interpolation_prefix(raw: str) -> str:
+    """Entfernt eine führende Python-f-String-Interpolation (z.B. `{BASE_URL}` in
+    `f"{BASE_URL}/events"`) - übrig bleibt der literale Pfad-Teil, der normalisiert und mit den
+    Endpunkten des Ziel-Projekts abgeglichen werden kann. Dasselbe Prinzip wie die
+    `${...}`-Behandlung für JS-Template-Strings in normalize_path(), nur für Python-f-Strings
+    (geschweifte Klammern ohne führendes `$`)."""
+    return re.sub(r"^\{[^}]*\}", "", raw)
+
+
+def extract_python_client_calls(project_dir: Path | str) -> list[FrontendApiCall]:
+    """Sucht in Python-Dateien nach AUSGEHENDEN HTTP-Aufrufen (requests/httpx) - das Server-zu-
+    Server-Pendant zu extract_frontend_api_calls() (KI-Team-Analyse 07.09.2026, Punkt 9). Nur
+    Aufrufe mit einem literalen (ggf. per f-String-Variable präfixierten) Pfad werden erfasst -
+    ein vollständig dynamisch zusammengesetzter Pfad kann statisch nicht sicher aufgelöst
+    werden und wird bewusst übersprungen (ein übersehener Fund ist besser als ein Fehlalarm,
+    dieselbe Haltung wie überall in diesem Modul)."""
+    project_dir = Path(project_dir).resolve()
+    calls: list[FrontendApiCall] = []
+    for py_file in project_dir.rglob("*.py"):
+        if any(part in _IGNORED_DIRS for part in py_file.relative_to(project_dir).parts):
+            continue
+        try:
+            content = py_file.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        rel_path = str(py_file.relative_to(project_dir)).replace("\\", "/")
+        for match in _PYTHON_HTTP_CLIENT_CALL_PATTERN.finditer(content):
+            method = match.group(1).upper()
+            raw = _strip_python_fstring_interpolation_prefix(match.group(2).strip())
+            parsed = urlsplit(raw)
+            path = parsed.path if parsed.scheme else raw
+            if not path.startswith("/"):
+                continue
+            line_no = content[:match.start()].count("\n") + 1
+            calls.append(FrontendApiCall(method=method, raw_path=path, source_file=rel_path, line_number=line_no))
+    return calls
+
+
+def verify_cross_project_contract(caller_dir: Path | str, provider_dir: Path | str) -> ContractReport:
+    """
+    Statischer Cross-Projekt-Contract-Check (KI-Team-Analyse 07.09.2026, Punkt 9 "Fehlende
+    Interoperabilitäts-Tests zwischen generierten Projekten"): gleicht ausgehende HTTP-Aufrufe
+    EINES generierten Workspace-Projekts (`caller_dir`, z.B. event_relay) gegen die tatsächlich
+    deklarierten Backend-Routen eines ANDEREN generierten Workspace-Projekts (`provider_dir`,
+    z.B. taskpulse) ab - dasselbe Prinzip wie verify_api_contracts() (Frontend vs. Backend
+    DESSELBEN Projekts), hier für zwei UNABHÄNGIGE Projekte, die im echten Betrieb über HTTP
+    miteinander kommunizieren sollen. Bisher arbeitete jedes Workspace-Projekt beim Verifizieren
+    komplett isoliert - ob project A tatsächlich zu project B passt, blieb ungeprüft, bis
+    (spätestens) ein echter Produktionsausfall es zeigte.
+
+    Rein statisch (keine laufenden Container/echten Requests nötig, dieselbe "echt statt
+    geraten, aber ohne Infrastruktur-Voraussetzung"-Philosophie wie core/verifier/completeness.py):
+    erfasst nur Aufrufe mit literalem Pfad (siehe extract_python_client_calls()) und Endpunkte,
+    die extract_backend_endpoints() bereits für den Single-Projekt-Check nutzt.
+    """
+    caller_dir = Path(caller_dir).resolve()
+    provider_dir = Path(provider_dir).resolve()
+    endpoints = extract_backend_endpoints(provider_dir)
+    client_calls = extract_python_client_calls(caller_dir)
+
+    report = ContractReport(
+        passed=True,
+        endpoints_found=len(endpoints),
+        frontend_calls_found=len(client_calls),
+        endpoints=endpoints,
+        frontend_calls=client_calls,
+    )
+    if not endpoints or not client_calls:
+        # Keines der beiden Projekte hat etwas beizusteuern (kein Backend bei provider_dir
+        # bzw. keine ausgehenden HTTP-Aufrufe bei caller_dir) - kein Interop-Check nötig.
+        return report
+
+    backend_map: dict[str, dict[str, Endpoint]] = {}
+    for ep in endpoints:
+        backend_map.setdefault(ep.normalized_path, {})[ep.method] = ep
+
+    for call in client_calls:
+        target_norm = call.normalized_path
+        if target_norm not in backend_map:
+            candidates = [p for p in backend_map if p.split("/")[-1] == target_norm.split("/")[-1]]
+            report.mismatches.append(ContractMismatch(
+                mismatch_type="MISSING_ENDPOINT",
+                frontend_call=call,
+                details=f"`{provider_dir.name}` registriert keinen Endpunkt für den von "
+                        f"`{caller_dir.name}` aufgerufenen Pfad '{call.raw_path}' "
+                        f"(normalisiert: {target_norm}).",
+                suggested_fix=(
+                    f"Existierende Routen mit ähnlichem Namen in `{provider_dir.name}`: "
+                    f"{', '.join(candidates)}" if candidates else ""
+                ),
+            ))
+            report.passed = False
+            continue
+
+        methods_for_path = backend_map[target_norm]
+        if call.method not in methods_for_path:
+            available = ", ".join(methods_for_path.keys())
+            report.mismatches.append(ContractMismatch(
+                mismatch_type="METHOD_MISMATCH",
+                frontend_call=call,
+                details=f"`{caller_dir.name}` ruft {call.method} {call.raw_path} auf, aber "
+                        f"`{provider_dir.name}` registriert für '{target_norm}' nur: [{available}].",
             ))
             report.passed = False
 

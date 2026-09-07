@@ -26,7 +26,14 @@ from memory.run_history import get_agent_success_rates, get_recent_runs
 class _FakeLLM:
     def __init__(self, label: str, succeed: bool = True):
         self.label = label
-        self.model_name = "fake-model"
+        # Bewusst NICHT "fake-model" (das in praktisch jeder anderen Testdatei dieser Suite
+        # verwendete generische Fake-LLM-Modellname): memory/run_history.py._is_real_run()
+        # filtert genau diesen Namen seit der KI-Team-Analyse 07.09.2026 (Punkt 5, "Fake-Model
+        # in Testzyklen") aus jeder Optimierungsberechnung heraus, um die reale
+        # memory/run_history.json vor Test-Rauschen zu schützen. Dieser Test prüft die reine
+        # Lese-Plumbing von get_agent_success_rates() selbst, nicht die Fake-Model-Filterung -
+        # ein anderer, nicht gefilterter Modellname hält beide Anliegen sauber getrennt.
+        self.model_name = "test-stub-model"
         self._succeed = succeed
 
     async def generate_with_tools(self, messages, system_prompt, tools, _allow_self_fallback=True):

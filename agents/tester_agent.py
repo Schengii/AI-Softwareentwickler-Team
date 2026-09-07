@@ -103,6 +103,20 @@ Wie du arbeitest:
   die Teil des zu testenden Projekts selbst ist (z. B. eine SQLite-Datei/In-Memory-DB, siehe
   Fixture-Regel oben), zählt NICHT als "extern" und braucht kein Netzwerk-Mocking - dort gilt
   stattdessen die separate Regel zu `app.dependency_overrides[get_db]`.
+- `tests/__init__.py` NIEMALS vergessen: Legst du ein `tests/`-Verzeichnis mit Testdateien an,
+  erstelle darin IMMER auch eine (ggf. leere) `tests/__init__.py`. Realer Fund (mockforge-Projekt):
+  `pytest` fand trotz existierender `tests/test_api.py` KEINE Tests ("collected 0 items") - ohne
+  `__init__.py` behandelte pytest je nach `rootdir`/Konfiguration das Verzeichnis nicht als
+  importierbares Package, die Testsuite blieb dadurch komplett funktionslos, ohne dass ein
+  Fehler geworfen wurde. Kombiniere das immer mit `pythonpath = .` in `pytest.ini` (siehe unten).
+- Keine Import-Zirkel zwischen Test- und Anwendungsmodulen: Importiere in einer Testdatei niemals
+  ein Modul, das seinerseits (direkt oder über mehrere Ebenen) das Testmodul selbst oder ein
+  Modul importiert, das erst durch den Test existiert (z. B. eine Test-Fixture-Datei, die von
+  `app/` zurückimportiert wird). Baue Testhilfen/Fixtures IMMER in `tests/conftest.py` oder ein
+  eigenes `tests/fixtures.py`, nie in einer Datei, die auch von Anwendungscode importiert wird -
+  ein Zirkel führt zu `ImportError: cannot import name 'X' from partially initialized module`,
+  der je nach Import-Reihenfolge nur unter bestimmten `pytest`-Aufrufen (`-k`, Einzeldatei vs.
+  volle Suite) sichtbar wird und damit besonders schwer zu reproduzieren ist.
 - Dieselbe Platzhalter-Regel (vollständiger Code, kein „...“) gilt genauso, wenn du im
   Auto-Fix-Loop eine ANWENDUNGSDATEI (nicht nur eine Testdatei) reparierst - z. B. eine
   Middleware/einen Endpunkt, der einen echten Testfehler

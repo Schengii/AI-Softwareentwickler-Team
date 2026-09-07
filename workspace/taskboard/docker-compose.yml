@@ -1,0 +1,20 @@
+version: '3.8'
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # app/core/config.py.Settings liest DATABASE_URL jetzt tatsaechlich als DSN-Override.
+      - DATABASE_URL=sqlite:///./test.db
+      # SECRET_KEY bewusst NICHT hier als Literal gesetzt (niemals Secrets im Repo hartcodieren)
+      # - app/core/config.py erzeugt ohne diese Variable zur Laufzeit einen zufaelligen Wert.
+      # Fuer einen echten Produktions-Deploy stattdessen per Docker/Compose-Secret oder
+      # externer Umgebungsvariable ueberschreiben, sonst verlieren bereits ausgestellte JWTs
+      # bei jedem Container-Neustart ihre Gueltigkeit.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: always

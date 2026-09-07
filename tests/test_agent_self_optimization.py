@@ -16,6 +16,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import agents.orchestrator.retrospective as retrospective_module
 from agents.orchestrator import Orchestrator
 from core.message_bus import AgentResult
 
@@ -170,6 +171,90 @@ Beispiel für einen Tool-Aufruf mit Begründung:
             self.orchestrator._extract_and_store_learnings(report)
 
         self.assertTrue(kb.get_learnings("dev_lead"))
+
+
+class TestDeterministicCheckSuggestionExtraction(unittest.TestCase):
+    """Testet _extract_and_store_check_suggestions(): Team-Optimierung 2026-09-07 - der
+    Trainer-Report enthält bei statisch erkennbaren Fehlermustern zusätzlich zur Prompt-Regel
+    einen "**Deterministischer Check-Vorschlag:**"-Text, der bisher nirgends aufgefangen wurde
+    und nach dem Lauf spurlos verloren ging."""
+
+    def setUp(self):
+        self.orchestrator = Orchestrator()
+
+    def test_suggestion_on_same_line_is_stored(self):
+        report = (
+            "**Deterministischer Check-Vorschlag:** core/verifier/completeness.py sollte "
+            "prüfen, ob jedes ForeignKey-Feld einen Index trägt.\n"
+        )
+        with patch.object(retrospective_module, "record_lesson") as mock_record:
+            self.orchestrator._extract_and_store_check_suggestions(report)
+        mock_record.assert_called_once()
+        args = mock_record.call_args.args
+        self.assertEqual(args[0], "_team")
+        self.assertEqual(args[1], "deterministic_check_suggestion")
+        self.assertIn("ForeignKey", args[2])
+
+    def test_output_template_placeholder_on_same_line_is_not_stored(self):
+        # Der Beispieltext aus dem System-Prompt selbst (agents/agent_trainer_agent.py) - taucht
+        # auf, wenn das Modell die Formatvorlage unausgefüllt übernimmt statt sie auszufüllen
+        # oder bewusst leer zu lassen.
+        report = (
+            "**Deterministischer Check-Vorschlag:** z. B. \"core/verifier/completeness.py: "
+            "prüfe X\" - leer lassen, wenn der Fehler echtes fachliches Urteilsvermögen braucht\n"
+        )
+        with patch.object(retrospective_module, "record_lesson") as mock_record:
+            self.orchestrator._extract_and_store_check_suggestions(report)
+        mock_record.assert_not_called()
+
+    def test_empty_suggestion_on_own_output_template_line_is_not_stored(self):
+        # Die Vorlage aus Punkt 2 des Ausgabeformats: der eigentliche Vorschlag steht (falls
+        # vorhanden) erst in der Folgezeile in eckigen Klammern - eine leere Same-Line-Erfassung
+        # nach dem Doppelpunkt darf nicht als (leerer) Vorschlag gespeichert werden.
+        report = (
+            "**Deterministischer Check-Vorschlag** (nur bei statisch erkennbaren Mustern, "
+            "siehe Grenze oben):\n"
+            "[leer lassen, wenn der Fehler echtes fachliches Urteilsvermögen braucht]\n"
+        )
+        with patch.object(retrospective_module, "record_lesson") as mock_record:
+            self.orchestrator._extract_and_store_check_suggestions(report)
+        mock_record.assert_not_called()
+
+    def test_no_suggestion_line_stores_nothing(self):
+        report = "### 1. Schwachstellen\n- Ganz normaler Bericht ohne Check-Vorschlag.\n"
+        with patch.object(retrospective_module, "record_lesson") as mock_record:
+            self.orchestrator._extract_and_store_check_suggestions(report)
+        mock_record.assert_not_called()
+
+    def test_too_short_suggestion_is_discarded(self):
+        report = "**Deterministischer Check-Vorschlag:** kurz\n"
+        with patch.object(retrospective_module, "record_lesson") as mock_record:
+            self.orchestrator._extract_and_store_check_suggestions(report)
+        mock_record.assert_not_called()
+
+    def test_self_optimization_run_persists_check_suggestion(self):
+        """End-to-End über _run_agent_trainer_self_optimization(): eine erfolgreiche
+        Selbstoptimierung mit Check-Vorschlag im Bericht muss ihn tatsächlich speichern."""
+        results = [
+            AgentResult(task_id="t1", agent_id="backend", agent_name="Backend", success=False,
+                        content="Fehler.", total_tokens=100, error="ImportError"),
+        ]
+        report = (
+            '```json\n{"learnings": []}\n```\n'
+            "**Deterministischer Check-Vorschlag:** core/pre_flight_check.py sollte fehlende "
+            "greenlet-Abhängigkeit bei create_async_engine() erkennen.\n"
+        )
+        mock_execute = AsyncMock(return_value=AgentResult(
+            task_id="trainer_auto_opt", agent_id="agent_trainer", agent_name="Agent Trainer",
+            success=True, content=report,
+        ))
+        with patch.object(self.orchestrator._agents["agent_trainer"], "execute", mock_execute), \
+             patch.object(retrospective_module, "record_lesson") as mock_record:
+            asyncio.run(self.orchestrator._run_agent_trainer_self_optimization(
+                user_request="Baue etwas", results=results, retro_content="",
+            ))
+        mock_record.assert_called_once()
+        self.assertIn("greenlet", mock_record.call_args.args[2])
 
 
 if __name__ == "__main__":

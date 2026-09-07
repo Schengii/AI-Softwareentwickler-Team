@@ -8,6 +8,28 @@ import json
 import re
 
 from core.message_bus import AgentResult, AgentTask
+from core.team_memory import record_lesson
+
+# Team-Optimierung (Retrospektive 2026-09-07): agents/agent_trainer_agent.py wird angewiesen,
+# bei statisch erkennbaren Fehlermustern (z.B. "Paket X fehlt in requirements.txt") zusätzlich
+# zur Prompt-Regel einen "**Deterministischer Check-Vorschlag:** ..." zu formulieren, WEIL eine
+# Prompt-Regel für solche Muster nachweislich unzuverlässig ist (siehe dortiger Docstring). Bis
+# hierhin wurde dieser Vorschlag aber nirgends aufgefangen - nur die Lern-Regeln (```json
+# "learnings"-Block, siehe _extract_and_store_learnings() unten) wurden persistiert, der
+# Prosa-Vorschlag stand nur einmalig im Trainer-Bericht dieses einen Laufs und ging danach
+# spurlos verloren. Genau DAS war die Lücke, die core/pre_flight_check.py/core/verifier/
+# completeness.py erst nach einer vollständigen manuellen Analysesitzung (statt automatisch aus
+# dem Trainer-Report heraus) um die greenlet-/python-multipart-/TrustedHostMiddleware-Checks
+# ergänzte. _DETERMINISTIC_CHECK_SUGGESTION_RE fängt diese Zeile jetzt ab (beide im Prompt
+# vorkommenden Varianten: "...Vorschlag:**" direkt gefolgt vom Text, und "...Vorschlag**
+# (Klammerzusatz):" mit dem Text danach oder in der Folgezeile).
+_DETERMINISTIC_CHECK_SUGGESTION_RE = re.compile(
+    r"Deterministischer\s+Check-Vorschlag\**[^:\n]*:\s*(.*)"
+)
+# Der Beispiel-/Platzhaltertext aus dem System-Prompt selbst ("leer lassen, wenn...") - taucht
+# auf, wenn das Modell die Formatvorlage unverändert übernimmt statt sie auszufüllen oder bewusst
+# leer zu lassen; ein solcher Treffer ist kein echter Vorschlag und wird verworfen.
+_CHECK_SUGGESTION_PLACEHOLDER_RE = re.compile(r"leer lassen|z\.\s?B\.\s*\"", re.IGNORECASE)
 
 
 class RetrospectiveMixin:
@@ -92,8 +114,28 @@ class RetrospectiveMixin:
 
         if trainer_result and trainer_result.success and trainer_result.content:
             self._extract_and_store_learnings(trainer_result.content)
+            self._extract_and_store_check_suggestions(trainer_result.content)
 
         return trainer_result
+
+    @staticmethod
+    def _extract_and_store_check_suggestions(report_text: str) -> None:
+        """Fängt "**Deterministischer Check-Vorschlag:** ..."-Zeilen aus dem Trainer-Report ab
+        (siehe _DETERMINISTIC_CHECK_SUGGESTION_RE-Docstring oben) und persistiert sie über
+        core/team_memory.py.record_lesson() unter dem Team-weiten Pseudo-Projekt "_team" - dem
+        bereits etablierten Muster für reine Team-Selbstoptimierungs-Buchführung (siehe dortiges
+        unused_agent). Landet damit dauerhaft in memory/team_lessons.jsonl, wo ein Mensch (oder
+        eine spätere KI-Team-Analysesitzung) es beim nächsten Blick auf die Team-Lektionen sieht,
+        statt dass der Vorschlag nur im Transkript dieses einen Laufs verschwindet. Kategorie
+        "deterministic_check_suggestion" ist bewusst in _LOW_SEVERITY_CATEGORIES eingestuft
+        (siehe dort) - ein Vorschlag ist eine Handlungsempfehlung an das Framework-Team, kein
+        akuter Governance-Blocker eines laufenden Projekts, und soll dessen knappe Prompt-Plätze
+        nicht verdrängen."""
+        for match in _DETERMINISTIC_CHECK_SUGGESTION_RE.finditer(report_text):
+            suggestion = match.group(1).strip(" `\"'*")
+            if len(suggestion) <= 15 or _CHECK_SUGGESTION_PLACEHOLDER_RE.search(suggestion):
+                continue
+            record_lesson("_team", "deterministic_check_suggestion", suggestion)
 
     def _extract_and_store_learnings(self, report_text: str) -> None:
         """

@@ -36,7 +36,15 @@ _NORMALIZE_RE = re.compile(r"[^\w]+")
 # Rezenz für seltenere, wichtigere Befunde (echte Governance-/Verifikations-Blocker wie
 # `unresolved_governance_critical`) verdrängt - genau das ist nach dem event_relay-Lauf am
 # 2026-09-06 passiert.
-_LOW_SEVERITY_CATEGORIES = frozenset({"model_performance", "low_performing_agent", "unused_agent"})
+# "deterministic_check_suggestion" (Team-Optimierung 2026-09-07, siehe
+# agents/orchestrator/retrospective.py._extract_and_store_check_suggestions()) ist wie
+# "unused_agent" reine TEAM-Selbstoptimierungs-Buchführung, kein konkreter Code-Defekt an einem
+# Projekt - gehört deshalb ebenfalls zu den niedrigschwelligen Kategorien, damit ein einzelner
+# Trainer-Report mit mehreren Vorschlägen nicht die knappen Plätze für echte Governance-Funde
+# verdrängt.
+_LOW_SEVERITY_CATEGORIES = frozenset({
+    "model_performance", "low_performing_agent", "unused_agent", "deterministic_check_suggestion",
+})
 # Wie viele der MAX_LESSONS_SHOWN-Plätze mindestens für die jüngsten NICHT-niedrigschwelligen
 # Lektionen reserviert sind (siehe _LOW_SEVERITY_CATEGORIES-Docstring und
 # _select_with_severity_reservation()) - der Rest wird ganz normal der Reihe nach aufgefüllt,

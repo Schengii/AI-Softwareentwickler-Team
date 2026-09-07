@@ -168,6 +168,83 @@ class TestRunPreFlightCheckMissingInit(unittest.TestCase):
                 self.assertIn("myapp", init_issues[0].suggestion)
 
 
+class TestRunPreFlightCheckHiddenRuntimeDependency(unittest.TestCase):
+    """Tests fuer versteckte Laufzeit-Abhaengigkeiten (Team-Lektionen 2026-09-05):
+    greenlet (create_async_engine), python-multipart (OAuth2PasswordRequestForm/Form),
+    bcrypt-Versionspin (passlib CryptContext)."""
+
+    def test_detects_missing_greenlet_for_async_engine(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "database.py", "from sqlalchemy.ext.asyncio import create_async_engine\n"
+                                          "engine = create_async_engine('sqlite+aiosqlite:///./x.db')\n")
+            _write(proj / "requirements.txt", "sqlalchemy\n")
+            report = run_pre_flight_check(proj)
+            hidden = [i for i in report.issues if i.issue_type == "hidden_runtime_dependency"]
+            self.assertTrue(any("greenlet" in i.message.lower() for i in hidden))
+
+    def test_no_issue_when_greenlet_already_listed(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "database.py", "from sqlalchemy.ext.asyncio import create_async_engine\n"
+                                          "engine = create_async_engine('sqlite+aiosqlite:///./x.db')\n")
+            _write(proj / "requirements.txt", "sqlalchemy\ngreenlet\n")
+            report = run_pre_flight_check(proj)
+            hidden = [i for i in report.issues if i.issue_type == "hidden_runtime_dependency"]
+            self.assertFalse(any("greenlet" in i.message.lower() for i in hidden))
+
+    def test_detects_missing_python_multipart_for_oauth2_form(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "auth.py", "from fastapi.security import OAuth2PasswordRequestForm\n"
+                                      "def login(form: OAuth2PasswordRequestForm):\n    pass\n")
+            _write(proj / "requirements.txt", "fastapi\n")
+            report = run_pre_flight_check(proj)
+            hidden = [i for i in report.issues if i.issue_type == "hidden_runtime_dependency"]
+            self.assertTrue(any("multipart" in i.message.lower() for i in hidden))
+
+    def test_no_issue_when_python_multipart_already_listed(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "auth.py", "from fastapi import Form\n"
+                                      "def login(username: str = Form(...)):\n    pass\n")
+            _write(proj / "requirements.txt", "fastapi\npython-multipart\n")
+            report = run_pre_flight_check(proj)
+            hidden = [i for i in report.issues if i.issue_type == "hidden_runtime_dependency"]
+            self.assertFalse(any("multipart" in i.message.lower() for i in hidden))
+
+    def test_detects_unpinned_bcrypt_with_passlib_cryptcontext(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "security.py",
+                   "from passlib.context import CryptContext\n"
+                   "pwd_context = CryptContext(schemes=['bcrypt'], deprecated='auto')\n")
+            _write(proj / "requirements.txt", "passlib\nbcrypt\n")
+            report = run_pre_flight_check(proj)
+            hidden = [i for i in report.issues if i.issue_type == "hidden_runtime_dependency"]
+            self.assertTrue(any("bcrypt<4.1" in i.suggestion for i in hidden))
+
+    def test_no_issue_when_bcrypt_pinned_below_4_1(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "security.py",
+                   "from passlib.context import CryptContext\n"
+                   "pwd_context = CryptContext(schemes=['bcrypt'], deprecated='auto')\n")
+            _write(proj / "requirements.txt", "passlib\nbcrypt<4.1\n")
+            report = run_pre_flight_check(proj)
+            hidden = [i for i in report.issues if i.issue_type == "hidden_runtime_dependency"]
+            self.assertFalse(any("bcrypt" in i.message.lower() for i in hidden))
+
+    def test_hidden_runtime_dependency_is_not_blocking(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "database.py", "from sqlalchemy.ext.asyncio import create_async_engine\n"
+                                          "engine = create_async_engine('sqlite+aiosqlite:///./x.db')\n")
+            _write(proj / "requirements.txt", "sqlalchemy\n")
+            report = run_pre_flight_check(proj)
+            self.assertFalse(report.has_blocking_issues)
+
+
 class TestRunPreFlightCheckMissingDependency(unittest.TestCase):
     """Tests fuer fehlende Drittanbieter-Abhaengigkeiten."""
 

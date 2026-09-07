@@ -126,6 +126,44 @@ class QuotaEstimator:
         }
 
     @staticmethod
+    def get_proactive_budget_warnings(threshold: float = 0.8) -> list[str]:
+        """Team-Optimierung (Retrospektive 2026-09-07): das bisherige Quota-Management war rein
+        REAKTIV - core/token_guard.py markiert ein Modell erst als erschöpft, NACHDEM ein
+        echter 429/Rate-Limit-Fehler eintraf (siehe core/llm_factory.py, jeder
+        `mark_model_exhausted()`-Aufruf steht dort in einem `except`-Block). Das Team arbeitet
+        dadurch faktisch "bis zum Anschlag", bevor überhaupt umgeschaltet wird - sichtbar an der
+        Häufung von Fallback-Ketten-Commits (OpenRouter/DeepSeek als weitere Ausweichziele), die
+        jeweils NACH einer bereits eingetretenen Erschöpfung nachgerüstet wurden.
+
+        Gibt eine Warnung PRO Provider zurück, dessen Session-Verbrauch bereits `threshold`
+        (Standard 80%) seines ungefähren Tages-Kontingents (FREE_TIER_LIMITS) erreicht hat -
+        BEVOR der erste 429 überhaupt eintritt. Nutzt bewusst denselben
+        `get_detailed_report()`-Verbrauch wie /tokens (kein neuer Zähler, keine doppelte
+        Buchführung) - ein Aufrufer (z.B. agents/orchestrator/__init__.py vor Laufstart, analog
+        zum bestehenden Projekt-Budget-Check dort) kann diese Warnung dem Team/der Nutzerin VOR
+        weiterem Tokenverbrauch zeigen, statt erst auf den reaktiven Cooldown zu warten. Rein
+        informativ (keine Rückgabe blockiert etwas) - Provider ohne definiertes Tages-Budget
+        (`approx_daily_budget == 0`, z.B. Claude ohne Gratis-Kontingent) werden übersprungen,
+        da "80% von 0" keine sinnvolle Warnschwelle ergibt."""
+        report = QuotaEstimator.get_detailed_report()
+        provider_usage = report["provider_usage"]
+        warnings = []
+        for p_key, info in FREE_TIER_LIMITS.items():
+            budget = info["approx_daily_budget"]
+            if budget <= 0:
+                continue
+            used = provider_usage.get(p_key, 0)
+            ratio = used / budget
+            if ratio < threshold:
+                continue
+            warnings.append(
+                f"⚠️ {info['name']}: bereits `{used:,}` von ca. `{budget:,}` Tokens des "
+                f"ungefähren Tages-Kontingents verbraucht ({ratio * 100:.0f}%) - Erschöpfung "
+                f"(und automatischer Fallback) steht bevor."
+            )
+        return warnings
+
+    @staticmethod
     def format_markdown_table() -> str:
         report = QuotaEstimator.get_detailed_report()
         grand_total = report["grand_total_tokens"]

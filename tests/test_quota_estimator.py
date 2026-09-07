@@ -74,6 +74,32 @@ class TestQuotaEstimator(unittest.TestCase):
         self.assertIn("1,800", table)  # 1500 + 300, unabhängig vom aktuellen Sitzungs-Zähler
         self.assertIn("claude-sonnet-5", table)
 
+    def test_no_proactive_warning_below_threshold(self):
+        # groq-Tagesbudget laut FREE_TIER_LIMITS: 500_000 Tokens - 1.000 Tokens sind weit darunter.
+        quota_estimator_module.token_guard.record_usage("groq:openai/gpt-oss-120b", 800, 200)
+        warnings = QuotaEstimator.get_proactive_budget_warnings()
+        self.assertEqual(warnings, [])
+
+    def test_proactive_warning_above_threshold(self):
+        # 90% von 500_000 (groq) auslösen, ohne dass bereits ein 429 aufgetreten ist (token_guard
+        # markiert das Modell hier bewusst NICHT als erschoepft - reine Verbrauchszaehlung).
+        quota_estimator_module.token_guard.record_usage("groq:openai/gpt-oss-120b", 400_000, 50_000)
+        warnings = QuotaEstimator.get_proactive_budget_warnings()
+        self.assertTrue(any("Groq" in w for w in warnings))
+
+    def test_provider_without_daily_budget_never_warns(self):
+        # Claude hat approx_daily_budget=0 (kein Gratis-Kontingent) - "80% von 0" ergibt keine
+        # sinnvolle Warnschwelle und darf nie ausgeloest werden, egal wie hoch der Verbrauch ist.
+        quota_estimator_module.token_guard.record_usage("claude-sonnet-5", 10_000_000, 5_000_000)
+        warnings = QuotaEstimator.get_proactive_budget_warnings()
+        self.assertFalse(any("Claude" in w for w in warnings))
+
+    def test_custom_threshold_is_respected(self):
+        quota_estimator_module.token_guard.record_usage("groq:openai/gpt-oss-120b", 200_000, 0)
+        self.assertEqual(QuotaEstimator.get_proactive_budget_warnings(threshold=0.5), [])
+        warnings = QuotaEstimator.get_proactive_budget_warnings(threshold=0.3)
+        self.assertTrue(any("Groq" in w for w in warnings))
+
     def test_agent_availability_reflects_exhausted_model(self):
         """
         Nutzeranfrage: Übersicht, welche AGENTEN (nicht nur welche Modelle) gerade betroffen

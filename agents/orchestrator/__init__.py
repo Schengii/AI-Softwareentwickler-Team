@@ -129,6 +129,7 @@ from core.project_status import (
     read_status,
     save_project_checkpoint,
 )
+from core.quota_estimator import QuotaEstimator
 from core.result_aggregator import ResultAggregator
 from core.task_manager import TaskManager
 from core.team_memory import format_team_lessons_for_agents, record_lesson
@@ -604,6 +605,17 @@ class Orchestrator(
                 )
                 self._history.add_assistant_message(response)
                 return response
+
+        # Team-Optimierung (Retrospektive 2026-09-07): core/token_guard.py schaltet bisher rein
+        # REAKTIV auf ein Fallback-Modell um - erst NACHDEM ein echter 429/Rate-Limit-Fehler
+        # eintrat (siehe core/quota_estimator.py.get_proactive_budget_warnings()-Docstring für
+        # die volle Herleitung). Dieselbe Vorab-Prüfung wie beim Projekt-Token-Budget oben, nur
+        # providerweit statt projektweit: rein informativ, blockiert den Lauf NICHT (anders als
+        # der Budget-Abbruch oben), damit ein einzelner naher Provider kein automatisches
+        # Fallback-Verhalten verhindert - das Team soll die Warnung nur SEHEN, bevor der erste
+        # 429 überhaupt eintritt.
+        for warning in QuotaEstimator.get_proactive_budget_warnings():
+            self._history.add_assistant_message(warning)
 
         # Projekt-Kontinuität über mehrere Sitzungen hinweg (core/project_status.py): eine
         # neue Sitzung (neues Terminal) hat KEINEN Zugriff auf memory/conversation_history.py

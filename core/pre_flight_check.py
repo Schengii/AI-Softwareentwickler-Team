@@ -20,6 +20,7 @@ eindeutige Faelle.
 from __future__ import annotations
 
 import ast
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,6 +61,82 @@ _IMPORT_TO_PKG: dict[str, str] = {
     "passlib": "passlib",
     "multipart": "python_multipart",
 }
+
+# Team-Optimierung (Retrospektive 2026-09-07, aus 3 team_lessons-Eintraegen destilliert):
+# diese drei Muster sind Laufzeit-Abhaengigkeiten, die eine reine Import-Analyse (oben)
+# NIE findet, weil das Paket selbst nirgends direkt importiert wird - es wird erst
+# TRANSITIV zur Laufzeit von einer Drittanbieter-Bibliothek nachgeladen und faellt dann
+# nicht beim Start, sondern erst beim ECHTEN Aufruf des jeweiligen Codepfads auf:
+#   - SQLAlchemy create_async_engine() braucht "greenlet" (SQLAlchemy importiert es lazy)
+#   - FastAPI OAuth2PasswordRequestForm/Form(...) braucht "python-multipart" zum Parsen
+#     von Formulardaten (FastAPI prueft das nur zur Laufzeit beim ersten Form-Request)
+#   - passlib's CryptContext(schemes=["bcrypt"]) bricht mit bcrypt>=4.1 (bcrypt.__about__
+#     wurde entfernt, passlibs interner Selbsttest schlaegt fehl)
+# Jeweils ein (Signal-Regex im Quelltext, benoetigtes Paket, Meldung) - regex statt AST,
+# weil das Signal (Klassenname/Funktionsaufruf) unabhaengig davon erkannt werden soll, WIE
+# es importiert wurde (from-import, aliasiert, etc.).
+_HIDDEN_RUNTIME_DEPENDENCIES: tuple[tuple[re.Pattern, str, str], ...] = (
+    (
+        re.compile(r"\bcreate_async_engine\s*\("),
+        "greenlet",
+        (
+            "`create_async_engine(...)` wird verwendet, aber SQLAlchemy braucht "
+            "`greenlet` zur Laufzeit dafuer (lazy import, KEIN direkter Code-Import) - "
+            "fehlt es, schlaegt jede DB-Operation mit \"the greenlet library is "
+            "required\" fehl."
+        ),
+    ),
+    (
+        re.compile(r"\bOAuth2PasswordRequestForm\b|\bForm\s*\("),
+        "python_multipart",
+        (
+            "`OAuth2PasswordRequestForm`/`Form(...)` wird verwendet, aber FastAPI "
+            "braucht `python-multipart` zur Laufzeit zum Parsen von Formulardaten - "
+            "fehlt es, schlaegt der Endpunkt erst beim ECHTEN Aufruf fehl (kein "
+            "Fehler beim Start)."
+        ),
+    ),
+)
+
+
+def _check_passlib_bcrypt_pin(project_dir: Path, sources_by_file: dict[str, str]) -> PreFlightIssue | None:
+    """Prueft auf die bekannte passlib+bcrypt-Inkompatibilitaet (siehe
+    _HIDDEN_RUNTIME_DEPENDENCIES-Docstring oben): CryptContext(schemes=[..."bcrypt"...])
+    im Code, aber `bcrypt` in requirements.txt ohne oberes Versions-Limit - bcrypt>=4.1
+    bricht passlibs internen Selbsttest. Separat von _HIDDEN_RUNTIME_DEPENDENCIES, weil
+    hier NICHT das Fehlen eines Pakets das Problem ist, sondern eine fehlende Versions-
+    Obergrenze eines bereits vorhandenen Pakets."""
+    bcrypt_scheme_re = re.compile(r"CryptContext\s*\([^)]*bcrypt", re.DOTALL)
+    hit_file = next((f for f, src in sources_by_file.items() if bcrypt_scheme_re.search(src)), None)
+    if not hit_file:
+        return None
+    for req_name in ("requirements.txt", "requirements-dev.txt", "requirements_dev.txt"):
+        req_file = project_dir / req_name
+        if not req_file.exists():
+            continue
+        try:
+            for line in req_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                stripped = line.strip().lower()
+                if not stripped.startswith("bcrypt"):
+                    continue
+                # Irgendeine Obergrenze (<, <=, ==) gilt als abgesichert - nur ein
+                # unbegrenztes "bcrypt" oder ein reines Untergrenzen-Pin (>=) ist riskant.
+                if "<" in stripped or "==" in stripped:
+                    return None
+        except OSError:
+            pass
+    return PreFlightIssue(
+        file=hit_file,
+        line=0,
+        issue_type="hidden_runtime_dependency",
+        message=(
+            "`CryptContext(..., schemes=[\"bcrypt\"])` (passlib) wird verwendet, aber "
+            "`bcrypt` ist in requirements.txt nicht auf `<4.1` gedeckelt - bcrypt>=4.1 "
+            "entfernt `bcrypt.__about__`, passlibs interner Selbsttest schlaegt fehl "
+            "(\"password cannot be longer than 72 bytes\")."
+        ),
+        suggestion="Pinne `bcrypt<4.1` in requirements.txt.",
+    )
 
 
 @dataclass
@@ -237,12 +314,19 @@ def _run_checks(project_path: Path, report: PreFlightReport) -> None:
     # dasselbe fehlende Paket - nur einmal melden, nicht 10 Mal).
     seen_issues: set[tuple[str, str, str]] = set()
 
+    # Fuer die projektweiten Muster-Checks (_HIDDEN_RUNTIME_DEPENDENCIES, passlib+bcrypt
+    # unten) muessen alle Quelltexte vorliegen, BEVOR diese Checks laufen - ein Signal
+    # (z.B. create_async_engine) kann in einer anderen Datei stehen als requirements.txt
+    # geprueft wird gegen.
+    sources_by_file: dict[str, str] = {}
+
     for py_file in py_files:
         rel_path = str(py_file.relative_to(project_path)).replace("\\", "/")
         try:
             source = py_file.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        sources_by_file[rel_path] = source
 
         # 1. Syntax-Check via ast.parse
         try:
@@ -320,6 +404,38 @@ def _run_checks(project_path: Path, report: PreFlightReport) -> None:
                             suggestion=f"Fuege `{top}` zu requirements.txt hinzu.",
                         ))
 
+    # Projektweite Muster-Checks fuer bekannte versteckte Laufzeit-Abhaengigkeiten
+    # (siehe _HIDDEN_RUNTIME_DEPENDENCIES-Docstring): erst NACH der Datei-Schleife, weil
+    # sie ueber alle gesammelten Quelltexte hinweg pruefen, nicht nur pro Datei.
+    for pattern, required_pkg, message in _HIDDEN_RUNTIME_DEPENDENCIES:
+        if required_pkg in known_packages:
+            continue
+        hit = next(
+            ((f, src) for f, src in sources_by_file.items() if pattern.search(src)),
+            None,
+        )
+        if not hit:
+            continue
+        hit_file, src = hit
+        line = next((i + 1 for i, src_line in enumerate(src.splitlines()) if pattern.search(src_line)), 0)
+        key = ("hidden_dep", required_pkg, hit_file)
+        if key not in seen_issues:
+            seen_issues.add(key)
+            report.issues.append(PreFlightIssue(
+                file=hit_file,
+                line=line,
+                issue_type="hidden_runtime_dependency",
+                message=message,
+                suggestion=f"Fuege `{required_pkg.replace('_', '-')}` zu requirements.txt hinzu.",
+            ))
+
+    bcrypt_issue = _check_passlib_bcrypt_pin(project_path, sources_by_file)
+    if bcrypt_issue:
+        key = ("hidden_dep", "bcrypt_pin", bcrypt_issue.file)
+        if key not in seen_issues:
+            seen_issues.add(key)
+            report.issues.append(bcrypt_issue)
+
 
 def format_pre_flight_issues_for_fix(report: PreFlightReport) -> str:
     """Formatiert die Befunde als kompakten Fix-Auftrag fuer den backend-Agenten."""
@@ -331,6 +447,7 @@ def format_pre_flight_issues_for_fix(report: PreFlightReport) -> str:
     ]
     blocking = [i for i in report.issues if i.issue_type in {"missing_init", "syntax_error"}]
     deps = [i for i in report.issues if i.issue_type == "missing_dependency"]
+    hidden_deps = [i for i in report.issues if i.issue_type == "hidden_runtime_dependency"]
 
     if blocking:
         lines.append("Blockierende Befunde (verhindern jeden Testlauf):")
@@ -345,6 +462,18 @@ def format_pre_flight_issues_for_fix(report: PreFlightReport) -> str:
         lines.append("Fehlende Dependencies (requirements.txt):")
         for issue in deps[:10]:
             lines.append(f"  - {issue.message}")
+            if issue.suggestion:
+                lines.append(f"    Loesung: {issue.suggestion}")
+
+    if hidden_deps:
+        lines.append("")
+        lines.append(
+            "Versteckte Laufzeit-Abhaengigkeiten (schlagen erst beim ECHTEN Aufruf fehl, "
+            "nicht beim Start - aus frueheren Team-Lektionen bekannt):"
+        )
+        for issue in hidden_deps[:10]:
+            loc = f"{issue.file}:{issue.line}" if issue.line else issue.file
+            lines.append(f"  - {loc}: {issue.message}")
             if issue.suggestion:
                 lines.append(f"    Loesung: {issue.suggestion}")
 

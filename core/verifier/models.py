@@ -564,6 +564,25 @@ _SQLA_DRIVER_TO_PACKAGE_NAME: dict[str, str] = {
     "pymysql": "pymysql",
 }
 
+# Team-Optimierung (Retrospektive 2026-09-07, taskboard-Governance-Fund): `TrustedHostMiddleware
+# (allowed_hosts=["*"])` erlaubt JEDEN Host-Header und hebelt damit den eigentlichen Zweck der
+# Middleware (Schutz vor Host-Header-Injection/DNS-Rebinding) komplett aus - ein Muster, das
+# bereits in einem echten Projekt vom Governance-Review post-hoc gefunden wurde. Rein
+# regelbasiert per Regex statt AST (dieselbe Abwägung wie beim Rest dieser Datei: das Argument
+# ist fast immer ein Literal, ein echter Parser lohnt sich für ein einzelnes Schlüsselwort-Muster
+# nicht). Erfasst sowohl `["*"]` als auch `allowed_hosts="*"` (String statt Liste).
+_TRUSTED_HOST_WILDCARD_RE = re.compile(
+    r"TrustedHostMiddleware[^)]*allowed_hosts\s*=\s*(?:\[\s*[\"']\*[\"']\s*,?\s*\]|[\"']\*[\"'])"
+)
+# CORSMiddleware(allow_origins=["*"], allow_credentials=True) ist die eigentlich gefaehrliche
+# Kombination (nicht der Wildcard allein): mit Credentials erlaubt das JEDER Website im Browser,
+# im Namen eines eingeloggten Nutzers Anfragen zu stellen - moderne Browser verweigern diese
+# Kombination inzwischen zwar serverseitig oft selbst, aber verlassen sollte man sich darauf
+# nicht. Beide Argumente koennen in beliebiger Reihenfolge auftreten, deshalb zwei Regexe statt
+# eines starren "allow_origins...allow_credentials"-Musters.
+_CORS_WILDCARD_ORIGIN_RE = re.compile(r"CORSMiddleware[^)]*allow_origins\s*=\s*\[\s*[\"']\*[\"']")
+_CORS_ALLOW_CREDENTIALS_RE = re.compile(r"CORSMiddleware[^)]*allow_credentials\s*=\s*True")
+
 # Fünfter realer Fund (Team-Retrospektive, taskpulse-Projekt): _missing_local_python_imports()
 # (siehe completeness.py) prüfte bisher NUR Python - dieselbe Fehlerklasse ("lokaler Import
 # verweist auf eine nie erzeugte Datei") passiert genauso in JS/TS-Frontend-Projekten, z.B.

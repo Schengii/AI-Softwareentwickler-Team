@@ -1001,6 +1001,76 @@ class TestCompletenessCheck(unittest.TestCase):
             self.assertFalse(report.passed)
             self.assertTrue(any("receive_webhook" in i.message for i in report.issues))
 
+    def test_detects_trusted_host_wildcard(self):
+        # Elfter realer Fund (taskboard-Projekt): TrustedHostMiddleware(allowed_hosts=["*"])
+        # erlaubt jeden Host-Header und hebelt den Schutz vor Host-Header-Injection aus.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "main.py").write_text(
+                "from fastapi import FastAPI\n"
+                "from fastapi.middleware.trustedhost import TrustedHostMiddleware\n"
+                "app = FastAPI()\n"
+                "app.add_middleware(TrustedHostMiddleware, allowed_hosts=[\"*\"])\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any("TrustedHostMiddleware" in i.message for i in report.issues))
+
+    def test_trusted_host_with_explicit_domains_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "main.py").write_text(
+                "from fastapi import FastAPI\n"
+                "from fastapi.middleware.trustedhost import TrustedHostMiddleware\n"
+                "app = FastAPI()\n"
+                "app.add_middleware(TrustedHostMiddleware, allowed_hosts=[\"example.com\"])\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_detects_cors_wildcard_with_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "main.py").write_text(
+                "from fastapi import FastAPI\n"
+                "from fastapi.middleware.cors import CORSMiddleware\n"
+                "app = FastAPI()\n"
+                "app.add_middleware(\n"
+                "    CORSMiddleware,\n"
+                "    allow_origins=[\"*\"],\n"
+                "    allow_credentials=True,\n"
+                ")\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any("CORSMiddleware" in i.message for i in report.issues))
+
+    def test_cors_wildcard_without_credentials_not_flagged(self):
+        # Oeffentliche, nicht-authentifizierte APIs mit reinem Wildcard-CORS (ohne Credentials)
+        # sind gaengige, unbedenkliche Praxis - bewusst nicht gemeldet.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "main.py").write_text(
+                "from fastapi import FastAPI\n"
+                "from fastapi.middleware.cors import CORSMiddleware\n"
+                "app = FastAPI()\n"
+                "app.add_middleware(CORSMiddleware, allow_origins=[\"*\"])\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
     def test_ignores_venv_and_node_modules(self):
         with tempfile.TemporaryDirectory() as tmp:
             project_dir = Path(tmp)

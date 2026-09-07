@@ -32,6 +32,8 @@ from core.verifier.models import (
     _API_CALL_MARKER_RE,
     _COMPONENT_FILENAME_RE,
     _COMPONENT_TAKES_PROPS_RE,
+    _CORS_ALLOW_CREDENTIALS_RE,
+    _CORS_WILDCARD_ORIGIN_RE,
     _IGNORED_DIRS,
     _IMPORT_TO_PACKAGE_NAME,
     _IO_CALL_MARKERS,
@@ -61,6 +63,7 @@ from core.verifier.models import (
     _STDLIB_MODULES,
     _STUB_MARKER_RE,
     _STUB_SCAN_EXTENSIONS,
+    _TRUSTED_HOST_WILDCARD_RE,
     CompletenessIssue,
     CompletenessReport,
 )
@@ -114,6 +117,7 @@ class CompletenessMixin:
         issues.extend(self._conflicting_sqlalchemy_config(py_texts))
         issues.extend(self._double_router_prefix(py_texts))
         issues.extend(self._missing_sqlalchemy_dsn_driver(py_texts))
+        issues.extend(self._wildcard_security_middleware(py_texts))
 
         return CompletenessReport(attempted=True, passed=not issues, issues=issues)
 
@@ -731,6 +735,36 @@ class CompletenessMixin:
                             f"Treiber erst zur Laufzeit anhand der DSN nach, ein "
                             f"`ModuleNotFoundError: No module named '{driver}'` bricht dann JEDE "
                             f"echte DB-Verbindung (und damit jede Testsuite) sofort ab.",
+                ))
+        return issues
+
+    def _wildcard_security_middleware(self, py_texts: dict[str, str]) -> list[CompletenessIssue]:
+        """Elfter realer Fund (taskboard-Projekt, Governance-Review 2026-09-07): `app.add_
+        middleware(TrustedHostMiddleware, allowed_hosts=["*"])` erlaubt JEDEN Host-Header und
+        hebelt damit den Schutz vor Host-Header-Injection/DNS-Rebinding komplett aus - ein
+        Muster, das bisher NUR im nachgelagerten Governance-Review per Code-Lesen gefunden
+        wurde, nie vorab durch diesen Check. Ebenso wird `CORSMiddleware(allow_origins=["*"],
+        allow_credentials=True)` gemeldet - die Kombination aus Wildcard-Origin UND Credentials
+        erlaubt jeder Website, im Namen eines eingeloggten Nutzers Anfragen zu stellen. Ein
+        reiner CORS-Wildcard OHNE `allow_credentials=True` wird bewusst NICHT gemeldet - das ist
+        für öffentliche, nicht-authentifizierte APIs eine gängige, unbedenkliche Praxis."""
+        issues: list[CompletenessIssue] = []
+        for rel, text in sorted(py_texts.items()):
+            if _TRUSTED_HOST_WILDCARD_RE.search(text):
+                issues.append(CompletenessIssue(
+                    file_path=rel,
+                    message="`TrustedHostMiddleware(allowed_hosts=[\"*\"])` erlaubt jeden "
+                            "Host-Header - hebelt den Schutz vor Host-Header-Injection/"
+                            "DNS-Rebinding komplett aus. Auf eine explizite Liste erlaubter "
+                            "Domains umstellen (z.B. aus einer Konfigurationsvariable).",
+                ))
+            if _CORS_WILDCARD_ORIGIN_RE.search(text) and _CORS_ALLOW_CREDENTIALS_RE.search(text):
+                issues.append(CompletenessIssue(
+                    file_path=rel,
+                    message="`CORSMiddleware(allow_origins=[\"*\"], allow_credentials=True)` "
+                            "erlaubt jeder Website, im Namen eines eingeloggten Nutzers "
+                            "Anfragen zu stellen. Entweder `allow_origins` auf eine explizite "
+                            "Liste beschränken oder `allow_credentials` auf False setzen.",
                 ))
         return issues
 

@@ -24,6 +24,17 @@ COST_HISTORY_FILE = Path(BASE_DIR) / "memory" / "cost_history.json"
 
 _STAT_KEYS = ("total_calls", "prompt_tokens", "completion_tokens", "total_tokens", "cache_read_tokens", "cache_write_tokens")
 
+# Team-Optimierung (Retrospektive 2026-09-07): core/quota_estimator.py.
+# get_proactive_budget_warnings() sah bisher NUR core/token_guard.py - eine reine In-Memory-
+# Instanz DIESES EINEN Prozesses (siehe Moduldocstring oben). Mehrere kurze CLI-Sitzungen am
+# selben Tag (der real übliche Nutzungs-Rhythmus, nicht ein einziger durchgehender Dauerlauf)
+# ließen den Verbrauchszähler bei jedem Neustart wieder bei Null beginnen - eine Provider-
+# Erschöpfung, die sich über den TAG hinweg (nicht nur innerhalb einer Sitzung) anbahnt, blieb
+# dadurch bis zum tatsächlichen 429 unsichtbar. `daily` bucketet denselben Verbrauch zusätzlich
+# nach Kalendertag (UTC), unabhängig von Sitzungsgrenzen - `get_today_totals()` macht daraus
+# die Grundlage für eine über den ganzen Tag hinweg wirksame Warnung.
+_MAX_DAILY_BUCKETS_KEPT = 14
+
 
 def record_run_usage(model_deltas: dict[str, dict[str, int]]) -> None:
     """
@@ -54,6 +65,18 @@ def record_run_usage(model_deltas: dict[str, dict[str, int]]) -> None:
             entry.setdefault(key, 0)
             entry[key] += delta.get(key, 0)
 
+    day_key = datetime.now(UTC).strftime("%Y-%m-%d")
+    daily = data.setdefault("daily", {})
+    day_totals = daily.setdefault(day_key, {})
+    for model_name, delta in model_deltas.items():
+        if delta.get("total_tokens", 0) <= 0:
+            continue
+        entry = day_totals.setdefault(model_name, dict.fromkeys(_STAT_KEYS, 0))
+        for key in _STAT_KEYS:
+            entry.setdefault(key, 0)
+            entry[key] += delta.get(key, 0)
+    _prune_old_daily_buckets(daily)
+
     data["runs_recorded"] = data.get("runs_recorded", 0) + 1
     now = datetime.now(UTC).isoformat(timespec="seconds")
     data["last_recorded_at"] = now
@@ -62,10 +85,32 @@ def record_run_usage(model_deltas: dict[str, dict[str, int]]) -> None:
     _save(data)
 
 
+def _prune_old_daily_buckets(daily: dict) -> None:
+    """Behält nur die jüngsten `_MAX_DAILY_BUCKETS_KEPT` Kalendertage - verhindert
+    unbegrenztes Wachstum von memory/cost_history.json über Monate/Jahre der Nutzung hinweg
+    (Token-/Speicher-Effizienz), ohne die für die proaktive Tages-Budget-Warnung relevante
+    jüngste Vergangenheit zu verlieren. Tages-Schlüssel im Format "YYYY-MM-DD" sortieren sich
+    lexikografisch identisch zur chronologischen Reihenfolge - kein Datums-Parsing nötig."""
+    if len(daily) <= _MAX_DAILY_BUCKETS_KEPT:
+        return
+    for old_day in sorted(daily.keys())[:-_MAX_DAILY_BUCKETS_KEPT]:
+        del daily[old_day]
+
+
 def get_lifetime_totals() -> dict:
     """Gibt die kumulierten Werte über ALLE bisher aufgezeichneten Läufe zurück (leeres dict,
     falls noch nie ein Lauf mit echtem Tokenverbrauch aufgezeichnet wurde – kein Crash)."""
     return _load()
+
+
+def get_today_totals(day: str | None = None) -> dict[str, dict[str, int]]:
+    """Gibt die kumulierten Pro-Modell-Werte für EINEN Kalendertag zurück (Standard: heute,
+    UTC) - siehe _MAX_DAILY_BUCKETS_KEPT-Docstring oben für die volle Herleitung. Leeres dict,
+    falls für diesen Tag noch kein Lauf mit echtem Tokenverbrauch aufgezeichnet wurde (der
+    Normalfall für den ersten Lauf eines neuen Tages) oder die Historie-Datei nicht lesbar ist."""
+    day = day or datetime.now(UTC).strftime("%Y-%m-%d")
+    data = _load()
+    return data.get("daily", {}).get(day, {})
 
 
 def _load() -> dict:

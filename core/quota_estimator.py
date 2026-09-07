@@ -82,13 +82,14 @@ class QuotaEstimator:
         return rows
 
     @staticmethod
-    def get_detailed_report() -> dict[str, Any]:
-        summary = token_guard.get_summary()
-        models = summary.get("models", {})
-        grand_total = summary.get("grand_total_tokens", 0)
-        exhausted = summary.get("exhausted_models", [])
-
-        # Aufteilung nach Providern
+    def _bucket_usage_by_provider(models: dict[str, dict[str, Any]]) -> dict[str, int]:
+        """Ordnet eine {Modellname: Verbrauchsstatistik}-Zuordnung (egal ob aus
+        core/token_guard.py.get_summary() für die aktuelle Sitzung oder aus
+        memory/cost_history.py.get_today_totals() für den gesamten Kalendertag - beide haben
+        dieselbe Form) nach Provider zusammen. Extrahiert aus dem vormals in
+        get_detailed_report() inline stehenden Code, damit get_proactive_daily_budget_warnings()
+        unten dieselbe Zuordnungslogik wiederverwenden kann, statt sie ein zweites Mal (und
+        potenziell abweichend) zu implementieren."""
         provider_usage: dict[str, int] = {
             "gemini": 0,
             "claude": 0,
@@ -98,7 +99,6 @@ class QuotaEstimator:
             "huggingface": 0,
             "other": 0,
         }
-
         for model_name, stat in models.items():
             m_lower = model_name.lower()
             tokens = stat.get("total_tokens", 0)
@@ -116,17 +116,25 @@ class QuotaEstimator:
                 provider_usage["huggingface"] += tokens
             else:
                 provider_usage["other"] += tokens
+        return provider_usage
+
+    @staticmethod
+    def get_detailed_report() -> dict[str, Any]:
+        summary = token_guard.get_summary()
+        models = summary.get("models", {})
+        grand_total = summary.get("grand_total_tokens", 0)
+        exhausted = summary.get("exhausted_models", [])
 
         return {
             "grand_total_tokens": grand_total,
             "models_detail": models,
-            "provider_usage": provider_usage,
+            "provider_usage": QuotaEstimator._bucket_usage_by_provider(models),
             "exhausted_models": exhausted,
             "free_tier_limits": FREE_TIER_LIMITS,
         }
 
     @staticmethod
-    def get_proactive_budget_warnings(threshold: float = 0.8) -> list[str]:
+    def get_proactive_daily_budget_warnings(threshold: float = 0.8) -> list[str]:
         """Team-Optimierung (Retrospektive 2026-09-07): das bisherige Quota-Management war rein
         REAKTIV - core/token_guard.py markiert ein Modell erst als erschöpft, NACHDEM ein
         echter 429/Rate-Limit-Fehler eintraf (siehe core/llm_factory.py, jeder
@@ -135,18 +143,24 @@ class QuotaEstimator:
         Häufung von Fallback-Ketten-Commits (OpenRouter/DeepSeek als weitere Ausweichziele), die
         jeweils NACH einer bereits eingetretenen Erschöpfung nachgerüstet wurden.
 
-        Gibt eine Warnung PRO Provider zurück, dessen Session-Verbrauch bereits `threshold`
-        (Standard 80%) seines ungefähren Tages-Kontingents (FREE_TIER_LIMITS) erreicht hat -
-        BEVOR der erste 429 überhaupt eintritt. Nutzt bewusst denselben
-        `get_detailed_report()`-Verbrauch wie /tokens (kein neuer Zähler, keine doppelte
-        Buchführung) - ein Aufrufer (z.B. agents/orchestrator/__init__.py vor Laufstart, analog
-        zum bestehenden Projekt-Budget-Check dort) kann diese Warnung dem Team/der Nutzerin VOR
-        weiterem Tokenverbrauch zeigen, statt erst auf den reaktiven Cooldown zu warten. Rein
-        informativ (keine Rückgabe blockiert etwas) - Provider ohne definiertes Tages-Budget
-        (`approx_daily_budget == 0`, z.B. Claude ohne Gratis-Kontingent) werden übersprungen,
-        da "80% von 0" keine sinnvolle Warnschwelle ergibt."""
-        report = QuotaEstimator.get_detailed_report()
-        provider_usage = report["provider_usage"]
+        Gibt eine Warnung PRO Provider zurück, dessen Verbrauch bereits `threshold` (Standard
+        80%) seines ungefähren Tages-Kontingents (FREE_TIER_LIMITS) erreicht hat - BEVOR der
+        erste 429 überhaupt eintritt. Nutzt bewusst NICHT core/token_guard.py (reiner
+        In-Memory-Zähler DIESES EINEN Prozesses, bei jedem Neustart wieder bei Null - siehe
+        memory/cost_history.py-Moduldocstring), sondern den über memory/cost_history.py.
+        get_today_totals() kumulierten Verbrauch des GANZEN Kalendertags (UTC) über ALLE
+        Sitzungen hinweg: mehrere kurze CLI-Sitzungen am selben Tag (der real übliche
+        Nutzungs-Rhythmus, nicht ein einziger durchgehender Dauerlauf) summieren sich hier
+        korrekt, statt bei jedem Neustart wieder unsichtbar bei Null zu beginnen. Ein Aufrufer
+        (agents/orchestrator/__init__.py vor Laufstart, analog zum bestehenden Projekt-
+        Budget-Check dort) kann diese Warnung dem Team/der Nutzerin VOR weiterem Tokenverbrauch
+        zeigen, statt erst auf den reaktiven Cooldown zu warten. Rein informativ (keine Rückgabe
+        blockiert etwas) - Provider ohne definiertes Tages-Budget (`approx_daily_budget == 0`,
+        z.B. Claude ohne Gratis-Kontingent) werden übersprungen, da "80% von 0" keine sinnvolle
+        Warnschwelle ergibt."""
+        from memory.cost_history import get_today_totals
+
+        provider_usage = QuotaEstimator._bucket_usage_by_provider(get_today_totals())
         warnings = []
         for p_key, info in FREE_TIER_LIMITS.items():
             budget = info["approx_daily_budget"]
@@ -157,9 +171,9 @@ class QuotaEstimator:
             if ratio < threshold:
                 continue
             warnings.append(
-                f"⚠️ {info['name']}: bereits `{used:,}` von ca. `{budget:,}` Tokens des "
-                f"ungefähren Tages-Kontingents verbraucht ({ratio * 100:.0f}%) - Erschöpfung "
-                f"(und automatischer Fallback) steht bevor."
+                f"⚠️ {info['name']}: heute bereits `{used:,}` von ca. `{budget:,}` Tokens des "
+                f"Tages-Kontingents verbraucht ({ratio * 100:.0f}%, über alle Sitzungen hinweg) "
+                f"- Erschöpfung (und automatischer Fallback) steht bevor."
             )
         return warnings
 

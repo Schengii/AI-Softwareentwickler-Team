@@ -19,6 +19,47 @@ from core.token_guard import TokenGuard
 from memory.cost_history import record_run_usage
 
 
+class TestProactiveDailyBudgetWarnings(unittest.TestCase):
+    """Testet get_proactive_daily_budget_warnings() (Team-Optimierung 2026-09-07): tagesweite
+    Warnung ÜBER SITZUNGSGRENZEN HINWEG, gespeist aus memory/cost_history.py.get_today_totals()
+    statt aus dem sitzungsgebundenen core/token_guard.py."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self._cost_patcher = patch.object(
+            cost_history_module, "COST_HISTORY_FILE", Path(self.temp_dir) / "cost_history.json",
+        )
+        self._cost_patcher.start()
+        self.addCleanup(self._cost_patcher.stop)
+        self.addCleanup(lambda: shutil.rmtree(self.temp_dir, ignore_errors=True))
+
+    def test_no_warning_below_threshold(self):
+        record_run_usage({"groq:openai/gpt-oss-120b": {"total_calls": 1, "prompt_tokens": 800, "completion_tokens": 200, "total_tokens": 1000}})
+        self.assertEqual(QuotaEstimator.get_proactive_daily_budget_warnings(), [])
+
+    def test_warning_above_threshold_across_simulated_sessions(self):
+        # Zwei getrennte record_run_usage()-Aufrufe simulieren zwei kurze CLI-Sitzungen am
+        # selben Tag - token_guard (session-gebunden) hätte das NICHT summiert gesehen.
+        record_run_usage({"groq:openai/gpt-oss-120b": {"total_calls": 1, "prompt_tokens": 300_000, "completion_tokens": 0, "total_tokens": 300_000}})
+        record_run_usage({"groq:openai/gpt-oss-120b": {"total_calls": 1, "prompt_tokens": 150_000, "completion_tokens": 0, "total_tokens": 150_000}})
+        warnings = QuotaEstimator.get_proactive_daily_budget_warnings()
+        self.assertTrue(any("Groq" in w for w in warnings))
+
+    def test_provider_without_daily_budget_never_warns(self):
+        record_run_usage({"claude-sonnet-5": {"total_calls": 1, "prompt_tokens": 10_000_000, "completion_tokens": 5_000_000, "total_tokens": 15_000_000}})
+        warnings = QuotaEstimator.get_proactive_daily_budget_warnings()
+        self.assertFalse(any("Claude" in w for w in warnings))
+
+    def test_no_recorded_usage_today_produces_no_warnings(self):
+        self.assertEqual(QuotaEstimator.get_proactive_daily_budget_warnings(), [])
+
+    def test_custom_threshold_is_respected(self):
+        record_run_usage({"groq:openai/gpt-oss-120b": {"total_calls": 1, "prompt_tokens": 200_000, "completion_tokens": 0, "total_tokens": 200_000}})
+        self.assertEqual(QuotaEstimator.get_proactive_daily_budget_warnings(threshold=0.5), [])
+        warnings = QuotaEstimator.get_proactive_daily_budget_warnings(threshold=0.3)
+        self.assertTrue(any("Groq" in w for w in warnings))
+
+
 class TestQuotaEstimator(unittest.TestCase):
     def setUp(self):
         # Isolierter TokenGuard statt des globalen Singletons, damit Tests sich nicht
@@ -73,32 +114,6 @@ class TestQuotaEstimator(unittest.TestCase):
         self.assertIn("Kumulierter Verbrauch", table)
         self.assertIn("1,800", table)  # 1500 + 300, unabhängig vom aktuellen Sitzungs-Zähler
         self.assertIn("claude-sonnet-5", table)
-
-    def test_no_proactive_warning_below_threshold(self):
-        # groq-Tagesbudget laut FREE_TIER_LIMITS: 500_000 Tokens - 1.000 Tokens sind weit darunter.
-        quota_estimator_module.token_guard.record_usage("groq:openai/gpt-oss-120b", 800, 200)
-        warnings = QuotaEstimator.get_proactive_budget_warnings()
-        self.assertEqual(warnings, [])
-
-    def test_proactive_warning_above_threshold(self):
-        # 90% von 500_000 (groq) auslösen, ohne dass bereits ein 429 aufgetreten ist (token_guard
-        # markiert das Modell hier bewusst NICHT als erschoepft - reine Verbrauchszaehlung).
-        quota_estimator_module.token_guard.record_usage("groq:openai/gpt-oss-120b", 400_000, 50_000)
-        warnings = QuotaEstimator.get_proactive_budget_warnings()
-        self.assertTrue(any("Groq" in w for w in warnings))
-
-    def test_provider_without_daily_budget_never_warns(self):
-        # Claude hat approx_daily_budget=0 (kein Gratis-Kontingent) - "80% von 0" ergibt keine
-        # sinnvolle Warnschwelle und darf nie ausgeloest werden, egal wie hoch der Verbrauch ist.
-        quota_estimator_module.token_guard.record_usage("claude-sonnet-5", 10_000_000, 5_000_000)
-        warnings = QuotaEstimator.get_proactive_budget_warnings()
-        self.assertFalse(any("Claude" in w for w in warnings))
-
-    def test_custom_threshold_is_respected(self):
-        quota_estimator_module.token_guard.record_usage("groq:openai/gpt-oss-120b", 200_000, 0)
-        self.assertEqual(QuotaEstimator.get_proactive_budget_warnings(threshold=0.5), [])
-        warnings = QuotaEstimator.get_proactive_budget_warnings(threshold=0.3)
-        self.assertTrue(any("Groq" in w for w in warnings))
 
     def test_agent_availability_reflects_exhausted_model(self):
         """

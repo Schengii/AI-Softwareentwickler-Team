@@ -608,13 +608,15 @@ class Orchestrator(
 
         # Team-Optimierung (Retrospektive 2026-09-07): core/token_guard.py schaltet bisher rein
         # REAKTIV auf ein Fallback-Modell um - erst NACHDEM ein echter 429/Rate-Limit-Fehler
-        # eintrat (siehe core/quota_estimator.py.get_proactive_budget_warnings()-Docstring für
-        # die volle Herleitung). Dieselbe Vorab-Prüfung wie beim Projekt-Token-Budget oben, nur
-        # providerweit statt projektweit: rein informativ, blockiert den Lauf NICHT (anders als
-        # der Budget-Abbruch oben), damit ein einzelner naher Provider kein automatisches
-        # Fallback-Verhalten verhindert - das Team soll die Warnung nur SEHEN, bevor der erste
-        # 429 überhaupt eintritt.
-        for warning in QuotaEstimator.get_proactive_budget_warnings():
+        # eintrat (siehe core/quota_estimator.py.get_proactive_daily_budget_warnings()-Docstring
+        # für die volle Herleitung). Nutzt bewusst die TAGES- statt die Sitzungs-Variante: an
+        # GENAU DIESER Stelle (Laufstart, vor jedem Tokenverbrauch) zählt der kumulierte
+        # Verbrauch des ganzen Kalendertags über alle Sitzungen hinweg, nicht nur der noch junge
+        # Zähler dieses einen, gerade erst gestarteten Prozesses. Rein informativ, blockiert den
+        # Lauf NICHT (anders als der Budget-Abbruch oben), damit ein einzelner naher Provider
+        # kein automatisches Fallback-Verhalten verhindert - das Team soll die Warnung nur SEHEN,
+        # bevor der erste 429 überhaupt eintritt.
+        for warning in QuotaEstimator.get_proactive_daily_budget_warnings():
             self._history.add_assistant_message(warning)
 
         # Projekt-Kontinuität über mehrere Sitzungen hinweg (core/project_status.py): eine

@@ -11,11 +11,12 @@ import json
 import shutil
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
 import memory.cost_history as cost_history_module
-from memory.cost_history import get_lifetime_totals, record_run_usage
+from memory.cost_history import get_lifetime_totals, get_today_totals, record_run_usage
 
 
 class TestCostHistory(unittest.TestCase):
@@ -119,6 +120,65 @@ class TestCostHistory(unittest.TestCase):
         self.assertEqual(stat["total_tokens"], 770)
         self.assertEqual(stat["cache_read_tokens"], 30)
         self.assertEqual(stat["cache_write_tokens"], 10)
+
+
+class TestCostHistoryDailyBuckets(unittest.TestCase):
+    """Testet die Kalendertag-Bucketierung (Team-Optimierung 2026-09-07): Grundlage für eine
+    über mehrere kurze CLI-Sitzungen am selben Tag hinweg wirksame Budget-Warnung (siehe
+    core/quota_estimator.py.get_proactive_daily_budget_warnings()) - core/token_guard.py allein
+    (reiner In-Memory-Zähler pro Prozess) kann das nicht leisten."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.file_path = Path(self.temp_dir) / "cost_history.json"
+        self._patcher = patch.object(cost_history_module, "COST_HISTORY_FILE", self.file_path)
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+        self.addCleanup(lambda: shutil.rmtree(self.temp_dir, ignore_errors=True))
+
+    def test_today_totals_empty_when_never_recorded(self):
+        self.assertEqual(get_today_totals(), {})
+
+    def test_records_today_bucket_alongside_lifetime(self):
+        record_run_usage({"claude-sonnet-5": {"total_calls": 1, "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}})
+        today_key = datetime.now(UTC).strftime("%Y-%m-%d")
+        today = get_today_totals()
+        self.assertEqual(today["claude-sonnet-5"]["total_tokens"], 150)
+        # get_today_totals() ohne Argument muss identisch zum expliziten heutigen Schlüssel sein.
+        self.assertEqual(get_today_totals(today_key), today)
+
+    def test_today_bucket_accumulates_across_multiple_runs_same_day(self):
+        record_run_usage({"gemini-3.6-flash": {"total_calls": 1, "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}})
+        record_run_usage({"gemini-3.6-flash": {"total_calls": 1, "prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}})
+        self.assertEqual(get_today_totals()["gemini-3.6-flash"]["total_tokens"], 180)
+
+    def test_get_today_totals_for_unrecorded_past_day_is_empty(self):
+        record_run_usage({"claude-sonnet-5": {"total_calls": 1, "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}})
+        self.assertEqual(get_today_totals("2000-01-01"), {})
+
+    def test_daily_buckets_beyond_max_kept_are_pruned(self):
+        # 20 künstliche, weit in der Vergangenheit liegende Tage vorab ins Rohformat schreiben -
+        # weit über _MAX_DAILY_BUCKETS_KEPT (14) hinaus.
+        old_daily = {
+            f"2020-01-{day:02d}": {"claude-sonnet-5": {"total_calls": 1, "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cache_read_tokens": 0, "cache_write_tokens": 0}}
+            for day in range(1, 21)
+        }
+        self.file_path.write_text(json.dumps({"models": {}, "daily": old_daily, "runs_recorded": 20}), encoding="utf-8")
+
+        record_run_usage({"claude-sonnet-5": {"total_calls": 1, "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}})
+
+        raw = json.loads(self.file_path.read_text(encoding="utf-8"))
+        self.assertLessEqual(len(raw["daily"]), cost_history_module._MAX_DAILY_BUCKETS_KEPT + 1)  # +1 für den neu hinzugekommenen heutigen Tag
+        # Die ältesten Tage müssen weg sein, die jüngsten (2020-01-20 etc.) erhalten bleiben.
+        self.assertNotIn("2020-01-01", raw["daily"])
+        self.assertIn("2020-01-20", raw["daily"])
+
+    def test_lifetime_totals_unaffected_by_daily_bucketing(self):
+        """Die neue Tages-Bucketierung darf die bestehende, unabhängige Lifetime-Summe nicht
+        verändern - reine Ergänzung, kein Ersatz."""
+        record_run_usage({"claude-sonnet-5": {"total_calls": 1, "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}})
+        totals = get_lifetime_totals()
+        self.assertEqual(totals["models"]["claude-sonnet-5"]["total_tokens"], 150)
 
 
 if __name__ == "__main__":

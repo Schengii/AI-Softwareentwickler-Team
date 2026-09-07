@@ -64,6 +64,21 @@ GROQ_HEAVY_MODEL: str = os.getenv("GROQ_HEAVY_MODEL", "groq:openai/gpt-oss-120b"
 # Gemini-RPM-Limits gehalten (Reserve für gleichzeitige Nutzung außerhalb dieses Frameworks).
 GEMINI_MAX_CALLS_PER_MINUTE: int = int(os.getenv("GEMINI_MAX_CALLS_PER_MINUTE", "12"))
 
+# Explizites Gemini-Context-Caching (core/llm_factory.py.GeminiClient): Anthropic-Aufrufe
+# nutzen bereits `cache_control` (Prompt-Caching) für den (pro Agentenlauf großteils gleich
+# bleibenden) System-Prompt/Tool-Katalog über mehrere Loop-Iterationen hinweg - Gemini bekam
+# dasselbe bisher nie, obwohl die zurückgelesene `cached_content_token_count` zeigt, dass die
+# API implizites Caching bereits unterstützt. Standardmäßig AUS: die Google-API verlangt für
+# EXPLIZITES Caching eine Mindestgröße des zwischengespeicherten Inhalts (modellabhängig,
+# historisch im Bereich mehrerer Tausend Token) - ein System-Prompt/Tool-Katalog, der darunter
+# liegt, würde bei jedem Aufruf einen zusätzlichen (fehlschlagenden) API-Roundtrip zur
+# Cache-Erstellung verursachen, statt Kosten zu sparen. Nur für Projekte mit tatsächlich
+# großen, mehrfach wiederverwendeten System-Prompts (z.B. viele Tools/lange Rollenbeschreibung)
+# bewusst aktivieren. Die Implementierung fällt bei JEDEM Fehler (Modell unterstützt es nicht,
+# Inhalt zu klein, ...) automatisch und dauerhaft auf den unveränderten, ungecachten Pfad
+# zurück - ein deaktiviertes/fehlschlagendes Caching bricht also nie einen echten Agentenlauf.
+GEMINI_ENABLE_CONTEXT_CACHING: bool = os.getenv("GEMINI_ENABLE_CONTEXT_CACHING", "false").lower() == "true"
+
 # Primäre Zuordnung pro Komplexitätsstufe: Standard/Lite laufen primär über Gemini
 # (schnell & günstig), Heavy primär über Claude (stärkeres Trade-off-Reasoning).
 LITE_MODEL: str = GEMINI_LITE_MODEL

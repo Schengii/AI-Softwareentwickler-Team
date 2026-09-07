@@ -4,7 +4,9 @@ mit präziser Token-Messung und automatischer Failover-Kette.
 """
 
 import asyncio
+import hashlib
 import json
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -17,6 +19,7 @@ from config import (
     ANTHROPIC_API_KEY,
     DEEPSEEK_API_KEY,
     GEMINI_API_KEY,
+    GEMINI_ENABLE_CONTEXT_CACHING,
     GEMINI_MAX_CALLS_PER_MINUTE,
     GEMINI_STANDARD_MODEL,
     GROQ_API_KEY,
@@ -626,6 +629,77 @@ class DeepSeekClient:
         return res.text
 
 
+# Explizites Gemini-Context-Caching (siehe GEMINI_ENABLE_CONTEXT_CACHING in config.py) -
+# In-Prozess-Registry statt einer neuen Persistenzschicht: ein Cache-Objekt lohnt sich nur
+# INNERHALB desselben Prozesslaufs (mehrere Loop-Iterationen DESSELBEN Agenten-Tasks teilen sich
+# denselben großen, unveränderten System-Prompt/Tool-Katalog) - über Prozessgrenzen hinweg neu
+# zu cachen würde nur unnötige Erstellungs-Roundtrips verursachen, ohne echten Wiederverwendungs-
+# Nutzen. Key -> (cache_name, expires_at_monotonic). `_gemini_cache_unsupported` merkt sich
+# Keys, für die die Erstellung bereits einmal fehlgeschlagen ist (z.B. Inhalt zu klein für
+# dieses Modell), damit nicht bei JEDEM einzelnen Aufruf erneut derselbe aussichtslose
+# API-Roundtrip versucht wird.
+_gemini_cache_registry: dict[str, tuple[str, float]] = {}
+_gemini_cache_unsupported: set[str] = set()
+_GEMINI_CACHE_TTL_SECONDS = 600.0
+
+
+def _gemini_cache_key(model: str, system_prompt: str, tools: list[dict] | None) -> str:
+    """Stabiler Schlüssel für Modell + System-Prompt + Tool-Katalog - identischer Inhalt über
+    mehrere Loop-Iterationen desselben Agenten-Tasks hinweg ergibt denselben Schlüssel und kann
+    damit dasselbe Cache-Objekt wiederverwenden."""
+    tool_sig = json.dumps([t.get("name") for t in tools], sort_keys=True) if tools else ""
+    digest = hashlib.sha256(f"{system_prompt}\n---\n{tool_sig}".encode()).hexdigest()
+    return f"{model}:{digest}"
+
+
+def _get_or_create_gemini_cache(
+    model: str, system_prompt: str, tools: list[dict] | None,
+) -> str | None:
+    """
+    Liefert den Namen eines wiederverwendbaren Gemini-CachedContent-Objekts für (model,
+    system_prompt, tools), oder None, wenn Caching deaktiviert/nicht verfügbar ist oder die
+    Erstellung fehlschlägt - in JEDEM Fehlerfall bewusst None statt einer Exception, damit der
+    Aufrufer (GeminiClient.generate_with_tools) IMMER auf den unveränderten, ungecachten Pfad
+    zurückfallen kann. Ein fehlgeschlagener Versuch wird für diesen Schlüssel dauerhaft gemerkt
+    (_gemini_cache_unsupported), um nicht bei jedem weiteren Aufruf denselben aussichtslosen
+    API-Roundtrip zu wiederholen.
+    """
+    if not GEMINI_ENABLE_CONTEXT_CACHING or not _gemini_client or not system_prompt:
+        return None
+    key = _gemini_cache_key(model, system_prompt, tools)
+    if key in _gemini_cache_unsupported:
+        return None
+
+    cached = _gemini_cache_registry.get(key)
+    if cached and cached[1] > time.monotonic():
+        return cached[0]
+
+    try:
+        genai_tool = genai_types.Tool(function_declarations=[
+            genai_types.FunctionDeclaration(
+                name=t["name"], description=t.get("description", ""),
+                parameters_json_schema=t.get("parameters", {"type": "object", "properties": {}}),
+            )
+            for t in tools
+        ]) if tools else None
+        cache = _gemini_client.caches.create(
+            model=model,
+            config=genai_types.CreateCachedContentConfig(
+                system_instruction=system_prompt,
+                tools=[genai_tool] if genai_tool else None,
+                ttl=f"{int(_GEMINI_CACHE_TTL_SECONDS)}s",
+            ),
+        )
+        _gemini_cache_registry[key] = (cache.name, time.monotonic() + _GEMINI_CACHE_TTL_SECONDS)
+        return cache.name
+    except Exception:
+        # Häufigste Ursache: system_prompt+tools liegen unter der modellabhängigen
+        # Mindestgröße für explizites Caching - kein Fehler, den ein einzelner Agentenlauf
+        # dem Nutzer melden müsste, nur ein "lohnt sich hier nicht".
+        _gemini_cache_unsupported.add(key)
+        return None
+
+
 class GeminiClient:
     """Wrapper für die Google Gemini API."""
 
@@ -720,8 +794,20 @@ class GeminiClient:
             for attempt in range(MAX_RETRIES):
                 try:
                     await _gemini_rate_limiter.acquire()
+                    # Explizites Context-Caching (siehe GEMINI_ENABLE_CONTEXT_CACHING/
+                    # _get_or_create_gemini_cache oben) ist an ein KONKRETES Modell gebunden -
+                    # ein für `model` erstellter Cache ist bei einem Fallback auf ein anderes
+                    # Modell in dieser Schleife nicht gültig, deshalb pro Modell neu ermittelt
+                    # (Cache-Wiederverwendung über mehrere Loop-Iterationen DESSELBEN Modells
+                    # bleibt trotzdem erhalten, siehe _gemini_cache_registry-TTL).
+                    call_config = config
+                    cache_name = await asyncio.to_thread(_get_or_create_gemini_cache, model, system_prompt, tools)
+                    if cache_name:
+                        call_config = genai_types.GenerateContentConfig(
+                            temperature=TEMPERATURE, max_output_tokens=MAX_OUTPUT_TOKENS, cached_content=cache_name,
+                        )
                     response = await asyncio.to_thread(
-                        _gemini_client.models.generate_content, model=model, contents=contents, config=config,
+                        _gemini_client.models.generate_content, model=model, contents=contents, config=call_config,
                     )
                     return self._parse_gemini_tool_response(response, model)
                 except Exception as e:

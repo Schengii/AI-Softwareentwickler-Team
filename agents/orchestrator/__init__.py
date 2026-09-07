@@ -990,12 +990,30 @@ class Orchestrator(
                 results=results,
                 total_duration=total_duration,
             )
+            # Team-Optimierung (KI-Team-Analyse 07.09.2026, Punkt 1): die Optimization-Analyse
+            # wird JETZT VOR dem Trainer-Aufruf ausgeführt (bisher erfolgte sie danach, was es
+            # unmöglich machte, den Trainer mit Underperformer-Hints zu speisen). Bei einem
+            # technisch grünen Lauf (alle Agenten ok, Tests bestanden) blieb der Trainer bisher
+            # komplett stumm, selbst wenn ein Agent wie `tester` seit Wochen bei 57%
+            # Erfolgsquote liegt - chronische Schwächen wurden so nie automatisch trainiert,
+            # nur akute Lauf-Fehler. Jetzt fließen Underperformer-Hinweise als optionaler
+            # `optimization_hints`-Kontext in den Trainer-Aufruf ein.
+            optimization_report = analyze_optimization_potential()
+            optimization_hints_for_trainer = ""
+            if optimization_report.low_performing_agents:
+                hints = [
+                    f"- Agent '{a.agent_id}': {a.success_rate}% Erfolgsquote über {a.calls} Aufrufe "
+                    f"(Team-Durchschnitt: {a.team_average}%)"
+                    for a in optimization_report.low_performing_agents
+                ]
+                optimization_hints_for_trainer = "\n".join(hints)
             trainer_result = await self._run_agent_trainer_self_optimization(
                 user_request=user_request,
                 results=results,
                 retro_content=retro_result.content if retro_result else "",
                 verification_ok=verification_ok,
                 verification_summary=verification_summary,
+                optimization_hints=optimization_hints_for_trainer,
             )
 
         stats_table = self._build_metrics_summary(
@@ -1046,7 +1064,10 @@ class Orchestrator(
         # Aufruf blieb selbst eine glasklare Empfehlung wirkungslos, solange niemand den
         # Abschlussbericht liest (z.B. bei autonomen --work-backlog/Cron-Läufen). No-Op und []
         # zurück, solange das Flag aus ist (Standard) - dieselbe Zeile läuft für JEDEN Lauf.
-        optimization_report = analyze_optimization_potential()
+        # Wiederverwendung, falls optimization_report im else-Block (vor dem Trainer-Aufruf)
+        # bereits berechnet wurde - vermeidet eine doppelte, unnötige Auswertung.
+        if "optimization_report" not in locals():
+            optimization_report = analyze_optimization_potential()
         auto_tuned_agents = apply_auto_tuning(optimization_report)
         # Punkt 2 der Team-Retrospektive (2026-09-06): schreibt Modell-/Underperformer-Funde in
         # das teamweite Lektionen-Gedächtnis (core/team_memory.py) - bleibt so auch dann

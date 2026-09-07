@@ -1,0 +1,1 @@
+{"timestamp": "2026-09-07T14:44:50.156456+00:00", "event": "missing_tests_fix_dispatched", "detail": "Keine Testdateien (test_*.py), kein npm-Test-Skript und kein Rust/Go-Projekt gefunden – Verifikation übersprungen."}

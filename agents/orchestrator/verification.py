@@ -46,6 +46,7 @@ from core.review_gate import (
 )
 from core.team_memory import record_lesson
 from core.verifier import ProjectVerifier, VerificationReport
+from memory.agent_knowledge_base import agent_knowledge_base
 
 # Realer Fund (taskpulse-Projekt, 2026-09-03): eine fehlende `app/models.py` (referenziert per
 # `from . import database, models, schemas`) führte zu einem ModuleNotFoundError/ImportError,
@@ -112,6 +113,75 @@ def _diagnose_no_tests_ran(message: str) -> str | None:
             "requirements.txt/requirements-dev.txt auf fehlende Test-Abhängigkeiten, bevor du "
             "Testdateien inhaltlich änderst."
         )
+    return None
+
+
+def _record_verification_learning(agent_id: str | None, rule: str) -> None:
+    """
+    Closed-Loop-Selbstoptimierung: schreibt eine kurze, prägnante Regel DIREKT und
+    deterministisch aus einer konkreten Fehlerklasse (Bandit-/Ruff-Regel-ID, ModuleNotFound,
+    fehlende Testdatei, ...) in AgentKnowledgeBase.add_learning() - anders als die bisherige,
+    rein LLM-basierte Retrospektive (agents/orchestrator/retrospective.py, läuft nur am
+    Laufende und ist budgetabhängig optional) passiert das hier sofort bei jedem
+    Verifikationslauf, ohne zusätzlichen LLM-Aufruf und ohne auf eine spätere Retrospektive
+    warten zu müssen. Defensiv: ein Persistenzfehler darf den laufenden Verifikationslauf
+    niemals abbrechen.
+    """
+    if not agent_id:
+        return
+    try:
+        agent_knowledge_base.add_learning(agent_id, rule[:150])
+    except Exception:
+        pass
+
+
+# Bandit-Regel-ID -> kurze, direkt umsetzbare Guardrail-Regel (siehe _record_verification_learning).
+# Nur die häufigsten, in echten Projektläufen tatsächlich beobachteten Bandit-Codes - bewusst
+# keine vollständige Bandit-Regelliste, um keine Regeln zu speichern, die nie zutreffen.
+_BANDIT_RULE_HINTS: dict[str, str] = {
+    "B101": "Nutze `assert` nur in tests/ - in Produktivcode stattdessen echte Validierung/Exceptions (bandit B101).",
+    "B105": "Keine hartcodierten Passwort-/Secret-Literale im Code - aus Umgebungsvariablen laden (bandit B105).",
+    "B106": "Keine hartcodierten Passwort-Argumente in Funktionsaufrufen - aus Umgebungsvariablen laden (bandit B106).",
+    "B301": "Kein `pickle`/`cPickle` für nicht vertrauenswürdige Daten - stattdessen json (bandit B301).",
+    "B303": "Keine unsicheren Hash-Funktionen (MD5/SHA1) für sicherheitsrelevante Zwecke - sha256 nutzen (bandit B303).",
+    "B307": "Kein `eval()` auf Eingaben - stattdessen sichere Parser/ast.literal_eval (bandit B307).",
+    "B311": "Kein `random` für sicherheitsrelevante Zwecke (Tokens/Passwörter) - stattdessen `secrets` nutzen (bandit B311).",
+    "B608": "Nutze parametrisierte SQL-Queries statt String-Interpolation/-Konkatenation (SQL-Injection, bandit B608).",
+}
+
+# Ruff-Regel-ID -> kurze, direkt umsetzbare Guardrail-Regel (siehe _record_verification_learning).
+_RUFF_RULE_HINTS: dict[str, str] = {
+    "BLE001": "Fange spezifische Exceptions statt eines generischen `except Exception:` ab (ruff BLE001).",
+    "F401": "Entferne ungenutzte Imports vor Abschluss der Aufgabe (ruff F401).",
+    "F841": "Entferne ungenutzte lokale Variablen vor Abschluss der Aufgabe (ruff F841).",
+    "E722": "Nutze `except SpezifischeException:` statt eines nackten `except:` (ruff E722).",
+    "B008": "Keine veränderlichen Default-Argumente (z.B. Listen/Dicts) in Funktionssignaturen (ruff B008).",
+}
+
+
+def _classify_test_failure(message: str) -> str | None:
+    """Leitet aus einer Testfehler-Nachricht eine kurze, wiederverwendbare Guardrail-Regel ab
+    (siehe _record_verification_learning) - dieselben Fehlerklassen wie _diagnose_import_failure/
+    _diagnose_no_tests_ran, aber als knappe, dauerhaft im System-Prompt hinterlegbare Regel statt
+    als einmaliger Fix-Auftragstext."""
+    if _MODULE_NOT_FOUND_RE.search(message) or _IMPORT_NAME_ERROR_RE.search(message):
+        return "Prüfe vor Abschluss alle Imports gegen tatsächlich vorhandene lokale Module/Pakete (kein ModuleNotFoundError/ImportError)."
+    if _NO_TESTS_RAN_RE.search(message):
+        return "Trage `pytest`/`pytest-asyncio`/`httpx` immer in requirements.txt oder requirements-dev.txt ein, wenn sie im Test-Code importiert werden."
+    if "AssertionError" in message:
+        return "Verifiziere Assertions gegen die TATSÄCHLICHE Implementierung, nicht gegen angenommenes Verhalten."
+    return None
+
+
+def _owner_for_file(file_owners: dict[str, str], file_path: str) -> str | None:
+    """Gleicht einen Dateipfad (z.B. aus einem SAST-/Lint-Fund) gegen file_owners ab - gleiche
+    Suffix-Toleranz wie core/review_gate.py.route_findings_to_owners, hier nur für einen
+    bereits bekannten, konkreten Pfad statt gegen Backtick-zitierte Fundtexte."""
+    normalized = file_path.replace("\\", "/")
+    for owned_path, owner_id in file_owners.items():
+        owned_normalized = owned_path.replace("\\", "/")
+        if owned_normalized == normalized or owned_normalized.endswith(f"/{normalized}") or normalized.endswith(f"/{owned_normalized}"):
+            return owner_id
     return None
 
 
@@ -1173,6 +1243,11 @@ class VerificationMixin:
         # unten) - verhindert eine Endlosschleife, falls der tester-Agent wiederholt keine
         # echte Testdatei anlegt.
         no_tests_fix_attempted = False
+        # Execution-Gate (siehe testrunner._find_incomplete_project_reason): höchstens EIN
+        # automatischer Nachbeauftragungs-Versuch, falls nach den Architektur-/Planungsphasen
+        # überhaupt kein Quellcode existiert - verhindert, dass die Orchestrierung nach reinen
+        # Spezifikations-/ADR-Artefakten stillschweigend als "verifiziert" endet.
+        no_code_fix_attempted = False
         # Zirkuit-Breaker gegen wirkungslose Wiederholungen (Team-Retrospektive nach dem
         # taskpulse-Lauf): bisher wurde ein zweiter Fixversuch immer unternommen, selbst wenn
         # der erste erkennbar NICHTS verändert hat - derselbe Satz Testfehler (gleiche
@@ -1466,6 +1541,37 @@ class VerificationMixin:
                     # - eine fehlende Einstiegspunkt-Datei (main.py/app.py/...) ist kein Testsuite-
                     # Problem und bleibt bewusst unangetastet, damit der tester nicht fälschlich mit
                     # einer Aufgabe beauftragt wird, die architect/backend lösen müssten.
+                    # Execution-Gate: reine Architektur-/ADR-/Doku-Artefakte ohne jeden
+                    # Quellcode bedeuten, dass die Generierung nach der Planungsphase abbrach,
+                    # bevor backend/tester überhaupt liefern konnten. Anders als der Testdatei-
+                    # Zweig unten braucht es hier ZUERST echten Code (backend), bevor eine
+                    # Testsuite überhaupt sinnvoll ist - der reguläre "keine Tests"-Zweig
+                    # weiter unten übernimmt danach automatisch das Nachbeauftragen des tester.
+                    if (
+                        not no_code_fix_attempted and "backend" in self._agents
+                        and "einziger Quellcode" in report.reason_skipped
+                    ):
+                        no_code_fix_attempted = True
+                        notify(f"  🚧 [bold red]Execution-Gate:[/bold red] {report.reason_skipped} – beauftrage backend mit der Implementierung...")
+                        summary_lines.append(f"- 🚧 {report.reason_skipped} → backend beauftragt, den spezifizierten Code zu implementieren.")
+                        log_decision(project_dir, "execution_gate_forced_backend", report.reason_skipped)
+                        fix_task = AgentTask(
+                            task_id=f"execution_gate_backend_{attempt}",
+                            agent_id="backend",
+                            description=(
+                                "Für dieses Projekt existieren bereits Architektur-/ADR-Spezifikationen "
+                                "(docs/, docs/adr/), aber noch KEIN einziger Quellcode - die Generierung "
+                                "wurde offenbar nach der Planungsphase abgebrochen. Implementiere jetzt "
+                                "den in den vorhandenen Spezifikationen beschriebenen, tatsächlich "
+                                "lauffähigen Code (keine weiteren Planungsdokumente, kein Platzhalter-"
+                                f"Code).\n\n{report.reason_skipped}"
+                            ),
+                            context="", project_dir=project_dir,
+                        )
+                        fix_results = await self._run_agents_parallel([fix_task], notify=notify)
+                        self._update_file_owners(file_owners, fix_results)
+                        all_results.extend(fix_results)
+                        continue
                     if (
                         not no_tests_fix_attempted and "tester" in self._agents
                         and ("Testdatei" in report.reason_skipped or "Testsuite" in report.reason_skipped)
@@ -1474,6 +1580,11 @@ class VerificationMixin:
                         notify(f"  🧪 [yellow]{report.reason_skipped}[/yellow] – beauftrage tester, die fehlende Testsuite nachzuliefern...")
                         summary_lines.append(f"- 🧪 {report.reason_skipped} → tester beauftragt, eine echte Testsuite nachzuliefern.")
                         log_decision(project_dir, "missing_tests_fix_dispatched", report.reason_skipped)
+                        _record_verification_learning(
+                            "tester",
+                            "Liefere IMMER mindestens eine echte test_*.py mit ausführbaren "
+                            "pytest-Funktionen, nicht nur eine leere conftest.py.",
+                        )
                         fix_task = AgentTask(
                             task_id=f"incomplete_tests_fix_{attempt}",
                             agent_id="tester",
@@ -1506,6 +1617,11 @@ class VerificationMixin:
                     notify(f"  🧪 [yellow]{report.reason_skipped}[/yellow] – beauftrage tester mit einer echten Testsuite...")
                     summary_lines.append(f"- 🧪 {report.reason_skipped} → tester beauftragt, eine echte Testsuite nachzuliefern.")
                     log_decision(project_dir, "missing_tests_fix_dispatched", report.reason_skipped)
+                    _record_verification_learning(
+                        "tester",
+                        "Liefere IMMER eine echte, automatisch ausführbare Testsuite "
+                        "(test_*.py bzw. npm-Testskript), bevor die Aufgabe als erledigt gilt.",
+                    )
                     fix_task = AgentTask(
                         task_id=f"missing_tests_fix_{attempt}",
                         agent_id="tester",
@@ -1557,6 +1673,15 @@ class VerificationMixin:
                     stuck_owners = {
                         file_owners[f] for failure in report.failures for f in failure.files if f in file_owners
                     } & set(self._agents.keys())
+                    # Closed-Loop-Fehler-Gedächtnis (siehe _record_verification_learning): ein
+                    # wirkungsloser Fixversuch bei einer erkennbaren Fehlerklasse ist ein starkes
+                    # Signal, dass der zuständige Agent diese Klasse künftig von sich aus vermeiden
+                    # sollte - unabhängig davon, ob die anschließende Eskalation den Fehler behebt.
+                    for failure in report.failures[:5]:
+                        rule = _classify_test_failure(failure.message)
+                        if rule:
+                            for owner in stuck_owners:
+                                _record_verification_learning(owner, rule)
                     lead_targets = {
                         dept_id for dept_id, defn in DEPARTMENT_DEFINITIONS.items()
                         if stuck_owners & set(defn["members"]) and dept_id in self._dept_leads
@@ -1842,6 +1967,14 @@ class VerificationMixin:
                         top += f" … und {len(sast.findings) - 5} weitere"
                     notify(f"  🕵️ [bold red]{sast.tool}: {len(sast.findings)} potenzielle Sicherheits-Fund(e) im Code.[/bold red]")
                     summary_lines.append(f"- 🕵️ ⚠️ {sast.tool}: {len(sast.findings)} potenzielle Sicherheits-Fund(e) im Code: {top}")
+                    # Closed-Loop-Fehler-Gedächtnis (siehe _record_verification_learning):
+                    # bekannte Bandit-Regel-IDs sofort und deterministisch als Guardrail beim
+                    # verantwortlichen Datei-Owner hinterlegen, statt auf die optionale,
+                    # LLM-basierte Retrospektive am Laufende zu warten.
+                    for f in sast.findings[:5]:
+                        hint = _BANDIT_RULE_HINTS.get(f.rule)
+                        if hint:
+                            _record_verification_learning(_owner_for_file(file_owners, f.file_path), hint)
                 else:
                     notify(f"  🕵️ [bold green]{sast.tool}: keine Sicherheits-Funde im Code.[/bold green]")
                     summary_lines.append(f"- 🕵️ {sast.tool}: keine Sicherheits-Funde im Code (statischer Scan).")
@@ -1904,9 +2037,49 @@ class VerificationMixin:
                         top += f" … und {len(lint.issues) - 5} weitere"
                     notify(f"  🎨 [bold yellow]{lint.tool}: {len(lint.issues)} Lint-Fund(e).[/bold yellow]")
                     summary_lines.append(f"- 🎨 ⚠️ {lint.tool}: {len(lint.issues)} Lint-Fund(e): {top}")
+                    # Closed-Loop-Fehler-Gedächtnis (siehe _record_verification_learning):
+                    # bekannte Ruff-Regel-IDs sofort und deterministisch als Guardrail beim
+                    # verantwortlichen Datei-Owner hinterlegen.
+                    for i in lint.issues[:5]:
+                        hint = _RUFF_RULE_HINTS.get(i.rule)
+                        if hint:
+                            _record_verification_learning(_owner_for_file(file_owners, i.file_path), hint)
                 else:
                     notify(f"  🎨 [bold green]{lint.tool}: keine Lint-Funde.[/bold green]")
                     summary_lines.append(f"- 🎨 {lint.tool}: keine Lint-Funde.")
+
+        # API-Contract-Check (core/contract_verifier.py): gleicht Backend-Endpunkte statisch
+        # mit den vom Frontend tatsächlich aufgerufenen URLs ab - erkennt aneinander vorbei
+        # entwickelte Frontend-/Backend-Agenten (z.B. Frontend ruft /api/notes, Backend
+        # deklariert nur /api/v1/notes). Die Maschinerie (verify_api_contracts) existierte
+        # bereits, war aber nie an den echten Verifikationslauf angeschlossen - nur in Tests
+        # aufgerufen. Rein informativ wie Lint/SAST/Lizenz-Check, beeinflusst verification_ok
+        # NICHT: ein Mismatch kann ein False Positive sein (z.B. dynamisch zusammengesetzte
+        # URL, die die Regex nicht erkennt) und braucht menschliche/agentische Einschätzung,
+        # anders als ein roter Test.
+        if not (budget_aborted or manually_cancelled):
+            contract_report = await asyncio.to_thread(verifier.check_api_contracts)
+            if contract_report.endpoints_found and contract_report.frontend_calls_found:
+                if not contract_report.passed:
+                    top = "; ".join(
+                        f"{m.frontend_call.source_file}:{m.frontend_call.line_number} "
+                        f"[{m.mismatch_type}] {m.details}"
+                        for m in contract_report.mismatches[:5]
+                    )
+                    if len(contract_report.mismatches) > 5:
+                        top += f" … und {len(contract_report.mismatches) - 5} weitere"
+                    notify(f"  🔗 [bold yellow]API-Contract: {len(contract_report.mismatches)} Abweichung(en) zwischen Frontend und Backend.[/bold yellow]")
+                    summary_lines.append(f"- 🔗 ⚠️ API-Contract: {len(contract_report.mismatches)} Abweichung(en): {top}")
+                    for m in contract_report.mismatches[:5]:
+                        _record_verification_learning(
+                            _owner_for_file(file_owners, m.frontend_call.source_file),
+                            "Gleiche Frontend-API-Aufrufe (fetch/axios) IMMER exakt gegen die "
+                            "tatsächlich im Backend deklarierten Routen ab (Pfad, Methode, "
+                            "Versionierung) - kein blindes Annehmen der Backend-URL.",
+                        )
+                else:
+                    notify(f"  🔗 [bold green]API-Contract: {contract_report.endpoints_found} Endpunkt(e)/{contract_report.frontend_calls_found} Frontend-Aufruf(e) stimmen überein.[/bold green]")
+                    summary_lines.append(f"- 🔗 API-Contract: {contract_report.endpoints_found} Endpunkt(e)/{contract_report.frontend_calls_found} Frontend-Aufruf(e) stimmen überein.")
 
         # Vollständigkeits-Check: erkennt Stub-/Platzhalter-Code (z.B. "Hier würde die
         # Verschlüsselung erfolgen") und im README referenzierte, aber fehlende Dateien (z.B.

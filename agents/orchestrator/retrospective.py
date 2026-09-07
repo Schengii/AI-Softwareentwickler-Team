@@ -67,6 +67,7 @@ class RetrospectiveMixin:
         retro_content: str,
         verification_ok: bool = True,
         verification_summary: str = "",
+        optimization_hints: str = "",
     ) -> AgentResult | None:
         trainer = self._agents.get("agent_trainer")
         if not trainer:
@@ -86,7 +87,15 @@ class RetrospectiveMixin:
         # Selbstlern-Kanal (memory/agent_learnings.json) bekam dadurch nie die Chance, aus einem
         # der eigentlich lehrreichsten Signale (ein Fehler, den das Team trotz Eskalation NICHT
         # selbst beheben konnte) etwas zu lernen.
-        if not has_errors and not high_usage and verification_ok:
+        #
+        # Team-Optimierung (KI-Team-Analyse 07.09.2026, Punkt 1 "Agent-Trainer automatisch
+        # triggern"): optimization_hints enthält projektübergreifende Underperformer-Hinweise
+        # aus dem Optimization-Advisor (low_performing_agents). Ein Agent wie `tester` mit
+        # dauerhaft 57% Erfolgsquote wird so trainiert, auch wenn der aktuelle Lauf selbst
+        # technisch grün ist - der Trainer soll NICHT nur auf akute Lauf-Fehler reagieren,
+        # sondern auch auf statistisch erkannte, chronische Schwachstellen.
+        has_optimization_hints = bool(optimization_hints.strip())
+        if not has_errors and not high_usage and verification_ok and not has_optimization_hints:
             return None
 
         context = (
@@ -102,6 +111,15 @@ class RetrospectiveMixin:
                 "\nECHTE VERIFIKATION SCHLUG FEHL (Tests/Governance/Lint blieben rot, obwohl "
                 "kein Agent selbst einen Fehler meldete - das ist das eigentlich lehrreichste "
                 f"Signal hier):\n{verification_summary.strip()[:2000]}\n"
+            )
+        if has_optimization_hints:
+            context += (
+                "\nDAUERHAFTE UNDERPERFORMER (projektübergreifende Statistik aus run_history.json – "
+                "KEIN Fehler im aktuellen Lauf, aber chronisch schlechte Erfolgsquote über viele Läufe):\n"
+                f"{optimization_hints.strip()[:1500]}\n"
+                "Für diese Agenten: analysiere deren System-Prompt gezielt auf strukturelle Lücken, "
+                "die zu chronischen, wiederholbaren Fehlern führen, und schlage konkrete Prompt-Ergänzungen "
+                "(inkl. maschinenlesbarem JSON-Block) vor.\n"
             )
 
         task = AgentTask(

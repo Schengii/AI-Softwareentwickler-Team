@@ -280,65 +280,86 @@ async def run_backlog_poll_cycle(
     combined.sort(key=lambda t: (t.priority, t.id in {rt.id for rt in retry_pool}))  # 1=hoch zuerst, Retries zuletzt bei gleicher Priorität
 
     limit = max_tickets if max_tickets is not None else BACKLOG_WORKER_MAX_PER_CYCLE
-    for ticket in combined[:limit]:
-        is_retry = ticket in retry_pool
-        if is_retry:
-            if status_callback:
-                status_callback(
-                    f"🎫 Governance-Ticket `{ticket.id}` wird erneut aufgegriffen "
-                    f"(Versuch {ticket.retries + 1}/{MAX_GOVERNANCE_TICKET_RETRIES})..."
-                )
-            # Zähler VOR dem eigentlichen Versuch erhöhen (nicht erst danach) - ein Absturz
-            # mitten im Versuch (siehe try/except in _process_single_ticket) darf nicht dazu
-            # führen, dass derselbe Befund unbegrenzt oft ohne Fortschritt erneut versucht wird.
-            upsert_ticket(
-                ticket_id=ticket.id, title=ticket.title, source=ticket.source,
-                status=ticket.status, detail=ticket.detail, project_slug=ticket.project_slug,
-                retries=ticket.retries + 1,
+    # Team-Optimierung: dieser Zyklus hat bereits ENTSCHIEDEN, dass bis zu `limit` unabhängige,
+    # abhängigkeitsfreie Tickets (is_ticket_ready() oben) gemeinsam bearbeitet werden dürfen -
+    # bisher liefen sie trotzdem strikt SEQUENZIELL ab, obwohl jedes Ticket bereits über
+    # core/git_isolation.py in einem eigenen Worktree isoliert arbeitet (dasselbe Muster, das
+    # interface/web_dashboard.py für parallele Jobs nutzt, siehe DASHBOARD_MAX_CONCURRENT_JOBS)
+    # und core/backlog_store.py._save_raw() bereits gegen gleichzeitige Schreiber gehärtet ist
+    # (atomarer os.replace()). Mit dem konservativen Standard BACKLOG_WORKER_MAX_PER_CYCLE=1
+    # ändert sich dadurch NICHTS (asyncio.gather() mit einer einzigen Coroutine verhält sich wie
+    # ein direkter await) - erst ein bewusst erhöhtes Limit nutzt jetzt auch die Laufzeit dafür.
+    results = await asyncio.gather(*(
+        _process_and_finalize_ticket(github_agent, ticket, ticket in retry_pool, status_callback)
+        for ticket in combined[:limit]
+    ))
+    report.results.extend(results)
+    return report
+
+
+async def _process_and_finalize_ticket(
+    github_agent: GitHubAgent, ticket: Ticket, is_retry: bool, status_callback: StatusCallback | None,
+) -> BacklogRunResult:
+    """Bearbeitet EIN Ticket vollständig (Aufgreifen, Ausführung, Abschluss-Status/Benach-
+    richtigung) - ausgelagert aus run_backlog_poll_cycle(), damit mehrere unabhängige Tickets
+    desselben Zyklus per asyncio.gather() nebenläufig statt strikt sequenziell laufen können
+    (siehe Kommentar dort)."""
+    if is_retry:
+        if status_callback:
+            status_callback(
+                f"🎫 Governance-Ticket `{ticket.id}` wird erneut aufgegriffen "
+                f"(Versuch {ticket.retries + 1}/{MAX_GOVERNANCE_TICKET_RETRIES})..."
             )
-        elif status_callback:
-            status_callback(f"🎫 Backlog-Ticket `{ticket.id}` '{ticket.title}' wird eigenständig aufgegriffen...")
-        result = await _process_single_ticket(github_agent, ticket, status_callback)
-        # Team-Optimierung (echter Fund: memory/backlog.json-Tickets `recurring-lint-
-        # sentinelproxy`/`recurring-failure-sentinelproxy`, beide dauerhaft "blocked" mit
-        # identischem, kontextlosem Detail nach retries=2): ein "no_changes"/"error"-Ausgang
-        # überschrieb `detail` bisher IMMER mit der knappen, generischen Ausgangs-Zeile ("Ticket
-        # bearbeitet, dabei aber keine Datei geändert...") - für Governance-/Recurring-*-Retry-
-        # Tickets ist `ticket.detail` aber der EINZIGE Träger des ursprünglich erkannten Befunds,
-        # den _process_single_ticket() oben extra in den Fix-Auftrag mischt (siehe dortiger
-        # Kommentar zu `task_text`). Nach GENAU EINEM Fehlschlag ohne neue Erkenntnis war dieser
-        # Kontext für JEDEN weiteren automatischen Retry unwiderbringlich weg - jeder folgende
-        # Versuch hatte dadurch WENIGER Information als der erste, garantiert kein besseres
-        # Ergebnis, bis MAX_GOVERNANCE_TICKET_RETRIES erreicht war und das Ticket für immer
-        # "blocked" liegen blieb. Ein Ausgang OHNE neue, verwertbare Information behält den
-        # ursprünglichen Befundtext jetzt bei; ein Ausgang mit echtem neuem Erkenntnisgewinn (PR
-        # eröffnet, CI-Fehler, Rückfrage, gefundene Secrets) überschreibt ihn wie bisher.
-        preserved_detail = (
-            ticket.detail
-            if (
-                ticket.id.startswith(_GOVERNANCE_RETRY_PREFIXES)
-                and ticket.detail
-                and result.outcome in _NON_INFORMATIVE_RETRY_OUTCOMES
-            )
-            else result.detail
-        )
-        # Terminal-Status im Backlog nachziehen (der "in_progress"-Stand wurde bereits beim
-        # Aufgreifen geschrieben, siehe _process_single_ticket()) - EIN Mapping-Ort statt an
-        # jedem der mehreren Rückgabepunkte dort. Ein Governance-Retry, der erneut nicht
-        # "pr_opened" erreicht, bleibt "blocked" (Default von .get() unten) - der bereits oben
-        # erhöhte retries-Zähler bleibt dabei erhalten (kein retries=... hier, siehe
-        # core/backlog_store.py.upsert_ticket()-Sentinel-Verhalten).
+        # Zähler VOR dem eigentlichen Versuch erhöhen (nicht erst danach) - ein Absturz
+        # mitten im Versuch (siehe try/except in _process_single_ticket) darf nicht dazu
+        # führen, dass derselbe Befund unbegrenzt oft ohne Fortschritt erneut versucht wird.
         upsert_ticket(
             ticket_id=ticket.id, title=ticket.title, source=ticket.source,
-            status=_OUTCOME_TO_TICKET_STATUS.get(result.outcome, "blocked"), detail=preserved_detail,
+            status=ticket.status, detail=ticket.detail, project_slug=ticket.project_slug,
+            retries=ticket.retries + 1,
         )
-        if result.outcome != "pr_opened":
-            await asyncio.to_thread(
-                notify_external, "Backlog-Ticket benötigt Aufmerksamkeit",
-                f"`{result.ticket_id}` '{result.title}' ({result.outcome}): {result.detail[:200]}",
-            )
-        report.results.append(result)
-    return report
+    elif status_callback:
+        status_callback(f"🎫 Backlog-Ticket `{ticket.id}` '{ticket.title}' wird eigenständig aufgegriffen...")
+    result = await _process_single_ticket(github_agent, ticket, status_callback)
+    # Team-Optimierung (echter Fund: memory/backlog.json-Tickets `recurring-lint-
+    # sentinelproxy`/`recurring-failure-sentinelproxy`, beide dauerhaft "blocked" mit
+    # identischem, kontextlosem Detail nach retries=2): ein "no_changes"/"error"-Ausgang
+    # überschrieb `detail` bisher IMMER mit der knappen, generischen Ausgangs-Zeile ("Ticket
+    # bearbeitet, dabei aber keine Datei geändert...") - für Governance-/Recurring-*-Retry-
+    # Tickets ist `ticket.detail` aber der EINZIGE Träger des ursprünglich erkannten Befunds,
+    # den _process_single_ticket() oben extra in den Fix-Auftrag mischt (siehe dortiger
+    # Kommentar zu `task_text`). Nach GENAU EINEM Fehlschlag ohne neue Erkenntnis war dieser
+    # Kontext für JEDEN weiteren automatischen Retry unwiderbringlich weg - jeder folgende
+    # Versuch hatte dadurch WENIGER Information als der erste, garantiert kein besseres
+    # Ergebnis, bis MAX_GOVERNANCE_TICKET_RETRIES erreicht war und das Ticket für immer
+    # "blocked" liegen blieb. Ein Ausgang OHNE neue, verwertbare Information behält den
+    # ursprünglichen Befundtext jetzt bei; ein Ausgang mit echtem neuem Erkenntnisgewinn (PR
+    # eröffnet, CI-Fehler, Rückfrage, gefundene Secrets) überschreibt ihn wie bisher.
+    preserved_detail = (
+        ticket.detail
+        if (
+            ticket.id.startswith(_GOVERNANCE_RETRY_PREFIXES)
+            and ticket.detail
+            and result.outcome in _NON_INFORMATIVE_RETRY_OUTCOMES
+        )
+        else result.detail
+    )
+    # Terminal-Status im Backlog nachziehen (der "in_progress"-Stand wurde bereits beim
+    # Aufgreifen geschrieben, siehe _process_single_ticket()) - EIN Mapping-Ort statt an
+    # jedem der mehreren Rückgabepunkte dort. Ein Governance-Retry, der erneut nicht
+    # "pr_opened" erreicht, bleibt "blocked" (Default von .get() unten) - der bereits oben
+    # erhöhte retries-Zähler bleibt dabei erhalten (kein retries=... hier, siehe
+    # core/backlog_store.py.upsert_ticket()-Sentinel-Verhalten).
+    upsert_ticket(
+        ticket_id=ticket.id, title=ticket.title, source=ticket.source,
+        status=_OUTCOME_TO_TICKET_STATUS.get(result.outcome, "blocked"), detail=preserved_detail,
+    )
+    if result.outcome != "pr_opened":
+        await asyncio.to_thread(
+            notify_external, "Backlog-Ticket benötigt Aufmerksamkeit",
+            f"`{result.ticket_id}` '{result.title}' ({result.outcome}): {result.detail[:200]}",
+        )
+    return result
 
 
 async def _process_single_ticket(

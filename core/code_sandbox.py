@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -86,6 +87,37 @@ class CodeSandbox:
             errors=errors,
             warnings=warnings,
         )
+
+    @staticmethod
+    def _new_process_group_kwargs() -> dict:
+        """Plattformspezifische Popen-Kwargs, die den Kindprozess in eine EIGENE Prozessgruppe/
+        -session stellen - Voraussetzung dafür, dass _kill_process_tree() gezielt den gesamten
+        Baum statt nur der Wurzel beenden kann (siehe run_command()-Kommentar)."""
+        if sys.platform == "win32":
+            return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        return {"start_new_session": True}
+
+    @staticmethod
+    def _kill_process_tree(process: subprocess.Popen) -> None:
+        """Beendet nicht nur den unmittelbaren Kindprozess, sondern dessen gesamten Prozessbaum
+        (siehe run_command()-Kommentar zum reinen Root-Kill von subprocess.run(timeout=...)).
+        Bewusst best-effort mit breitem except: ein Fehler beim Aufräumen darf den bereits
+        erkannten Timeout niemals verdecken oder den Aufrufer crashen lassen."""
+        try:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                    capture_output=True, timeout=10, check=False,
+                )
+            else:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except Exception:
+            pass
+        finally:
+            try:
+                process.kill()
+            except Exception:
+                pass
 
     @staticmethod
     def _restricted_env() -> dict[str, str]:
@@ -174,30 +206,55 @@ class CodeSandbox:
         start_time = time.monotonic()
 
 
+        # Realer Sicherheits-/Resilienz-Fund: subprocess.run(..., timeout=...) killt bei
+        # Zeitüberschreitung NUR den unmittelbaren Kindprozess - startet dieser selbst weitere
+        # Unterprozesse (z.B. `pip install` ein Compiler-Toolchain-Skript, `npm test` einen
+        # hängenden Test-Worker), laufen diese als Orphans/Zombies unbegrenzt weiter, statt mit
+        # dem eigentlich gewollten Timeout beendet zu werden. subprocess.Popen (statt .run) mit
+        # einer eigenen Prozessgruppe/-session erlaubt es, beim Timeout gezielt den GESAMTEN
+        # Baum zu beenden, nicht nur die Wurzel.
         try:
-            process = subprocess.run(
+            process = subprocess.Popen(
                 resolved_command,
                 cwd=cwd,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout_seconds,
                 shell=False,
                 env=env,
+                **CodeSandbox._new_process_group_kwargs(),
             )
-            duration = time.monotonic() - start_time
-            return ExecutionResult(
-                exit_code=process.returncode,
-                stdout=process.stdout,
-                stderr=process.stderr,
-                duration_seconds=duration,
-                timed_out=False,
-            )
-        except subprocess.TimeoutExpired as e:
+        except Exception as e:
             duration = time.monotonic() - start_time
             return ExecutionResult(
                 exit_code=-1,
-                stdout=e.stdout or "",
-                stderr=f"Timeout nach {timeout_seconds} Sekunden überschritten.",
+                stdout="",
+                stderr=f"Fehler bei Befehlsausführung: {str(e)}",
+                duration_seconds=duration,
+                timed_out=False,
+            )
+
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
+            duration = time.monotonic() - start_time
+            return ExecutionResult(
+                exit_code=process.returncode,
+                stdout=stdout,
+                stderr=stderr,
+                duration_seconds=duration,
+                timed_out=False,
+            )
+        except subprocess.TimeoutExpired:
+            CodeSandbox._kill_process_tree(process)
+            try:
+                stdout, stderr = process.communicate(timeout=5.0)
+            except Exception:
+                stdout, stderr = "", ""
+            duration = time.monotonic() - start_time
+            return ExecutionResult(
+                exit_code=-1,
+                stdout=stdout or "",
+                stderr=f"Timeout nach {timeout_seconds} Sekunden überschritten (kompletter Prozessbaum beendet).",
                 duration_seconds=duration,
                 timed_out=True,
             )

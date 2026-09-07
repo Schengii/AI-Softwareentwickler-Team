@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+pydantic-settings
+sqlalchemy
+asyncpg
+redis
+aiokafka
+kafka-python
+python-multipart
+passlib[bcrypt]
+python-jose[cryptography]
+numpy

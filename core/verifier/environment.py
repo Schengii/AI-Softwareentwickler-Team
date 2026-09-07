@@ -30,7 +30,13 @@ class EnvironmentMixin:
 
     def _requirements_files(self) -> list[Path]:
         files = []
-        for name in ("requirements.txt", "requirements-dev.txt"):
+        # Dieselben Manifest-Namen, die core/manifest_guard.py bereits als gültige Python-
+        # Requirements-Dateien anerkennt (_PYTHON_REQUIREMENTS_MANIFESTS) - vorher fehlten
+        # requirements-test.txt/requirements-prod.txt hier, sodass ein Agent, der eine dieser
+        # (vom Korruptions-Schutz bereits als legitim behandelten) Dateien anlegt, in der
+        # Sandbox trotzdem NIE installiert worden wäre: dieselbe Dependency-Desynchronisation
+        # wie beim ursprünglichen requirements-dev.txt-Fund, nur unter anderem Dateinamen.
+        for name in ("requirements.txt", "requirements-dev.txt", "requirements-test.txt", "requirements-prod.txt"):
             candidate = self.project_dir / name
             if candidate.exists() and candidate.stat().st_size > 0:
                 files.append(candidate)

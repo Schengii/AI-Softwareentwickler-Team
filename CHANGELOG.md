@@ -7,6 +7,48 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔐 Dependency-Audit über alle requirements-Dateien, Bandit-B101-False-Positives, Fehlerbehandlungs-Disziplin
+
+Nutzerauftrag: Analyse von vier vermuteten System-/Workflow-Hürden (Sandbox-Dependency-
+Desync, fehlende Erst-Tests, wiederkehrende Lint-/SAST-False-Positives, Traceback-Injection
+im Fix-Loop). Ergebnis der Analyse: Punkte 1 (requirements-dev.txt-Installation in der Sandbox),
+2 (automatische Testsuite-Nachbeauftragung des Testers) und 4 (voller Traceback im Fix-Prompt,
+Eskalationskette mit stärkerem Modell) waren bereits robust implementiert
+(`core/verifier/environment.py`, `agents/orchestrator/verification.py`). Zwei konkrete, echte
+Lücken daneben wurden gefunden und behoben:
+
+1. **`core/verifier/security.py`: `check_dependency_vulnerabilities()` prüfte nur die ERSTE
+   gefundene Requirements-Datei gegen die CVE-Datenbank**, obwohl `_requirements_files()`
+   längst mehrere Dateien liefert (requirements.txt + requirements-dev.txt) – Testabhängigkeiten
+   wie `httpx`/`pytest-asyncio` in requirements-dev.txt blieben dadurch unbemerkt von jedem
+   Sicherheits-Scan ausgeschlossen. `_audit_python_dependencies()` übergibt `pip-audit` jetzt
+   ein wiederholtes `-r` pro gefundener Datei statt nur der ersten.
+2. **`core/verifier/environment.py`: `_requirements_files()` kannte nur requirements.txt/
+   -dev.txt**, obwohl `core/manifest_guard.py._PYTHON_REQUIREMENTS_MANIFESTS` bereits
+   requirements-test.txt/requirements-prod.txt als gültige Manifeste anerkennt – eine so
+   benannte Datei wäre in der Sandbox nie installiert/gescannt worden. Beide Namen ergänzt.
+3. **`core/verifier/security.py`: bandit meldete B101 ("Use of assert detected") bei JEDER
+   generierten Testdatei**, weil pytest-Tests idiomatisch auf `assert` setzen
+   (`agents/tester_agent.py` schreibt das explizit vor) – kein echter Sicherheitsfund, nur
+   Dauer-Rauschen. `_sast_python()` schließt jetzt zusätzlich zu den Build-/Umgebungs-
+   Verzeichnissen erkannte Testverzeichnisse (`tests/`, `test/`, `__tests__/`) vom Scan aus UND
+   überspringt B101 projektweit (`-s B101`) als zweite, robustere Verteidigungslinie – echte
+   Regeln (SQL-Injection, hartcodierte Secrets, `shell=True`, …) bleiben unberührt.
+4. **`agents/base_agent.py`: neue `exception_handling_note`** in
+   `_augment_with_tool_instructions()` (nur für `CODE_WRITING_AGENT_IDS`) – konkrete Regel
+   gegen den wiederkehrenden ruff-Fund BLE001 ("Do not catch blind exception"): spezifischere
+   Exception verwenden, wo möglich, sonst einen bewusst breiten `except Exception:`-Fallback
+   mit kurzem Begründungskommentar kennzeichnen. Setzt VOR dem Fund an, statt ihn erst über das
+   nie automatisch schließende `recurring-lint-`-Ticket (`core/project_status.py.
+   has_repeated_lint_finding()`) für menschliche Prüfung zu melden.
+
+Neue Tests: `tests/test_verifier_dev_dependency_sync.py` (7 Fälle: Manifest-Namen-Erkennung,
+Multi-Datei-Audit, Bandit-Ausschluss/-s B101), 3 in `tests/test_adr_adoption.py`
+(Prompt-Regressionstests für die neue Fehlerbehandlungs-Regel). Volle Suite grün, `ruff check`
+clean.
+
+---
+
 ## 🧹 Mocking-Pflicht für den Tester-Agenten & automatisches Pruning verwaister Tickets
 
 Nutzerauftrag: zwei konkrete, vom Nutzer benannte Verbesserungen.

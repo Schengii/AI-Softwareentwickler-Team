@@ -21,6 +21,7 @@ import unittest
 
 from agents.backend_agent import BackendAgent
 from agents.copywriter_agent import CopywriterAgent
+from agents.ml_agent import MLAgent
 from core.task_manager import DECOMPOSE_SYSTEM_PROMPT
 
 
@@ -70,6 +71,33 @@ class TestWriteAccessNoteReflectsReadOnlyFlag(unittest.TestCase):
         agent = BackendAgent()
         augmented = agent._augment_with_tool_instructions("Basis-Prompt.")
         self.assertIn("vollen Schreibzugriff", augmented)
+
+
+class TestCodeWritingAgentsGetExceptionHandlingNote(unittest.TestCase):
+    """
+    Nutzerauftrag: ruff-Fund BLE001 (`except Exception:` ohne Weiterbehandlung) trat wiederholt
+    über mehrere Projekte hinweg auf und erzeugte damit dauerhaftes Rauschen im
+    Verifikationsprotokoll bzw. ein "recurring-lint-"-Ticket (core/project_status.py.
+    has_repeated_lint_finding()). Code-schreibende Agenten bekommen jetzt vorab die konkrete
+    Regel (spezifischere Exception ODER dokumentiertes bewusstes noqa), statt den Fund erst
+    hinterher als Ticket zu melden.
+    """
+
+    def test_code_writing_agent_sees_exception_handling_note(self):
+        agent = BackendAgent()
+        augmented = agent._augment_with_tool_instructions("Basis-Prompt.")
+        self.assertIn("FEHLERBEHANDLUNG", augmented)
+        self.assertIn("except Exception", augmented)
+
+    def test_ml_agent_sees_exception_handling_note(self):
+        agent = MLAgent()
+        augmented = agent._augment_with_tool_instructions("Basis-Prompt.")
+        self.assertIn("FEHLERBEHANDLUNG", augmented)
+
+    def test_non_code_writing_agent_does_not_see_exception_handling_note(self):
+        agent = CopywriterAgent()
+        augmented = agent._augment_with_tool_instructions("Basis-Prompt.")
+        self.assertNotIn("FEHLERBEHANDLUNG", augmented)
 
 
 if __name__ == "__main__":

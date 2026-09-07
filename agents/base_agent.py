@@ -400,6 +400,33 @@ class BaseAgent(ABC):
             "README-Abschnitt)."
             if self.agent_id in CODE_WRITING_AGENT_IDS else ""
         )
+        # Team-Optimierung (Retrospektive: wiederkehrende ruff-Funde BLE001 "Do not catch blind
+        # exception: `Exception`" über mehrere Projekte hinweg) - core/project_status.py.
+        # has_repeated_lint_finding() eröffnet nach zwei Läufen mit identischem Lint-Fund ein
+        # "recurring-lint-"-Ticket für menschliche Prüfung, das NIE automatisch wieder schließt,
+        # solange derselbe Fund bestehen bleibt. `except Exception:` als pauschaler Fallback
+        # (z.B. um einen Hintergrund-Task nicht abstürzen zu lassen) ist oft bewusst gewollt,
+        # nicht versehentlich - der Fund selbst ist dann kein echter Bug, sondern reines
+        # Dauer-Rauschen im Verifikationsprotokoll UND im Backlog. Diese Regel setzt vor dem
+        # Fund an (spezifischere Exception ODER ein dokumentiertes bewusstes noqa-Kommentar),
+        # statt ihn erst hinterher als Ticket zu melden. Nur für Code-schreibende Rollen (nicht
+        # z.B. copywriter/i18n, die keinen fehleranfälligen Code erzeugen).
+        exception_handling_note = (
+            "\n\n⚠️ FEHLERBEHANDLUNG: Fange NIEMALS pauschal `except Exception:` (oder gar "
+            "`except:`) ohne Weiterbehandlung ab, wenn eine spezifischere Exception (z.B. "
+            "`except (KeyError, ValueError):`, `except sqlalchemy.exc.IntegrityError:`, "
+            "`except httpx.HTTPError:`) die tatsächlich erwartbare Fehlerursache genauer trifft "
+            "- ein zu breiter Fang verschluckt echte Programmierfehler (z.B. AttributeError durch "
+            "einen Tippfehler) genauso wie die erwartete Ausnahme und macht sie unsichtbar. Ist "
+            "ein bewusst breiter Fallback nötig (z.B. ein Hintergrund-Task/Worker-Loop, der bei "
+            "JEDEM Fehler robust weiterlaufen muss, statt abzustürzen), ist `except Exception:` "
+            "dafür legitim - kennzeichne ihn dann aber explizit mit einem kurzen Kommentar, WARUM "
+            "er bewusst breit ist (z.B. `except Exception:  # noqa: BLE001 - Worker darf nie "
+            "abstürzen`), statt ihn unkommentiert stehen zu lassen. So bleibt der Lint-Scan des "
+            "Verifikators aussagekräftig, statt bei jedem Lauf denselben bereits bekannten, "
+            "bewusst akzeptierten Fund erneut gegen echte neue Funde zu vermischen."
+            if self.agent_id in CODE_WRITING_AGENT_IDS else ""
+        )
         return f"""{system_prompt}
 
 ## 🛠️ WERKZEUG-NUTZUNG (agentischer Modus)
@@ -420,7 +447,7 @@ Triffst du auf eine ECHTE, für die Aufgabe entscheidende Unklarheit, die nur ei
 statt zu raten und trotzdem etwas möglicherweise Falsches auszuliefern. Ein erfahrener Senior-Entwickler fragt bei
 echter Mehrdeutigkeit nach, statt zu spekulieren. Setze deine Arbeit danach so weit wie möglich fort und fasse in
 deiner finalen Antwort ehrlich zusammen, was bereits erledigt ist und was durch die Rückfrage offen bleibt.
-{write_access_note}{empty_scope_note}"""
+{write_access_note}{empty_scope_note}{exception_handling_note}"""
 
     def _build_prompt(self, task: AgentTask) -> str:
         """Baut den finalen Prompt token-effizient zusammen mit strikten Sparsamkeits-Regeln."""

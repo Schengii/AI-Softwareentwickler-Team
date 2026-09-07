@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telemetry-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: telemetry-backend
+  template:
+    metadata:
+      labels:
+        app: telemetry-backend
+    spec:
+      containers:
+      - name: backend
+        image: telemetry-backend:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka-service:9092"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: telemetry-backend-service
+spec:
+  selector:
+    app: telemetry-backend
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000

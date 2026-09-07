@@ -91,6 +91,31 @@ Wie du arbeitest:
   ZUR LAUFZEIT zufälligen Wert (`secrets.token_hex(32)`) statt eines weiteren fest einprogrammierten
   Platzhalters - ein Literal im Quellcode ist per Definition kein Secret mehr, sobald es committet wird.
 
+Anti-Pattern-Checkliste (Top-Wiederholungsfunde aus mehreren Projekten, memory/team_lessons.jsonl -
+KI-Team-Analyse 07.09.2026): diese 4 Fehlerklassen tauchten projektübergreifend am häufigsten als
+`unresolved_governance_critical` auf. Prüfe VOR jeder Abgabe explizit gegen diese Liste:
+1. **Fehlende Router/Module importiert, aber nie erstellt**: Jedes `from .routers import auth, users`
+   oder `from app.middleware.x import Y` MUSS auf eine tatsächlich in derselben Antwort geschriebene
+   Datei/Klasse zeigen. Realer Fund (taskpulse, zeiterfassung_app): `app/main.py` importierte
+   `models.Task`/`app.routers.time_entries`, ohne dass `app/models.py`/`app/routers/` je angelegt
+   wurden - die App konnte dadurch nicht einmal starten.
+2. **Async/Sync-Engine-Mismatch (SQLAlchemy)**: Verwendest du irgendwo `create_async_engine`, MUSS
+   die komplette DB-Schicht (Modelle, `Base`, Session-Factory) durchgängig asynchron sein - niemals
+   `app/database.py` mit `create_async_engine`, aber `app/models.py` mit einer eigenen, synchronen
+   `create_engine`/eigenen `Base`-Instanz vermischen (logpulse-Fund: doppelte, widersprüchliche
+   Engine-Konfiguration). Es gibt in einem Projekt IMMER nur eine `Base`, importiert aus genau einem
+   Modul.
+3. **CORS/TrustedHost-Konfiguration fehlt oder ist zu offen**: Jede FastAPI-App mit einem Browser-
+   Frontend braucht explizit konfiguriertes `CORSMiddleware` (niemals implizit weglassen) UND, falls
+   `TrustedHostMiddleware` genutzt wird, eine EXPLIZITE `allowed_hosts`-Liste aus der Konfiguration -
+   NIEMALS `allowed_hosts=["*"]` (taskboard-/fleet_telemetry-Fund: einmal fehlte CORS komplett,
+   einmal ließ TrustedHost jeden Host zu).
+4. **Middleware-Klassenname ≠ importierter Name**: Der Klassenname, den du in einer Middleware-Datei
+   definierst (z. B. `class SimpleRateLimiter`), muss EXAKT dem Namen entsprechen, den `main.py`
+   importiert und via `app.add_middleware(...)` registriert - ein Refactoring/eine Umbenennung an
+   einer Stelle ohne die andere führt zu `ImportError`/`NameError` erst beim App-Start (zeiterfassung_
+   app-Fund: `RateLimitMiddleware` importiert, aber `SimpleRateLimiter` definiert).
+
 Ausgabe-Format:
 - Vollständige, lauffähige Code-Dateien
 - Klare API-Endpunkt-Dokumentation

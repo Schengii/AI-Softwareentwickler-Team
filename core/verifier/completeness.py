@@ -49,10 +49,13 @@ from core.verifier.models import (
     _KNOWN_PACKAGE_NAMES,
     _LOCAL_DIR_THIRDPARTY_NAME_COLLISIONS,
     _MANIFEST_FILENAMES,
+    _PATH_PARAM_RE,
     _PY_IMPORT_RE,
     _PY_ROUTE_DEF_RE,
+    _PY_ROUTE_PATH_RE,
     _PY_WRITE_ROUTE_DECORATOR_RE,
     _PYTEST_ASYNC_TEST_RE,
+    _README_ENDPOINT_RE,
     _README_FILE_REF_RE,
     _ROUTE_IO_EXEMPT_NAME_RE,
     _SQLA_ASYNC_ENGINE_RE,
@@ -118,6 +121,7 @@ class CompletenessMixin:
         issues.extend(self._double_router_prefix(py_texts))
         issues.extend(self._missing_sqlalchemy_dsn_driver(py_texts))
         issues.extend(self._wildcard_security_middleware(py_texts))
+        issues.extend(self._readme_endpoints_not_implemented(py_texts))
 
         return CompletenessReport(attempted=True, passed=not issues, issues=issues)
 
@@ -799,17 +803,7 @@ class CompletenessMixin:
         so gut wie nie beabsichtigt. Ein Import-Alias (`import logs as x`) wird bewusst NICHT
         aufgelöst - dieselbe konservative Grundhaltung wie überall in dieser Datei, ein
         übersehener Fund ist besser als ein Fehlalarm."""
-        router_prefix_by_module: dict[str, str] = {}
-        for rel, text in py_texts.items():
-            for m in re.finditer(r"\bAPIRouter\s*(\()", text):
-                close_idx = self._find_matching_paren(text, m.start(1))
-                if close_idx is None:
-                    continue
-                args_text = text[m.end(1):close_idx]
-                prefix_match = re.search(r"\bprefix\s*=\s*[\"']([^\"']+)[\"']", args_text)
-                if prefix_match and prefix_match.group(1):
-                    router_prefix_by_module[Path(rel).stem] = prefix_match.group(1)
-
+        router_prefix_by_module = self._router_prefixes(py_texts)
         if not router_prefix_by_module:
             return []
 
@@ -836,6 +830,92 @@ class CompletenessMixin:
                             f"vermutlich beabsichtigten `{router_prefix}`.",
                 ))
         return issues
+
+    def _router_prefixes(self, py_texts: dict[str, str]) -> dict[str, str]:
+        """Extrahiert je Modul (Dateiname ohne Endung) den von `APIRouter(prefix=...)`
+        deklarierten Präfix (FastAPI-Konvention `from app.routers import logs` + `logs.router`) -
+        ausgelagert aus _double_router_prefix(), da _readme_endpoints_not_implemented() dieselbe
+        Zuordnung braucht, um einen vollen, im README dokumentierten Pfad korrekt gegen die
+        (relative) Route im Router-Modul abzugleichen."""
+        router_prefix_by_module: dict[str, str] = {}
+        for rel, text in py_texts.items():
+            for m in re.finditer(r"\bAPIRouter\s*(\()", text):
+                close_idx = self._find_matching_paren(text, m.start(1))
+                if close_idx is None:
+                    continue
+                args_text = text[m.end(1):close_idx]
+                prefix_match = re.search(r"\bprefix\s*=\s*[\"']([^\"']+)[\"']", args_text)
+                if prefix_match and prefix_match.group(1):
+                    router_prefix_by_module[Path(rel).stem] = prefix_match.group(1)
+        return router_prefix_by_module
+
+    def _readme_endpoints_not_implemented(self, py_texts: dict[str, str]) -> list[CompletenessIssue]:
+        """
+        Semantischer README-zu-Implementierung-Abgleich (KI-Team-Analyse 07.09.2026, Punkt 3
+        "Stub-Completeness-Check erkennt keine logisch unvollständigen Implementierungen"):
+        _missing_readme_referenced_files() oben prüft bisher nur, ob im README per
+        Installationsbefehl genannte DATEIEN existieren - ob ein im README als API-Endpunkt
+        DOKUMENTIERTER Pfad (`GET /users/{id}`) im Code überhaupt implementiert ist, blieb
+        ungeprüft. Ein README, das mehr Endpunkte verspricht als das Backend tatsächlich
+        registriert, bestand die Verifikation bisher unbemerkt - derselbe Bug-Typ wie ein
+        `return {}`, das laut README ein verschlüsseltes Objekt liefern soll, nur auf
+        API-Vertrags- statt Funktionskörper-Ebene.
+
+        Bewusst konservativ (ein übersehener Fund ist besser als ein Fehlalarm, dieselbe Haltung
+        wie _double_router_prefix() oben): README-Endpunkte werden nur erkannt, wenn die HTTP-
+        Methode in GROSSBUCHSTABEN direkt vor einem `/`-Pfad steht (_README_ENDPOINT_RE) - die in
+        Fließtext/Marketing-Prosa unübliche Schreibweise vermeidet die meisten Fehlalarme. Ein
+        Pfadparameter-Platzhalter (`{id}`, `{note_id}`, ...) wird vor dem Vergleich auf `{}`
+        normalisiert, da README und Implementierung oft unterschiedliche Parameternamen für
+        dieselbe Route verwenden. Sowohl der volle (Router-Prefix + relativer Pfad) als auch der
+        rohe Dekorator-Pfad gelten als "implementiert" - ein nicht statisch auflösbarer Prefix
+        (z.B. aus einer Variable) führt so NICHT zu einem Fehlalarm.
+        """
+        readme = next(
+            (self.project_dir / name for name in ("README.md", "readme.md") if (self.project_dir / name).exists()),
+            None,
+        )
+        if readme is None or not py_texts:
+            return []
+        try:
+            readme_text = readme.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return []
+
+        documented: dict[tuple[str, str], str] = {}
+        for match in _README_ENDPOINT_RE.finditer(readme_text):
+            method = match.group(1).upper()
+            raw_path = match.group(2).rstrip("/") or "/"
+            if raw_path == "/":
+                continue  # zu unspezifisch, um sinnvoll gegen die Implementierung zu prüfen
+            key = (method, _PATH_PARAM_RE.sub("{}", raw_path))
+            documented.setdefault(key, f"{method} {raw_path}")
+        if not documented:
+            return []
+
+        router_prefixes = self._router_prefixes(py_texts)
+        implemented: set[tuple[str, str]] = set()
+        for rel, text in py_texts.items():
+            prefix = router_prefixes.get(Path(rel).stem, "")
+            for m in _PY_ROUTE_PATH_RE.finditer(text):
+                method = m.group(2).upper()
+                raw_path = m.group(4)
+                normalized_raw = _PATH_PARAM_RE.sub("{}", raw_path.rstrip("/") or "/")
+                implemented.add((method, normalized_raw))
+                if prefix and raw_path.startswith("/"):
+                    full_path = (prefix + raw_path).rstrip("/") or "/"
+                    implemented.add((method, _PATH_PARAM_RE.sub("{}", full_path)))
+
+        missing: list[CompletenessIssue] = []
+        for key, label in documented.items():
+            if key not in implemented:
+                missing.append(CompletenessIssue(
+                    file_path="README.md",
+                    message=f"README dokumentiert den Endpunkt `{label}`, aber kein Backend-"
+                            f"Code registriert eine passende Route dafür (geprüft gegen alle "
+                            f"`@app.*`/`@router.*`-Dekoratoren inkl. bekannter APIRouter-Prefixe).",
+                ))
+        return missing
 
     def _missing_readme_referenced_files(self) -> list[CompletenessIssue]:
         readme = next(

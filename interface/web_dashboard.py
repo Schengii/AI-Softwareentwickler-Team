@@ -306,10 +306,19 @@ class DashboardServer:
         except Exception as e:
             self.deployments[project_name] = {"status": "error", "output": str(e)}
             return
+        health: dict | None = None
+        if result.success and result.urls:
+            # Sofortiger Post-Deploy-Health-Check (KI-Team-Analyse 07.09.2026, Punkt 8) -
+            # dieselbe Logik wie interface/cli.py._run_post_deploy_health_check(), hier als
+            # zusätzliches Feld im Poll-Status statt einer Konsolen-Ausgabe.
+            from core.production_monitor import wait_for_health
+            health_result = await wait_for_health(result.urls[0])
+            health = {"healthy": health_result.healthy, "detail": health_result.detail, "url": health_result.url}
         self.deployments[project_name] = {
             "status": "done" if result.attempted else "skipped",
             "success": result.success, "method": result.method,
             "urls": result.urls, "output": result.output, "reason_skipped": result.reason_skipped,
+            "health": health,
         }
 
     def stop_deploy(self, project_name: str) -> None:

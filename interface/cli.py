@@ -98,6 +98,8 @@ HELP_TEXT = """
 | `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
 | `/deploy-stop [projekt]` | Fährt ein per `/deploy` gestartetes Deployment wieder herunter |
 | `/deploy-cloud <fly/vercel/render/railway> [projekt] [--real]` | Deployt in die Cloud (echte Preview-URL) – ohne `--real` nur Dry-Run/Manifeste |
+| `/feedback <gut/schlecht> <text>` | Speichert Nutzer-Feedback direkt im Team-Gedächtnis (`memory/team_lessons.jsonl`) – fließt in künftige Läufe ein |
+| `/check-interop <aufrufendes_projekt> <ziel_projekt>` | Statischer Cross-Projekt-Contract-Check: prüft, ob HTTP-Aufrufe eines Projekts zu den echten Endpunkten eines anderen Workspace-Projekts passen |
 | `/push` | Führt manuell einen Git-Commit & Push aus |
 | `/release` | Erstellt einen echten SemVer-Tag + GitHub-Release des FRAMEWORKS selbst aus den Commits seit dem letzten Release (mit Vorschau & Bestätigung) |
 | `/rollback <PR-Nummer>` | Revertiert einen bereits gemergten PR über einen echten Revert-Pull-Request (mit Vorschau & Bestätigung) |
@@ -1593,6 +1595,12 @@ class CLIInterface:
         elif cmd in ("/deploy-cloud", "/cloud-deploy"):
             await self._deploy_cloud_with_confirmation(args)
 
+        elif cmd == "/feedback":
+            self._record_user_feedback(args)
+
+        elif cmd in ("/check-interop", "/interop"):
+            self._check_cross_project_interop(args)
+
         elif cmd in ("/protect-branch", "/branch-protection"):
             await self._protect_branch_with_confirmation(args[0] if args else None)
 
@@ -1790,9 +1798,32 @@ class CLIInterface:
         elif result.success:
             urls_note = "\n".join(f"  🌐 {u}" for u in result.urls) if result.urls else "  (kein Port ermittelt)"
             console.print(f"✅ [bold green]Deployment erfolgreich ({result.method}):[/bold green]\n{urls_note}")
+            if result.urls:
+                await self._run_post_deploy_health_check(result.urls[0])
             console.print("💡 [dim]Stoppen mit `/deploy-stop`.[/dim]")
         else:
             console.print(f"❌ [bold red]Deployment fehlgeschlagen:[/bold red]\n{result.output}", style="red")
+
+    async def _run_post_deploy_health_check(self, url: str) -> None:
+        """
+        Sofortiger Erreichbarkeits-Check direkt nach einem erfolgreichen Deploy (lokal oder
+        Cloud) - core/production_monitor.py.wait_for_health(), siehe dort für den realen Fund
+        (KI-Team-Analyse 07.09.2026, Punkt 8: "Kein Deployment-Validierungsschritt"). Rein
+        informativ: ein fehlgeschlagener Health-Check macht den Deploy-Befehl selbst nicht
+        rückgängig, macht aber sichtbar, dass die URL trotz Exit-Code 0 (noch) nicht antwortet.
+        """
+        from core.production_monitor import wait_for_health
+
+        console.print(f"🩺 [dim]Prüfe Erreichbarkeit von {url}...[/dim]")
+        health = await wait_for_health(url)
+        if health.healthy:
+            console.print(f"✅ [bold green]Health-Check bestanden:[/bold green] {url} ({health.detail}).")
+        else:
+            console.print(
+                f"⚠️ [bold yellow]Health-Check fehlgeschlagen:[/bold yellow] {url} antwortet nicht ({health.detail}) "
+                "- Deploy-Befehl war erfolgreich, der Dienst ist aber (noch) nicht erreichbar.",
+                style="yellow",
+            )
 
     async def _deploy_cloud_with_confirmation(self, args: list[str]) -> None:
         """
@@ -1874,6 +1905,8 @@ class CLIInterface:
                 # nur falsche "nicht erreichbar"-Alarme für etwas erzeugen, das nie live war.
                 from core.deployment_status import record_deployment
                 record_deployment(project_dir, provider=result.provider, url=result.preview_url)
+                if result.preview_url:
+                    await self._run_post_deploy_health_check(result.preview_url)
                 console.print("💡 [dim]`python main.py --check-deployments` überwacht diese URL künftig automatisch.[/dim]")
         else:
             console.print(f"❌ [bold red]Cloud-Deployment fehlgeschlagen:[/bold red]\n{result.output}", style="red")
@@ -1899,6 +1932,72 @@ class CLIInterface:
             console.print("⏹️ [bold green]Deployment gestoppt.[/bold green]")
         else:
             console.print(f"❌ Stoppen fehlgeschlagen:\n{result.output}", style="red")
+
+    def _record_user_feedback(self, args: list[str]) -> None:
+        """
+        `/feedback <gut|schlecht> <Text>` – strukturierter Rückkanal vom Nutzer ins Team-
+        Gedächtnis (KI-Team-Analyse 07.09.2026, Punkt 10 "Kein strukturiertes Feedback-System
+        vom Nutzer zurück ans Team"): bisher lief alles nur in eine Richtung (das Team
+        produziert, der Nutzer begutachtet) - core/team_memory.py.record_lesson() wurde bislang
+        NUR intern von der Retrospektive/dem Optimization-Advisor aufgerufen, nie direkt vom
+        Nutzer. Landet in derselben memory/team_lessons.jsonl wie automatisch erkannte Befunde
+        und wird über core/team_memory.py.format_team_lessons_for_agents() künftigen Läufen
+        (auch an anderen Projekten) mitgegeben - eine Kategorie `user_feedback_positive`/
+        `user_feedback_negative` statt `unresolved_governance_critical` o.Ä., damit sie in
+        Retrospektiven klar als Nutzer-Einschätzung statt automatisierter Fund erkennbar bleibt.
+        Nutzt denselben project_slug wie das aktuell geladene Projekt, falls eines geladen ist,
+        sonst "_team" (dieselbe Konvention wie unused_agent-Tickets in team_lessons.jsonl).
+        """
+        if len(args) < 2 or args[0].lower() not in ("gut", "schlecht", "positiv", "negativ"):
+            console.print(
+                "⚠️ Nutzung: `/feedback <gut|schlecht> <Beschreibung>` - z.B. "
+                "`/feedback gut Der Backend-Agent hat CORS diesmal sofort richtig konfiguriert`",
+                style="yellow",
+            )
+            return
+
+        from core.team_memory import record_lesson
+
+        polarity = "positive" if args[0].lower() in ("gut", "positiv") else "negative"
+        detail = " ".join(args[1:]).strip()
+        project_slug = Path(self._loaded_project_dir).name if self._loaded_project_dir else "_team"
+        record_lesson(project_slug=project_slug, category=f"user_feedback_{polarity}", detail=detail)
+        console.print(
+            f"✅ [bold green]Feedback gespeichert[/bold green] (`user_feedback_{polarity}`, Projekt `{project_slug}`) "
+            "- fließt künftig in die Team-Lektionen für nachfolgende Läufe ein.",
+        )
+
+    def _check_cross_project_interop(self, args: list[str]) -> None:
+        """
+        `/check-interop <aufrufendes_projekt> <ziel_projekt>` – statischer Cross-Projekt-
+        Contract-Check (core/contract_verifier.py.verify_cross_project_contract(), KI-Team-
+        Analyse 07.09.2026, Punkt 9 "Fehlende Interoperabilitäts-Tests zwischen generierten
+        Projekten"): bisher arbeitete jedes Workspace-Projekt beim Verifizieren komplett
+        isoliert - ob ein Projekt (z.B. `event_relay`), das per HTTP einen anderen Service
+        aufruft, tatsächlich zu dessen echten Endpunkten (z.B. `taskpulse`) passt, blieb
+        ungeprüft. Rein statisch, keine laufenden Container nötig.
+        """
+        if len(args) < 2:
+            console.print(
+                "⚠️ Nutzung: `/check-interop <aufrufendes_projekt> <ziel_projekt>` - z.B. "
+                "`/check-interop event_relay taskpulse`", style="yellow",
+            )
+            return
+
+        caller_dir = self._resolve_project_dir(args[0])
+        provider_dir = self._resolve_project_dir(args[1])
+        if caller_dir is None:
+            console.print(f"⚠️ Projekt `{args[0]}` existiert nicht in `workspace/`.", style="yellow")
+            return
+        if provider_dir is None:
+            console.print(f"⚠️ Projekt `{args[1]}` existiert nicht in `workspace/`.", style="yellow")
+            return
+
+        from core.contract_verifier import verify_cross_project_contract
+
+        report = verify_cross_project_contract(caller_dir, provider_dir)
+        style = "green" if report.passed else "red"
+        console.print(Panel(report.format_summary(), title="🤝 Cross-Projekt-Interop-Check", border_style=style))
 
     async def _protect_branch_with_confirmation(self, branch: str | None) -> None:
         """

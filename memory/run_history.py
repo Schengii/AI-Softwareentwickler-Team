@@ -23,6 +23,30 @@ from config import BASE_DIR
 RUN_HISTORY_FILE = Path(BASE_DIR) / "memory" / "run_history.json"
 MAX_RUNS_KEPT = 200
 
+# Team-Optimierung (KI-Team-Analyse 07.09.2026, Punkt 5 "Fake-Model in Testzyklen"): tests/
+# __init__.py leitet RUN_HISTORY_FILE zwar seit einer früheren Retrospektive strukturell auf ein
+# Temp-Verzeichnis um, sodass NEUE Testläufe die echte Datei nicht mehr verschmutzen - bereits
+# VOR diesem Fix geschriebene Einträge (model_used="fake-model", 0 Tool-Calls, meist
+# total_tokens im niedrigen einstelligen/zweistelligen Bereich) blieben aber unverändert in der
+# echten memory/run_history.json stehen und flossen weiter in jede Auswertung ein. Dieser Filter
+# schließt SOWOHL alte als auch (defensiv, falls die Testisolation künftig umgangen wird) neue
+# Dummy-Läufe konsequent aus jeder Optimierungsberechnung aus, statt sich allein auf die
+# Testisolation zu verlassen.
+_FAKE_MODEL_NAME = "fake-model"
+
+
+def _is_real_run(run: dict) -> bool:
+    """
+    Ein Lauf gilt als "echt" (Grundlage für Optimierungsvorschläge), wenn KEIN einziges Ergebnis
+    mit dem Dummy-Modell `fake-model` verzeichnet ist - Unit-Tests, die absichtlich ohne echten
+    LLM-Aufruf laufen (core/llm_factory.py-Fake-Provider), tragen genau diesen Modellnamen ein.
+    Ein Lauf ohne jegliche `agent_results` (z.B. sehr frühe Testdaten) gilt als real, damit
+    bereits bestehende Aufrufer, die diese Funktion nicht kennen, unverändertes Verhalten sehen.
+    """
+    return not any(
+        (res.get("model_used") or "") == _FAKE_MODEL_NAME for res in run.get("agent_results", [])
+    )
+
 
 def record_run(
     project_slug: str, task_summary: str, verification_ok: bool,
@@ -61,7 +85,7 @@ def get_agent_success_rates(limit_runs: int = 50) -> list[dict]:
     Aufrufe absteigend (die aktivsten Agenten zuerst, statt alphabetisch). Ein Agent, der nie
     aufgerufen wurde, taucht schlicht nicht auf (kein künstlicher 0-Eintrag).
     """
-    runs = _load()[-limit_runs:]
+    runs = [r for r in _load() if _is_real_run(r)][-limit_runs:]
     stats: dict[str, dict[str, int]] = {}
     for run in runs:
         for res in run.get("agent_results", []):
@@ -95,7 +119,7 @@ def get_agent_model_performance(limit_runs: int = 100) -> list[dict]:
     `model_used` – werden unter "unbekannt" gruppiert statt zu crashen oder verworfen zu werden
     (Rückwärtskompatibilität mit bereits bestehenden memory/run_history.json-Einträgen).
     """
-    runs = _load()[-limit_runs:]
+    runs = [r for r in _load() if _is_real_run(r)][-limit_runs:]
     stats: dict[tuple[str, str], dict[str, int]] = {}
     for run in runs:
         for res in run.get("agent_results", []):
@@ -132,7 +156,7 @@ def get_verification_success_rate(limit_runs: int = 10) -> dict:
     Hinweis in den Abschlussbericht aufnimmt, statt dass dieses Muster nur durch manuelle
     Auswertung von memory/run_history.json auffällt.
     """
-    runs = _load()[-limit_runs:]
+    runs = [r for r in _load() if _is_real_run(r)][-limit_runs:]
     passed = sum(1 for r in runs if r.get("verification_ok"))
     total = len(runs)
     return {

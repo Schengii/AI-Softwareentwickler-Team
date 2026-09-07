@@ -67,9 +67,10 @@ class TestDeployCloudCommand(unittest.TestCase):
 
             mock_cls.return_value.deploy.assert_called_once_with("fly", True)  # dry_run=True per Standard
 
+    @patch("core.production_monitor._check_url", return_value=(True, "HTTP 200"))
     @patch("interface.cli.Confirm.ask", return_value=True)
     @patch("interface.cli.console.print")
-    def test_real_flag_passes_dry_run_false(self, _mock_print, _mock_confirm):
+    def test_real_flag_passes_dry_run_false(self, _mock_print, _mock_confirm, _mock_check_url):
         with patch("core.cloud_deployment.CloudDeploymentManager") as mock_cls:
             mock_cls.return_value.deploy.return_value = CloudDeploymentResult(
                 attempted=True, success=True, provider="fly", preview_url="https://demo.fly.dev",
@@ -78,9 +79,10 @@ class TestDeployCloudCommand(unittest.TestCase):
 
             mock_cls.return_value.deploy.assert_called_once_with("fly", False)
 
+    @patch("core.production_monitor._check_url", return_value=(True, "HTTP 200"))
     @patch("interface.cli.Confirm.ask", return_value=True)
     @patch("interface.cli.console.print")
-    def test_successful_real_deploy_records_deployment_status(self, mock_print, _mock_confirm):
+    def test_successful_real_deploy_records_deployment_status(self, mock_print, _mock_confirm, _mock_check_url):
         with patch("core.cloud_deployment.CloudDeploymentManager") as mock_cls, \
              patch("core.deployment_status.record_deployment") as mock_record:
             mock_cls.return_value.deploy.return_value = CloudDeploymentResult(

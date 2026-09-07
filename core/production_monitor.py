@@ -86,6 +86,36 @@ def _check_url(url: str, timeout: float) -> tuple[bool, str]:
         return False, str(e)[:200]
 
 
+async def wait_for_health(
+    url: str, attempts: int = 5, delay_seconds: float = 3.0,
+    timeout: float = DEPLOYMENT_HEALTH_CHECK_TIMEOUT_SECONDS,
+) -> DeploymentHealthResult:
+    """
+    Sofortiger Post-Deploy-Health-Check: unmittelbar NACH einem erfolgreichen `deploy_project()`/
+    `CloudDeploymentManager.deploy()`-Aufruf, statt erst beim nächsten periodischen
+    `python main.py --check-deployments`-Zyklus. Realer Fund (KI-Team-Analyse 07.09.2026): ein
+    "✅ Deployment erfolgreich" bedeutete bisher nur, dass der Deploy-BEFEHL selbst (docker/
+    flyctl/vercel) mit Exit-Code 0 zurückkam - ob der Service danach tatsächlich unter der
+    Ziel-URL antwortet (Endpunkte erreichbar, kein Crash-Loop beim Boot), blieb bis zum nächsten
+    manuell/per Cron ausgelösten Monitor-Zyklus ungeprüft.
+
+    Nutzt dieselbe `_check_url()`-Logik (jeder Statuscode < 500 gilt als erreichbar) wie der
+    periodische Monitor-Zyklus oben, aber mit mehreren Versuchen statt nur einem: ein frisch
+    gestarteter Container/eine frisch ausgerollte Cloud-Instanz braucht oft ein paar Sekunden,
+    bis der Anwendungsprozess wirklich auf dem Port lauscht - ein einzelner sofortiger Check
+    direkt nach `docker run`/`flyctl deploy` würde sonst systematisch fälschlich "nicht
+    erreichbar" melden, obwohl der Service kurz danach normal hochkommt.
+    """
+    detail = "kein Versuch unternommen"
+    for attempt in range(1, attempts + 1):
+        healthy, detail = await asyncio.to_thread(_check_url, url, timeout)
+        if healthy:
+            return DeploymentHealthResult(project_slug="", url=url, healthy=True, detail=detail)
+        if attempt < attempts:
+            await asyncio.sleep(delay_seconds)
+    return DeploymentHealthResult(project_slug="", url=url, healthy=False, detail=detail)
+
+
 async def run_deployment_health_check_cycle(status_callback: StatusCallback | None = None) -> DeploymentHealthReport:
     """
     Ein einzelner Poll-Durchlauf über ALLE per `/deploy-cloud --real` deployten Projekte. Wird

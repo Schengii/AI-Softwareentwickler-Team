@@ -92,8 +92,15 @@ class TestDashboardDeployEndpoints(unittest.TestCase):
         data = self._get_json("/api/deploy-status/never_touched_project")
         self.assertEqual(data["status"], "none")
 
+    @patch("core.production_monitor._check_url", return_value=(True, "HTTP 200"))
     @patch("core.deployment.deploy_project")
-    def test_full_deploy_cycle_reaches_done_with_success(self, mock_deploy):
+    def test_full_deploy_cycle_reaches_done_with_success(self, mock_deploy, mock_check_url):
+        # core.production_monitor._check_url() gemockt statt des sofortigen Post-Deploy-
+        # Health-Checks selbst (interface/web_dashboard.py._execute_deploy() ruft seit der
+        # KI-Team-Analyse 07.09.2026, Punkt 8, wait_for_health() auf) - ohne diesen Mock würde
+        # ein echter, mehrfach wiederholter HTTP-Request gegen die (in diesem Test nie wirklich
+        # laufende) URL http://localhost:8000 versucht, was den Testlauf unnötig verlangsamt/
+        # instabil macht.
         mock_deploy.return_value = DeploymentResult(
             attempted=True, success=True, method="docker", urls=["http://localhost:8000"],
         )

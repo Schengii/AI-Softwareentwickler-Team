@@ -6,11 +6,12 @@ LLM-Aufruf delegieren, sein Fachteam parallel/sequenziell arbeiten und die Ergeb
 anschließend per weiterem LLM-Aufruf konsolidieren.
 """
 
+import asyncio
 import time
 from collections.abc import Callable
 
 from agents.department_lead_agent import DEPARTMENT_DEFINITIONS, DepartmentLeadAgent
-from agents.orchestrator.constants import PHASE_ORDER
+from agents.orchestrator.constants import LEAN_CONTEXT_AGENT_IDS, PHASE_ORDER
 from config import ENABLE_DEPARTMENT_LEAD_EXECUTION, ENABLE_TASK_COMPLEXITY_SCALING
 from core.message_bus import AgentResult, AgentTask
 from core.task_manager import is_micro_task
@@ -55,6 +56,20 @@ class DepartmentMixin:
         file_owners: dict[str, str] = {}
         task_map = {t.agent_id: t for t in agent_tasks}
         running_context = ""  # Kompakter Kontext aus vorherigen Phasen (z.B. Planungsergebnisse)
+        # Team-Optimierung (Token-Effizienz): einmalig VOR der Phasenschleife berechnet (statt
+        # lazy innerhalb einer Phase) - dieselbe Struktur-Übersicht wird jetzt ggf. von ZWEI
+        # gleichzeitig laufenden Phasen gebraucht (siehe content_lead/qa_lead-Parallelisierung
+        # unten), ein nachträgliches lazy-Bauen hätte dort zu einer Race-Condition auf einer
+        # einzelnen Variable geführt. Nur berechnet, wenn überhaupt eine LEAN_CONTEXT_AGENT_IDS-
+        # Rolle Teil dieses Laufs ist, um den AST-Scan bei jeder anderen Aufgabe zu sparen.
+        structural_overview = ""
+        if any(t.agent_id in LEAN_CONTEXT_AGENT_IDS for t in agent_tasks):
+            try:
+                from core.code_graph import CodebaseGraph
+                graph = await asyncio.to_thread(CodebaseGraph, project_dir)
+                structural_overview = graph.get_structural_overview()
+            except Exception:
+                structural_overview = ""
         budget_aborted = False
         manually_cancelled = False
         # Realer Fund: eine triviale Ein-Endpunkt-Aufgabe verbrauchte 66.000 Tokens, weil
@@ -64,7 +79,9 @@ class DepartmentMixin:
         # LLM-Aufruf.
         task_is_micro = ENABLE_TASK_COMPLEXITY_SCALING and is_micro_task(agent_tasks)
 
-        for dept_id, phase_label, icon, run_mode in PHASE_ORDER:
+        i = 0
+        while i < len(PHASE_ORDER):
+            dept_id, phase_label, icon, run_mode = PHASE_ORDER[i]
             # _generation_budget_exceeded statt _run_budget_exceeded: reserviert einen Anteil
             # von MAX_RUN_TOKENS (VERIFICATION_TOKEN_RESERVE_RATIO, config.py) exklusiv für die
             # spätere Verifikations-/Fix-Phase, die Autonomie erst beweist - siehe deren
@@ -89,134 +106,227 @@ class DepartmentMixin:
                 )
                 break
 
-            member_ids = DEPARTMENT_DEFINITIONS[dept_id]["members"]
-            member_tasks = [task_map[aid] for aid in member_ids if aid in task_map]
-            if not member_tasks:
+            # Team-Optimierung (Parallelisierung unabhängiger Fachbereiche): content_lead
+            # (Doku/i18n/Barrierefreiheit) und qa_lead (DevOps/Tests/Security) bauen BEIDE nur
+            # auf dem bereits fertigen dev_lead-Code auf - keiner der beiden braucht Ergebnisse
+            # des jeweils anderen (governance_lead danach prüft ohnehin den Gesamtstand). Bisher
+            # wartete qa_lead trotzdem strikt sequentiell auf das Ende von content_lead, obwohl
+            # beide Fachbereiche voneinander unabhängig sind - dieselbe Idee wie die bereits
+            # bestehende Parallelisierung INNERHALB einer Phase (frontend/backend/database im
+            # dev_lead-Team), nur eine Ebene höher zwischen zwei ganzen Fachbereichen.
+            if dept_id == "content_lead" and i + 1 < len(PHASE_ORDER) and PHASE_ORDER[i + 1][0] == "qa_lead":
+                next_dept_id, next_phase_label, next_icon, next_run_mode = PHASE_ORDER[i + 1]
+                notify(
+                    f"{icon}{next_icon} [bold cyan]{phase_label} & {next_phase_label}[/bold cyan] "
+                    "laufen parallel (unabhängige Fachbereiche, beide bauen nur auf dem bereits "
+                    "fertigen Entwicklungsstand auf)..."
+                )
+                (results_a, fo_a, ctx_a, budget_a), (results_b, fo_b, ctx_b, budget_b) = await asyncio.gather(
+                    self._run_single_department_phase(
+                        dept_id, phase_label, icon, run_mode, task_map, task_summary, project_dir,
+                        notify, running_context, structural_overview, task_is_micro, collision_sink,
+                        run_start_tokens,
+                    ),
+                    self._run_single_department_phase(
+                        next_dept_id, next_phase_label, next_icon, next_run_mode, task_map, task_summary,
+                        project_dir, notify, running_context, structural_overview, task_is_micro,
+                        collision_sink, run_start_tokens,
+                    ),
+                )
+                all_results.extend(results_a)
+                all_results.extend(results_b)
+                file_owners.update(fo_a)
+                file_owners.update(fo_b)
+                running_context = (running_context + ctx_a + ctx_b)[-3000:]
+                budget_aborted = budget_aborted or budget_a or budget_b
+                i += 2
                 continue
 
-            lead = self._dept_leads[dept_id]
-            notify(f"{icon} [bold cyan]{phase_label}[/bold cyan] (Geleitet von: {lead.name})...")
-
-            if running_context:
-                for task in member_tasks:
-                    task.context += f"\n\n## Kontext aus vorherigen Fachbereichen:\n{running_context[:2500]}"
-
-            # Nur EIN Mitglied trägt hier die gesamte Fachbereichsarbeit - bei einer insgesamt
-            # kleinen Aufgabe fehlt der Abstimmungsbedarf, den Delegation+Konsolidierung
-            # eigentlich rechtfertigt (siehe task_is_micro oben). Fachbereiche mit mehreren
-            # Mitgliedern behalten die Teamleiter-Koordination IMMER.
-            skip_lead_layer = task_is_micro and len(member_tasks) == 1
-
-            # ── Echte Delegation durch den Teamleiter ──
-            if ENABLE_DEPARTMENT_LEAD_EXECUTION and not skip_lead_layer:
-                delegation = await self._run_department_delegation(lead, task_summary, member_tasks, project_dir)
-                all_results.append(delegation)
-                if delegation.success and delegation.content:
-                    notify(f"  📤 [cyan]{lead.name} delegiert:[/cyan] {self._first_line(delegation.content)}")
-                    for task in member_tasks:
-                        task.context += f"\n\n## Arbeitsauftrag von {lead.name}:\n{delegation.content[:1200]}"
-                else:
-                    notify(f"  ⚠️ [yellow]{lead.name} konnte nicht delegieren ({delegation.error}) – Fachteam startet ohne Zusatzanweisung.[/yellow]")
-            elif skip_lead_layer:
-                notify(f"  ℹ️ [dim]Kleine Aufgabe, einziges Mitglied – Delegation/Konsolidierung durch {lead.name} übersprungen.[/dim]")
-
-            # ── Fachteam arbeitet (parallel oder sequentiell, je nach Phase) ──
-            # Realer Fund: bei nur 1-2 Mitgliedern eines eigentlich "parallelen" Fachbereichs
-            # (typisch für klar umrissene Aufgaben) sahen sich die Agenten NIE gegenseitig, weil
-            # beide fast zeitgleich starten und der Dateibaum beim jeweils eigenen Start noch
-            # leer war (agents/base_agent.py._run_agentic_loop() zeigt zwar IMMER den aktuellen
-            # Dateibaum, aber eben nur den zum eigenen Startzeitpunkt) – das produzierte real
-            # zwei parallele Implementierungen derselben Sache (app.py/test_app.py UND separat
-            # main.py/test_main.py für denselben Health-Check-Endpoint). Bei so wenigen
-            # Mitgliedern ist der Latenzgewinn durch Parallelität gering, der Sichtbarkeitsgewinn
-            # durch echte Sequenzialität aber groß – deshalb wird hier bewusst NIE parallelisiert,
-            # unabhängig von der für den Fachbereich generell hinterlegten Präferenz.
-            effective_run_mode = "sequential" if len(member_tasks) <= 2 else run_mode
-            if effective_run_mode == "parallel":
-                for task in member_tasks:
-                    notify(f"  ▶️ [yellow]Fachteam arbeitet:[/yellow] {self._agents[task.agent_id].name}...")
-                member_results = await self._run_agents_parallel(member_tasks, notify=notify)
-                # Direkte Folge desselben strukturellen Problems wie im Kommentar oben: sehen
-                # sich parallel laufende Agenten nie gegenseitig, kann das auch dazu führen,
-                # dass ZWEI von ihnen dieselbe Datei schreiben (z.B. requirements.txt,
-                # README.md) - core/agent_toolbox.py._tool_write_file() überschreibt dabei
-                # blind, KEIN Lock/Merge. _update_file_owners() unten würde den zuerst
-                # geschriebenen Stand dann still verwerfen (nur der laut Ergebnis-Reihenfolge
-                # letzte Schreiber gewinnt als "Owner"). Da automatisch nicht entscheidbar ist,
-                # welche Version die richtige ist, wird der Fund hier NUR sichtbar gemacht
-                # (Live-Warnung + Eintrag in collision_sink für den Abschlussbericht) statt
-                # geblockt - dieselbe "melden statt raten"-Philosophie wie bei fehlgeschlagener
-                # Verifikation.
-                collisions = self._detect_file_write_collisions(member_results)
-                if collisions:
-                    collision_desc = "; ".join(
-                        f"`{path}` ({', '.join(agents)})" for path, agents in collisions.items()
-                    )
-                    notify(
-                        f"  ⚠️ [bold yellow]Datei-Kollision:[/bold yellow] mehrere gleichzeitig "
-                        f"arbeitende Fachteam-Mitglieder haben dieselbe Datei geschrieben – die "
-                        f"zuerst geschriebene Version könnte überschrieben worden sein: {collision_desc}"
-                    )
-                    if collision_sink is not None:
-                        for path, agents in collisions.items():
-                            collision_sink.append({"phase": phase_label, "path": path, "agents": agents})
-            else:
-                member_results = []
-                for task in member_tasks:
-                    agent_name = self._agents[task.agent_id].name
-                    notify(f"  ▶️ [yellow]Fachteam arbeitet:[/yellow] {agent_name}...")
-                    start_t = time.monotonic()
-                    res = await self._run_single_agent(task)
-                    dur = time.monotonic() - start_t
-                    member_results.append(res)
-                    notify(self._status_notify_line("✅ [green]Fertig[/green]", "❌ [red]Fehler[/red]", agent_name, dur, res.success, res.error))
-
-                    # Realer Fund: die Budget-Prüfung lief bisher NUR einmal am Anfang jeder
-                    # Fachbereichs-Phase (siehe Schleifenkopf oben) - bei mehreren SEQUENZIELL
-                    # laufenden Mitgliedern (z.B. Governance: Code-Reviewer -> Compliance ->
-                    # Projekt-Hygiene) konnte ein Lauf dadurch erst NACH der kompletten Phase
-                    # bemerkt werden, dass MAX_RUN_TOKENS bereits deutlich überschritten war
-                    # (beobachtet: 383.143 von 300.000 Tokens, +27%). Zusätzliche Prüfung NACH
-                    # jedem einzelnen sequenziellen Mitglied (nicht im parallelen Zweig oben -
-                    # dort läuft bereits alles gleichzeitig, ein Zwischenstopp mitten in
-                    # asyncio.gather ist nicht sinnvoll möglich) - bricht die Phase ggf. vorzeitig
-                    # ab, die äußere Schleife überspringt beim nächsten Phasenkopf dann wie gehabt
-                    # alle verbleibenden Fachbereiche.
-                    if run_start_tokens is not None and (
-                        self._generation_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
-                    ):
-                        budget_aborted = True
-                        notify(
-                            f"🚫 [bold red]{self._budget_exceeded_label(run_start_tokens)} erreicht:[/bold red] "
-                            f"{self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf verbraucht – "
-                            f"überspringe verbleibende Mitglieder in '{phase_label}' und liefere die bisherigen "
-                            "Ergebnisse aus (Rest-Budget bleibt für die Verifikation reserviert)."
-                        )
-                        break
-
-            all_results.extend(member_results)
-            self._update_file_owners(file_owners, member_results)
-            # Auf die letzten ~3000 Zeichen begrenzen, damit der Kontext über 5 Phasen hinweg
-            # nicht unbegrenzt wächst und jedem folgenden Agenten unnötig viele Tokens kostet.
-            running_context = (running_context + self._format_results_for_review(member_results)[:2000])[-3000:]
-
-            # ── Echte Konsolidierung durch den Teamleiter ──
-            # "and not budget_aborted": wurde das Budget gerade eben MITTEN in der sequenziellen
-            # Mitglieder-Schleife oben überschritten, spart der zusätzliche Konsolidierungs-
-            # Aufruf hier den letzten möglichen Tokenverbrauch dieser Phase ein - konsistent
-            # mit dem äußeren Phasenkopf, der ab der NÄCHSTEN Iteration ohnehin komplett
-            # überspringt.
-            if ENABLE_DEPARTMENT_LEAD_EXECUTION and not skip_lead_layer and not budget_aborted:
-                consolidation = await self._run_department_consolidation(lead, member_results, project_dir)
-                all_results.append(consolidation)
-                if consolidation.success and consolidation.content:
-                    notify(f"  📥 [bold green]{lead.name} konsolidiert:[/bold green] {self._first_line(consolidation.content)}")
-                else:
-                    notify(f"  ⚠️ [yellow]{lead.name} konnte den Bereich nicht konsolidieren ({consolidation.error}).[/yellow]")
-            else:
-                notify(f"  📥 [dim]{phase_label} abgeschlossen ({len(member_results)} Ergebnisse).[/dim]")
+            results, fo, ctx, mid_phase_budget_aborted = await self._run_single_department_phase(
+                dept_id, phase_label, icon, run_mode, task_map, task_summary, project_dir,
+                notify, running_context, structural_overview, task_is_micro, collision_sink,
+                run_start_tokens,
+            )
+            all_results.extend(results)
+            file_owners.update(fo)
+            running_context = (running_context + ctx)[-3000:]
+            budget_aborted = budget_aborted or mid_phase_budget_aborted
+            i += 1
 
         return all_results, file_owners, budget_aborted, manually_cancelled
+
+    async def _run_single_department_phase(
+        self,
+        dept_id: str,
+        phase_label: str,
+        icon: str,
+        run_mode: str,
+        task_map: dict[str, AgentTask],
+        task_summary: str,
+        project_dir: str,
+        notify: Callable[[str], None],
+        running_context: str,
+        structural_overview: str,
+        task_is_micro: bool,
+        collision_sink: list[dict] | None,
+        run_start_tokens: int | None,
+    ) -> tuple[list[AgentResult], dict[str, str], str, bool]:
+        """
+        Führt EINE Fachbereichs-Phase vollständig aus (Delegation, Fachteam-Arbeit,
+        Konsolidierung) - ausgelagert aus _run_department_hierarchy(), damit zwei voneinander
+        unabhängige Phasen (content_lead/qa_lead, siehe Aufrufer) per asyncio.gather() parallel
+        laufen können, statt zwingend eine Schleifeniteration je Phase zu sein.
+
+        Bekommt `running_context`/`structural_overview` als Momentaufnahme (nicht als geteilte,
+        veränderliche Variable) übergeben, damit zwei parallel laufende Phasen sich nicht
+        gegenseitig überschreiben - beide sehen dabei bewusst denselben Stand (Ende der
+        VORHERIGEN, gemeinsamen Phase), nicht die Zwischenergebnisse des jeweils anderen
+        parallelen Fachbereichs, da sie einander gerade NICHT sehen sollen (das ist ja der Grund,
+        warum sie überhaupt parallelisierbar sind).
+
+        Gibt (phase_results, file_owner_updates, context_contribution, budget_aborted_mid_phase)
+        zurück - der Aufrufer verschmilzt diese Ergebnisse deterministisch in seine eigenen,
+        laufenden Sammler-Variablen.
+        """
+        member_ids = DEPARTMENT_DEFINITIONS[dept_id]["members"]
+        member_tasks = [task_map[aid] for aid in member_ids if aid in task_map]
+        if not member_tasks:
+            return [], {}, "", False
+
+        lead = self._dept_leads[dept_id]
+        notify(f"{icon} [bold cyan]{phase_label}[/bold cyan] (Geleitet von: {lead.name})...")
+
+        if running_context or structural_overview:
+            for task in member_tasks:
+                if task.agent_id in LEAN_CONTEXT_AGENT_IDS:
+                    # Team-Optimierung (Token-Effizienz): diese Rollen brauchen Datei-Struktur/
+                    # Signaturen, nicht die vollen (u.U. Implementierungscode enthaltenden)
+                    # Ergebnistexte vorheriger Phasen.
+                    if structural_overview:
+                        task.context += f"\n\n## Struktur-Überblick des Projekts (Klassen-/Funktionssignaturen, kein Implementierungscode):\n{structural_overview[:2500]}"
+                elif running_context:
+                    task.context += f"\n\n## Kontext aus vorherigen Fachbereichen:\n{running_context[:2500]}"
+
+        # Nur EIN Mitglied trägt hier die gesamte Fachbereichsarbeit - bei einer insgesamt
+        # kleinen Aufgabe fehlt der Abstimmungsbedarf, den Delegation+Konsolidierung
+        # eigentlich rechtfertigt (siehe task_is_micro oben). Fachbereiche mit mehreren
+        # Mitgliedern behalten die Teamleiter-Koordination IMMER.
+        skip_lead_layer = task_is_micro and len(member_tasks) == 1
+        phase_results: list[AgentResult] = []
+        budget_aborted = False
+
+        # ── Echte Delegation durch den Teamleiter ──
+        if ENABLE_DEPARTMENT_LEAD_EXECUTION and not skip_lead_layer:
+            delegation = await self._run_department_delegation(lead, task_summary, member_tasks, project_dir)
+            phase_results.append(delegation)
+            if delegation.success and delegation.content:
+                notify(f"  📤 [cyan]{lead.name} delegiert:[/cyan] {self._first_line(delegation.content)}")
+                for task in member_tasks:
+                    task.context += f"\n\n## Arbeitsauftrag von {lead.name}:\n{delegation.content[:1200]}"
+            else:
+                notify(f"  ⚠️ [yellow]{lead.name} konnte nicht delegieren ({delegation.error}) – Fachteam startet ohne Zusatzanweisung.[/yellow]")
+        elif skip_lead_layer:
+            notify(f"  ℹ️ [dim]Kleine Aufgabe, einziges Mitglied – Delegation/Konsolidierung durch {lead.name} übersprungen.[/dim]")
+
+        # ── Fachteam arbeitet (parallel oder sequentiell, je nach Phase) ──
+        # Realer Fund: bei nur 1-2 Mitgliedern eines eigentlich "parallelen" Fachbereichs
+        # (typisch für klar umrissene Aufgaben) sahen sich die Agenten NIE gegenseitig, weil
+        # beide fast zeitgleich starten und der Dateibaum beim jeweils eigenen Start noch
+        # leer war (agents/base_agent.py._run_agentic_loop() zeigt zwar IMMER den aktuellen
+        # Dateibaum, aber eben nur den zum eigenen Startzeitpunkt) – das produzierte real
+        # zwei parallele Implementierungen derselben Sache (app.py/test_app.py UND separat
+        # main.py/test_main.py für denselben Health-Check-Endpoint). Bei so wenigen
+        # Mitgliedern ist der Latenzgewinn durch Parallelität gering, der Sichtbarkeitsgewinn
+        # durch echte Sequenzialität aber groß – deshalb wird hier bewusst NIE parallelisiert,
+        # unabhängig von der für den Fachbereich generell hinterlegten Präferenz.
+        effective_run_mode = "sequential" if len(member_tasks) <= 2 else run_mode
+        if effective_run_mode == "parallel":
+            for task in member_tasks:
+                notify(f"  ▶️ [yellow]Fachteam arbeitet:[/yellow] {self._agents[task.agent_id].name}...")
+            member_results = await self._run_agents_parallel(member_tasks, notify=notify)
+            # Direkte Folge desselben strukturellen Problems wie im Kommentar oben: sehen
+            # sich parallel laufende Agenten nie gegenseitig, kann das auch dazu führen,
+            # dass ZWEI von ihnen dieselbe Datei schreiben (z.B. requirements.txt,
+            # README.md) - core/agent_toolbox.py._tool_write_file() überschreibt dabei
+            # blind, KEIN Lock/Merge. _update_file_owners() unten würde den zuerst
+            # geschriebenen Stand dann still verwerfen (nur der laut Ergebnis-Reihenfolge
+            # letzte Schreiber gewinnt als "Owner"). Da automatisch nicht entscheidbar ist,
+            # welche Version die richtige ist, wird der Fund hier NUR sichtbar gemacht
+            # (Live-Warnung + Eintrag in collision_sink für den Abschlussbericht) statt
+            # geblockt - dieselbe "melden statt raten"-Philosophie wie bei fehlgeschlagener
+            # Verifikation.
+            collisions = self._detect_file_write_collisions(member_results)
+            if collisions:
+                collision_desc = "; ".join(
+                    f"`{path}` ({', '.join(agents)})" for path, agents in collisions.items()
+                )
+                notify(
+                    f"  ⚠️ [bold yellow]Datei-Kollision:[/bold yellow] mehrere gleichzeitig "
+                    f"arbeitende Fachteam-Mitglieder haben dieselbe Datei geschrieben – die "
+                    f"zuerst geschriebene Version könnte überschrieben worden sein: {collision_desc}"
+                )
+                if collision_sink is not None:
+                    for path, agents in collisions.items():
+                        collision_sink.append({"phase": phase_label, "path": path, "agents": agents})
+        else:
+            member_results = []
+            for task in member_tasks:
+                agent_name = self._agents[task.agent_id].name
+                notify(f"  ▶️ [yellow]Fachteam arbeitet:[/yellow] {agent_name}...")
+                start_t = time.monotonic()
+                res = await self._run_single_agent(task)
+                dur = time.monotonic() - start_t
+                member_results.append(res)
+                notify(self._status_notify_line("✅ [green]Fertig[/green]", "❌ [red]Fehler[/red]", agent_name, dur, res.success, res.error))
+
+                # Realer Fund: die Budget-Prüfung lief bisher NUR einmal am Anfang jeder
+                # Fachbereichs-Phase (siehe Schleifenkopf oben) - bei mehreren SEQUENZIELL
+                # laufenden Mitgliedern (z.B. Governance: Code-Reviewer -> Compliance ->
+                # Projekt-Hygiene) konnte ein Lauf dadurch erst NACH der kompletten Phase
+                # bemerkt werden, dass MAX_RUN_TOKENS bereits deutlich überschritten war
+                # (beobachtet: 383.143 von 300.000 Tokens, +27%). Zusätzliche Prüfung NACH
+                # jedem einzelnen sequenziellen Mitglied (nicht im parallelen Zweig oben -
+                # dort läuft bereits alles gleichzeitig, ein Zwischenstopp mitten in
+                # asyncio.gather ist nicht sinnvoll möglich) - bricht die Phase ggf. vorzeitig
+                # ab, die äußere Schleife überspringt beim nächsten Phasenkopf dann wie gehabt
+                # alle verbleibenden Fachbereiche.
+                if run_start_tokens is not None and (
+                    self._generation_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                ):
+                    budget_aborted = True
+                    notify(
+                        f"🚫 [bold red]{self._budget_exceeded_label(run_start_tokens)} erreicht:[/bold red] "
+                        f"{self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf verbraucht – "
+                        f"überspringe verbleibende Mitglieder in '{phase_label}' und liefere die bisherigen "
+                        "Ergebnisse aus (Rest-Budget bleibt für die Verifikation reserviert)."
+                    )
+                    break
+
+        phase_results.extend(member_results)
+        file_owner_updates: dict[str, str] = {}
+        self._update_file_owners(file_owner_updates, member_results)
+        # Auf die letzten ~2000 Zeichen begrenzt (derselbe Wert wie zuvor bei der einzelnen
+        # Ergänzung der running_context, siehe Aufrufer), damit der Kontext über die Phasen
+        # hinweg nicht unbegrenzt wächst und jedem folgenden Agenten unnötig viele Tokens kostet.
+        context_contribution = self._format_results_for_review(member_results)[:2000]
+
+        # ── Echte Konsolidierung durch den Teamleiter ──
+        # "and not budget_aborted": wurde das Budget gerade eben MITTEN in der sequenziellen
+        # Mitglieder-Schleife oben überschritten, spart der zusätzliche Konsolidierungs-
+        # Aufruf hier den letzten möglichen Tokenverbrauch dieser Phase ein - konsistent
+        # mit dem äußeren Phasenkopf, der ab der NÄCHSTEN Iteration ohnehin komplett
+        # überspringt.
+        if ENABLE_DEPARTMENT_LEAD_EXECUTION and not skip_lead_layer and not budget_aborted:
+            consolidation = await self._run_department_consolidation(lead, member_results, project_dir)
+            phase_results.append(consolidation)
+            if consolidation.success and consolidation.content:
+                notify(f"  📥 [bold green]{lead.name} konsolidiert:[/bold green] {self._first_line(consolidation.content)}")
+            else:
+                notify(f"  ⚠️ [yellow]{lead.name} konnte den Bereich nicht konsolidieren ({consolidation.error}).[/yellow]")
+        else:
+            notify(f"  📥 [dim]{phase_label} abgeschlossen ({len(member_results)} Ergebnisse).[/dim]")
+
+        return phase_results, file_owner_updates, context_contribution, budget_aborted
 
     async def _run_department_delegation(
         self,

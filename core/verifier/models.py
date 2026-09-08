@@ -311,6 +311,32 @@ class RuntimeSmokeReport:
 
 
 @dataclass
+class FrontendBuildReport:
+    """
+    Ergebnis eines echten `npm run build`-Laufs für ein gefundenes Frontend-Projekt (package.json
+    mit "build"-Skript, z. B. `frontend/package.json` oder ein Root-Vite/React/Next-Projekt) -
+    bisher wurde ein generiertes Frontend NUR über `npm test` (falls überhaupt ein "test"-Skript
+    existierte) geprüft; ein TypeScript-Typfehler, ein ungelöster Import oder ungültiges JSX/CSS,
+    das den PRODUKTIONS-Build bricht, blieb unentdeckt, solange die (oft gar nicht vorhandene
+    oder komplett anders geartete) Testsuite grün war. `npm run build` deckt genau diese Klasse
+    ab, weil es denselben Bundler/Compiler (Vite/webpack/tsc) durchläuft, den ein echtes
+    Deployment auch nutzen würde.
+
+    Wie bei DockerBuildReport/RuntimeSmokeReport gilt: fehlendes `npm`, ein Projekt ohne "build"-
+    Skript oder fehlende node_modules sind KEIN Fehler, nur nicht prüfbar (attempted=False) -
+    und werden NIEMALS fälschlich als "Build erfolgreich" gemeldet. Anders als LintReport (rein
+    informativ) ist ein gebrochener Produktions-Build eine echte Anforderungsverletzung, kein
+    Stil-Hinweis - siehe agents/orchestrator/verification.py, wo dieser Report verification_ok
+    blockiert, bevor ein Projekt als verifiziert gilt.
+    """
+    attempted: bool
+    passed: bool = False
+    directory: str = ""
+    output: str = ""
+    reason_skipped: str = ""
+
+
+@dataclass
 class PerfCheckReport:
     """
     Ergebnis eines echten, kurzen Lastentest-Laufs (k6/locust) gegen die generierte, tatsächlich

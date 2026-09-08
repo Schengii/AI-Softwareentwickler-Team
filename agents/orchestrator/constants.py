@@ -13,6 +13,17 @@ from core.message_bus import AgentTask
 # Tokens, da ihnen ein kleineres Werkzeug-Set (kein write_file/edit_file/run_command) angeboten wird.
 REVIEW_ONLY_AGENT_IDS = {"code_reviewer", "compliance", "project_cleaner"}
 
+# Team-Optimierung (Token-Effizienz, KI-Team-Analyse): Rollen, deren Auftrag Struktur/
+# Schnittstellen betrifft (Dokumentation, Compliance-Prüfung, Prompt-/Architektur-Review),
+# nicht die konkrete Implementierung - sie bekommen in _run_department_hierarchy()
+# (agents/orchestrator/department.py) statt des vollen running_context (bisherige Ergebnis-
+# Rohtexte inkl. generiertem Code) einen kompakten, AST-basierten Struktur-Überblick
+# (CodebaseGraph.get_structural_overview() – Datei-/Klassen-/Funktionssignaturen ohne
+# Funktionskörper). Spart Tokens, ohne diesen Rollen Informationen vorzuenthalten, die sie für
+# ihre eigentliche Aufgabe brauchen - ein voller Implementierungsrumpf war für sie ohnehin nie
+# der relevante Teil des Kontexts.
+LEAN_CONTEXT_AGENT_IDS = {"readme", "documentation", "compliance", "prompt_engineer"}
+
 StatusCallback = Callable[[str], None]
 
 # Optionaler Aufrufer-Hook: bekommt den zerlegten Plan (Zusammenfassung, Projekt-Ordnername,

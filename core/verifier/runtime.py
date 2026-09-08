@@ -30,6 +30,7 @@ from core.verifier.models import (
     _DOCKER_DAEMON_UNAVAILABLE_RE,
     LOAD_TEST_DIRNAME,
     DockerBuildReport,
+    FrontendBuildReport,
     PerfCheckReport,
     RuntimeSmokeReport,
     _csv_float,
@@ -183,6 +184,36 @@ class RuntimeMixin:
                     )
 
         return RuntimeSmokeReport(attempted=False, reason_skipped="Kein ausführbarer Einstiegspunkt (main.py, app.py, server.js) gefunden.")
+
+    def check_frontend_build(self, timeout_seconds: float = 180.0) -> list[FrontendBuildReport]:
+        """
+        Führt einen echten `npm run build` für jedes gefundene Frontend-Projekt aus (package.json
+        mit "build"-Skript unter `frontend/` oder im Projekt-Root, siehe
+        EnvironmentMixin._find_node_build_projects()). TypeScript-Typfehler, ungelöste Imports
+        oder ungültiges JSX/CSS brechen dabei denselben Bundler/Compiler (Vite/webpack/tsc), den
+        auch ein echtes Deployment nutzen würde - anders als `npm test` (das oft gar nicht
+        existiert oder etwas völlig anderes prüft als der Produktions-Build).
+        """
+        return [self._build_frontend(node_dir, timeout_seconds) for node_dir in self._find_node_build_projects()]
+
+    def _build_frontend(self, node_dir: Path, timeout_seconds: float) -> FrontendBuildReport:
+        rel = self._relative_label(node_dir)
+        if shutil.which("npm") is None:
+            return FrontendBuildReport(
+                attempted=False, passed=True, directory=rel,
+                reason_skipped="`npm` ist auf diesem System nicht installiert/verfügbar.",
+            )
+        if not (node_dir / "node_modules").exists():
+            return FrontendBuildReport(
+                attempted=False, passed=True, directory=rel,
+                reason_skipped=f"Keine node_modules unter {rel} gefunden - `npm install`/`npm ci` "
+                               "ist offenbar fehlgeschlagen oder wurde nicht ausgeführt.",
+            )
+        result = CodeSandbox.run_command(["npm", "run", "build"], cwd=node_dir, timeout_seconds=timeout_seconds)
+        if result.exit_code == 0:
+            return FrontendBuildReport(attempted=True, passed=True, directory=rel)
+        output = (result.stdout + result.stderr).strip()[-4000:]
+        return FrontendBuildReport(attempted=True, passed=False, directory=rel, output=output)
 
     def check_browser_ui(self, timeout_seconds: float = 8.0):
         """

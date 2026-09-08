@@ -478,6 +478,42 @@ class CodebaseGraph:
             imported_in=imported_in,
         )
 
+    def get_structural_overview(self, max_files: int = 40, max_symbols_per_file: int = 12) -> str:
+        """
+        Team-Optimierung (Token-Effizienz, KI-Team-Analyse): kompakte, NUR strukturelle Sicht
+        auf das Projekt - Dateiliste plus Klassen-/Funktionssignaturen (`class Foo(Bar)`,
+        `def bar(self, x)`) OHNE Funktionskörper. Gedacht für Rollen wie readme/compliance/
+        prompt_engineer, deren Auftrag Schnittstellen und Struktur betrifft, nicht die
+        Implementierung selbst - ein voller Quellcode-Dump (wie er bisher über running_context/
+        AgentResult.content an spätere Fachbereichs-Phasen weitergereicht wurde) kostet diesen
+        Rollen unnötig viele Tokens, ohne dass sie die Implementierungsdetails je brauchen. Real
+        beobachtet: ein einzelner Lauf verbrauchte über 1 Mio. Tokens, u.a. weil generierter
+        Implementierungscode wiederholt in den Kontext nachgelagerter Phasen einfloss.
+        """
+        if not self.file_symbols:
+            return "Codebase-Graph: keine indexierbaren Quelldateien gefunden."
+
+        lines = [f"Projekt-Struktur ({self.indexed_files_count} Datei(en), nur Signaturen - kein Implementierungscode):"]
+        # Größte Dateien zuerst (mehr Symbole = strukturell relevanter) - bei sehr großen
+        # Projekten werden die restlichen Dateien nur noch als Namen aufgeführt, nie ganz
+        # weggelassen (siehe else-Zweig unten), damit kein Datei-Name unsichtbar wird.
+        sorted_files = sorted(self.file_symbols.items(), key=lambda kv: len(kv[1]), reverse=True)
+        for i, (file_path, symbols) in enumerate(sorted_files):
+            if i >= max_files:
+                remaining = [fp for fp, _ in sorted_files[i:]]
+                lines.append(f"... und {len(remaining)} weitere Datei(en): {', '.join(remaining[:20])}")
+                break
+            top_level = [s for s in symbols if s.kind in ("class", "function")]
+            if not top_level:
+                continue
+            lines.append(f"`{file_path}`:")
+            for sym in top_level[:max_symbols_per_file]:
+                doc_hint = f"  # {sym.docstring.splitlines()[0][:80]}" if sym.docstring else ""
+                lines.append(f"  - {sym.signature}{doc_hint}")
+            if len(top_level) > max_symbols_per_file:
+                lines.append(f"  ... und {len(top_level) - max_symbols_per_file} weitere Symbol(e)")
+        return "\n".join(lines)
+
     def get_summary(self) -> str:
         """Erzeugt eine kompakte Übersicht des Code-Graphen für den Agenten-Kontext."""
         total_symbols = sum(len(nodes) for nodes in self.file_symbols.values())

@@ -63,7 +63,14 @@ class EnvironmentMixin:
         # zusätzlicher pip-Aufruf für Projekte ohne Python-Tests.
         if req_files and self._find_python_test_files():
             logs.append(self._ensure_pytest_available(timeout_seconds))
-        for node_dir in self._find_node_projects():
+        # Team-Optimierung (Frontend-Build-Validierung): _find_node_projects() findet nur
+        # package.json mit "test"-Skript - ein reines Frontend-Projekt (Vite/React/Next), das
+        # gar keine Tests hat, aber ein "build"-Skript, bekam dadurch NIE `npm install` und
+        # check_frontend_build() (core/verifier/runtime.py) liefe ins Leere (fehlende
+        # node_modules). Set-Deduplizierung, damit ein Projekt mit BEIDEN Skripten nicht doppelt
+        # installiert wird.
+        node_dirs = list(dict.fromkeys(self._find_node_projects() + self._find_node_build_projects()))
+        for node_dir in node_dirs:
             logs.append(self._ensure_node_environment(node_dir, timeout_seconds))
         if self._has_rust_project():
             logs.append(self._ensure_rust_environment(timeout_seconds))
@@ -185,6 +192,25 @@ class EnvironmentMixin:
             except (json.JSONDecodeError, OSError):
                 continue
             if isinstance(data.get("scripts"), dict) and data["scripts"].get("test"):
+                projects.append(pkg_json.parent)
+        return projects
+
+    def _find_node_build_projects(self) -> list[Path]:
+        """
+        Wie _find_node_projects(), aber für das "build"-Skript statt "test" - Grundlage für
+        check_frontend_build() (core/verifier/runtime.py). Ein Frontend-Projekt deklariert oft
+        gar kein "test"-Skript, sehr wohl aber "build" (`vite build`, `next build`, `tsc &&
+        vite build`, ...) - genau das Skript, das ein echtes Deployment auch ausführen würde.
+        """
+        projects: list[Path] = []
+        for pkg_json in self.project_dir.rglob("package.json"):
+            if any(part in _IGNORED_DIRS for part in pkg_json.relative_to(self.project_dir).parts):
+                continue
+            try:
+                data = json.loads(pkg_json.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if isinstance(data.get("scripts"), dict) and data["scripts"].get("build"):
                 projects.append(pkg_json.parent)
         return projects
 

@@ -103,6 +103,19 @@ Wie du arbeitest:
   die Teil des zu testenden Projekts selbst ist (z. B. eine SQLite-Datei/In-Memory-DB, siehe
   Fixture-Regel oben), zählt NICHT als "extern" und braucht kein Netzwerk-Mocking - dort gilt
   stattdessen die separate Regel zu `app.dependency_overrides[get_db]`.
+- Zentrale SDK-Mocks in `conftest.py` statt Ad-hoc-Patches pro Testdatei: Nutzt das Projekt ein
+  Drittanbieter-SDK (z. B. `openai`, `boto3`, `stripe`) oder ruft externe Webhooks per `httpx`/
+  `requests` auf, legst du dafür GENAU EINE wiederverwendbare pytest-Fixture in `tests/conftest.py`
+  an (z. B. eine `autouse`-Fixture, die `openai.OpenAI`/den jeweiligen Client-Konstruktor patcht
+  und ein konfigurierbares Fake-Response-Objekt zurückgibt), statt denselben Patch in jeder
+  einzelnen Testdatei manuell zu wiederholen - das verhindert, dass eine Testdatei den Mock
+  vergisst und dadurch als einzige eine echte Verbindung versucht. Ein Dummy-API-Key in der
+  lokalen Sandbox (z. B. `OPENAI_API_KEY=sk-dummy`, `STRIPE_API_KEY=sk_test_dummy`) MUSS die
+  Testsuite NIEMALS zum Scheitern bringen, weil er keine echte Cloud-Verbindung erlaubt - jeder
+  Testpfad, der einen solchen Client tatsächlich aufruft, muss zwingend gemockt sein, sodass der
+  Key selbst nie wirklich für eine Netzwerkverbindung gebraucht wird. Für Jest/Vitest gilt
+  dieselbe Zentralisierung über eine gemeinsame `jest.setup.js`/`vitest.setup.ts` mit `vi.mock()`/
+  `jest.mock()` statt verstreuter Mocks pro Testdatei.
 - `tests/__init__.py` NIEMALS vergessen: Legst du ein `tests/`-Verzeichnis mit Testdateien an,
   erstelle darin IMMER auch eine (ggf. leere) `tests/__init__.py`. Realer Fund (mockforge-Projekt):
   `pytest` fand trotz existierender `tests/test_api.py` KEINE Tests ("collected 0 items") - ohne

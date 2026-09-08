@@ -45,7 +45,7 @@ from core.review_gate import (
     route_findings_to_owners,
 )
 from core.team_memory import record_lesson
-from core.verifier import ProjectVerifier, VerificationReport
+from core.verifier import FrontendBuildReport, ProjectVerifier, VerificationReport
 from memory.agent_knowledge_base import agent_knowledge_base
 
 # Realer Fund (taskpulse-Projekt, 2026-09-03): eine fehlende `app/models.py` (referenziert per
@@ -1924,6 +1924,67 @@ class VerificationMixin:
                 # wird - siehe _DOCKER_DAEMON_UNAVAILABLE_RE (core/verifier/models.py).
                 notify(f"  🐳 [dim yellow]{docker_report.reason_skipped}[/dim yellow]")
                 summary_lines.append(f"- 🐳 ⏭️ {docker_report.reason_skipped}")
+
+        # Frontend-Build-Validierung: führt einen echten `npm run build` für jedes gefundene
+        # Frontend-Projekt aus (frontend/package.json oder Root-package.json mit "build"-Skript).
+        # Bisher lief für ein Frontend NUR `npm test` (falls überhaupt ein "test"-Skript
+        # existierte, siehe check_lint()/_typecheck_node_tsc() weiter unten für den rein
+        # informativen tsc-Typcheck) - ein TypeScript-Typfehler, ein ungelöster Import oder
+        # ungültiges JSX/CSS, das den PRODUKTIONS-Build bricht, blieb dadurch unentdeckt, obwohl
+        # genau das ein echtes Deployment sofort verhindern würde. Anders als Lint (rein
+        # informativ) blockiert ein gebrochener Build verification_ok wie ein echter Testfehler -
+        # dieselbe gezielte Fix-Schleife wie beim Runtime-Smoke-/Browser-Check oben.
+        if not (budget_aborted or manually_cancelled):
+            def _worst_frontend_build_report() -> FrontendBuildReport:
+                reports = verifier.check_frontend_build()
+                failing = next((r for r in reports if r.attempted and not r.passed), None)
+                if failing is not None:
+                    return failing
+                attempted = next((r for r in reports if r.attempted), None)
+                if attempted is not None:
+                    return attempted
+                return FrontendBuildReport(attempted=False, passed=True, reason_skipped="Kein Frontend-Projekt mit build-Skript gefunden.")
+
+            def _build_frontend_build_fix_task(build_report, attempt):
+                owner = file_owners.get(build_report.directory) if build_report.directory else None
+                agent_id = owner if owner in self._agents else ("frontend" if "frontend" in self._agents else None)
+                if agent_id is None:
+                    return None
+                return AgentTask(
+                    task_id=f"verify_fix_frontend_build_{agent_id}_{attempt}",
+                    agent_id=agent_id,
+                    description=(
+                        f"Der ECHTE Frontend-Produktions-Build (`npm run build` unter `{build_report.directory}`) "
+                        f"ist fehlgeschlagen. Typische Ursachen: TypeScript-Typfehler, ein ungelöster Import "
+                        f"oder ungültiges JSX/CSS. Nutze read_file, um die betroffene(n) Datei(en) zu prüfen, "
+                        f"und edit_file/write_file, um den Fehler zu beheben.\n\nBuild-Ausgabe:\n{build_report.output[:1500]}"
+                    ),
+                    context="",
+                    project_dir=project_dir,
+                )
+
+            build_report, all_results, fb_aborted, fb_cancelled = await self._run_runtime_check_with_fix(
+                check_fn=_worst_frontend_build_report,
+                build_fix_task=_build_frontend_build_fix_task,
+                all_results=all_results,
+                file_owners=file_owners,
+                notify=notify,
+                run_start_tokens=run_start_tokens,
+                cancel_requested=cancel_requested,
+                is_attempted=lambda r: r.attempted,
+                is_passed=lambda r: r.passed,
+            )
+            budget_aborted = budget_aborted or fb_aborted
+            manually_cancelled = manually_cancelled or fb_cancelled
+            if build_report.attempted:
+                if build_report.passed:
+                    notify(f"  📦 [bold green]Frontend-Build erfolgreich:[/bold green] `npm run build` ({build_report.directory}).")
+                    summary_lines.append(f"- 📦 Frontend-Build: `npm run build` ({build_report.directory}) erfolgreich.")
+                else:
+                    err = build_report.output[:150]
+                    notify(f"  📦 [bold red]Frontend-Build fehlgeschlagen[/bold red] ({build_report.directory}): {err}.")
+                    summary_lines.append(f"- 📦 ❌ Frontend-Build fehlgeschlagen ({build_report.directory}): {err}.")
+                    verification_ok = False
 
         # Ersetzt die rein LLM-basierte Einschätzung des security-Agenten zu Abhängigkeits-
         # Risiken durch einen echten Abgleich gegen eine öffentliche Advisory-Datenbank

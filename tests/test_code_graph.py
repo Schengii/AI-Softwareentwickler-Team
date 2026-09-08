@@ -105,6 +105,25 @@ class TestCodebaseGraph(unittest.TestCase):
         self.assertIn("Codebase-Graph: 4 Datei(en) indexiert", summary)
         self.assertIn("Symbole", summary)
 
+    def test_get_structural_overview_contains_signatures_not_bodies(self):
+        # Team-Optimierung (Token-Effizienz): get_structural_overview() ist die Grundlage für
+        # den kompakten Kontext, den LEAN_CONTEXT_AGENT_IDS-Rollen (readme/compliance/
+        # prompt_engineer, siehe agents/orchestrator/department.py) statt des vollen
+        # running_context bekommen - muss Klassen-/Funktionssignaturen enthalten, aber NIE den
+        # Funktionskörper (hier: "f'User: {self.name}'" darf nicht auftauchen).
+        self._create_sample_files()
+        graph = CodebaseGraph(self.project_dir)
+        overview = graph.get_structural_overview()
+
+        self.assertIn("class User", overview)
+        self.assertIn("def create_user_service(name)", overview)
+        self.assertNotIn("f'User: {self.name}'", overview)
+
+    def test_get_structural_overview_on_empty_project(self):
+        graph = CodebaseGraph(self.project_dir)
+        overview = graph.get_structural_overview()
+        self.assertIn("keine indexierbaren Quelldateien", overview)
+
     def test_agent_toolbox_tools_integration(self):
         self._create_sample_files()
         toolbox = AgentToolbox(self.project_dir, agent_id="backend")

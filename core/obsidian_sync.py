@@ -290,3 +290,52 @@ def auto_sync_if_enabled() -> ObsidianSyncResult | None:
     if not OBSIDIAN_AUTO_SYNC:
         return None
     return sync_project_to_obsidian()
+
+
+_SYNC_HEALTH_TICKET_ID = "obsidian-sync-health"
+
+
+def record_sync_health_ticket(result: ObsidianSyncResult | None, exception: Exception | None = None) -> None:
+    """
+    Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echter Fund): interface/cli.py rief
+    auto_sync_if_enabled() bisher in einem try/except auf, das einen Fehlschlag NUR auf der
+    Konsole ausgab (`console.print(f"⚠️ Obsidian-Sync fehlgeschlagen: {e}")`) - unsichtbar für
+    jeden autonomen Lauf ohne Terminal-Zuschauer und ohne jede Spur, sobald die nächste
+    Konsolenzeile den Hinweis verdrängt hat. Das externe Gedächtnis (core/obsidian_sync.py
+    synchronisiert README/CHANGELOG/ARCHITECTURE/Zwischenstand in den Obsidian-Vault) driftet
+    dadurch unbemerkt vom Live-Code weg, wenn z.B. der Vault-Pfad zeitweise nicht erreichbar ist
+    (externe Sync-Software, USB-Laufwerk, Netzwerkpfad).
+
+    Legt bei einem Fehlschlag (Exception ODER result.success=False) ein stabiles Backlog-Ticket
+    an/aktualisiert es - sichtbar im Kanban-Board statt nur einer flüchtigen Konsolenzeile.
+    Schließt es automatisch wieder, sobald ein späterer Sync erfolgreich war (mechanische
+    Tatsachenfeststellung, dasselbe Prinzip wie core/optimization_advisor.py.close_resolved_
+    unused_agent_tickets()). Best-effort: ein Fehler beim Ticket-Schreiben selbst darf den Sync-
+    Aufruf nie zum Absturz bringen.
+    """
+    from core.backlog_store import get_ticket, upsert_ticket
+
+    failed = exception is not None or (result is not None and not result.success)
+    try:
+        if failed:
+            detail = str(exception) if exception is not None else "; ".join(
+                f"{f}: {err}" for f, err in (result.failed_files.items() if result else [])
+            ) or "Unbekannter Fehler"
+            upsert_ticket(
+                ticket_id=_SYNC_HEALTH_TICKET_ID, title="Obsidian-Gedächtnis-Sync fehlgeschlagen",
+                source="orchestrator", status="blocked", project_slug="_team",
+                detail=f"Externes Gedächtnis driftet vom Live-Code weg: {detail}",
+            )
+        elif result is not None and result.success and get_ticket(_SYNC_HEALTH_TICKET_ID) is not None:
+            # Nur schliessen, wenn zuvor tatsaechlich ein Fehlschlag-Ticket existierte - sonst
+            # legt jeder einzelne erfolgreiche Sync ein nutzloses "done"-Ticket ohne vorherigen
+            # Befund an.
+            upsert_ticket(
+                ticket_id=_SYNC_HEALTH_TICKET_ID, title="Obsidian-Gedächtnis-Sync fehlgeschlagen",
+                source="orchestrator", status="done", project_slug="_team",
+                detail="Ein späterer Sync-Lauf war wieder erfolgreich - automatisch geschlossen.",
+            )
+    except Exception:
+        # Wie im Docstring beschrieben: ein fehlgeschlagenes Ticket-Update darf den eigentlichen
+        # Sync-Vorgang nie beeinträchtigen.
+        pass

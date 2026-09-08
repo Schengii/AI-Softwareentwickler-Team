@@ -1335,6 +1335,12 @@ class VerificationMixin:
                 "hidden_runtime_dependency": "project_cleaner",
                 "missing_dependency": "refactoring",
                 "syntax_error": "dev_lead",
+                # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08): "empty_test_suite"
+                # (core/pre_flight_check.py._check_empty_test_suite) meldet ein tests/-
+                # Verzeichnis ohne eine einzige echte Testfunktion - kein Code-/Import-Problem,
+                # sondern fehlende Testabdeckung. `tester` (nicht dev_lead) schreibt bereits
+                # regulär die gesamte Testsuite und ist damit der fachlich richtige Owner.
+                "empty_test_suite": "tester",
             }
             agents_to_fix: dict[str, list[PreFlightIssue]] = {}
             for issue in pre_flight_report.issues:

@@ -7,9 +7,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import core.backlog_store as backlog_store_module
+from core.backlog_store import get_ticket
 from core.obsidian_sync import (
+    ObsidianSyncResult,
     _create_markdown_wrapper,
     get_obsidian_destination,
+    record_sync_health_ticket,
     sync_project_to_obsidian,
 )
 
@@ -160,6 +164,63 @@ class TestObsidianSync(unittest.TestCase):
         self.assertFalse((target_dest / ".env.md").exists())
         # README.md (kein Secret) muss trotzdem normal synchronisiert werden.
         self.assertIn("README.md", result.synced_files)
+
+
+class TestRecordSyncHealthTicket(unittest.TestCase):
+    """
+    KI-Team-Zustandsbericht 2026-09-08, echter Fund: interface/cli.py verwarf einen Obsidian-
+    Sync-Fehlschlag bisher NUR auf der Konsole - unsichtbar für jeden autonomen Lauf und ohne
+    jede Spur, sobald die naechste Konsolenzeile den Hinweis verdraengt hat. record_sync_health_
+    ticket() macht einen Fehlschlag als Backlog-Ticket sichtbar und schliesst es mechanisch
+    wieder, sobald ein spaeterer Sync erfolgreich war.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self._patcher = patch.object(backlog_store_module, "BACKLOG_FILE", Path(self.temp_dir.name) / "backlog.json")
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_failed_result_opens_ticket(self):
+        result = ObsidianSyncResult(success=False, target_dir=Path("x"), failed_files={"README.md": "Permission denied"})
+
+        record_sync_health_ticket(result)
+
+        ticket = get_ticket("obsidian-sync-health")
+        self.assertIsNotNone(ticket)
+        self.assertEqual(ticket.status, "blocked")
+        self.assertIn("Permission denied", ticket.detail)
+
+    def test_exception_opens_ticket(self):
+        record_sync_health_ticket(None, exception=RuntimeError("Vault-Pfad nicht erreichbar"))
+
+        ticket = get_ticket("obsidian-sync-health")
+        self.assertIsNotNone(ticket)
+        self.assertEqual(ticket.status, "blocked")
+        self.assertIn("Vault-Pfad nicht erreichbar", ticket.detail)
+
+    def test_successful_result_after_failure_closes_ticket(self):
+        record_sync_health_ticket(None, exception=RuntimeError("Vault-Pfad nicht erreichbar"))
+
+        record_sync_health_ticket(ObsidianSyncResult(success=True, target_dir=Path("x"), synced_files=["README.md"]))
+
+        ticket = get_ticket("obsidian-sync-health")
+        self.assertEqual(ticket.status, "done")
+
+    def test_successful_result_without_prior_failure_opens_no_ticket(self):
+        record_sync_health_ticket(ObsidianSyncResult(success=True, target_dir=Path("x"), synced_files=["README.md"]))
+
+        self.assertIsNone(get_ticket("obsidian-sync-health"))
+
+    def test_none_result_without_exception_is_a_noop(self):
+        """auto_sync_if_enabled() gibt None zurueck, wenn OBSIDIAN_AUTO_SYNC deaktiviert ist -
+        kein Fehlschlag, kein Ticket."""
+        record_sync_health_ticket(None)
+
+        self.assertIsNone(get_ticket("obsidian-sync-health"))
 
 
 if __name__ == "__main__":

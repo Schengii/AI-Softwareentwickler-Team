@@ -35,7 +35,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import config
-from core.backlog_store import upsert_ticket
+from core.backlog_store import list_tickets, upsert_ticket
 from core.task_manager import _DECOMPOSE_EXCLUDED_AGENT_IDS, AVAILABLE_AGENTS
 from core.team_memory import read_team_lessons, record_lesson
 from memory.run_history import (
@@ -534,6 +534,55 @@ def record_unused_agent_tickets(report: OptimizationReport) -> list[str]:
             # einzige Spur des Fundes.
             continue
     return ticket_ids
+
+
+def close_resolved_unused_agent_tickets(report: OptimizationReport) -> list[str]:
+    """
+    Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echter Fund): record_unused_agent_
+    tickets() öffnet ein `unused-agent-<id>`-Ticket, sobald eine Rolle über die letzten Läufe nie
+    gewählt wurde - schließt es aber NIE wieder, selbst wenn eine spätere Prompt-Schärfung
+    (core/task_manager.py.AVAILABLE_AGENTS, siehe die "Analyse 2026-09-06"-Kommentare dort) genau
+    das beheben sollte und die Rolle in einem späteren Lauf tatsächlich wieder gewählt wird. Real
+    beobachtet: alle 10 zum Fund-Zeitpunkt offenen `unused-agent-*`-Tickets standen tagelang
+    unverändert auf "todo", obwohl die zugehörige Beschreibung längst nachgeschärft war - eine rein
+    mechanisch verifizierbare Tatsache (`agent_id` taucht wieder in `get_agent_success_rates()`
+    auf) hätte das Ticket sofort schließen können, statt auf eine erneute menschliche Prüfung zu
+    warten, die dieselbe Beobachtung nur wiederholt hätte.
+
+    Bewusst NICHT die Kehrseite von record_unused_agent_tickets() (kein `source`-Ausschluss aus
+    core/backlog_worker.py._AUTONOMOUS_SOURCES nötig): das Schließen eines Tickets, weil eine Rolle
+    nachweislich wieder genutzt wird, ist eine rein mechanische Tatsachenfeststellung, keine
+    Abwägung ("ist die Rolle überflüssig?") - dieselbe Unterscheidung wie beim bestehenden
+    Auto-Close-Muster für `recurring-lint-`/`recurring-failure-`-Tickets
+    (agents/orchestrator/__init__.py bzw. agents/orchestrator/verification.py).
+
+    Gibt die Liste der geschlossenen Ticket-IDs zurück (für dieselbe Erfolgsmeldung im
+    Abschlussbericht wie apply_auto_tuning()/record_unused_agent_tickets()).
+    """
+    still_unused_ids = {u.agent_id for u in report.unused_agents}
+    closed_ids: list[str] = []
+    for ticket in list_tickets(status="todo"):
+        if ticket.source != "optimization_advisor" or not ticket.id.startswith("unused-agent-"):
+            continue
+        agent_id = ticket.id.removeprefix("unused-agent-")
+        if agent_id in still_unused_ids:
+            continue
+        try:
+            upsert_ticket(
+                ticket_id=ticket.id, title=ticket.title, source=ticket.source,
+                status="done", project_slug=ticket.project_slug,
+                detail=(
+                    f"Agent '{agent_id}' wurde in einem späteren Lauf wieder vom Planer "
+                    "ausgewählt - automatisch geschlossen (kein manueller Konsolidierungsbedarf "
+                    "mehr erkennbar)."
+                ),
+            )
+            closed_ids.append(ticket.id)
+        except Exception:
+            # Wie oben: ein fehlgeschlagenes Ticket-Update darf den laufenden Orchestrator-Lauf
+            # nie zum Absturz bringen - das Ticket bleibt dann einfach offen für den nächsten Lauf.
+            continue
+    return closed_ids
 
 
 def _load_auto_tuned_models() -> dict:

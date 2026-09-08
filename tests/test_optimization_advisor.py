@@ -20,7 +20,7 @@ import config
 import core.backlog_store as backlog_store_module
 import core.team_memory as team_memory_module
 import memory.run_history as run_history_module
-from core.backlog_store import list_tickets
+from core.backlog_store import list_tickets, upsert_ticket
 from core.optimization_advisor import (
     MIN_LESSON_RECURRENCE,
     MIN_SAMPLE_SIZE,
@@ -36,6 +36,7 @@ from core.optimization_advisor import (
     analyze,
     apply_auto_tuning,
     apply_single_suggestion,
+    close_resolved_unused_agent_tickets,
     format_report_for_humans,
     get_recent_verification_trend_warning,
     record_suggestions_as_lessons,
@@ -690,6 +691,82 @@ class TestRecordUnusedAgentTickets(unittest.TestCase):
         from core.backlog_worker import _AUTONOMOUS_SOURCES
 
         self.assertNotIn("optimization_advisor", _AUTONOMOUS_SOURCES)
+
+
+class TestCloseResolvedUnusedAgentTickets(unittest.TestCase):
+    """
+    Testet den KI-Team-Zustandsbericht-Fund (2026-09-08): record_unused_agent_tickets() öffnete
+    bisher ein Ticket, sobald eine Rolle nie gewählt wurde, schloss es aber nie wieder - selbst
+    wenn eine spätere Prompt-Schärfung (core/task_manager.py.AVAILABLE_AGENTS) genau das behob
+    und die Rolle in einem späteren Lauf wieder gewählt wurde. close_resolved_unused_agent_
+    tickets() ist die mechanische Kehrseite dazu.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self._patcher = patch.object(backlog_store_module, "BACKLOG_FILE", Path(self.temp_dir) / "backlog.json")
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_closes_ticket_once_agent_is_used_again(self):
+        record_unused_agent_tickets(OptimizationReport(
+            unused_agents=[UnusedAgent(agent_id="ml", configured_model="claude-sonnet-5", sample_runs=100)],
+        ))
+
+        # ml taucht im nächsten Bericht nicht mehr unter den ungenutzten Agenten auf - wurde
+        # also inzwischen wieder vom Planer gewählt.
+        closed_ids = close_resolved_unused_agent_tickets(OptimizationReport(unused_agents=[]))
+
+        self.assertEqual(closed_ids, ["unused-agent-ml"])
+        ticket = list_tickets()[0]
+        self.assertEqual(ticket.status, "done")
+        self.assertIn("ml", ticket.detail)
+
+    def test_leaves_still_unused_agent_ticket_open(self):
+        record_unused_agent_tickets(OptimizationReport(
+            unused_agents=[UnusedAgent(agent_id="ml", configured_model="claude-sonnet-5", sample_runs=100)],
+        ))
+
+        closed_ids = close_resolved_unused_agent_tickets(OptimizationReport(
+            unused_agents=[UnusedAgent(agent_id="ml", configured_model="claude-sonnet-5", sample_runs=110)],
+        ))
+
+        self.assertEqual(closed_ids, [])
+        self.assertEqual(list_tickets()[0].status, "todo")
+
+    def test_ignores_tickets_from_other_sources(self):
+        """Ein 'unused-agent-'-präfixiertes Ticket, das NICHT von optimization_advisor stammt
+        (z.B. ein manuell im Dashboard angelegtes Ticket mit zufällig ähnlicher ID), darf nicht
+        blind mitgeschlossen werden."""
+        upsert_ticket(
+            ticket_id="unused-agent-ml", title="Manuell angelegtes Ticket", source="dashboard",
+            status="todo", project_slug="_team",
+        )
+
+        closed_ids = close_resolved_unused_agent_tickets(OptimizationReport(unused_agents=[]))
+
+        self.assertEqual(closed_ids, [])
+        self.assertEqual(list_tickets()[0].status, "todo")
+
+    def test_ignores_tickets_not_in_todo_status(self):
+        """Ein bereits manuell 'blocked' gesetztes Ticket (z.B. weil ein Mensch die Konsolidierung
+        bewusst zurückgestellt hat) wird nicht automatisch überschrieben."""
+        record_unused_agent_tickets(OptimizationReport(
+            unused_agents=[UnusedAgent(agent_id="ml", configured_model="claude-sonnet-5", sample_runs=100)],
+        ))
+        upsert_ticket(
+            ticket_id="unused-agent-ml", title="Ungenutzte Agentenrolle: ml", source="optimization_advisor",
+            status="blocked", project_slug="_team",
+        )
+
+        closed_ids = close_resolved_unused_agent_tickets(OptimizationReport(unused_agents=[]))
+
+        self.assertEqual(closed_ids, [])
+        self.assertEqual(list_tickets()[0].status, "blocked")
 
 
 class TestVerificationTrendWarning(unittest.TestCase):

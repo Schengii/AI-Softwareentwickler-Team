@@ -114,6 +114,7 @@ from core.notifier import notify_external
 from core.optimization_advisor import analyze as analyze_optimization_potential
 from core.optimization_advisor import (
     apply_auto_tuning,
+    close_resolved_unused_agent_tickets,
     record_suggestions_as_lessons,
     record_unused_agent_tickets,
 )
@@ -1065,11 +1066,22 @@ class Orchestrator(
         # arbeitet es also NICHT automatisch ab (Rollen-Konsolidierung ist eine menschliche
         # Abwägung), es bleibt aber sichtbar im Kanban-Board statt in einer JSONL-Datei begraben.
         unused_agent_tickets = record_unused_agent_tickets(optimization_report)
+        # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08): Kehrseite von
+        # record_unused_agent_tickets() direkt darüber - schließt ein zuvor offenes
+        # `unused-agent-<id>`-Ticket automatisch, sobald die Rolle in einem späteren Lauf
+        # nachweislich wieder gewählt wurde (siehe close_resolved_unused_agent_tickets()-
+        # Docstring für den realen Fund, der das ausgelöst hat).
+        resolved_unused_agent_tickets = close_resolved_unused_agent_tickets(optimization_report)
         optimization_section = format_optimization_report(optimization_report)
         if unused_agent_tickets:
             notify(
                 f"  💤 [dim yellow]Ungenutzte Rollen als Backlog-Ticket vermerkt:[/dim yellow] "
                 f"{', '.join(t.removeprefix('unused-agent-') for t in unused_agent_tickets)}."
+            )
+        if resolved_unused_agent_tickets:
+            notify(
+                f"  ✅ [dim green]Rollen wieder aktiv, Ticket geschlossen:[/dim green] "
+                f"{', '.join(t.removeprefix('unused-agent-') for t in resolved_unused_agent_tickets)}."
             )
         if auto_tuned_agents:
             notify(

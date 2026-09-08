@@ -350,11 +350,16 @@ class CLIInterface:
 
         # Automatischer Obsidian-Gedächtnis-Sync (falls aktiviert)
         try:
-            from core.obsidian_sync import auto_sync_if_enabled
+            from core.obsidian_sync import auto_sync_if_enabled, record_sync_health_ticket
             obs_res = auto_sync_if_enabled()
+            record_sync_health_ticket(obs_res)
             if obs_res and obs_res.synced_files:
                 console.print(f"🧠 [dim]Obsidian-Gedächtnis aktualisiert: {', '.join(obs_res.synced_files)}[/dim]")
+            elif obs_res and not obs_res.success:
+                console.print(f"⚠️ [dim]Obsidian-Sync fehlgeschlagen ({', '.join(obs_res.failed_files)}) - als Ticket vermerkt.[/dim]")
         except Exception as e:
+            from core.obsidian_sync import record_sync_health_ticket
+            record_sync_health_ticket(None, exception=e)
             console.print(f"⚠️ [dim]Obsidian-Sync fehlgeschlagen: {e}[/dim]")
 
         # Regelmäßige Erinnerung an die Projekt-Hygiene (kein Auto-Löschen – nur ein Hinweis).

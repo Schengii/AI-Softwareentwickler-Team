@@ -388,6 +388,29 @@ async def _process_single_ticket(
         if ticket.id.startswith(_GOVERNANCE_RETRY_PREFIXES) and ticket.detail
         else ticket.title
     )
+    # Team-Optimierung (echter Fund, KI-Team-Zustandsbericht 2026-09-08: memory/backlog.json-
+    # Tickets `recurring-lint-sentinelproxy`/`recurring-failure-sentinelproxy`,
+    # `unresolved-verification-service_bookmark_monitor` - jeweils mit dem Detail "Ticket
+    # bearbeitet, dabei aber keine Datei geändert - vermutlich war der Titel nicht eindeutig
+    # genug" bzw. "Fixversuch änderte nichts an 1 Testfehler(n)"): ein Governance-Retry mit
+    # retries>=1 hat bereits MINDESTENS EINEN automatischen Versuch mit exakt demselben
+    # `task_text` hinter sich, der keine (oder eine unwirksame) Änderung erzeugte - denselben
+    # vagen Titel/Befundtext unverändert ein zweites Mal zu schicken lieferte real beobachtet
+    # NIE ein anderes Ergebnis. Statt darauf zu hoffen, wird der Agent hier explizit angewiesen,
+    # die betroffene Datei ERST gezielt zu lokalisieren (Traceback/Testname/Symbolsuche über das
+    # bereits verfügbare `find_symbol_definition`-Tool bzw. eine gezielte Textsuche), BEVOR er
+    # etwas ändert - siehe `escalate_models` direkt darüber für die parallele Modell-Eskalation
+    # bei derselben Bedingung.
+    if ticket.id.startswith(_GOVERNANCE_RETRY_PREFIXES) and ticket.retries >= 1:
+        task_text += (
+            "\n\nHINWEIS: Ein vorheriger automatischer Versuch für dieses Ticket hat KEINE oder "
+            "keine wirksame Dateiänderung erzeugt (vermutlich war der Titel/Befund nicht "
+            "eindeutig genug, um die betroffene Datei zu identifizieren). Lokalisiere daher ZUERST "
+            "gezielt die tatsächlich betroffene Datei (z.B. über das find_symbol_definition-Tool, "
+            "eine Textsuche nach dem im Befund genannten Fehler/Testnamen, oder die Testdatei, die "
+            "den Fehler auslöst) und ändere dann konkret genau diese Datei - eine erneute Wiederholung "
+            "des vorherigen, erfolglosen Versuchs ohne neue Datei-Änderung ist keine akzeptable Lösung."
+        )
 
     # Team-Optimierung (Retrospektive 2026-09-04): `ticket.retries` ist hier noch der Stand VOR
     # dem Zähler-Erhöhen in run_backlog_poll_cycle (derselbe `ticket`, die Erhöhung schreibt nur

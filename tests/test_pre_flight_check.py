@@ -245,6 +245,59 @@ class TestRunPreFlightCheckHiddenRuntimeDependency(unittest.TestCase):
             self.assertFalse(report.has_blocking_issues)
 
 
+class TestRunPreFlightCheckEmptyTestSuite(unittest.TestCase):
+    """
+    KI-Team-Zustandsbericht 2026-09-08, echter Fund (memory/backlog.json-Ticket
+    `unresolved-governance-critical-feature_pilot_repair`): ein `tests/`-Verzeichnis mit
+    `conftest.py`, aber ohne eine einzige ausfuehrbare Testfunktion, wurde bisher erst am Ende
+    von Phase 6 (Governance) entdeckt statt mechanisch vorab.
+    """
+
+    def test_detects_tests_dir_without_any_test_function(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "app" / "main.py", "def hello():\n    return 'hi'\n")
+            _write(proj / "tests" / "conftest.py", "import pytest\n")
+            report = run_pre_flight_check(proj)
+            empty = [i for i in report.issues if i.issue_type == "empty_test_suite"]
+            self.assertEqual(len(empty), 1)
+            self.assertIn("tests/", empty[0].message)
+
+    def test_no_issue_when_a_real_test_function_exists(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "app" / "main.py", "def hello():\n    return 'hi'\n")
+            _write(proj / "tests" / "test_main.py", "def test_hello():\n    assert True\n")
+            report = run_pre_flight_check(proj)
+            empty = [i for i in report.issues if i.issue_type == "empty_test_suite"]
+            self.assertEqual(empty, [])
+
+    def test_no_issue_when_no_tests_dir_exists_at_all(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "app" / "main.py", "def hello():\n    return 'hi'\n")
+            report = run_pre_flight_check(proj)
+            empty = [i for i in report.issues if i.issue_type == "empty_test_suite"]
+            self.assertEqual(empty, [])
+
+    def test_detects_async_test_function(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "app" / "main.py", "def hello():\n    return 'hi'\n")
+            _write(proj / "tests" / "test_main.py", "async def test_hello():\n    assert True\n")
+            report = run_pre_flight_check(proj)
+            empty = [i for i in report.issues if i.issue_type == "empty_test_suite"]
+            self.assertEqual(empty, [])
+
+    def test_empty_test_suite_is_not_blocking(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "app" / "main.py", "def hello():\n    return 'hi'\n")
+            _write(proj / "tests" / "conftest.py", "import pytest\n")
+            report = run_pre_flight_check(proj)
+            self.assertFalse(report.has_blocking_issues)
+
+
 class TestRunPreFlightCheckMissingDependency(unittest.TestCase):
     """Tests fuer fehlende Drittanbieter-Abhaengigkeiten."""
 

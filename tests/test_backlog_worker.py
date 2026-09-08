@@ -291,6 +291,37 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
         task_text = self.fake_orchestrator.process.call_args.args[0]
         self.assertIn("DB-Session pro Request in ProxyMiddleware", task_text)
 
+    def test_first_attempt_gets_no_stalled_retry_hint(self):
+        """Ein Governance-Ticket beim allerersten Aufgreifen (retries=0) hat noch keinen
+        gescheiterten Vorversuch hinter sich - der explizite 'lokalisiere zuerst die Datei'-
+        Hinweis wäre hier irreführend (es gibt noch keinen Grund zur Annahme, der Titel sei
+        unklar) und bläht den Prompt unnötig auf."""
+        backlog_store.upsert_ticket(
+            "unresolved-governance-critical-mockforge", "Ungelöster kritischer Governance-Befund",
+            "orchestrator", "blocked", project_slug="mockforge", detail="DB-Session pro Request",
+        )
+        asyncio.run(run_backlog_poll_cycle())
+
+        task_text = self.fake_orchestrator.process.call_args.args[0]
+        self.assertNotIn("find_symbol_definition", task_text)
+
+    def test_stalled_retry_gets_explicit_file_search_instruction(self):
+        """KI-Team-Zustandsbericht-Fund (2026-09-08, memory/backlog.json-Ticket
+        `recurring-failure-sentinelproxy`): ein Governance-Retry, der bereits mindestens einen
+        erfolglosen automatischen Versuch hinter sich hat (retries>=1), bekommt eine explizite
+        Anweisung, die betroffene Datei zuerst gezielt zu lokalisieren - derselbe vage Titel ein
+        zweites Mal unverändert zu schicken lieferte real beobachtet nie ein anderes Ergebnis."""
+        backlog_store.upsert_ticket(
+            "recurring-failure-sentinelproxy", "Nicht behobener Verifikations-Fehler: sentinelproxy",
+            "orchestrator", "blocked", project_slug="sentinelproxy", detail="1 echte(r) Testfehler",
+            retries=1,
+        )
+        asyncio.run(run_backlog_poll_cycle())
+
+        task_text = self.fake_orchestrator.process.call_args.args[0]
+        self.assertIn("find_symbol_definition", task_text)
+        self.assertIn("KEINE oder keine wirksame Dateiänderung", task_text)
+
     def test_blocked_governance_ticket_still_blocked_keeps_retry_count_after_failed_retry(self):
         self.fake_github.get_status.return_value = ""  # keine Änderung -> "no_changes" -> bleibt "blocked"
         backlog_store.upsert_ticket(

@@ -273,6 +273,48 @@ def _check_missing_init(
     return None
 
 
+def _check_empty_test_suite(project_path: Path, sources_by_file: dict[str, str]) -> PreFlightIssue | None:
+    """
+    Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echter Fund: memory/backlog.json-
+    Ticket `unresolved-governance-critical-feature_pilot_repair`): ein Projekt mit `tests/`-
+    Verzeichnis UND `conftest.py`, aber OHNE eine einzige ausfuehrbare Testdatei, wurde bisher
+    erst am Ende von Phase 6 (Governance) entdeckt - nachdem Dev-, Test- und Doku-Phase bereits
+    vollstaendig (und teuer) gelaufen waren. Ein leeres `tests/`-Verzeichnis ist rein mechanisch
+    erkennbar (Dateiname-Muster + `def test_`-Vorkommen zaehlen, kein LLM noetig) und gehoert
+    wie die anderen Checks hier VOR die teuren Phasen, nicht als Nachlese danach.
+
+    Bewusst NICHT blockierend (kein Eintrag in PreFlightReport.has_blocking_issues): anders als
+    ein fehlender Import bricht ein leeres `tests/`-Verzeichnis den Testlauf nicht hart ab
+    (pytest meldet nur "collected 0 items", exit_code 5) - der tester-Agent soll die Datei
+    trotzdem schreiben koennen, der Fund ist ein frueher Hinweis, kein Show-Stopper.
+    """
+    test_dirs = [d for d in (project_path / "tests", project_path / "test") if d.is_dir()]
+    if not test_dirs:
+        return None
+    has_real_test = any(
+        re.search(r"^\s*(async\s+)?def\s+test_\w+", src, re.MULTILINE)
+        for rel_path, src in sources_by_file.items()
+        if any(rel_path.startswith(f"{d.name}/") for d in test_dirs)
+    )
+    if has_real_test:
+        return None
+    checked_dirs = ", ".join(f"`{d.name}/`" for d in test_dirs)
+    return PreFlightIssue(
+        file=f"{test_dirs[0].name}/",
+        line=0,
+        issue_type="empty_test_suite",
+        message=(
+            f"{checked_dirs} existiert, enthaelt aber keine einzige ausfuehrbare Testfunktion "
+            "(`def test_...`) - die Testsuite ist aktuell funktionslos (pytest wuerde "
+            "\"collected 0 items\" melden)."
+        ),
+        suggestion=(
+            f"Lege in {checked_dirs} mindestens eine `test_*.py`-Datei mit echten "
+            "`def test_...`-Funktionen an."
+        ),
+    )
+
+
 def run_pre_flight_check(project_dir: str | Path) -> PreFlightReport:
     """Fuehrt den deterministischen Vorab-Import-Check aus und gibt einen PreFlightReport zurueck.
 
@@ -435,6 +477,13 @@ def _run_checks(project_path: Path, report: PreFlightReport) -> None:
         if key not in seen_issues:
             seen_issues.add(key)
             report.issues.append(bcrypt_issue)
+
+    empty_test_issue = _check_empty_test_suite(project_path, sources_by_file)
+    if empty_test_issue:
+        key = ("empty_test_suite", empty_test_issue.file, "")
+        if key not in seen_issues:
+            seen_issues.add(key)
+            report.issues.append(empty_test_issue)
 
 
 def format_pre_flight_issues_for_fix(report: PreFlightReport) -> str:

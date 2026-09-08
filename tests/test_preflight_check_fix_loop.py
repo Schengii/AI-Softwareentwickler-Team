@@ -86,6 +86,18 @@ def _clean_report() -> PreFlightReport:
     return PreFlightReport(project_dir="dummy", files_checked=3, issues=[])
 
 
+def _report_with_empty_test_suite() -> PreFlightReport:
+    return PreFlightReport(
+        project_dir="dummy",
+        files_checked=3,
+        issues=[PreFlightIssue(
+            file="tests/", line=0, issue_type="empty_test_suite",
+            message="`tests/` existiert, enthaelt aber keine einzige ausfuehrbare Testfunktion.",
+            suggestion="Lege in `tests/` mindestens eine `test_*.py`-Datei mit echten `def test_...`-Funktionen an.",
+        )],
+    )
+
+
 class TestPreflightCheckFixLoop(unittest.TestCase):
     def setUp(self):
         self.temp_workspace = tempfile.mkdtemp()
@@ -135,6 +147,21 @@ class TestPreflightCheckFixLoop(unittest.TestCase):
 
         self.assertTrue(any("Pre-Flight-Check" in line for line in logs))
         self.assertTrue(any("Beauftrage backend" in line and "Pre-Flight-Check" in line for line in logs))
+        self.assertTrue(self.orchestrator.last_verification_ok)
+
+    def test_empty_test_suite_dispatched_to_tester_not_dev_lead(self):
+        """KI-Team-Zustandsbericht 2026-09-08: 'empty_test_suite' hat nie einen bekannten
+        file_owners-Eintrag (der Fund zeigt auf das Verzeichnis 'tests/', keine konkrete Datei,
+        die je von einem Agenten geschrieben wurde) - muss also über den Fallback-Owner
+        ausdrücklich an 'tester' gehen, nicht an den generischen 'dev_lead'-Auffangfall."""
+        self.orchestrator._agents["tester"]._llm = _ScriptedLLM(written_file="tests/test_main.py")
+        result, logs, mock_verifier = self._run([
+            _report_with_empty_test_suite(),
+            _clean_report(),
+        ], write_file=None)
+
+        self.assertTrue(any("Beauftrage tester" in line and "Pre-Flight-Check" in line for line in logs))
+        self.assertFalse(any("Beauftrage dev_lead" in line and "Pre-Flight-Check" in line for line in logs))
         self.assertTrue(self.orchestrator.last_verification_ok)
 
     def test_no_issues_skips_dispatch_entirely(self):

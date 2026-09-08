@@ -46,6 +46,38 @@ from core.task_manager import AVAILABLE_AGENTS
 
 console = Console()
 
+try:
+    import msvcrt  # Windows-Konsole: erlaubt einen nicht-blockierenden "steht noch Input an?"-Check.
+except ImportError:
+    msvcrt = None
+try:
+    import select  # POSIX-Fallback (Windows unterstützt select() nur für Sockets, nicht für stdin).
+except ImportError:
+    select = None
+
+
+def _has_pending_stdin() -> bool:
+    """
+    Nicht-blockierender Check, ob bereits weitere Zeichen im Eingabepuffer von stdin warten -
+    Grundlage der automatischen Paste-Erkennung in `_read_user_input()` (siehe dort). Ein echter
+    Tastatur-Tipper erzeugt zwischen zwei Zeilen praktisch nie "sofort weitere Zeichen bereits im
+    Puffer", ein Terminal-Paste liefert dagegen den kompletten mehrzeiligen Text quasi augenblicklich
+    auf einmal - dieser Unterschied lässt sich ohne echtes Bracketed-Paste-Protokoll (das ein
+    einfacher `input()`-Wrapper nicht auswertet) nur über diesen Timing-Trick erkennen.
+    Best-Effort: liefert `False` (kein Fehler), wenn weder `msvcrt` (Windows) noch `select` (POSIX)
+    verfügbar ist bzw. stdin kein reales Terminal ist - Verhalten fällt dann auf die rein manuelle
+    `\\`-Fortsetzung zurück, keine Regression gegenüber vorher.
+    """
+    try:
+        if msvcrt is not None:
+            return bool(msvcrt.kbhit())
+        if select is not None and sys.stdin.isatty():
+            ready, _, _ = select.select([sys.stdin], [], [], 0)
+            return bool(ready)
+    except Exception:
+        pass
+    return False
+
 # agent_id -> Fachbereichs-ID (z.B. "backend" -> "dev_lead"), einmalig aus
 # DEPARTMENT_DEFINITIONS abgeleitet - Grundlage für die nach Fachbereich gruppierte
 # Plan-Vorschau (siehe _render_and_confirm_plan).
@@ -150,7 +182,8 @@ class CLIInterface:
         console.print(BANNER, style="bold cyan")
         console.print(
             "💡 Schreibe einfach deine Projektidee in den Chat! (Tippe /hilfe für Befehle)\n"
-            "   Für mehrzeilige Eingaben: Zeile mit \\ beenden, um sie fortzusetzen.\n",
+            "   Für mehrzeilige Eingaben: Zeile mit \\ beenden, um sie fortzusetzen, "
+            "oder einfach mehrzeiligen Text einfügen (Paste wird automatisch erkannt).\n",
             style="dim"
         )
 
@@ -163,11 +196,18 @@ class CLIInterface:
         Zeilenumbruch. Eine mehrzeilige Aufgabenbeschreibung wurde dadurch nicht als EINE
         Eingabe erkannt, sondern jede Zeile einzeln als eigener, meist unsinniger Prompt an
         `_main_loop()` weitergereicht (im schlimmsten Fall ein mehrzeiliger Paste, der als
-        mehrere separate Läufe endete statt als einer). Endet eine Zeile auf ein einzelnes
-        `\\` (dieselbe Fortsetzungs-Konvention wie in der Shell/in Python selbst), wird die
-        NÄCHSTE Zeile angehängt statt die Eingabe abzuschließen – ein einzelnes Enter am Ende
-        einer normalen, einzeiligen Aufgabe bleibt dadurch unverändert genauso schnell wie
-        bisher, kein zusätzlicher Aufwand für den Alltagsfall.
+        mehrere separate Läufe endete statt als einer). Zwei Wege, eine mehrzeilige Eingabe
+        als EINE zusammenhängende Aufgabe abzuschließen:
+        1. Manuell: eine Zeile mit einem einzelnen `\\` beenden (dieselbe Fortsetzungs-
+           Konvention wie in der Shell/in Python selbst) – die NÄCHSTE Zeile wird angehängt.
+        2. Automatisch per Paste-Erkennung (`_has_pending_stdin()`): direkt nach dem Enter
+           EINER Zeile bereits weitere, augenblicklich verfügbare Zeichen im Eingabepuffer
+           bedeuten praktisch immer einen Terminal-Paste mehrzeiligen Texts (kein echter
+           Tastatur-Tipper erzeugt diesen Timing-Abstand) – diese Folgezeilen werden dann
+           automatisch OHNE manuelles `\\` als Teil derselben Eingabe eingesammelt, bis der
+           Puffer leer ist.
+        Ein einzelnes Enter am Ende einer normalen, einzeiligen Aufgabe bleibt dadurch
+        unverändert genauso schnell wie bisher, kein zusätzlicher Aufwand für den Alltagsfall.
         """
         lines: list[str] = []
         prompt_label = "[bold green]Du[/bold green] → "
@@ -178,6 +218,12 @@ class CLIInterface:
                 prompt_label = "[bold green]…[/bold green] → "
                 continue
             lines.append(line)
+            if _has_pending_stdin():
+                # Automatische Paste-Fortsetzung (siehe Docstring, Punkt 2) - stiller Sammel-
+                # Read ohne erneuten Prompt, damit ein mehrzeiliger Paste optisch als EIN Block
+                # erscheint statt als mehrere "…"-Zeilen.
+                prompt_label = ""
+                continue
             break
         return "\n".join(lines).strip()
 

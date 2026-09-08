@@ -1,0 +1,53 @@
+{
+  "theme": {
+    "mode": "dark",
+    "colors": {
+      "primary": "#3B82F6",
+      "background": "#0F172A",
+      "surface": "#1E293B",
+      "text": "#F8FAFC",
+      "text_muted": "#94A3B8",
+      "border": "#334155",
+      "status": {
+        "critical": "#EF4444",
+        "warning": "#F59E0B",
+        "resolved": "#10B981",
+        "pending": "#6366F1"
+      }
+    },
+    "spacing": {
+      "xs": "4px",
+      "sm": "8px",
+      "md": "16px",
+      "lg": "24px",
+      "xl": "32px"
+    },
+    "borderRadius": {
+      "sm": "4px",
+      "md": "8px",
+      "lg": "12px"
+    },
+    "typography": {
+      "fontFamily": "'Inter', sans-serif",
+      "sizes": {
+        "sm": "0.875rem",
+        "md": "1rem",
+        "lg": "1.25rem",
+        "xl": "1.5rem"
+      }
+    }
+  },
+  "layout": {
+    "sidebarWidth": "260px",
+    "headerHeight": "64px",
+    "gridGap": "16px"
+  },
+  "assets": {
+    "icons": {
+      "critical": "/public/assets/icons/critical.svg",
+      "warning": "/public/assets/icons/warning.svg",
+      "resolved": "/public/assets/icons/resolved.svg",
+      "pending": "/public/assets/icons/pending.svg"
+    }
+  }
+}

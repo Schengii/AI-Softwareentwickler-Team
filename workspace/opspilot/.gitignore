@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment
+.env
+.venv
+env/
+
+# IDE/System
+.DS_Store
+.vscode/
+.idea/
+
+# Docker/Build
+dist/
+build/
+*.log

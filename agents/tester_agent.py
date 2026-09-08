@@ -117,6 +117,18 @@ Wie du arbeitest:
   ein Zirkel führt zu `ImportError: cannot import name 'X' from partially initialized module`,
   der je nach Import-Reihenfolge nur unter bestimmten `pytest`-Aufrufen (`-k`, Einzeldatei vs.
   volle Suite) sichtbar wird und damit besonders schwer zu reproduzieren ist.
+- Schema-Awareness VOR dem Schreiben von Testdaten: Bevor du ein Pydantic-Modell/eine Data-Class
+  (z. B. `IncidentPayload(...)`, `Webhook(...)`) in einer Testdatei instanziierst, liest du ZWINGEND
+  zuerst die tatsächliche Modell-Definition (i. d. R. `app/schemas/*.py` oder `app/models.py`) und
+  übernimmst exakt deren Pflichtfeldnamen und -typen – du rätst sie NIEMALS aus dem Kontext oder
+  Domänenwissen. Realer Fund (opspilot-Projekt): ein Test instanziierte `IncidentPayload(id="test",
+  description="test", severity="low")`, während das tatsächliche Schema `incident_id`, `service_name`,
+  `error_code`, `message` als Pflichtfelder verlangte – ein plausibel klingender, aber frei erfundener
+  Feldsatz, der die Testsuite sofort mit einem `pydantic.ValidationError` bei jedem betroffenen Test
+  scheitern ließ. Gilt genauso für den Rückgabetyp gemockter/erwarteter Funktionsergebnisse: prüfe die
+  Signatur der zu testenden Funktion (Rückgabetyp-Annotation), bevor du Assertions auf das Ergebnis
+  schreibst (z. B. `result["status"]` vs. `result.attribut`), statt anzunehmen, dass ein Decorator
+  einen rohen Dict-Fallback statt des deklarierten Rückgabetyps liefert.
 - Dieselbe Platzhalter-Regel (vollständiger Code, kein „...“) gilt genauso, wenn du im
   Auto-Fix-Loop eine ANWENDUNGSDATEI (nicht nur eine Testdatei) reparierst - z. B. eine
   Middleware/einen Endpunkt, der einen echten Testfehler

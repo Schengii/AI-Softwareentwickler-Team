@@ -1,0 +1,87 @@
+openapi: 3.1.0
+info:
+  title: OpsPilot Incident Automation Hub API
+  version: 1.0.0
+  description: API für AI-Driven Incident Management und Workflow-Automatisierung.
+servers:
+  - url: /api/v1
+paths:
+  /incidents:
+    post:
+      summary: Neuen Vorfall erstellen
+      operationId: create_incident
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IncidentCreate'
+      responses:
+        '201':
+          description: Vorfall erfolgreich erstellt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
+        '401':
+          description: Nicht autorisiert
+        '422':
+          description: Validierungsfehler
+  /webhooks/ingest:
+    post:
+      summary: Ingestion-Endpunkt für externe Webhooks
+      operationId: ingest_webhook
+      parameters:
+        - name: X-OpsPilot-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '202':
+          description: Webhook akzeptiert
+        '401':
+          description: Ungültige Signatur
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  schemas:
+    IncidentCreate:
+      type: object
+      required: [title, severity]
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+    Incident:
+      allOf:
+        - $ref: '#/components/schemas/IncidentCreate'
+        - type: object
+          required: [id, created_at]
+          properties:
+            id:
+              type: string
+              format: uuid
+            created_at:
+              type: string
+              format: date-time

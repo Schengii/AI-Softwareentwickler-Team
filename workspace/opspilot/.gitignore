@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment
+.env
+.venv
+env/
+
+# IDE/System
+.DS_Store
+.vscode/
+.idea/
+
+# Docker/Build
+dist/
+build/
+*.log
+
+# Lokale SQLite-DB (app/core/config.py DATABASE_URL Default)
+*.db
+
+# Frontend
+frontend/node_modules/
+frontend/dist/

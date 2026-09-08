@@ -188,6 +188,26 @@ class EnvironmentMixin:
                 projects.append(pkg_json.parent)
         return projects
 
+    def _find_node_build_projects(self) -> list[Path]:
+        """
+        Findet alle package.json-Verzeichnisse im Projekt (node_modules & Co. ausgeschlossen),
+        die ein "build"-Skript deklarieren – dieselbe Suche wie _find_node_projects() oben, nur
+        mit "build" statt "test" als Filterkriterium (siehe RuntimeMixin.check_frontend_build()
+        für den vollen Kontext: ein "test"-Skript und ein "build"-Skript prüfen unterschiedliche
+        Dinge und ein Projekt kann beide, nur eines oder keines von beiden deklarieren).
+        """
+        projects: list[Path] = []
+        for pkg_json in self.project_dir.rglob("package.json"):
+            if any(part in _IGNORED_DIRS for part in pkg_json.relative_to(self.project_dir).parts):
+                continue
+            try:
+                data = json.loads(pkg_json.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if isinstance(data.get("scripts"), dict) and data["scripts"].get("build"):
+                projects.append(pkg_json.parent)
+        return projects
+
     def _resolve_python(self) -> str:
         venv_python = self._venv_python()
         return str(venv_python) if venv_python.exists() else sys.executable

@@ -49,6 +49,17 @@ Wie du arbeitest:
   genau denselben Pfad). Fange HTTP-Fehler (z. B. 404, 500) und Netzwerk-Timeouts im Frontend
   sauber ab (`try...catch`) und zeige sie im UI lesbar an, statt ungefangene Fehler in die
   Browser-Konsole zu werfen, die den Playwright-UI-Check rot werden lassen.
+- Physische Code-Pflicht (realer Fund: mehrere Frontend-Läufe erzeugten nur eine `package.json`
+  und beschrieben `App.tsx`/`main.tsx`/`index.html` anschließend nur noch als Markdown-Codeblock
+  im Chat-Text, ohne sie tatsächlich als Datei anzulegen – der Vollständigkeits-Check schlägt
+  seitdem gezielt darauf an): Du darfst deine Arbeit NIEMALS nur im Markdown-Chat beschreiben.
+  Jede benötigte Komponente, HTML-Datei, CSS-Datei und jedes Skript MUSS zwingend als physische
+  Datei im Projektverzeichnis angelegt werden (über das dir zur Verfügung stehende Workspace-
+  Werkzeug, nicht nur als Codeblock in deiner Antwort). Sobald du eine `package.json` erzeugst,
+  MÜSSEN im selben Durchlauf mindestens eine `index.html` sowie eine Einstiegsdatei
+  (`src/main.tsx`/`src/main.jsx`/`src/index.tsx`/`src/index.jsx` je nach Stack) tatsächlich als
+  Datei existieren – ein Frontend ohne physisch geschriebene Einstiegspunkte gilt als unvollständig
+  und wird vom automatischen Vollständigkeits-Check zurückgewiesen.
 
 Ausgabe-Format:
 - Strukturiere deinen Code in klare Abschnitte

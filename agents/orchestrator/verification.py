@@ -46,6 +46,7 @@ from core.review_gate import (
 )
 from core.team_memory import record_lesson
 from core.verifier import ProjectVerifier, VerificationReport
+from memory.agent_knowledge_base import agent_knowledge_base
 
 # Realer Fund (taskpulse-Projekt, 2026-09-03): eine fehlende `app/models.py` (referenziert per
 # `from . import database, models, schemas`) führte zu einem ModuleNotFoundError/ImportError,
@@ -85,6 +86,47 @@ def _diagnose_import_failure(message: str) -> str | None:
             f"Variable) in genau dieser Datei, statt nur die importierende Datei zu ändern."
         )
     return None
+
+
+def _import_name_error_target(message: str) -> tuple[str, str] | None:
+    """Extrahiert (Symbolname, Zielmodul) aus einer `ImportError: cannot import name 'X' from
+    'Y'`-Meldung, oder None, falls die Meldung kein solches Muster enthält. Dieselbe Regex wie
+    in _diagnose_import_failure() oben, hier separat nutzbar für Fix-Routing (siehe
+    _run_verification_loop) und persistentes Lernen (siehe _record_verification_learning)."""
+    m = _IMPORT_NAME_ERROR_RE.search(message)
+    if not m:
+        return None
+    return m.group(1), m.group(2)
+
+
+def _record_verification_learning(message: str, agent_id: str = "backend") -> None:
+    """
+    Deterministisches Lernen aus einem `ImportError: cannot import name 'X' from 'Y'` (echter
+    Fund: `workspace/opspilot` scheiterte wiederholt mit genau diesem Fehlerbild, weil ein
+    Router eine Hilfsfunktion importierte, die im Zielmodul nie definiert/exportiert wurde).
+    Anders als die generischen LLM-Retrospektiven (agents/orchestrator/retrospective.py) läuft
+    dies rein regelbasiert und SOFORT bei jedem Auftreten - kein zusätzlicher LLM-Aufruf nötig,
+    keine Wartezeit auf den nächsten Retrospektiven-Lauf.
+
+    Speichert eine kurze, konkrete Regel dauerhaft in memory/agent_learnings.json (siehe
+    memory/agent_knowledge_base.py.AgentKnowledgeBase.add_learning) - diese Regel wird ab dem
+    nächsten Aufruf automatisch in den System-Prompt DIESES Agenten injiziert
+    (get_augmented_prompt), sodass das Team aus dem Fehler dauerhaft lernt, statt ihn in
+    künftigen Projekten erneut zu begehen. Ein Fehler beim Speichern (z.B. Datei nicht
+    schreibbar) darf die eigentliche Fix-Schleife nie zum Absturz bringen.
+    """
+    target = _import_name_error_target(message)
+    if target is None:
+        return
+    name, module = target
+    try:
+        agent_knowledge_base.add_learning(
+            agent_id,
+            f"Prüfe vor Abschluss, dass alle in Routern importierten Hilfsfunktionen "
+            f"(z. B. {name}) im Modul {module} tatsächlich definiert und exportiert sind.",
+        )
+    except Exception:
+        pass
 
 
 # Team-Optimierung (echter Fund: memory/backlog.json-Tickets `recurring-failure-event_relay`/
@@ -1279,10 +1321,27 @@ class VerificationMixin:
                 break
             previous_preflight_signature = current_preflight_signature
 
+            # Zuständigkeits-Fallback (Team-Optimierung, echter Fund: Pre-Flight-Befunde ohne
+            # bekannten file_owners-Eintrag blieben bisher komplett unbeauftragt liegen und
+            # landeten als Dauer-Blocker im recurring-failure-*-Backlog-Ticket, ohne dass je ein
+            # Agent den Fix übernahm. Statt den Fund stillschweigend fallen zu lassen: Format-/
+            # Lint-/Import-Funde (missing_init = fehlende __init__.py, hidden_runtime_dependency
+            # = Import ohne deklarierte Abhängigkeit) gehen an project_cleaner (räumt Struktur/
+            # Imports auf), reine Dependency-Manifest-Lücken (missing_dependency) an refactoring
+            # (pflegt requirements.txt/pyproject.toml), alle übrigen echten Code-Probleme
+            # (syntax_error u.ä.) an dev_lead als Auffangzuständigkeit für Code-Fehler.
+            _FALLBACK_OWNER_BY_ISSUE_TYPE = {
+                "missing_init": "project_cleaner",
+                "hidden_runtime_dependency": "project_cleaner",
+                "missing_dependency": "refactoring",
+                "syntax_error": "dev_lead",
+            }
             agents_to_fix: dict[str, list[PreFlightIssue]] = {}
             for issue in pre_flight_report.issues:
                 owner = file_owners.get(issue.file)
-                if owner and owner in self._agents:
+                if not owner or owner not in self._agents:
+                    owner = _FALLBACK_OWNER_BY_ISSUE_TYPE.get(issue.issue_type, "dev_lead")
+                if owner in self._agents:
                     agents_to_fix.setdefault(owner, []).append(issue)
 
             if not agents_to_fix:
@@ -1390,10 +1449,16 @@ class VerificationMixin:
                 top = "; ".join(f"{i.file_path}:{i.line_number} – {i.message}" for i in import_issues[:5])
                 notify(f"  🧩 [bold red]Vorab-Import-Check: {len(import_issues)} fehlende(s) lokale(s) Modul/Symbol VOR jedem Testlauf gefunden.[/bold red]")
 
+                # Derselbe Zuständigkeits-Fallback wie beim Pre-Flight-Check oben: ein fehlendes
+                # lokales Modul/Symbol ist immer ein Code-Problem, nie ein Format-/Lint-Fund -
+                # ohne bekannten file_owners-Eintrag geht der Fund deshalb an dev_lead statt
+                # unbeauftragt liegen zu bleiben.
                 agents_to_fix: dict[str, list] = {}
                 for issue in import_issues:
                     owner = file_owners.get(issue.file_path)
-                    if owner and owner in self._agents:
+                    if not owner or owner not in self._agents:
+                        owner = "dev_lead"
+                    if owner in self._agents:
                         agents_to_fix.setdefault(owner, []).append(issue)
 
                 if not agents_to_fix:
@@ -1704,6 +1769,26 @@ class VerificationMixin:
             agents_to_fix: dict[str, list] = {}
             for failure in report.failures:
                 owners = {file_owners[f] for f in failure.files if f in file_owners}
+                # Team-Optimierung (dieser Auftrag: `workspace/opspilot` scheiterte wiederholt mit
+                # `ImportError: cannot import name 'X' from 'Y'`) - der Traceback zeigt bei diesem
+                # Fehlerbild nur die IMPORTIERENDE Datei (z.B. app/api/auth.py), nicht das Zielmodul
+                # `Y` selbst, in dem das Symbol tatsächlich fehlt. Die generische Owner-Ermittlung
+                # oben adressiert deshalb oft den falschen/gar keinen Agenten und der Fehler landete
+                # zusätzlich beim `tester`-Fallback, der `Y` nicht besitzt und das Symbol strukturell
+                # nicht ergänzen kann. Löst hier deterministisch den Owner von `Y` selbst auf (statt
+                # nur der importierenden Datei) und dispatcht GEZIELT dorthin, BEVOR der generische
+                # tester-Fallback greift - inkl. persistentem Lernen (siehe
+                # _record_verification_learning) für künftige Läufe desselben Agenten.
+                import_target = _import_name_error_target(failure.message)
+                if import_target is not None:
+                    _record_verification_learning(failure.message)
+                    _name, module = import_target
+                    module_path = module.replace(".", "/") + ".py"
+                    module_owner = file_owners.get(module_path)
+                    if module_owner:
+                        owners = {module_owner}
+                    elif not owners and "backend" in self._agents:
+                        owners = {"backend"}
                 # Team-Optimierung (echter Fund: memory/backlog.json-Tickets `recurring-failure-
                 # event_relay`/`recurring-failure-service_bookmark_monitor`) - ein "Ran 0 tests"/
                 # "NO TESTS RAN"-Befund hat NIE einen Datei-Bezug im Traceback (reine Testlauf-
@@ -1973,6 +2058,8 @@ class VerificationMixin:
                 agents_to_fix: dict[str, list] = {}
                 for issue in completeness_report.issues:
                     owner = file_owners.get(issue.file_path)
+                    if not owner:
+                        owner = self._infer_owner_from_path(issue.file_path)
                     if owner and owner in self._agents:
                         agents_to_fix.setdefault(owner, []).append(issue)
 

@@ -311,6 +311,22 @@ class RuntimeSmokeReport:
 
 
 @dataclass
+class FrontendBuildReport:
+    """
+    Ergebnis eines echten `npm run build` für EIN gefundenes Frontend-Projekt (siehe
+    RuntimeMixin.check_frontend_build()) - ein Projekt kann mehrere solcher Reports liefern
+    (z.B. ein Frontend unter frontend/ UND eines im Root). Anders als RuntimeSmokeReport prüft
+    dies den Produktions-Build (Bundler/Compiler wie Vite/webpack/tsc), nicht das Starten der
+    laufenden App.
+    """
+    attempted: bool
+    passed: bool = False
+    directory: str = ""
+    output: str = ""
+    reason_skipped: str = ""
+
+
+@dataclass
 class PerfCheckReport:
     """
     Ergebnis eines echten, kurzen Lastentest-Laufs (k6/locust) gegen die generierte, tatsächlich

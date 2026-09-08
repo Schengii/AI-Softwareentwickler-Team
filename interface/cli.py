@@ -1615,15 +1615,22 @@ class CLIInterface:
 
         elif cmd in ("/load", "/laden", "/open", "/oeffnen", "/import"):
             if not args:
-                console.print("⚠️ Bitte gib den Pfad oder Namen des Projekts an:\n👉 `/load <pfad_oder_name>`", style="yellow")
+                console.print("⚠️ Bitte gib den Pfad oder Namen des Projekts an:\n👉 `/load <pfad_oder_name> [aufgabe]`", style="yellow")
                 return False
-            target_path = " ".join(args)
+            # Kombinierter `/load <projekt> [aufgabe]`-Modus (echter Fund: `/load opspilot Baue
+            # das Dashboard` interpretierte bisher den GESAMTEN Rest inkl. der Aufgabenbeschreibung
+            # als Pfad -> unter Windows ein WinError 3 (Path too long / Invalid Path), weil aus
+            # Wörtern wie "Baue" und "Dashboard" ein einziger, nie existierender Pfad zusammen-
+            # gebaut wurde. Nur args[0] ist der Projektname/-pfad; alles danach (args[1:]) ist eine
+            # sofort im Anschluss ans Team übergebene Folgeaufgabe.
+            target_path = args[0]
+            follow_up_task = " ".join(args[1:]).strip()
             ctx = self._workspace.read_existing_project_context(target_path)
             if ctx:
                 self._loaded_project_dir = str(self._workspace.get_project_dir(target_path))
                 self._orchestrator._history.add_user_message(f"Hier ist der bestehende Projektcode, den wir analysieren/erweitern:\n\n{ctx}")
                 console.print(f"✅ [bold green]Projekt erfolgreich geladen:[/bold green] `{target_path}` ({len(ctx)} Zeichen analysiert).")
-                
+
                 # Checkpoint-Vorschau anzeigen, falls vorhanden (spart Tokens und gibt sofort Überblick)
                 from core.project_status import read_project_state_md
                 state_preview = read_project_state_md(self._loaded_project_dir)
@@ -1632,8 +1639,12 @@ class CLIInterface:
                     # Zeige erste 5 Zeilen des Checkpoints als Vorschau
                     preview_lines = [line for line in state_preview.splitlines() if line.strip()][:5]
                     console.print(Panel("\n".join(preview_lines), title="📌 Checkpoint-Zusammenfassung", border_style="dim cyan"))
-                
-                console.print("💡 Du kannst deinem Team jetzt Aufgaben zu diesem Projekt stellen (z. B. *'Refaktoriere die App und füge Tests hinzu'*).", style="dim")
+
+                if follow_up_task:
+                    console.print(f"🚀 [bold cyan]Übergebe Folgeaufgabe an das Team:[/bold cyan] {follow_up_task}")
+                    await self._process_task(follow_up_task)
+                else:
+                    console.print("💡 Du kannst deinem Team jetzt Aufgaben zu diesem Projekt stellen (z. B. *'Refaktoriere die App und füge Tests hinzu'*).", style="dim")
             else:
                 console.print(f"⚠️ Konnte keine relevanten Quellcodedateien unter `{target_path}` finden.", style="yellow")
 

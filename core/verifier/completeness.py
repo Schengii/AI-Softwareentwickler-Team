@@ -79,7 +79,17 @@ class CompletenessMixin:
             if f.is_file() and f.suffix in _STUB_SCAN_EXTENSIONS
             and not any(part in _IGNORED_DIRS for part in f.relative_to(self.project_dir).parts)
         ]
-        if not source_files:
+        # Kein früher Abbruch mehr allein wegen fehlender .py/.js/.ts-Dateien, wenn eine
+        # package.json existiert: genau der Fall "nur package.json erzeugt, der eigentliche
+        # Frontend-Code (App.tsx/main.tsx/index.html) wurde nie als Datei angelegt" hätte HIER
+        # sonst überhaupt keine Quelldateien zum Scannen und der Lauf würde als "nichts zu prüfen"
+        # (attempted=False) durchgewunken, statt genau diese Lücke über
+        # _missing_frontend_entrypoints() unten zu melden.
+        has_package_json = any(
+            not any(part in _IGNORED_DIRS for part in f.relative_to(self.project_dir).parts)
+            for f in self.project_dir.rglob("package.json") if f.is_file()
+        )
+        if not source_files and not has_package_json:
             return CompletenessReport(attempted=False, reason_skipped="Keine Quelldateien zum Prüfen gefunden.")
 
         issues: list[CompletenessIssue] = []
@@ -108,6 +118,7 @@ class CompletenessMixin:
                 issues.extend(self._scan_js_write_routes_missing_io(rel, text))
 
         issues.extend(self._missing_readme_referenced_files())
+        issues.extend(self._missing_frontend_entrypoints())
         issues.extend(self._missing_dependency_manifest(py_import_names))
         issues.extend(self._corrupted_dependency_manifests())
         real_third_party = py_import_names - local_top_level
@@ -558,6 +569,53 @@ class CompletenessMixin:
             return str(path.relative_to(self.project_dir)).replace("\\", "/")
         except ValueError:
             return str(path).replace("\\", "/")
+
+    def _missing_frontend_entrypoints(self) -> list[CompletenessIssue]:
+        """Physische Code-Pflicht fürs Frontend (realer Fund: mehrere Läufe erzeugten nur eine
+        `package.json` und beschrieben `App.tsx`/`main.tsx`/`index.html` nur noch als Markdown-
+        Codeblock im Chat-Text, ohne sie tatsächlich als Datei anzulegen - die Testsuite lief
+        (soweit überhaupt vorhanden) trotzdem "grün", weil sie denselben fehlenden Stand nie
+        gegen ein echtes Frontend prüfte). Für jede gefundene `package.json` (Root oder
+        `frontend/`-Unterverzeichnis, egal ob dort tatsächlich ein Node-Projekt aufgebaut wurde)
+        wird geprüft, ob im selben Verzeichnis mindestens eine `index.html` UND mindestens eine
+        `.tsx`/`.jsx`/`.js`/`.ts`-Einstiegsdatei unter `src/` existieren. Fehlt eines von beiden,
+        ist das Frontend nur behauptet, nicht tatsächlich angelegt - ein klarer CompletenessIssue,
+        der den Frontend-Agenten gezielt zur Nachbesserung triggert (siehe file_owners-Routing in
+        agents/orchestrator/verification.py, das Funde anhand des file_path wieder an den
+        zuständigen Agenten zurückspielt)."""
+        issues: list[CompletenessIssue] = []
+        for manifest in self.project_dir.rglob("package.json"):
+            if any(part in _IGNORED_DIRS for part in manifest.relative_to(self.project_dir).parts):
+                continue
+            frontend_dir = manifest.parent
+            rel_manifest = self._relative_or_raw(manifest)
+
+            has_index_html = (frontend_dir / "index.html").is_file() or any(
+                p.is_file() for p in frontend_dir.glob("public/index.html")
+            )
+            src_dir = frontend_dir / "src"
+            has_entry_script = src_dir.is_dir() and any(
+                src_dir.glob(f"{stem}.{ext}")
+                for stem in ("main", "index", "App", "app")
+                for ext in ("tsx", "jsx", "ts", "js")
+            )
+
+            if has_index_html and has_entry_script:
+                continue
+
+            missing = []
+            if not has_index_html:
+                missing.append("`index.html`")
+            if not has_entry_script:
+                missing.append("eine Einstiegsdatei unter `src/` (z. B. `src/main.tsx`)")
+            issues.append(CompletenessIssue(
+                file_path=rel_manifest,
+                message=f"Frontend-Projekt ({rel_manifest}) fehlt {' und '.join(missing)} - "
+                        "die `package.json` allein ist kein lauffähiges Frontend. Vermutlich wurde "
+                        "der eigentliche Code nur im Chat beschrieben statt physisch als Datei "
+                        "angelegt.",
+            ))
+        return issues
 
     def _missing_dependency_manifest(self, third_party_imports: set[str]) -> list[CompletenessIssue]:
         """Prüft, ob ein Projekt mit erkennbaren Drittanbieter-Python-Importen (z.B. `fastapi`,

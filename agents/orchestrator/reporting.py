@@ -41,6 +41,33 @@ class ReportingMixin:
                 file_owners[rel_path] = res.agent_id
 
     @staticmethod
+    def _infer_owner_from_path(file_path: str) -> str | None:
+        """
+        Fallback-Owner-Ermittlung für Vollständigkeits-Funde, wenn `file_owners` keinen
+        Eintrag für den Pfad hat - realer Fund: eine bereits VOR dem aktuellen Lauf
+        existierende Datei (z.B. `frontend/package.json`, vom Frontend-Agenten in einem
+        früheren Durchlauf geschrieben) taucht in `file_owners` nicht auf, weil dieses Dict
+        nur Schreibvorgänge des AKTUELLEN Laufs erfasst (siehe `_update_file_owners`). Ohne
+        diesen Fallback bricht die Vollständigkeits-Fixschleife dann mit "keinem Agenten
+        eindeutig zuordenbar" ab, obwohl der zuständige Spezialist anhand des Pfads klar
+        erkennbar ist. Reine Pfad-/Namens-Heuristik, kein Dateiinhalt nötig.
+        """
+        lowered = file_path.replace("\\", "/").lower()
+        if (
+            "frontend/" in lowered
+            or lowered.endswith((".tsx", ".jsx", ".vue", ".html", ".css"))
+            or "package.json" in lowered
+        ):
+            return "frontend"
+        if "test_" in lowered or "tests/" in lowered:
+            return "tester"
+        if lowered.endswith(".py") or "app/" in lowered or "src/" in lowered:
+            return "backend"
+        if "readme" in lowered:
+            return "readme"
+        return None
+
+    @staticmethod
     def _detect_file_write_collisions(member_results: list[AgentResult]) -> dict[str, list[str]]:
         """
         Erkennt, ob innerhalb EINES parallelen Ausführungs-Batches (mehrere Fachteam-

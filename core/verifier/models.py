@@ -599,6 +599,31 @@ _TRUSTED_HOST_WILDCARD_RE = re.compile(
 _CORS_WILDCARD_ORIGIN_RE = re.compile(r"CORSMiddleware[^)]*allow_origins\s*=\s*\[\s*[\"']\*[\"']")
 _CORS_ALLOW_CREDENTIALS_RE = re.compile(r"CORSMiddleware[^)]*allow_credentials\s*=\s*True")
 
+# Team-Optimierung (Retrospektive 2026-09-08, opspilot-Governance-Fund): eine Resilience-/
+# Circuit-Breaker-Dekoration fängt `CircuitBreakerError` (oder eine verwandte Retry-/Resilience-
+# Ausnahme) ab und liefert im Fallback-Zweig ein rohes `dict`-Literal zurück, während die
+# dekorierte Funktion laut Signatur ein Pydantic-Modell (`-> WorkflowRecommendation:`) zurückgeben
+# muss - jeder Aufrufer, der `.attribut`-Zugriff oder Pydantic-Validierung auf dem Rückgabewert
+# erwartet, bekommt bei einem offenen Circuit Breaker einen `AttributeError`/Validierungsfehler
+# statt der erwarteten Fehlerbehandlung. Rein regelbasiert: sucht ein `except`, dessen
+# Ausnahmename auf Circuit-Breaker/Resilience/Retry hindeutet, gefolgt (innerhalb weniger Zeilen,
+# noch im selben Block) von einem `return {`-Dict-Literal.
+_RESILIENCE_FALLBACK_EXCEPT_RE = re.compile(
+    r"except\s+\w*(?:CircuitBreaker|Resilience|Retry)\w*(?:\s+as\s+\w+)?\s*:"
+)
+_DICT_LITERAL_RETURN_RE = re.compile(r"^\s*return\s*\{")
+
+# Dieselbe Team-Optimierung, zweiter Teil (logpulse-Fund vom 2026-09-05, bisher nie umgesetzt):
+# `create_async_engine()` braucht das Paket `greenlet` zur LAUFZEIT, um synchronen DBAPI-Code aus
+# async Kontext heraus aufzurufen (SQLAlchemy's Greenlet-basierte async-Bridge) - der Code
+# importiert `greenlet` aber NIRGENDS explizit (SQLAlchemy lädt es intern nach), weshalb eine rein
+# importbasierte Prüfung (_missing_known_packages_in_manifest()) das nie findet. Ohne
+# `greenlet` in requirements.txt schlägt jeder echte DB-Zugriff mit "the greenlet library is
+# required to use this function" fehl - ein Laufzeitfehler, der beim reinen Import-Check der
+# Anwendung (kein DB-Zugriff nötig) unentdeckt bleibt und erst in echten Endpunkt-/Testläufen
+# auffällt.
+_GREENLET_PACKAGE_NAME = "greenlet"
+
 # Fünfter realer Fund (Team-Retrospektive, taskpulse-Projekt): _missing_local_python_imports()
 # (siehe completeness.py) prüfte bisher NUR Python - dieselbe Fehlerklasse ("lokaler Import
 # verweist auf eine nie erzeugte Datei") passiert genauso in JS/TS-Frontend-Projekten, z.B.

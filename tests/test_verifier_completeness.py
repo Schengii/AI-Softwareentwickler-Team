@@ -799,7 +799,9 @@ class TestCompletenessCheck(unittest.TestCase):
                 "connectable = create_engine('sqlite:///./x.db')\n",
                 encoding="utf-8",
             )
-            (project_dir / "requirements.txt").write_text("sqlalchemy\naiosqlite\nalembic\n", encoding="utf-8")
+            (project_dir / "requirements.txt").write_text(
+                "sqlalchemy\naiosqlite\nalembic\ngreenlet\n", encoding="utf-8",
+            )
             verifier = ProjectVerifier(tmp)
             report = verifier.check_completeness()
             self.assertTrue(report.passed)
@@ -825,7 +827,7 @@ class TestCompletenessCheck(unittest.TestCase):
                 "    id = Column(Integer, primary_key=True)\n",
                 encoding="utf-8",
             )
-            (project_dir / "requirements.txt").write_text("sqlalchemy\naiosqlite\n", encoding="utf-8")
+            (project_dir / "requirements.txt").write_text("sqlalchemy\naiosqlite\ngreenlet\n", encoding="utf-8")
             verifier = ProjectVerifier(tmp)
             report = verifier.check_completeness()
             self.assertTrue(report.passed)
@@ -1078,6 +1080,77 @@ class TestCompletenessCheck(unittest.TestCase):
             venv_dir = project_dir / ".ai_team_venv" / "lib"
             venv_dir.mkdir(parents=True)
             (venv_dir / "dep.py").write_text("# Hier würde das erfolgen\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_detects_missing_greenlet_dependency(self):
+        # Team-Optimierung (Retrospektive 2026-09-08, logpulse-Fund vom 2026-09-05): async
+        # SQLAlchemy-Engine braucht `greenlet` zur Laufzeit, obwohl der Code es nirgends
+        # importiert - fehlt es im Manifest, muss das gemeldet werden.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "database.py").write_text(
+                "from sqlalchemy.ext.asyncio import create_async_engine\n"
+                "engine = create_async_engine('sqlite+aiosqlite:///./x.db')\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("sqlalchemy\naiosqlite\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any("greenlet" in i.message for i in report.issues))
+
+    def test_greenlet_present_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "database.py").write_text(
+                "from sqlalchemy.ext.asyncio import create_async_engine\n"
+                "engine = create_async_engine('sqlite+aiosqlite:///./x.db')\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text(
+                "sqlalchemy\naiosqlite\ngreenlet\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_detects_resilience_fallback_dict_type_mismatch(self):
+        # Team-Optimierung (Retrospektive 2026-09-08, opspilot-Fund): der Fallback-Zweig eines
+        # Circuit-Breaker-Except-Blocks liefert ein rohes dict statt des vom Aufrufer erwarteten
+        # Pydantic-Modells zurück.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "resilience.py").write_text(
+                "def resilience_wrapper(func):\n"
+                "    def wrapper(*args, **kwargs):\n"
+                "        try:\n"
+                "            return func(*args, **kwargs)\n"
+                "        except CircuitBreakerError:\n"
+                "            return {\"status\": \"fallback\", \"reason\": \"circuit_open\"}\n"
+                "    return wrapper\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any("dict" in i.message and "Circuit" in i.message for i in report.issues))
+
+    def test_resilience_fallback_raising_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "resilience.py").write_text(
+                "def resilience_wrapper(func):\n"
+                "    def wrapper(*args, **kwargs):\n"
+                "        try:\n"
+                "            return func(*args, **kwargs)\n"
+                "        except CircuitBreakerError:\n"
+                "            logger.warning('circuit open')\n"
+                "            raise\n"
+                "    return wrapper\n",
+                encoding="utf-8",
+            )
             verifier = ProjectVerifier(tmp)
             report = verifier.check_completeness()
             self.assertTrue(report.passed)

@@ -34,6 +34,8 @@ from core.verifier.models import (
     _COMPONENT_TAKES_PROPS_RE,
     _CORS_ALLOW_CREDENTIALS_RE,
     _CORS_WILDCARD_ORIGIN_RE,
+    _DICT_LITERAL_RETURN_RE,
+    _GREENLET_PACKAGE_NAME,
     _IGNORED_DIRS,
     _IMPORT_TO_PACKAGE_NAME,
     _IO_CALL_MARKERS,
@@ -54,6 +56,7 @@ from core.verifier.models import (
     _PY_WRITE_ROUTE_DECORATOR_RE,
     _PYTEST_ASYNC_TEST_RE,
     _README_FILE_REF_RE,
+    _RESILIENCE_FALLBACK_EXCEPT_RE,
     _ROUTE_IO_EXEMPT_NAME_RE,
     _SQLA_ASYNC_ENGINE_RE,
     _SQLA_DECLARATIVE_BASE_RE,
@@ -128,6 +131,8 @@ class CompletenessMixin:
         issues.extend(self._conflicting_sqlalchemy_config(py_texts))
         issues.extend(self._double_router_prefix(py_texts))
         issues.extend(self._missing_sqlalchemy_dsn_driver(py_texts))
+        issues.extend(self._missing_greenlet_dependency(py_texts))
+        issues.extend(self._resilience_fallback_type_mismatch(py_texts))
         issues.extend(self._wildcard_security_middleware(py_texts))
 
         return CompletenessReport(attempted=True, passed=not issues, issues=issues)
@@ -794,6 +799,69 @@ class CompletenessMixin:
                             f"`ModuleNotFoundError: No module named '{driver}'` bricht dann JEDE "
                             f"echte DB-Verbindung (und damit jede Testsuite) sofort ab.",
                 ))
+        return issues
+
+    def _missing_greenlet_dependency(self, py_texts: dict[str, str]) -> list[CompletenessIssue]:
+        """Zweiter Teil des logpulse-Funds vom 2026-09-05 (Team-Optimierung 2026-09-08 - bisher
+        nie umgesetzt, siehe _GREENLET_PACKAGE_NAME-Docstring in core/verifier/models.py):
+        `create_async_engine()` braucht `greenlet` zur LAUFZEIT, importiert es aber nirgends
+        explizit (SQLAlchemy lädt es intern nach) - eine rein importbasierte Prüfung
+        (_missing_known_packages_in_manifest()) findet das nie. Läuft nur, wenn überhaupt ein
+        Manifest existiert (fehlt es komplett, meldet das bereits _missing_dependency_manifest())
+        und mindestens eine Datei `create_async_engine()` verwendet."""
+        if not any(_SQLA_ASYNC_ENGINE_RE.search(text) for text in py_texts.values()):
+            return []
+        manifest_text = self._read_manifest_texts()
+        if not manifest_text:
+            return []
+        if self._manifest_has_package(manifest_text, _GREENLET_PACKAGE_NAME):
+            return []
+        return [CompletenessIssue(
+            file_path=".",
+            message="Projekt nutzt SQLAlchemy `create_async_engine()`, aber kein Dependency-"
+                    "Manifest listet `greenlet` auf - das Paket wird zur LAUFZEIT für die "
+                    "async/sync-Bridge benötigt (kein statisches `import greenlet` im Code, "
+                    "SQLAlchemy lädt es intern nach), ohne es schlägt jeder echte DB-Zugriff mit "
+                    "\"the greenlet library is required to use this function\" fehl.",
+        )]
+
+    def _resilience_fallback_type_mismatch(self, py_texts: dict[str, str]) -> list[CompletenessIssue]:
+        """Team-Optimierung (Retrospektive 2026-09-08, opspilot-Governance-Fund): ein
+        `except CircuitBreakerError`/ähnlicher Resilience-/Retry-Fallback liefert ein rohes
+        `dict`-Literal zurück, obwohl der umgebende Code-Pfad ein Pydantic-Modell erwarten lässt -
+        jeder Aufrufer, der `.attribut`-Zugriff oder Pydantic-Validierung auf dem Ergebnis
+        erwartet, bekommt bei offenem Circuit Breaker einen `AttributeError`/Validierungsfehler
+        statt sauberer Fehlerbehandlung. Rein zeilenbasiert (kein AST nötig): sucht ein
+        Resilience-`except`, dem innerhalb weniger Zeilen (noch im selben Block, bevor die
+        Einrückung wieder auf das except-Level oder darunter fällt) ein `return {`-Dict-Literal
+        folgt."""
+        issues: list[CompletenessIssue] = []
+        for rel, text in sorted(py_texts.items()):
+            lines = text.splitlines()
+            for i, line in enumerate(lines):
+                except_match = _RESILIENCE_FALLBACK_EXCEPT_RE.search(line)
+                if not except_match:
+                    continue
+                except_indent = len(line) - len(line.lstrip())
+                for j in range(i + 1, min(i + 15, len(lines))):
+                    candidate = lines[j]
+                    if candidate.strip() == "":
+                        continue
+                    candidate_indent = len(candidate) - len(candidate.lstrip())
+                    if candidate_indent <= except_indent:
+                        break  # Block des except-Zweigs verlassen, ohne Dict-Fallback gefunden
+                    if _DICT_LITERAL_RETURN_RE.match(candidate):
+                        issues.append(CompletenessIssue(
+                            file_path=rel, line_number=j + 1,
+                            message=f"Resilience-/Circuit-Breaker-Fallback (`{line.strip()}`) "
+                                    f"liefert ein rohes `dict`-Literal zurück (`{candidate.strip()[:80]}`)"
+                                    f" - falls der umgebende Aufruf ein Pydantic-Modell/Objekt "
+                                    f"erwartet, bricht jeder Zugriff per `.attribut` bei offenem "
+                                    f"Circuit Breaker mit `AttributeError`/Validierungsfehler ab. "
+                                    f"Fallback sollte eine Instanz des erwarteten Rückgabetyps "
+                                    f"liefern oder den Fehler bewusst weiterreichen.",
+                        ))
+                        break
         return issues
 
     def _wildcard_security_middleware(self, py_texts: dict[str, str]) -> list[CompletenessIssue]:

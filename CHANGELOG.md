@@ -7,6 +7,25 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## ⚡ Sync/Async-SQLAlchemy-Konflikt jetzt schon im schnellen Pre-Flight-Check erkannt
+
+Fortsetzung des `/goal`-Auftrags (Database Architecture Drift): `core/verifier/completeness.
+_conflicting_sqlalchemy_config()` erkannte einen Mix aus synchronem `create_engine()` und
+asynchronem `create_async_engine()` im selben Projekt bereits zuverlässig - aber erst als Teil
+der vollen, teuren Verifikation nach dem echten Testlauf. `core/pre_flight_check.py`, der
+schnelle deterministische Check VOR der Testsuite, kannte diese Fehlerklasse bisher nicht.
+
+`_check_conflicting_sqlalchemy_engines()` ergänzt denselben Check (inkl. derselben Alembic-
+Ausnahme für idiomatisch synchrone Migrationsskripte) als neuen blockierenden Issue-Typ
+`conflicting_sqlalchemy_engines` - ein Projekt mit dieser Architektur-Drift wird jetzt schon
+vor dem ersten, unnötigen pytest-Lauf markiert statt erst danach.
+
+Verifiziert: `ruff check` sowie die vollständige pytest-Suite (1492 passed) laufen fehlerfrei
+durch (ein unabhängiger `ConnectionResetError`-Flake in `test_dashboard_cancel.py` lief isoliert
+erneut grün und stammt nicht aus dieser Änderung).
+
+---
+
 ## 🛠️ Agenten-Prompts für Contract-/Typ- und DB-Architektur-Konsistenz geschärft
 
 Nutzeranfrage (`/goal`): gezieltes Framework- & Agenten-Refactoring gegen fünf konkrete

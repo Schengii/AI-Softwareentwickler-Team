@@ -245,6 +245,18 @@ class Orchestrator(
         # core/git_isolation.py) – None, solange noch kein solcher Lauf stattfand. Wird NICHT
         # automatisch entfernt; der Mensch reviewt/merged/löscht ihn bewusst selbst.
         self.last_isolated_worktree = None
+        # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echte PR-Review-Kommentare):
+        # ReviewFinding-Objekte (core/review_gate.py) aus kritischen Governance-/Permission-
+        # Blocked-Befunden, die auch nach dem gezielten Fix-Loop UND dem verpflichtenden
+        # Re-Review noch bestehen (siehe agents/orchestrator/verification.py._run_governance_
+        # fix_loop()/_run_permission_blocked_clarification_fix()) - dieselben Befunde, die als
+        # unresolved-governance-critical-<slug>/unresolved-permission-blocked-<slug>-Tickets
+        # landen. interface/cli.py._ask_for_git_push()/core/backlog_worker.py lesen dieses
+        # Attribut NACH einem erfolgreichen create_pull_request() und hinterlassen echte,
+        # dateibezogene GitHub-Review-Kommentare (agents/github_agent.py.post_pr_review())
+        # statt den Befund nur im PR-Body zu verstecken. Leer im Normalfall (keine unbehobenen
+        # kritischen Funde).
+        self.last_unresolved_review_findings: list = []
         # True NUR, wenn die echte Testsuite des letzten Laufs tatsächlich gelaufen UND
         # bestanden ist (siehe _run_verification_loop) – von interface/cli.py genutzt, um vor
         # dem Git-Push-Gate zu warnen, statt unkommentiert "fertig" wirken zu lassen.
@@ -350,6 +362,12 @@ class Orchestrator(
         Duplikate wie `calculator_service`/`simple_calculator`).
         """
         overall_start_time = time.monotonic()
+        # Reset gegen Datenleck aus einem VORHERIGEN process()-Aufruf derselben Orchestrator-
+        # Instanz (z.B. mehrere Chat-Runden in derselben CLI-Sitzung): ohne diesen Reset würde
+        # ein leerer/erfolgreicher aktueller Lauf fälschlich noch die unbehobenen Befunde des
+        # LETZTEN Laufs tragen, wenn dieser Lauf die entsprechende Fix-Schleife gar nicht
+        # durchläuft (siehe last_unresolved_review_findings-Docstring weiter unten im __init__).
+        self.last_unresolved_review_findings = []
         # Schnappschuss des GLOBALEN Tokenzählers (core/token_guard.py) vor diesem Lauf – nicht
         # der Zähler selbst, da der Prozess (CLI-Sitzung/Dashboard-Worker) mehrere Läufe teilt.
         # Der Verbrauch DIESES Laufs ergibt sich aus der Differenz zum aktuellen Stand (siehe

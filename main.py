@@ -42,12 +42,20 @@ def main():
     JEDES vorhandene Workspace-Projekt ausführt (unabhängig von aktiver Entwicklung) und bei
     einem echten Fehlschlag ein Backlog-Ticket öffnet (siehe core/workspace_audit.py) – dasselbe
     On-Call-Prinzip wie `--check-dependencies`, nur für Verifikations-Drift statt neuer CVEs.
+    Mit `--propose-roadmap <projekt>` lässt der product_owner-Agent read-only 3-5 sinnvolle
+    nächste Schritte für ein bestehendes workspace/-Projekt vorschlagen (siehe
+    core/roadmap_advisor.py) - landet als niedrig priorisierte Tickets im Backlog
+    (source="product_owner_proposal"), NICHT automatisch umgesetzt.
     Mit `--team-retro` läuft EIN Durchlauf, der alle offenen Backlog-Tickets OHNE automatischen
     Retry-Pfad (z.B. "unused-agent-<id>" von core/optimization_advisor.py, "team-verification-
     trend" von core/workspace_audit.py) auflistet, die seit core/team_retro.STALE_TICKET_DAYS
     Tagen unverändert liegen (siehe core/team_retro.py) – gedacht für eine periodische, z.B.
     wöchentliche Routine (Cron/Taskplaner/`/loop`/`schedule`-Skill), die genau die Ticket-
     Kategorie sichtbar macht, die --work-backlog bewusst NIE von selbst aufgreift.
+    Mit `--weekly-digest [--days N]` (Standard: core/team_retro.DIGEST_WINDOW_DAYS=7) zeigt ein
+    Sprint-Review-artiger Überblick abgeschlossene/neu eröffnete Tickets, Velocity, Token-
+    verbrauch und Verifikations-Erfolgsquote der letzten N Tage, plus denselben liegengebliebenen
+    Ticket-Block wie `--team-retro`.
     """
     if "--sync-obsidian" in sys.argv:
         from core.obsidian_sync import sync_project_to_obsidian
@@ -122,11 +130,43 @@ def main():
             print(f"⚠️ {report.verification_trend_warning}")
         return
 
+    if "--propose-roadmap" in sys.argv:
+        import asyncio
+
+        from agents.orchestrator import Orchestrator
+        from core.roadmap_advisor import propose_next_steps
+
+        try:
+            slug = sys.argv[sys.argv.index("--propose-roadmap") + 1]
+        except IndexError:
+            print("❌ Fehler: Bitte gib ein Projekt an (z. B. `python main.py --propose-roadmap mein-projekt`).")
+            return
+        report = asyncio.run(propose_next_steps(Orchestrator(), slug))
+        if report.error:
+            print(f"⚠️ {report.error}")
+        else:
+            print(f"🧭 {len(report.ticket_ids)} Vorschlag/Vorschläge für '{slug}' als Ticket angelegt:")
+            for p in report.proposals:
+                print(f"  - {p.title}: {p.rationale}")
+        return
+
     if "--team-retro" in sys.argv:
         from core.team_retro import build_team_retro_report
 
         report = build_team_retro_report()
         print(report.format_for_humans())
+        return
+
+    if "--weekly-digest" in sys.argv:
+        from core.team_retro import DIGEST_WINDOW_DAYS, build_weekly_digest
+
+        window = DIGEST_WINDOW_DAYS
+        if "--days" in sys.argv:
+            try:
+                window = int(sys.argv[sys.argv.index("--days") + 1])
+            except (IndexError, ValueError):
+                pass
+        print(build_weekly_digest(window_days=window).format_for_humans())
         return
 
     if "--check-pr-reviews" in sys.argv:

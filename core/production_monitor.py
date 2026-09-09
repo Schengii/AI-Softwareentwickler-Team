@@ -60,6 +60,12 @@ class DeploymentHealthResult:
     url: str
     healthy: bool
     detail: str = ""
+    # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08): gesetzt, wenn der Server zwar
+    # erreichbar ist (healthy=True, Statuscode < 500), der Response-Body aber einen eindeutigen
+    # Fehler-Marker enthält (siehe _scan_response_body_for_errors()) - "erreichbar, aber echte
+    # Nutzer sehen einen Fehler" ist ein ANDERER, milderer Zustand als "Server tot", verdient
+    # aber trotzdem ein sichtbares Signal statt stillschweigend als "ok" durchzugehen.
+    error_signal: str = ""
 
 
 @dataclass
@@ -84,6 +90,51 @@ def _check_url(url: str, timeout: float) -> tuple[bool, str]:
         return e.code < 500, f"HTTP {e.code}"
     except Exception as e:
         return False, str(e)[:200]
+
+
+# Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, "echtes Fehler-Feedback aus
+# Produktion"): _check_url() prüfte bisher AUSSCHLIESSLICH den HTTP-Statuscode - ein häufiges,
+# reales Muster ist aber, dass ein Framework eine Ausnahme intern abfängt und trotzdem mit
+# Statuscode 200 eine "freundliche" Fehlerseite ausliefert (klassisches Beispiel: ein Flask-/
+# Django-Debug-Traceback, der als normale HTML-Seite mit 200 zurückkommt) - so ein Ausfall wäre
+# für _check_url() bisher unsichtbar gewesen ("Server ist tot" ist nicht dasselbe wie "Server
+# antwortet, aber echte Nutzer sehen einen Fehler"). Bewusst eine kleine, konservative Liste
+# eindeutiger Marker statt eines aggressiven Musters wie "error" (viel zu viele Fehlalarme,
+# z.B. eine Login-Seite mit dem Text "Fehlerhafte Anmeldedaten" ist kein App-Ausfall).
+_ERROR_BODY_MARKERS: tuple[str, ...] = (
+    "Internal Server Error",
+    "Traceback (most recent call last)",
+    "500 Internal Server Error",
+    "Application Error",  # Heroku-typische Crash-Seite
+    "An unhandled exception occurred",
+    "UNCAUGHT EXCEPTION",
+)
+
+# Nur die ersten N Zeichen des Response-Bodys scannen - ein Fehler-Marker steht bei den oben
+# gelisteten Frameworks immer nahe am Seitenanfang (Titel/Überschrift), ein unbegrenzter Read
+# würde bei einer großen, gesunden Seite unnötig viele Daten herunterladen.
+_ERROR_BODY_SCAN_CHARS = 20_000
+
+
+def _scan_response_body_for_errors(url: str, timeout: float) -> str:
+    """
+    Lädt (best effort) die ersten _ERROR_BODY_SCAN_CHARS des Response-Bodys erneut herunter und
+    prüft auf _ERROR_BODY_MARKERS - NUR aufgerufen, wenn _check_url() bereits `healthy=True`
+    gemeldet hat (ein Statuscode >=500 ist bereits eindeutig ein Ausfall, dafür braucht es
+    keinen zusätzlichen Body-Scan). Gibt den gefundenen Marker zurück, oder "" bei keinem Fund
+    ODER JEDEM Problem beim erneuten Abruf (z.B. Timeout) - dieser Zusatz-Check darf das
+    Gesamtergebnis eines ansonsten erreichbaren Deployments nie zum Absturz bringen.
+    """
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "ai-team-production-monitor"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - feste, selbst gespeicherte HTTPS-Deploy-URL, kein Nutzereingabe-Pfad
+            body = resp.read(_ERROR_BODY_SCAN_CHARS).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+    for marker in _ERROR_BODY_MARKERS:
+        if marker in body:
+            return marker
+    return ""
 
 
 async def run_deployment_health_check_cycle(status_callback: StatusCallback | None = None) -> DeploymentHealthReport:
@@ -126,6 +177,39 @@ async def run_deployment_health_check_cycle(status_callback: StatusCallback | No
                     detail=f"Wieder erreichbar: {detail}", project_slug=project_slug,
                 )
 
-        report.checked.append(DeploymentHealthResult(project_slug, url, healthy, detail))
+        # Bewusst NUR geprüft/getoggelt, wenn healthy=True: bei einem vollständigen Ausfall
+        # (healthy=False) ist der oben bereits eröffnete "nicht erreichbar"-Vorfall das
+        # relevante, schwerwiegendere Signal - ein bestehendes Degraded-Ticket dann fälschlich
+        # als "Fehler-Marker nicht mehr gefunden" zu schließen (weil schlicht nie gescannt
+        # wurde) würde einen VERSCHLECHTERTEN Zustand als Verbesserung ausgeben.
+        error_signal = ""
+        degraded_ticket_id = f"{ticket_id}-degraded"
+        if healthy:
+            error_signal = await asyncio.to_thread(
+                _scan_response_body_for_errors, url, DEPLOYMENT_HEALTH_CHECK_TIMEOUT_SECONDS,
+            )
+            if error_signal:
+                upsert_ticket(
+                    ticket_id=degraded_ticket_id,
+                    title=f"⚠️ Deployment erreichbar, aber Fehlerseite erkannt: {project_slug}",
+                    source="monitor", status="todo", priority=2, project_slug=project_slug,
+                    detail=(
+                        f"{url} antwortet mit {detail}, der Response-Body enthält aber den "
+                        f"Fehler-Marker \"{error_signal}\" - echte Nutzer sehen vermutlich einen "
+                        "Fehler, auch wenn der Server selbst erreichbar ist."
+                    ),
+                )
+            else:
+                existing_degraded = next(
+                    (t for t in list_tickets() if t.id == degraded_ticket_id and t.status in _OPEN_INCIDENT_STATUSES), None,
+                )
+                if existing_degraded:
+                    upsert_ticket(
+                        ticket_id=degraded_ticket_id, title=existing_degraded.title, source="monitor",
+                        status="done", detail="Fehler-Marker im Response-Body nicht mehr gefunden.",
+                        project_slug=project_slug,
+                    )
+
+        report.checked.append(DeploymentHealthResult(project_slug, url, healthy, detail, error_signal))
 
     return report

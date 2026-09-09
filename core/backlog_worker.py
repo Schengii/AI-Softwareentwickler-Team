@@ -556,6 +556,16 @@ async def _process_single_ticket(
 
     pr_url = pr_out.splitlines()[-1] if pr_out else pr_out
 
+    # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echte PR-Review-Kommentare): dieselbe
+    # Ergänzung wie interface/cli.py._ask_for_git_push() - unbehobene kritische Governance-/
+    # Permission-Blocked-Funde landen sonst NUR im unresolved-*-Backlog-Ticket, unsichtbar für
+    # einen Reviewer, der nur den PR selbst öffnet. Best-effort: ein fehlgeschlagener Review-Post
+    # darf den bereits erfolgreich erstellten PR nicht verwerfen (siehe github_agent.post_pr_
+    # review()-Docstring), deshalb wird das Ergebnis hier bewusst nicht ausgewertet.
+    unresolved_findings = getattr(orchestrator, "last_unresolved_review_findings", [])
+    if unresolved_findings:
+        github_agent.post_pr_review(pr_url, unresolved_findings)
+
     # Eine offene Rückfrage ist wichtiger als das CI-Ergebnis (das kann durchaus grün sein,
     # obwohl eine fachliche Frage offen ist) - deshalb vor der CI-Prüfung behandelt.
     if needs_human_input:

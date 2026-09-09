@@ -42,6 +42,7 @@ from core.review_gate import (
     find_critical_findings,
     find_permission_blocked_questions,
     find_structural_scope_questions,
+    finding_from_critical_block,
     route_findings_to_owners,
 )
 from core.team_memory import record_lesson
@@ -857,6 +858,18 @@ class VerificationMixin:
                         "stillschweigend zu übernehmen."
                     )
                     still_critical_detail = "\n\n".join(still_critical)
+                    # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echte PR-Review-
+                    # Kommentare): dieselben still_critical-Blöcke, die gerade als Fließtext im
+                    # Backlog-Ticket landen, werden hier ZUSÄTZLICH in ReviewFinding-Objekte
+                    # (mit best-effort extrahiertem file_path) umgewandelt und am Orchestrator
+                    # gespeichert - interface/cli.py._ask_for_git_push()/core/backlog_worker.py
+                    # lesen dieses Attribut nach einem erfolgreichen create_pull_request() und
+                    # hinterlassen echte, dateibezogene GitHub-Review-Kommentare am PR
+                    # (agents/github_agent.py.post_pr_review()), statt den Befund nur im PR-Body
+                    # zu verstecken, wo ihn ein menschlicher Reviewer leicht überliest.
+                    self.last_unresolved_review_findings.extend(
+                        finding_from_critical_block(block) for block in still_critical
+                    )
                     try:
                         upsert_ticket(
                             ticket_id=f"unresolved-governance-critical-{getattr(self, 'last_project_slug', 'project')}",
@@ -1031,6 +1044,12 @@ class VerificationMixin:
                         "Befund(e). Backlog-Ticket für menschliche Prüfung eröffnet."
                     )
                     still_critical_detail = "\n\n".join(still_critical)
+                    # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echte PR-Review-
+                    # Kommentare) - siehe die ausführliche Begründung bei der Schwester-Stelle in
+                    # _run_governance_fix_loop() oben.
+                    self.last_unresolved_review_findings.extend(
+                        finding_from_critical_block(block) for block in still_critical
+                    )
                     try:
                         upsert_ticket(
                             ticket_id=f"unresolved-permission-blocked-{getattr(self, 'last_project_slug', 'project')}",

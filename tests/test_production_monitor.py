@@ -36,6 +36,12 @@ class TestProductionMonitor(unittest.TestCase):
         self.mock_notify = self._notify_patcher.start()
         self.addCleanup(self._notify_patcher.stop)
 
+        # Kein echter Netzwerkaufruf in diesen Tests - dasselbe Prinzip wie das gemockte
+        # _check_url() oben. Einzeln in TestErrorBodyDetection unten anders gemockt/getestet.
+        self._body_scan_patcher = patch("core.production_monitor._scan_response_body_for_errors", return_value="")
+        self.mock_body_scan = self._body_scan_patcher.start()
+        self.addCleanup(self._body_scan_patcher.stop)
+
     def tearDown(self):
         shutil.rmtree(self.temp_workspace, ignore_errors=True)
         shutil.rmtree(self.temp_backlog_dir, ignore_errors=True)
@@ -107,6 +113,94 @@ class TestProductionMonitor(unittest.TestCase):
         self.assertEqual(len(backlog_store.list_tickets()), 2)
 
 
+class TestErrorBodyDetection(unittest.TestCase):
+    """
+    KI-Team-Zustandsbericht 2026-09-08, "echtes Fehler-Feedback aus Produktion": _check_url()
+    prüfte bisher AUSSCHLIESSLICH den HTTP-Statuscode - ein Server, der eine Ausnahme intern
+    abfängt und trotzdem mit 200 eine Fehlerseite ausliefert, galt bisher fälschlich als "ok".
+    _scan_response_body_for_errors() erkennt genau dieses Muster zusätzlich, NUR wenn der
+    Server bereits als erreichbar gilt (healthy=True).
+    """
+
+    def setUp(self):
+        self.temp_workspace = tempfile.mkdtemp()
+        self.temp_backlog_dir = tempfile.mkdtemp()
+        self._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(self.temp_backlog_dir) / "backlog.json")
+        self._backlog_patcher.start()
+        self.addCleanup(self._backlog_patcher.stop)
+        self._workspace_patcher = patch("core.production_monitor.WORKSPACE_DIR", self.temp_workspace)
+        self._workspace_patcher.start()
+        self.addCleanup(self._workspace_patcher.stop)
+        self._notify_patcher = patch("core.production_monitor.notify_external")
+        self._notify_patcher.start()
+        self.addCleanup(self._notify_patcher.stop)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_workspace, ignore_errors=True)
+        shutil.rmtree(self.temp_backlog_dir, ignore_errors=True)
+
+    def _seed_deployment(self, slug: str, url: str = "https://x.fly.dev"):
+        project_dir = Path(self.temp_workspace) / slug
+        project_dir.mkdir(parents=True, exist_ok=True)
+        deployment_status.record_deployment(project_dir, provider="fly", url=url)
+        return project_dir
+
+    @patch("core.production_monitor._check_url", return_value=(True, "HTTP 200"))
+    @patch("core.production_monitor._scan_response_body_for_errors", return_value="Internal Server Error")
+    def test_error_marker_in_body_opens_degraded_ticket_not_down_ticket(self, _mock_scan, _mock_check):
+        self._seed_deployment("proj_a")
+        report = asyncio.run(run_deployment_health_check_cycle())
+
+        self.assertTrue(report.checked[0].healthy)
+        self.assertEqual(report.checked[0].error_signal, "Internal Server Error")
+        tickets = backlog_store.list_tickets()
+        self.assertEqual(len(tickets), 1)
+        self.assertEqual(tickets[0].id, "monitor-proj_a-degraded")
+        self.assertEqual(tickets[0].priority, 2)  # niedriger als ein echter Ausfall (priority=1)
+        self.assertIn("Internal Server Error", tickets[0].detail)
+
+    @patch("core.production_monitor._check_url", return_value=(True, "HTTP 200"))
+    @patch("core.production_monitor._scan_response_body_for_errors", return_value="")
+    def test_no_error_marker_opens_no_ticket(self, _mock_scan, _mock_check):
+        self._seed_deployment("proj_a")
+        report = asyncio.run(run_deployment_health_check_cycle())
+
+        self.assertEqual(report.checked[0].error_signal, "")
+        self.assertEqual(backlog_store.list_tickets(), [])
+
+    @patch("core.production_monitor._check_url", return_value=(True, "HTTP 200"))
+    @patch("core.production_monitor._scan_response_body_for_errors")
+    def test_recovered_error_marker_closes_degraded_ticket(self, mock_scan, _mock_check):
+        self._seed_deployment("proj_a")
+        mock_scan.return_value = "Internal Server Error"
+        asyncio.run(run_deployment_health_check_cycle())
+        self.assertEqual(backlog_store.list_tickets()[0].status, "todo")
+
+        mock_scan.return_value = ""
+        asyncio.run(run_deployment_health_check_cycle())
+
+        ticket = next(t for t in backlog_store.list_tickets() if t.id == "monitor-proj_a-degraded")
+        self.assertEqual(ticket.status, "done")
+
+    @patch("core.production_monitor._check_url", return_value=(False, "Connection refused"))
+    @patch("core.production_monitor._scan_response_body_for_errors")
+    def test_full_outage_never_triggers_body_scan_or_touches_degraded_ticket(self, mock_scan, _mock_check):
+        """Ein vollständiger Ausfall (healthy=False) darf ein zuvor offenes Degraded-Ticket
+        NICHT fälschlich als 'behoben' schließen, nur weil der Body-Scan bei einem toten Server
+        gar nicht erst lief - das würde einen VERSCHLECHTERTEN Zustand als Verbesserung zeigen."""
+        self._seed_deployment("proj_a")
+        backlog_store.upsert_ticket(
+            "monitor-proj_a-degraded", "⚠️ Deployment erreichbar, aber Fehlerseite erkannt: proj_a",
+            "monitor", "todo", project_slug="proj_a", priority=2,
+        )
+
+        asyncio.run(run_deployment_health_check_cycle())
+
+        mock_scan.assert_not_called()
+        degraded = next(t for t in backlog_store.list_tickets() if t.id == "monitor-proj_a-degraded")
+        self.assertEqual(degraded.status, "todo")  # unverändert, nicht fälschlich "done"
+
+
 class TestCheckUrlAgainstRealServer(unittest.TestCase):
     """Testet _check_url() gegen einen ECHTEN lokalen HTTP-Server statt gemockter urllib-
     Aufrufe - dasselbe Prinzip wie core/browser_verifier.py, das einen echten
@@ -157,6 +251,68 @@ class TestCheckUrlAgainstRealServer(unittest.TestCase):
         healthy, detail = _check_url(f"http://127.0.0.1:{port}/", timeout=2.0)
         self.assertFalse(healthy)
         self.assertTrue(detail)
+
+    def test_scan_response_body_detects_error_marker_on_real_server(self):
+        import http.server
+        import socket
+        import threading
+
+        from core.production_monitor import _scan_response_body_for_errors
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        class CrashPageHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"<html><body><h1>Internal Server Error</h1></body></html>")
+
+            def log_message(self, *args):
+                pass
+
+        httpd = http.server.HTTPServer(("127.0.0.1", port), CrashPageHandler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            marker = _scan_response_body_for_errors(f"http://127.0.0.1:{port}/", timeout=5.0)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+        self.assertEqual(marker, "Internal Server Error")
+
+    def test_scan_response_body_returns_empty_for_clean_page(self):
+        import http.server
+        import socket
+        import threading
+
+        from core.production_monitor import _scan_response_body_for_errors
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        class OkHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"<html><body>Willkommen!</body></html>")
+
+            def log_message(self, *args):
+                pass
+
+        httpd = http.server.HTTPServer(("127.0.0.1", port), OkHandler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            marker = _scan_response_body_for_errors(f"http://127.0.0.1:{port}/", timeout=5.0)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+        self.assertEqual(marker, "")
 
 
 if __name__ == "__main__":

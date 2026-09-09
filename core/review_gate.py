@@ -124,24 +124,39 @@ def parse_structured_findings(content: str, source_role: str = "") -> list[Revie
 
     # 2. Fallback auf Text-Heuristiken
     raw_critical = find_critical_findings(content)
-    for block in raw_critical:
-        # Versuche Dateipfad zu extrahieren
-        extracted_path = ""
-        for cand in _BACKTICK_PATH_RE.findall(block):
-            if _PATH_LIKE_RE.match(cand.strip().replace("\\", "/")):
-                extracted_path = cand.strip()
-                break
-
-        findings.append(ReviewFinding(
-            severity="critical",
-            source_role=source_role or "reviewer",
-            file_path=extracted_path,
-            title=block.splitlines()[0][:80],
-            description=block,
-            raw_text=block,
-        ))
+    findings.extend(finding_from_critical_block(block, source_role) for block in raw_critical)
 
     return findings
+
+
+def finding_from_critical_block(block: str, source_role: str = "") -> ReviewFinding:
+    """
+    Wandelt EINEN rohen, bereits als kritisch erkannten Textblock (z.B. aus find_critical_
+    findings()) in ein ReviewFinding um - inklusive Best-effort-Extraktion eines Dateipfads aus
+    Backtick-Code (`` `app/main.py` ``). Ausgelagert aus parse_structured_findings() (Pass 2
+    oben), damit auch ein Aufrufer, der bereits eine eigene Liste roher Blöcke hat (z.B. core/
+    review_gate-Konsumenten mit einer bereits über mehrere Re-Review-Runden angereicherten
+    still_critical-Liste), dieselbe Datei-Extraktion nutzen kann statt sie zu duplizieren.
+
+    Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echte PR-Review-Kommentare): genau
+    dieses ReviewFinding.file_path/line_number ist die Grundlage dafür, einen unbehobenen
+    kritischen Governance-Befund als ECHTEN GitHub-PR-Review-Kommentar an der betroffenen Datei
+    zu hinterlassen (agents/github_agent.py.post_pr_review()), statt ihn nur als Fließtext im
+    PR-Body zu verstecken.
+    """
+    extracted_path = ""
+    for cand in _BACKTICK_PATH_RE.findall(block):
+        if _PATH_LIKE_RE.match(cand.strip().replace("\\", "/")):
+            extracted_path = cand.strip()
+            break
+    return ReviewFinding(
+        severity="critical",
+        source_role=source_role or "reviewer",
+        file_path=extracted_path,
+        title=block.splitlines()[0][:80],
+        description=block,
+        raw_text=block,
+    )
 
 
 def find_critical_findings(content: str) -> list[str]:

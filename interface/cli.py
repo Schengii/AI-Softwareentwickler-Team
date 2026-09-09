@@ -93,6 +93,7 @@ HELP_TEXT = """
 | `/design-system [projekt]` | Zeigt/bearbeitet feste visuelle Präferenzen (Farbpalette, Typografie, Spacing-Skala, Tonalität, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/backlog` | Zeigt das Kanban-Board (Todo/In Bearbeitung/Review/Blockiert/Fertig) über CLI, Dashboard UND autonome Issue-Läufe hinweg |
 | `/team-health` | Projektübergreifender Health-Rollup über alle Projekte in `workspace/`: Status, seit wann rot, erkannte gemeinsame Fehlermuster |
+| `/propose-roadmap <projekt>` | Lässt den product_owner-Agenten read-only 3-5 sinnvolle nächste Schritte für ein bestehendes Projekt vorschlagen – landet als niedrig priorisierte Tickets im Backlog, NICHT automatisch umgesetzt |
 | `/backlog-add [priorität] <titel>` | Legt manuell ein priorisiertes, noch nicht begonnenes Ticket im Status "todo" an (Priorität: 1/hoch, 2/mittel, 3/niedrig) |
 | `/adr [projekt]` | Zeigt die dokumentierten Architecture Decision Records (Begründungen echter Architektur-Entscheidungen) eines Projekts |
 | `/deploy [projekt]` | Deployt ein Projekt lokal per Docker (Compose bevorzugt, sonst Dockerfile) – mit Vorschau & Bestätigung |
@@ -637,6 +638,27 @@ class CLIInterface:
                                 console.print(
                                     f"⚠️ Label(s) {status_labels} konnten nicht gesetzt werden ({label_out}) "
                                     "– PR bleibt trotzdem bestehen.", style="dim yellow",
+                                )
+
+                        # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echte PR-Review-
+                        # Kommentare): unbehobene kritische Governance-/Permission-Blocked-Funde
+                        # (self._orchestrator.last_unresolved_review_findings, siehe dessen
+                        # Docstring in agents/orchestrator/__init__.py) landeten bisher nur im
+                        # unresolved-*-Backlog-Ticket, unsichtbar für einen Reviewer, der nur den
+                        # PR selbst öffnet. Postet sie jetzt zusätzlich als echten, dateibezogenen
+                        # GitHub-Review (agents/github_agent.py.post_pr_review()).
+                        unresolved_findings = getattr(self._orchestrator, "last_unresolved_review_findings", [])
+                        if unresolved_findings:
+                            success_review, review_out = github_agent.post_pr_review(pr_url, unresolved_findings)
+                            if success_review:
+                                console.print(
+                                    f"🔎 [dim]{len(unresolved_findings)} unbehobene(r) kritische(r) "
+                                    "Befund(e) als PR-Review-Kommentar hinterlassen.[/dim]"
+                                )
+                            else:
+                                console.print(
+                                    f"⚠️ [dim yellow]PR-Review-Kommentar konnte nicht gepostet werden: "
+                                    f"{review_out}[/dim yellow]"
                                 )
                     else:
                         console.print(
@@ -1218,6 +1240,36 @@ class CLIInterface:
         else:
             console.print("ℹ️ Kein gemeinsames Fehlermuster über mehrere Projekte hinweg erkannt.", style="dim")
 
+    async def _propose_roadmap(self, project_slug: str) -> None:
+        """
+        Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, "Product-Owner-Weiterdenken"):
+        der product_owner-Agent bearbeitet bisher AUSSCHLIESSLICH die konkret gestellte Aufgabe.
+        Lässt ihn hier read-only über ein BEREITS BESTEHENDES Projekt nachdenken und legt seine
+        Vorschläge als niedrig priorisierte Backlog-Tickets an (core/roadmap_advisor.py) - KEINE
+        automatische Umsetzung, ein Mensch entscheidet, welcher Vorschlag es wert ist.
+        """
+        from core.roadmap_advisor import propose_next_steps
+
+        console.print(f"🧭 [bold cyan]product_owner denkt über '{project_slug}' nach (read-only)...[/bold cyan]")
+        report = await propose_next_steps(self._orchestrator, project_slug)
+
+        if report.error:
+            console.print(f"⚠️ [yellow]{report.error}[/yellow]")
+            if report.raw_content:
+                console.print(Panel(report.raw_content[:1500], title="Rohe Antwort", border_style="dim"))
+            return
+
+        lines = [f"{i + 1}. **{p.title}** - {p.rationale}" for i, p in enumerate(report.proposals)]
+        console.print(Panel(
+            "\n\n".join(lines),
+            title=f"🧭 Vorschläge für '{project_slug}' ({len(report.ticket_ids)} als Ticket angelegt)",
+            border_style="cyan",
+        ))
+        console.print(
+            "💡 [dim]Diese Tickets werden NICHT automatisch umgesetzt - greenlighte einen "
+            "Vorschlag, indem du ihn regulär als Aufgabe stellst.[/dim]"
+        )
+
     async def _delete_learning_with_confirmation(self, agent_id: str, index_str: str) -> None:
         """Entfernt eine einzelne gelernte Regel - IRREVERSIBEL, mit Bestätigung analog zu
         /delete-project und dem Git-Push-Gate. Kein Crash bei ungültiger Eingabe (z.B. Buchstaben
@@ -1609,6 +1661,12 @@ class CLIInterface:
 
         elif cmd in ("/team-health", "/teamgesundheit", "/rollup"):
             self._show_team_health()
+
+        elif cmd in ("/propose-roadmap", "/roadmap-vorschlagen", "/naechster-schritt"):
+            if not args:
+                console.print("⚠️ Bitte gib das Projekt an: `/propose-roadmap <projekt>`", style="yellow")
+                return False
+            await self._propose_roadmap(args[0])
 
         elif cmd in ("/sync-obsidian", "/obsidian-sync", "/obsidian"):
             from core.obsidian_sync import sync_project_to_obsidian

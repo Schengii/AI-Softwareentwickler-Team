@@ -417,6 +417,95 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
             return False, str(e)
         return result.returncode == 0, (result.stdout + result.stderr).strip()
 
+    def post_pr_review(self, pr_url_or_number: str, findings: list, event: str = "COMMENT") -> tuple[bool, str]:
+        """
+        Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echte PR-Review-Kommentare):
+        `findings` (core/review_gate.py.ReviewFinding) landeten bisher AUSSCHLIESSLICH als
+        Fließtext im PR-Body (siehe interface/cli.py._ask_for_git_push()) - ein echter
+        menschlicher Reviewer bekommt in GitHub selbst nie einen dateibezogenen Review-Kommentar
+        zu sehen, nur einen langen Beschreibungstext, den man leicht überliest. Postet stattdessen
+        einen echten GitHub-PR-Review (`gh api .../pulls/<nr>/reviews`) - Funde mit bekanntem
+        `file_path`+`line_number` werden als INLINE-Kommentar an genau dieser Stelle hinterlassen,
+        alle übrigen (kein Datei-/Zeilenbezug extrahierbar) im allgemeinen Review-Body aufgelistet.
+
+        `event="COMMENT"` (Standard) hinterlässt Kommentare, OHNE den PR formal freizugeben oder
+        abzulehnen (`APPROVE`/`REQUEST_CHANGES`) - das bleibt bewusst einem Menschen vorbehalten,
+        dieses Team gibt sich selbst keine Freigabe.
+
+        Bewusst zwei Versuche statt nur einem: GitHubs Review-API akzeptiert einen Inline-
+        Kommentar nur, wenn `line` tatsächlich Teil des aktuellen Diffs ist - der best-effort aus
+        Freitext extrahierte `line_number` (core/review_gate.py.finding_from_critical_block) ist
+        das nicht immer. Schlägt der volle Versuch MIT Inline-Kommentaren fehl (z.B. genau
+        deswegen), wird automatisch ein zweiter, reiner Text-Review OHNE `comments` nachgesendet -
+        besser ein reiner Text-Kommentar als gar keine Rückmeldung auf dem PR. Wirft NIE eine
+        Exception, aus demselben Grund wie create_pull_request()/label_pr(): ein fehlgeschlagener
+        Review-Post darf einen bereits erfolgreich erstellten PR nicht verwerfen.
+        """
+        if not findings:
+            return True, ""
+        repo_slug = self.get_repo_slug()
+        if not repo_slug:
+            return False, "Kein GitHub-Remote gefunden oder `gh` nicht nutzbar/eingeloggt."
+        try:
+            view_result = subprocess.run(
+                ["gh", "pr", "view", str(pr_url_or_number), "--json", "number"],
+                cwd=BASE_DIR, capture_output=True, text=True, timeout=15, encoding="utf-8",
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        if view_result.returncode != 0:
+            return False, (view_result.stderr or view_result.stdout).strip()
+        try:
+            pr_number = json.loads(view_result.stdout)["number"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return False, "Unerwartete Ausgabe von `gh pr view` (kein `number`-Feld)."
+
+        inline_comments = []
+        general_findings = []
+        for f in findings:
+            if f.file_path and f.line_number:
+                inline_comments.append({
+                    "path": f.file_path.replace("\\", "/"),
+                    "line": int(f.line_number),
+                    "side": "RIGHT",
+                    "body": f"🤖 **{f.severity.upper()}** ({f.source_role}): {f.title}\n\n{f.description}"[:65000],
+                })
+            else:
+                general_findings.append(f)
+
+        body_lines = [
+            f"🤖 **KI-Team Review**: {len(findings)} unbehobene(r) kritische(r) Befund(e) nach dem "
+            "automatischen Fix-Loop (siehe Inline-Kommentare unten für dateibezogene Funde)."
+        ]
+        if general_findings:
+            body_lines.append("")
+            body_lines.append("Ohne konkrete Datei-/Zeilenzuordnung:")
+            for f in general_findings:
+                body_lines.append(f"- **{f.severity.upper()}** ({f.source_role}): {f.title}")
+
+        def _post(with_inline: bool) -> tuple[bool, str]:
+            payload: dict = {"body": "\n".join(body_lines), "event": event}
+            if with_inline and inline_comments:
+                payload["comments"] = inline_comments
+            try:
+                result = subprocess.run(
+                    ["gh", "api", "--method", "POST", f"repos/{repo_slug}/pulls/{pr_number}/reviews",
+                     "-H", "Accept: application/vnd.github+json", "--input", "-"],
+                    input=json.dumps(payload),
+                    cwd=BASE_DIR, capture_output=True, text=True, timeout=20, encoding="utf-8",
+                )
+            except (OSError, subprocess.TimeoutExpired) as e:
+                return False, str(e)
+            return result.returncode == 0, (result.stdout + result.stderr).strip()
+
+        success, output = _post(with_inline=True)
+        if not success and inline_comments:
+            fallback_success, fallback_output = _post(with_inline=False)
+            if fallback_success:
+                return True, f"Inline-Kommentare abgelehnt ({output[:200]}) - Text-Review ohne Inline-Kommentare stattdessen gepostet."
+            return False, f"Beide Versuche fehlgeschlagen: {output} | {fallback_output}"
+        return success, output
+
     def get_repo_slug(self) -> str | None:
         """
         Gibt `owner/repo` des aktuellen GitHub-Remotes zurück (via `gh repo view`), oder None

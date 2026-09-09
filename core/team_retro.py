@@ -23,7 +23,7 @@ hartcodierter Automatismus hier.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from core.backlog_store import Ticket, list_tickets
 
@@ -113,3 +113,122 @@ def build_team_retro_report() -> TeamRetroReport:
         total_open_tickets=len(open_tickets),
         total_stale_tickets=len(stale),
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Weekly Digest: Sprint-Review-artiger Wochenüberblick (KI-Team-Zustandsbericht 2026-09-08)
+# ─────────────────────────────────────────────────────────────────────────────
+# Nutzerwunsch: der obige Team-Retro-Report zeigt nur liegengebliebene Tickets - kein
+# Fortschritts-Blick wie bei einem echten Sprint-Review (was wurde fertig, wie viel hat das
+# gekostet, wird das Team schneller/langsamer, wie steht die Verifikations-Erfolgsquote gerade).
+# Kombiniert bereits bestehende, über Läufe hinweg gesammelte Datenquellen (memory/run_history.py,
+# memory/cost_history.py, core/backlog_store.py) zu EINEM Überblick statt drei separaten Befehlen
+# (`/tokens`, `/backlog`, keinen für die Verifikations-Quote) - bewusst rein deterministisch,
+# keine LLM-Interpretation nötig, dieselbe Linie wie core/optimization_advisor.py.
+
+DIGEST_WINDOW_DAYS = 7
+
+
+@dataclass
+class WeeklyDigest:
+    """Sprint-Review-artiger Überblick über die letzten `window_days` Tage."""
+    window_days: int = DIGEST_WINDOW_DAYS
+    tickets_completed: int = 0
+    tickets_opened: int = 0
+    tokens_spent: int = 0
+    verification_runs: int = 0
+    verification_passed: int = 0
+    verification_rate: float = 0.0
+    stale_retro: TeamRetroReport = field(default_factory=TeamRetroReport)
+
+    @property
+    def velocity_delta(self) -> int:
+        """Positiv = mehr abgeschlossen als neu eröffnet (Backlog schrumpft), negativ =
+        Backlog wächst schneller, als das Team abarbeitet."""
+        return self.tickets_completed - self.tickets_opened
+
+    def format_for_humans(self) -> str:
+        trend_icon = "📈" if self.velocity_delta > 0 else ("📉" if self.velocity_delta < 0 else "➡️")
+        lines = [
+            f"🗓️ Weekly Digest (letzte {self.window_days} Tage)",
+            "",
+            f"✅ Abgeschlossen: {self.tickets_completed} Ticket(s)",
+            f"📥 Neu eröffnet: {self.tickets_opened} Ticket(s)",
+            f"{trend_icon} Velocity: {self.velocity_delta:+d} (Backlog {'schrumpft' if self.velocity_delta > 0 else 'wächst' if self.velocity_delta < 0 else 'stabil'})",
+            f"🪙 Tokenverbrauch: {self.tokens_spent:,}".replace(",", "."),
+        ]
+        if self.verification_runs:
+            lines.append(
+                f"🧪 Verifikations-Erfolgsquote: {self.verification_passed}/{self.verification_runs} "
+                f"({self.verification_rate}%)"
+            )
+        else:
+            lines.append("🧪 Verifikations-Erfolgsquote: keine Läufe in diesem Zeitraum aufgezeichnet.")
+        lines.append("")
+        lines.append(self.stale_retro.format_for_humans())
+        return "\n".join(lines)
+
+
+def build_weekly_digest(window_days: int = DIGEST_WINDOW_DAYS) -> WeeklyDigest:
+    """Baut den Weekly Digest aus bereits bestehenden Datenquellen zusammen - jede einzelne
+    Quelle best-effort (ein Fehler in einer Quelle darf den Rest des Digests nicht verwerfen)."""
+    from memory.cost_history import _load as _load_cost_history
+    from memory.run_history import get_recent_runs
+
+    all_tickets = list_tickets()
+    completed = sum(1 for t in all_tickets if t.status == "done" and _age_days(t) <= window_days)
+    opened = sum(1 for t in all_tickets if _created_age_days(t) <= window_days)
+
+    tokens_spent = 0
+    try:
+        daily = _load_cost_history().get("daily", {})
+        cutoff = datetime.now(UTC) - timedelta(days=window_days)
+        for day_str, models in daily.items():
+            try:
+                day = datetime.strptime(day_str, "%Y-%m-%d").replace(tzinfo=UTC)
+            except ValueError:
+                continue
+            if day < cutoff:
+                continue
+            tokens_spent += sum(stats.get("total_tokens", 0) for stats in models.values())
+    except Exception:
+        tokens_spent = 0
+
+    verification_runs = verification_passed = 0
+    try:
+        cutoff = datetime.now(UTC) - timedelta(days=window_days)
+        for run in get_recent_runs(limit=200):
+            try:
+                ts = datetime.fromisoformat(run.get("timestamp", ""))
+            except ValueError:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=UTC)
+            if ts < cutoff:
+                continue
+            verification_runs += 1
+            if run.get("verification_ok"):
+                verification_passed += 1
+    except Exception:
+        verification_runs = verification_passed = 0
+
+    return WeeklyDigest(
+        window_days=window_days,
+        tickets_completed=completed,
+        tickets_opened=opened,
+        tokens_spent=tokens_spent,
+        verification_runs=verification_runs,
+        verification_passed=verification_passed,
+        verification_rate=round(100 * verification_passed / verification_runs, 1) if verification_runs else 0.0,
+        stale_retro=build_team_retro_report(),
+    )
+
+
+def _created_age_days(ticket: Ticket) -> float:
+    try:
+        created = datetime.fromisoformat(ticket.created_at)
+    except (ValueError, TypeError):
+        return 0.0
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - created).total_seconds() / 86400

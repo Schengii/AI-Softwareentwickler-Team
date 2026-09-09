@@ -131,6 +131,7 @@ class TestCLIUsesPRWorkflowOnProtectedBranch(unittest.TestCase):
         self.fake_github.scan_for_secrets.return_value = []
         self.fake_github.wait_for_ci_status = AsyncMock(return_value=("no_run", "kein CI im Test"))
         self.fake_github.label_pr.return_value = (True, "")
+        self.fake_github.post_pr_review.return_value = (True, "")
         self.cli._orchestrator._agents["github"] = self.fake_github
         self.cli._orchestrator.last_verification_ok = True
         self._print_patcher = patch("interface.cli.console.print")
@@ -235,6 +236,34 @@ class TestCLIUsesPRWorkflowOnProtectedBranch(unittest.TestCase):
 
         self.fake_github.label_pr.assert_called_once_with(
             "https://github.com/x/y/pull/1", ["verification-failed"],
+        )
+
+    @patch("interface.cli.Confirm.ask", return_value=True)
+    def test_no_unresolved_findings_skips_pr_review_post(self, _mock_confirm):
+        self.fake_github.get_current_branch.return_value = "main"
+        self.fake_github.gh_ready.return_value = True
+        self.cli._orchestrator.last_verification_ok = True
+        asyncio.run(self.cli._ask_for_git_push("Testaufgabe"))
+
+        self.fake_github.post_pr_review.assert_not_called()
+
+    @patch("interface.cli.Confirm.ask", return_value=True)
+    def test_unresolved_findings_are_posted_as_pr_review(self, _mock_confirm):
+        """KI-Team-Zustandsbericht 2026-09-08: unbehobene kritische Governance-Funde
+        (Orchestrator.last_unresolved_review_findings) landeten bisher NUR im unresolved-*-
+        Backlog-Ticket, unsichtbar für einen Reviewer, der nur den PR selbst öffnet - müssen
+        jetzt zusätzlich als echter GitHub-Review gepostet werden."""
+        from core.review_gate import ReviewFinding
+
+        finding = ReviewFinding(severity="critical", source_role="security", file_path="app/auth.py", line_number=5, title="X")
+        self.fake_github.get_current_branch.return_value = "main"
+        self.fake_github.gh_ready.return_value = True
+        self.cli._orchestrator.last_verification_ok = True
+        self.cli._orchestrator.last_unresolved_review_findings = [finding]
+        asyncio.run(self.cli._ask_for_git_push("Testaufgabe"))
+
+        self.fake_github.post_pr_review.assert_called_once_with(
+            "https://github.com/x/y/pull/1", [finding],
         )
 
     @patch("interface.cli.Confirm.ask", return_value=True)

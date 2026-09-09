@@ -48,6 +48,12 @@ class TestBacklogWorkerOrchestration(unittest.TestCase):
         # Kontingent-Erschöpfung gescheitert" werten (bool(results)=True, all(...) über eine
         # vacuously leere Iteration=True).
         self.fake_orchestrator.last_agent_results = []
+        # Derselbe MagicMock-Fallstrick wie oben, hier für core.backlog_worker.getattr(
+        # orchestrator, "last_unresolved_review_findings", []) - ohne diese explizite Zuweisung
+        # wäre das ein truthy MagicMock statt einer leeren Liste und würde github_agent.
+        # post_pr_review() in JEDEM Test dieser Datei fälschlich aufrufen.
+        self.fake_orchestrator.last_unresolved_review_findings = []
+        self.fake_github.post_pr_review.return_value = (True, "")
 
         self._gh_patcher = patch("core.backlog_worker.GitHubAgent", return_value=self.fake_github)
         self._orch_patcher = patch("core.backlog_worker.Orchestrator", return_value=self.fake_orchestrator)
@@ -199,6 +205,27 @@ class TestBacklogWorkerOrchestration(unittest.TestCase):
         ticket = backlog_store.list_tickets()[0]
         self.assertEqual(ticket.status, "blocked")
 
+    def test_unresolved_review_findings_are_posted_as_pr_review(self):
+        """KI-Team-Zustandsbericht 2026-09-08: dieselbe Ergänzung wie interface/cli.py -
+        unbehobene kritische Governance-Funde landen jetzt zusätzlich als echter, dateibezogener
+        GitHub-Review auf dem PR, nicht nur im unresolved-*-Backlog-Ticket."""
+        from core.review_gate import ReviewFinding
+
+        finding = ReviewFinding(severity="critical", source_role="security", file_path="app/auth.py", line_number=5, title="X")
+        self.fake_orchestrator.last_unresolved_review_findings = [finding]
+        backlog_store.upsert_ticket("cli-1", "Baue etwas", "cli", "todo")
+        asyncio.run(run_backlog_poll_cycle())
+
+        self.fake_github.post_pr_review.assert_called_once_with(
+            "https://github.com/x/y/pull/9", [finding],
+        )
+
+    def test_no_unresolved_findings_skips_pr_review_post(self):
+        backlog_store.upsert_ticket("cli-1", "Baue etwas", "cli", "todo")
+        asyncio.run(run_backlog_poll_cycle())
+
+        self.fake_github.post_pr_review.assert_not_called()
+
     def test_gh_not_ready_skips_cycle_without_crashing(self):
         self.fake_github.gh_ready.return_value = False
         backlog_store.upsert_ticket("cli-1", "Ticket", "cli", "todo")
@@ -253,6 +280,12 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
         # Kontingent-Erschöpfung gescheitert" werten (bool(results)=True, all(...) über eine
         # vacuously leere Iteration=True).
         self.fake_orchestrator.last_agent_results = []
+        # Derselbe MagicMock-Fallstrick wie oben, hier für core.backlog_worker.getattr(
+        # orchestrator, "last_unresolved_review_findings", []) - ohne diese explizite Zuweisung
+        # wäre das ein truthy MagicMock statt einer leeren Liste und würde github_agent.
+        # post_pr_review() in JEDEM Test dieser Datei fälschlich aufrufen.
+        self.fake_orchestrator.last_unresolved_review_findings = []
+        self.fake_github.post_pr_review.return_value = (True, "")
 
         self._gh_patcher = patch("core.backlog_worker.GitHubAgent", return_value=self.fake_github)
         self._orch_patcher = patch("core.backlog_worker.Orchestrator", return_value=self.fake_orchestrator)

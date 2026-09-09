@@ -245,6 +245,56 @@ class TestRunPreFlightCheckHiddenRuntimeDependency(unittest.TestCase):
             self.assertFalse(report.has_blocking_issues)
 
 
+class TestRunPreFlightCheckConflictingSqlAlchemyEngines(unittest.TestCase):
+    """Tests fuer die Database-Architecture-Drift-Erkennung (`/goal`-Auftrag): Mischbetrieb
+    aus synchronem `create_engine()` und asynchronem `create_async_engine()` im selben
+    Projekt muss VOR der teuren Testsuite als kritischer Architekturfehler auffallen."""
+
+    def test_detects_mixed_sync_and_async_engines(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "app" / "database.py",
+                   "from sqlalchemy.ext.asyncio import create_async_engine\n"
+                   "engine = create_async_engine('sqlite+aiosqlite:///./x.db')\n")
+            _write(proj / "app" / "models.py",
+                   "from sqlalchemy import create_engine\n"
+                   "engine = create_engine('sqlite:///./x.db')\n")
+            _write(proj / "requirements.txt", "sqlalchemy\naiosqlite\ngreenlet\n")
+            report = run_pre_flight_check(proj)
+            conflicts = [i for i in report.issues if i.issue_type == "conflicting_sqlalchemy_engines"]
+            self.assertEqual(len(conflicts), 1)
+            self.assertIn("app/database.py", conflicts[0].message)
+            self.assertIn("app/models.py", conflicts[0].message)
+            self.assertTrue(report.has_blocking_issues)
+
+    def test_no_issue_for_pure_async_project(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "app" / "database.py",
+                   "from sqlalchemy.ext.asyncio import create_async_engine\n"
+                   "engine = create_async_engine('sqlite+aiosqlite:///./x.db')\n")
+            _write(proj / "requirements.txt", "sqlalchemy\naiosqlite\ngreenlet\n")
+            report = run_pre_flight_check(proj)
+            conflicts = [i for i in report.issues if i.issue_type == "conflicting_sqlalchemy_engines"]
+            self.assertEqual(conflicts, [])
+
+    def test_alembic_env_sync_engine_excluded(self):
+        """Alembic-Migrationsskripte duerfen idiomatisch synchron bleiben, selbst in einem
+        sonst durchgehend async Projekt (siehe Docstring)."""
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "app" / "database.py",
+                   "from sqlalchemy.ext.asyncio import create_async_engine\n"
+                   "engine = create_async_engine('sqlite+aiosqlite:///./x.db')\n")
+            _write(proj / "alembic" / "env.py",
+                   "from sqlalchemy import create_engine\n"
+                   "engine = create_engine('sqlite:///./x.db')\n")
+            _write(proj / "requirements.txt", "sqlalchemy\naiosqlite\ngreenlet\nalembic\n")
+            report = run_pre_flight_check(proj)
+            conflicts = [i for i in report.issues if i.issue_type == "conflicting_sqlalchemy_engines"]
+            self.assertEqual(conflicts, [])
+
+
 class TestRunPreFlightCheckEmptyTestSuite(unittest.TestCase):
     """
     KI-Team-Zustandsbericht 2026-09-08, echter Fund (memory/backlog.json-Ticket

@@ -25,6 +25,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from core.verifier.models import _SQLA_ASYNC_ENGINE_RE, _SQLA_SYNC_ENGINE_RE
+
 # Standardbibliothek-Module, die kein requirements.txt-Eintrag brauchen.
 # sys.stdlib_module_names ist verfuegbar ab Python 3.10.
 _STDLIB_MODULES: frozenset[str] = frozenset(
@@ -136,6 +138,46 @@ def _check_passlib_bcrypt_pin(project_dir: Path, sources_by_file: dict[str, str]
             "(\"password cannot be longer than 72 bytes\")."
         ),
         suggestion="Pinne `bcrypt<4.1` in requirements.txt.",
+    )
+
+
+def _check_conflicting_sqlalchemy_engines(sources_by_file: dict[str, str]) -> PreFlightIssue | None:
+    """Team-Optimierung (`/goal`-Auftrag: Database Architecture Drift): dieselbe
+    Sync/Async-SQLAlchemy-Konflikt-Erkennung wie `core/verifier/completeness.
+    _conflicting_sqlalchemy_config()`, aber HIER als schneller, deterministischer
+    Vorab-Check VOR der teuren Testsuite - ein Projekt, das `create_engine()` (sync) und
+    `create_async_engine()` (async) gleichzeitig verwendet, hat mit hoher Wahrscheinlichkeit
+    zwei parallele, inkompatible Engine-/Base-Registries (z.B. `app/database.py` async,
+    `app/models.py` daneben eine eigene synchrone Engine) - das muss nicht erst per
+    ImportError/OperationalError in der Testsuite auffallen. Dieselbe Alembic-Ausnahme wie
+    dort: `alembic/env.py` verwendet idiomatisch eine synchrone Engine fuer Migrationen,
+    selbst in einem sonst durchgehend async Projekt - das ist kein Bug."""
+    relevant = {
+        rel: text for rel, text in sources_by_file.items()
+        if "alembic" not in Path(rel).parts and "migrations" not in Path(rel).parts
+    }
+    sync_files = sorted(rel for rel, text in relevant.items() if _SQLA_SYNC_ENGINE_RE.search(text))
+    async_files = sorted(rel for rel, text in relevant.items() if _SQLA_ASYNC_ENGINE_RE.search(text))
+    if not (sync_files and async_files):
+        return None
+    all_files = sorted(set(sync_files) | set(async_files))
+    return PreFlightIssue(
+        file=all_files[0],
+        line=0,
+        issue_type="conflicting_sqlalchemy_engines",
+        message=(
+            f"Projekt mischt synchrones SQLAlchemy (`create_engine()` in "
+            f"{', '.join(sync_files)}) mit asynchronem (`create_async_engine()` in "
+            f"{', '.join(async_files)}) - typischerweise zwei parallele, inkompatible "
+            f"DB-Engines/Base-Registries statt einer konsistenten async- oder "
+            f"sync-Anbindung."
+        ),
+        suggestion=(
+            "Entscheide dich fuer GENAU eine DB-Anbindung (async: `create_async_engine` + "
+            "`AsyncSession` + `async_sessionmaker` ueberall; sync: `create_engine` + "
+            "`sessionmaker` ueberall) und definiere die `Base`-Klasse nur an EINER "
+            "zentralen Stelle, die alle Modelle importieren."
+        ),
     )
 
 
@@ -323,7 +365,10 @@ class PreFlightReport:
     def has_blocking_issues(self) -> bool:
         """True, wenn Befunde vorliegen, die einen Testlauf mit hoher Wahrscheinlichkeit
         zum Scheitern bringen (missing_init, syntax_error)."""
-        blocking_types = {"missing_init", "syntax_error", "unresolved_import_name"}
+        blocking_types = {
+            "missing_init", "syntax_error", "unresolved_import_name",
+            "conflicting_sqlalchemy_engines",
+        }
         return any(i.issue_type in blocking_types for i in self.issues)
 
     def format_for_agent(self) -> str:
@@ -634,6 +679,13 @@ def _run_checks(project_path: Path, report: PreFlightReport) -> None:
         if key not in seen_issues:
             seen_issues.add(key)
             report.issues.append(bcrypt_issue)
+
+    sqla_conflict_issue = _check_conflicting_sqlalchemy_engines(sources_by_file)
+    if sqla_conflict_issue:
+        key = ("conflicting_sqlalchemy_engines", "project_wide", "")
+        if key not in seen_issues:
+            seen_issues.add(key)
+            report.issues.append(sqla_conflict_issue)
 
     empty_test_issue = _check_empty_test_suite(project_path, sources_by_file)
     if empty_test_issue:

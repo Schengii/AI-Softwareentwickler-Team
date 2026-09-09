@@ -7,6 +7,33 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🛑 Deutliche Eskalation, wenn ein Governance-Ticket seine automatischen Retries ausschöpft
+
+Nutzeranfrage: Fortsetzung der Framework-Optimierungen. Realer Fund im aktuellen Backlog
+(`memory/backlog.json`): `recurring-failure-sentinelproxy`/`recurring-lint-sentinelproxy` stehen
+seit `retries: 2` (== `MAX_GOVERNANCE_TICKET_RETRIES`) dauerhaft auf "blocked" -
+`core/backlog_worker.py._governance_retry_pool()` greift sie absichtlich nie wieder auf
+(dokumentierte Design-Entscheidung: "bleibt bewusst blocked liegen, sichtbar für eine
+menschliche Prüfung"). Die dabei gesendete Benachrichtigung war aber bei JEDEM erfolglosen
+Versuch identisch ("Backlog-Ticket benötigt Aufmerksamkeit") - beim letzten erlaubten Versuch
+genauso wie beim ersten. Ohne `MAX_GOVERNANCE_TICKET_RETRIES` im Kopf zu haben, wirkte ein
+dauerhaft "blocked" liegendes Ticket wie "wird noch automatisch behoben", nicht wie "braucht
+JETZT einen Menschen, kein weiterer automatischer Versuch folgt".
+
+`run_backlog_poll_cycle()` erkennt jetzt den Moment, in dem ein Governance-Retry-Ticket seinen
+LETZTEN erlaubten automatischen Versuch verbraucht (`ticket.retries + 1 >= MAX_GOVERNANCE_
+TICKET_RETRIES`) UND weiterhin nicht "pr_opened" erreicht: sendet eine deutlich anders
+formulierte Benachrichtigung ("🛑 Automatische Wiederholungsversuche ausgeschöpft") statt der
+generischen, und trägt die Ticket-ID zusätzlich in `BacklogPollReport.retries_exhausted_ticket_
+ids` ein. `python main.py --work-backlog` hebt das jetzt auch in der Konsolenausgabe separat
+hervor, statt es in der generischen Ergebnisliste untergehen zu lassen.
+
+Neue Tests: `tests/test_backlog_worker.py` (3 neue Fälle: letzter Versuch scheitert → als
+ausgeschöpft gemeldet, nicht-letzter Versuch scheitert → nicht gemeldet, letzter Versuch
+gelingt → nicht gemeldet). Volle Suite (1490 Tests) grün, `ruff check` clean.
+
+---
+
 ## 🧠 Proaktive Import-Namen-Prüfung, ehrliche Kennzeichnung von Kontingent-Erschöpfung in Tickets
 
 Nutzerauftrag: Analyse der letzten realen KI-Team-Läufe (`workspace/agent_governance`,

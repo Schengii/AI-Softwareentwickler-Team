@@ -8,6 +8,7 @@ Speichert:
 """
 
 import json
+import re
 from pathlib import Path
 
 from config import BASE_DIR
@@ -30,6 +31,96 @@ MAX_RULE_LENGTH = 300
 # MAX_RULE_LENGTH, nur über alle Regeln eines Agenten hinweg statt pro einzelner Regel.
 MAX_RULES_PER_AGENT = 10
 MAX_TOTAL_LEARNING_CHARS_PER_AGENT = 1500
+
+# Team-Optimierung (ki_team_analyse_und_optimierungen.md, Punkt 5): der bisherige Dedup-Check in
+# add_learning() verglich nur auf EXAKTE String-Gleichheit ("clean_rule not in self._learnings[...]").
+# Realer Fund: memory/agent_learnings.json enthielt beim backend-Agenten drei semantisch identische
+# Regeln zum selben Thema ("Jeder neue Import muss sofort in requirements.txt nachgetragen werden.",
+# "Jeder neue Import muss zwingend gegen die requirements.txt geprüft ... werden.", "Jeder neue Import
+# muss vor dem Commit in die requirements.txt eingetragen werden. ...") - unterschiedlicher Wortlaut,
+# gleiche Aussage. Jede belegte unnötig ein Zehntel des MAX_RULES_PER_AGENT-Slots und einen Teil des
+# MAX_TOTAL_LEARNING_CHARS_PER_AGENT-Budgets, das dadurch für tatsächlich NEUE Erkenntnisse fehlte.
+# Jaccard-Ähnlichkeit der (kleingeschriebenen, satzzeichenbereinigten) Wortmengen ist bewusst simpel
+# gewählt statt eines Embedding-Vergleichs: kein zusätzlicher API-Aufruf/keine Latenz beim Speichern
+# eines Learnings, funktioniert rein lokal, und die Learnings sind kurze, thematisch enge Sätze, bei
+# denen Wortüberlappung ein guter Proxy für semantische Nähe ist.
+_SIMILARITY_DEDUP_THRESHOLD = 0.6
+_WORD_RE = re.compile(r"[a-zA-ZäöüÄÖÜß0-9_]+")
+
+
+def _word_set(text: str) -> set[str]:
+    """Kleingeschriebene Wortmenge eines Regeltexts, Satzzeichen ignoriert - Grundlage der
+    Jaccard-Ähnlichkeit in _is_semantic_duplicate() unten."""
+    return {w.lower() for w in _WORD_RE.findall(text)}
+
+
+def _jaccard_similarity(a: set[str], b: set[str]) -> float:
+    """Jaccard-Index zweier Wortmengen: |Schnittmenge| / |Vereinigungsmenge|, 0.0 bei zwei leeren
+    Mengen (kein Wort in beiden Sätzen zu vergleichen - gilt bewusst NICHT als Duplikat)."""
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+# Team-Optimierung (KI-Team-Masterplan, Stufe 3): Die Verdrängung bei vollem Budget arbeitete
+# rein nach FIFO (`rules.pop(0)`). Realer Fund: 7 der 19 Agenten mit Learnings standen exakt am
+# Limit MAX_RULES_PER_AGENT (architect, dev_lead, governance_lead, code_reviewer, qa_lead,
+# frontend, security - je 10/10). Bei ihnen verdrängte JEDE neue Regel die jeweils älteste,
+# unabhängig von deren Wert. Eine bewährte, sehr konkrete Regel ("Nutze StaticPool bei
+# In-Memory-SQLite") konnte so von einer beliebig generischen ("Achte auf saubere Fehler-
+# behandlung") verdrängt werden - das Gedächtnis verlor also mit der Zeit gerade seine
+# nützlichsten Einträge.
+#
+# Eine echte Wirksamkeitsmessung (zählen, ob der zugehörige Fehler seit Einführung der Regel
+# ausblieb) würde ein anderes Speicherformat erfordern - memory/agent_learnings.json ist eine
+# schlichte dict[str, list[str]]-Struktur ohne Metadaten. Als lokal berechenbarer, migrationsfreier
+# Ersatz dient die SPEZIFITÄT: Regeln, die konkrete, überprüfbare Anker enthalten (Codebezeichner,
+# Dateinamen, Fehlerklassen, Zahlen), sind erfahrungsgemäß handlungsleitender als allgemeine
+# Ermahnungen. Verdrängt wird deshalb die generischste Regel - bei Gleichstand weiterhin die
+# älteste (stabiles, nachvollziehbares Verhalten).
+_CODE_MARKER_RE = re.compile(
+    r"`[^`]+`"                 # in Backticks gesetzter Code/Bezeichner
+    r"|\b\w+\.(?:py|json|txt|toml|ini|yaml|yml|tsx?|jsx?)\b"  # konkrete Dateinamen
+    r"|\b\w+_\w+\b"            # snake_case-Bezeichner
+    r"|\b[a-z]+[A-Z]\w*\b"     # camelCase-Bezeichner
+    r"|\b[A-Z][a-z]+[A-Z]\w*\b"  # CamelCase-Klassennamen
+    r"|\b\w+\(\)"              # Funktionsaufrufe
+    r"|\b\w*(?:Error|Exception|Warning)\b"  # Fehlerklassen
+    r"|\b\d+\b"                # konkrete Zahlen/Schwellenwerte
+)
+
+
+def _specificity_score(rule: str) -> int:
+    """
+    Grobes Maß dafür, wie konkret und damit handlungsleitend eine Regel ist: die Anzahl
+    überprüfbarer Anker (Codebezeichner, Dateinamen, Fehlerklassen, Zahlen) im Text.
+
+    Bewusst eine reine Zählung ohne Normierung auf die Länge: Eine lange Regel mit vielen
+    konkreten Ankern IST wertvoller als eine kurze ohne. Das Zeichenbudget begrenzt die Länge
+    ohnehin bereits an anderer Stelle (MAX_TOTAL_LEARNING_CHARS_PER_AGENT).
+    """
+    return len(_CODE_MARKER_RE.findall(rule or ""))
+
+
+def _evict_least_valuable(rules: list[str]) -> None:
+    """
+    Entfernt genau eine Regel: die mit der geringsten Spezifität, bei Gleichstand die älteste
+    (kleinster Index). Arbeitet in-place, damit die Liste im Aufrufer dieselbe bleibt.
+    """
+    if len(rules) <= 1:
+        return
+    # min() ist stabil: Bei gleichem Score gewinnt der zuerst gefundene, also der älteste Eintrag.
+    index = min(range(len(rules)), key=lambda i: _specificity_score(rules[i]))
+    rules.pop(index)
+
+
+def _is_semantic_duplicate(new_rule: str, existing_rules: list[str]) -> bool:
+    """True, wenn `new_rule` einer bereits gespeicherten Regel semantisch stark ähnelt (Jaccard-
+    Ähnlichkeit der Wortmengen >= _SIMILARITY_DEDUP_THRESHOLD) - verhindert Fast-Dubletten wie die
+    drei "Import in requirements.txt nachtragen"-Varianten im Docstring oben, die exakter
+    String-Vergleich nicht erkennt."""
+    new_words = _word_set(new_rule)
+    return any(_jaccard_similarity(new_words, _word_set(existing)) >= _SIMILARITY_DEDUP_THRESHOLD for existing in existing_rules)
 
 
 class AgentKnowledgeBase:
@@ -74,17 +165,21 @@ class AgentKnowledgeBase:
         if agent_id not in self._learnings:
             self._learnings[agent_id] = []
 
-        if clean_rule not in self._learnings[agent_id]:
+        if clean_rule not in self._learnings[agent_id] and not _is_semantic_duplicate(
+            clean_rule, self._learnings[agent_id]
+        ):
             self._learnings[agent_id].append(clean_rule)
-            # Verdränge älteste Regeln zuerst, bis BEIDE Budgets eingehalten sind (Anzahl UND
-            # Gesamtzeichenlänge, siehe MAX_RULES_PER_AGENT/MAX_TOTAL_LEARNING_CHARS_PER_AGENT) -
-            # kurze, spezifische Lektionen kommen so seltener zu früh raus als beim alten reinen
-            # Zähler-Cap.
+            # Verdränge die jeweils GENERISCHSTE Regel (bei Gleichstand die älteste), bis BEIDE
+            # Budgets eingehalten sind (Anzahl UND Gesamtzeichenlänge, siehe
+            # MAX_RULES_PER_AGENT/MAX_TOTAL_LEARNING_CHARS_PER_AGENT). Zuvor wurde rein nach FIFO
+            # verdrängt, wodurch bei den 7 Agenten am Limit jede neue - auch jede belanglose -
+            # Regel die älteste und oft konkreteste Lektion herausdrängte (siehe
+            # _specificity_score() oben für die vollständige Herleitung).
             rules = self._learnings[agent_id]
             while len(rules) > MAX_RULES_PER_AGENT or sum(len(r) for r in rules) > MAX_TOTAL_LEARNING_CHARS_PER_AGENT:
                 if len(rules) <= 1:
                     break
-                rules.pop(0)
+                _evict_least_valuable(rules)
             self._save()
 
     def get_learnings(self, agent_id: str) -> list[str]:

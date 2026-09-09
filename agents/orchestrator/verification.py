@@ -26,6 +26,7 @@ from config import (
     ENABLE_COMPLETENESS_CHECK,
     ENABLE_GOVERNANCE_FIX_LOOP,
     ENABLE_LOAD_TEST_CHECK,
+    ENABLE_SMOKE_TEST_GATE,
     LOAD_TEST_DURATION_SECONDS,
     LOAD_TEST_TIMEOUT_SECONDS,
     MAX_REVIEW_ITERATIONS,
@@ -61,6 +62,71 @@ from memory.agent_knowledge_base import agent_knowledge_base
 # statt es implizit im Traceback zu verstecken.
 _MODULE_NOT_FOUND_RE = re.compile(r"ModuleNotFoundError: No module named ['\"]([\w.]+)['\"]")
 _IMPORT_NAME_ERROR_RE = re.compile(r"ImportError: cannot import name ['\"](\w+)['\"] from ['\"]([\w.]+)['\"]")
+
+# Team-Optimierung (ki_team_analyse_und_optimierungen.md, Punkt 1.2/2): vier weitere häufige
+# Laufzeit-Fehlerklassen, die bisher generisch ("lies die Datei und behebe den Fehler") ohne
+# konkrete Handlungsanweisung an den Fix-Agenten weitergeleitet wurden - der Fix-Agent musste
+# sich Ursache UND Lösungsweg selbst erschließen, oft über mehrere teure Iterationen hinweg
+# (siehe _no_progress()-Zirkuit-Breaker unten, der genau solche Fälle abfängt, aber erst NACH
+# dem ersten vergeblichen Versuch). Analog zu _diagnose_import_failure() oben: reine
+# Regex-Erkennung ohne LLM-Aufruf, liefert eine konkrete, an den jeweils fachlich zuständigen
+# Agenten (database/backend) adressierte Diagnosezeile.
+_INTEGRITY_ERROR_RE = re.compile(
+    r"IntegrityError[^\n]*?NOT NULL constraint failed:\s*([\w]+)\.([\w]+)", re.DOTALL,
+)
+_NO_SUCH_TABLE_RE = re.compile(r"OperationalError[^\n]*?no such table:\s*([\w]+)", re.DOTALL)
+_DICT_ATTRIBUTE_ERROR_RE = re.compile(r"AttributeError:\s*'dict' object has no attribute '(\w+)'")
+# Erkennt einen im URL-Pfad direkt aufeinanderfolgend WIEDERHOLTEN Prefix-Abschnitt
+# (z.B. "/api/v1/api/v1/users") - das typische Symptom eines doppelt eingebundenen Routers
+# (einmal `prefix=` im APIRouter() selbst, ein zweites Mal identisch in `include_router()`).
+_DUPLICATE_URL_PREFIX_RE = re.compile(r"(/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)?)\1")
+
+
+def _diagnose_runtime_failure(message: str) -> str | None:
+    """Analog zu _diagnose_import_failure() oben, aber für die vier häufigsten NICHT-Import-
+    Laufzeitfehlerklassen aus der Team-Analyse (SQLAlchemy-Schema-Konflikte, dict-statt-Modell-
+    Rückgaben, doppelte Router-Prefixe). Gibt None zurück, wenn keines der Muster passt - dann
+    bleibt der generische Fix-Auftrag unverändert (siehe Aufrufer)."""
+    m = _INTEGRITY_ERROR_RE.search(message)
+    if m:
+        table, column = m.group(1), m.group(2)
+        return (
+            f"⚠️ KONKRETE URSACHE: `IntegrityError` – Spalte `{column}` in Tabelle `{table}` ist "
+            f"`nullable=False`, aber ein Insert/Update übergibt keinen Wert dafür. Setze entweder "
+            f"`nullable=True` (falls das Feld wirklich optional ist) oder ergänze in JEDEM "
+            f"betroffenen Insert/Test einen validen Wert für `{column}`."
+        )
+    m = _NO_SUCH_TABLE_RE.search(message)
+    if m:
+        table = m.group(1)
+        return (
+            f"⚠️ KONKRETE URSACHE: `OperationalError: no such table: {table}` – das DB-Schema wurde "
+            f"nie angelegt (Migration/`create_all()` nicht ausgeführt) ODER die Modelle nutzen eine "
+            f"ANDERE `Base`-Instanz als die, gegen die Migration/`create_all()` läuft. Prüfe, dass "
+            f"ALLE Modelle dieselbe zentrale `Base`-Klasse importieren und dass das Schema (Alembic-"
+            f"Migration oder `Base.metadata.create_all()`) vor dem Testlauf tatsächlich erzeugt wird."
+        )
+    m = _DICT_ATTRIBUTE_ERROR_RE.search(message)
+    if m:
+        attr = m.group(1)
+        return (
+            f"⚠️ KONKRETE URSACHE: `AttributeError: 'dict' object has no attribute '{attr}'` – ein "
+            f"Service/Endpoint gibt ein rohes `dict` zurück statt einer Instanz des deklarierten "
+            f"Pydantic-Modells. Instanziiere das Modell explizit (z. B. `return UserOut(**data)` "
+            f"statt `return data`), statt ein dict weiterzureichen."
+        )
+    if "404" in message:
+        m = _DUPLICATE_URL_PREFIX_RE.search(message)
+        if m:
+            dup = m.group(1)
+            return (
+                f"⚠️ KONKRETE URSACHE: doppelter Router-Prefix im aufgerufenen Pfad (`{dup}{dup}`) – "
+                f"der Router wurde vermutlich sowohl mit `prefix=\"{dup}\"` in `APIRouter(...)` "
+                f"definiert als auch ein zweites Mal mit demselben Prefix in "
+                f"`app.include_router(router, prefix=\"{dup}\")` eingebunden. Entferne den Prefix an "
+                f"GENAU einer der beiden Stellen."
+            )
+    return None
 
 
 def _diagnose_import_failure(message: str) -> str | None:
@@ -1195,6 +1261,128 @@ class VerificationMixin:
         )
         return all_results, summary, False, False
 
+    async def _run_smoke_test_gate(
+        self,
+        verifier: ProjectVerifier,
+        project_dir: str,
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        notify: Callable[[str], None],
+    ) -> list[str]:
+        """
+        Prüft VOR der Testschleife, ob die erzeugte Anwendung überhaupt startet, und lässt einen
+        Startfehler gezielt beheben, bevor Zeit und Token in eine vollständige Testsuite fließen.
+
+        Gibt die Zeilen zurück, die ins Verifikations-Protokoll aufgenommen werden sollen.
+
+        Bewusst höchstens EIN Fixversuch: Das Gate soll den häufigsten und teuersten Fall früh
+        abfangen (App startet gar nicht), nicht die eigentliche Fix-Schleife duplizieren. Bleibt
+        der Start danach kaputt, läuft die reguläre Testschleife trotzdem an - sie sieht denselben
+        Fehler dann erneut und hat ihre eigene, mehrstufige Eskalationsleiter dafür.
+        """
+        summary: list[str] = []
+        try:
+            report = await asyncio.to_thread(verifier.check_runtime_smoke)
+        except Exception as e:
+            # Ein Smoke-Test ist eine Zusatzabsicherung - fällt er selbst aus, darf das die
+            # reguläre Verifikation nicht verhindern.
+            notify(f"  ⚠️ [dim yellow]Smoke-Test-Gate übersprungen ({type(e).__name__}).[/dim yellow]")
+            return summary
+
+        if not report.attempted:
+            # Kein erkennbarer Einstiegspunkt (z.B. reine Bibliothek) - kein Fehler, nur nicht prüfbar.
+            return summary
+        if report.passed:
+            notify("  ✅ [green]Smoke-Test-Gate:[/green] Die Anwendung startet.")
+            summary.append(f"- 🚦 Smoke-Test-Gate bestanden (`{report.entrypoint}` startet).")
+            return summary
+
+        fehlertext = (report.output or "").strip()
+        notify(
+            f"  🚦 [bold red]Smoke-Test-Gate: Die Anwendung startet nicht[/bold red] "
+            f"(`{report.entrypoint}`) – behebe das VOR der Testsuite."
+        )
+        summary.append(
+            f"- 🚦 ❌ Smoke-Test-Gate: `{report.entrypoint}` startet nicht – gezielter Fix vor der Testsuite."
+        )
+        log_decision(project_dir, "smoke_test_gate_failed", fehlertext[:500])
+
+        # Zuständigkeit über die bekannten Datei-Eigentümer bestimmen; ohne Zuordnung übernimmt
+        # der backend-Agent, weil ein nicht startender Einstiegspunkt fast immer dort liegt.
+        owner = file_owners.get(report.entrypoint or "", "") or "backend"
+        if owner not in self._agents:
+            owner = "backend"
+        if owner not in self._agents:
+            return summary
+
+        fix_tasks = [AgentTask(
+            task_id=f"smoke-gate-fix-{owner}",
+            agent_id=owner,
+            description=(
+                "🚦 KRITISCH – die Anwendung startet überhaupt nicht. Solange das so ist, ist "
+                "jeder Test wertlos, weil ausnahmslos alle Tests an derselben Ursache scheitern.\n\n"
+                f"Einstiegspunkt: `{report.entrypoint}`\n"
+                f"Art der Anwendung: {report.app_type or 'unbekannt'}\n\n"
+                "ECHTE Fehlerausgabe des Startversuchs:\n"
+                f"```\n{fehlertext[:3000]}\n```\n\n"
+                "Behebe AUSSCHLIESSLICH die Ursache dieses Startfehlers (fehlender Import, "
+                "Syntaxfehler, falscher Modulpfad, fehlende Abhängigkeit in requirements.txt, "
+                "Konfigurationsfehler beim Start). Schreibe KEINE neuen Features und KEINE Tests. "
+                "Prüfe deine Korrektur, indem du den Einstiegspunkt tatsächlich importierst bzw. "
+                "startest."
+            ),
+            context="",
+            project_dir=project_dir,
+        )]
+        fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+        self._update_file_owners(file_owners, fix_results)
+        all_results.extend(fix_results)
+
+        try:
+            recheck = await asyncio.to_thread(verifier.check_runtime_smoke)
+        except Exception:
+            return summary
+
+        if recheck.passed:
+            notify("  ✅ [green]Smoke-Test-Gate:[/green] Startfehler behoben – weiter mit der Testsuite.")
+            summary.append(f"- 🚦 ✅ Startfehler durch `{owner}` behoben – die Anwendung startet jetzt.")
+        else:
+            notify(
+                "  ⚠️ [yellow]Smoke-Test-Gate: Start weiterhin fehlerhaft – die reguläre "
+                "Testschleife übernimmt.[/yellow]"
+            )
+            summary.append(
+                f"- 🚦 ⚠️ Startfehler durch `{owner}` NICHT behoben – die reguläre Testschleife übernimmt."
+            )
+        return summary
+
+    async def _run_tests_logged(self, verifier: ProjectVerifier, phase: str) -> VerificationReport:
+        """
+        Führt die echte Testsuite aus und schreibt deren ROHE Ausgabe (stdout+stderr) in das
+        Verifikations-Log dieses Laufs (core/run_logger.py).
+
+        Realer Fund (KI-Team-Masterplan-Analyse): In den Bericht wandert nur eine stark gekürzte
+        Zusammenfassung ("⚠️ pip install -r requirements.txt (exit_code=1)"). Die eigentliche
+        Fehlerausgabe - also genau das, was ein Mensch zum Debuggen braucht - existierte nach
+        Ende des Laufs nirgends mehr, weil `logs/` leer blieb und die rich-Konsolenausgabe mit
+        dem Terminal verschwand. `phase` unterscheidet den Erstlauf von den Wiederholungen nach
+        einem Fixversuch, damit im Log nachvollziehbar bleibt, ob ein Fix etwas bewirkt hat.
+        """
+        report = await asyncio.to_thread(verifier.run_tests)
+        try:
+            run_logger = getattr(self, "_run_logger", None)
+            if run_logger is not None:
+                run_logger.log_verification_output(
+                    step=f"pytest ({phase})",
+                    exit_code=report.exit_code,
+                    output=(report.stdout or "") + (
+                        f"\n--- stderr ---\n{report.stderr}" if report.stderr else ""
+                    ),
+                )
+        except Exception:
+            pass
+        return report
+
     async def _run_verification_loop(
         self,
         project_dir: str,
@@ -1517,6 +1705,28 @@ class VerificationMixin:
                     notify("  ⚠️ [yellow]Maximale Vorab-Import-Fixversuche erreicht – weiter mit der regulären Testsuite.[/yellow]")
                     summary_lines.append(f"- 🧩 ⚠️ Vorab-Import-Check nach {MAX_VERIFICATION_ITERATIONS} Versuchen weiterhin mit Funden – weiter mit der regulären Testsuite (dort erneut sichtbar).")
 
+        # ── Smoke-Test-Gate: Startet die App überhaupt? ───────────────────────────────────
+        #
+        # Team-Optimierung (KI-Team-Masterplan, Stufe 2): Der Runtime-Smoke-Test lief bisher
+        # ERST NACH der kompletten Testschleife (siehe check_runtime_smoke weiter unten). Der
+        # `tester` ist mit 78 Aufrufen der meistgerufene und mit 65,4% der schwächste
+        # Kern-Agent - und ein Großteil dieser Fehlschläge entsteht, weil die Anwendung
+        # überhaupt nicht startet. Eine vollständige Testsuite gegen eine App zu schreiben und
+        # auszuführen, die schon beim Import scheitert, erzeugt nur Folgefehler: Jeder einzelne
+        # Test schlägt aus derselben Ursache fehl, die Fix-Schleife bekommt einen Berg
+        # scheinbar unabhängiger Fehler und verbrennt Token an Symptomen statt an der Ursache.
+        # Genau das erklärt die teuren Fehlläufe (opspilot: 1.038.910 Tokens, agent_governance:
+        # 999.313 - beide ohne bestandene Verifikation).
+        #
+        # Deshalb VOR der Testschleife: Startet die App nicht, wird genau dieser eine Fehler
+        # gezielt behoben, bevor irgendetwas anderes passiert.
+        if ENABLE_SMOKE_TEST_GATE and not (budget_aborted or manually_cancelled):
+            smoke_gate_summary = await self._run_smoke_test_gate(
+                verifier=verifier, project_dir=project_dir, all_results=all_results,
+                file_owners=file_owners, notify=notify,
+            )
+            summary_lines.extend(smoke_gate_summary)
+
         for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
             if run_start_tokens is not None and (
                 self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
@@ -1532,7 +1742,7 @@ class VerificationMixin:
                 break
 
             notify(f"  🧪 [yellow]Testlauf {attempt}/{MAX_VERIFICATION_ITERATIONS}:[/yellow] Führe echte Tests aus...")
-            report = await asyncio.to_thread(verifier.run_tests)
+            report = await self._run_tests_logged(verifier, "erstlauf")
 
             if not report.ran:
                 if not report.passed:
@@ -1693,7 +1903,7 @@ class VerificationMixin:
                         # zu melden oder ein Ticket zu eröffnen (so beim ersten Implementierungs-
                         # versuch real per Test aufgedeckt, siehe
                         # tests/test_verification_no_progress_breaker.py).
-                        report = await asyncio.to_thread(verifier.run_tests)
+                        report = await self._run_tests_logged(verifier, "nach-fixversuch")
                         if report.passed:
                             notify(f"  ✅ [bold green]Eskalation erfolgreich:[/bold green] Alle Tests bestanden (Versuch {attempt}, {report.duration_seconds:.1f}s).")
                             summary_lines.append("- ✅ Eskalation an Fachbereichsleiter behob den Fehler – Testsuite bestanden.")
@@ -1749,7 +1959,7 @@ class VerificationMixin:
                                 f"Fachbereichsleiter → letzter Versuch mit HEAVY_MODEL für "
                                 f"{', '.join(sorted(escalated_agent_ids))}."
                             )
-                            report = await asyncio.to_thread(verifier.run_tests)
+                            report = await self._run_tests_logged(verifier, "nach-eskalation")
                             if report.passed:
                                 notify(f"  ✅ [bold green]Modell-Eskalation erfolgreich:[/bold green] Alle Tests bestanden (Versuch {attempt}, {report.duration_seconds:.1f}s).")
                                 summary_lines.append("- ✅ Fix mit HEAVY_MODEL behob den Fehler – Testsuite bestanden.")
@@ -1825,6 +2035,22 @@ class VerificationMixin:
                 # generische tester-Fallback greift.
                 if not owners and _NO_TESTS_RAN_RE.search(failure.message) and "requirements.txt" in file_owners:
                     owners = {file_owners["requirements.txt"]}
+                # Team-Optimierung (ki_team_analyse_und_optimierungen.md, Punkt 1.2/2): DB-Schema-
+                # Fehler (IntegrityError/"no such table") und dict-statt-Modell-Rückgaben treffen
+                # im Traceback oft nur eine unbeteiligte Aufrufer-Datei (z.B. den Router), nicht die
+                # eigentlich zuständige Datei (Modell-Definition bzw. Service-Funktion) - deshalb
+                # hier GEZIELT an den fachlich zuständigen Agenten geroutet, analog zum
+                # import_target-Zweig oben, statt sich auf die generische Datei-Zuordnung zu
+                # verlassen.
+                if (
+                    _INTEGRITY_ERROR_RE.search(failure.message) or _NO_SUCH_TABLE_RE.search(failure.message)
+                ) and "database" in self._agents:
+                    owners = {"database"}
+                elif (
+                    _DICT_ATTRIBUTE_ERROR_RE.search(failure.message)
+                    or ("404" in failure.message and _DUPLICATE_URL_PREFIX_RE.search(failure.message))
+                ) and "backend" in self._agents:
+                    owners = {"backend"}
                 if not owners and any(r.agent_id == "tester" for r in all_results):
                     owners = {"tester"}
                 for owner in owners:
@@ -1840,7 +2066,15 @@ class VerificationMixin:
             for agent_id, fails in agents_to_fix.items():
                 failure_text = "\n\n".join(
                     f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(f.files) or 'unbekannt'}"
-                    + (f"\n{diag}" if (diag := (_diagnose_import_failure(f.message) or _diagnose_no_tests_ran(f.message))) else "")
+                    + (
+                        f"\n{diag}"
+                        if (diag := (
+                            _diagnose_import_failure(f.message)
+                            or _diagnose_no_tests_ran(f.message)
+                            or _diagnose_runtime_failure(f.message)
+                        ))
+                        else ""
+                    )
                     for f in fails
                 )
                 fix_tasks.append(AgentTask(

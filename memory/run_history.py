@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from config import BASE_DIR
+from core.provider_exhaustion import is_infrastructure_error, is_infrastructure_failure
 
 RUN_HISTORY_FILE = Path(BASE_DIR) / "memory" / "run_history.json"
 MAX_RUNS_KEPT = 200
@@ -55,18 +56,52 @@ def get_recent_runs(limit: int = 20) -> list[dict]:
     return list(reversed(_load()))[:limit]
 
 
+def is_infrastructure_result(res: dict) -> bool:
+    """
+    True, wenn ein `agent_results`-Eintrag an der Infrastruktur scheiterte (erschöpftes
+    API-Kontingent, fehlender API-Key) statt an einem echten, dem Agenten zurechenbaren Fehler.
+
+    Realer Fund (KI-Team-Masterplan-Analyse, 09.09.2026): memory/run_history.json enthielt 160
+    Fehlschläge unter `claude-sonnet-5` - einem Modell, das laut memory/cost_history.json nie
+    einen einzigen Call gemacht hat, weil ANTHROPIC_API_KEY leer war. Diese reinen
+    Konfigurations-/Kontingent-Ausfälle drückten die Erfolgsquoten genau der Kern-Rollen
+    (architect, backend, security, code_reviewer - alle auf HEAVY/Claude konfiguriert) und
+    core/team_retro.py schrieb daraufhin Einträge wie "Agent 'tester' liegt mit 57.1%
+    Erfolgsquote deutlich unter dem Durchschnitt" nach memory/team_lessons.jsonl. Die
+    Selbstoptimierung lernte also aus Rate-Limits statt aus Qualitätsmängeln.
+
+    Neuere Einträge tragen `failure_class` (gesetzt in agents/base_agent.py); für ältere
+    Einträge ohne dieses Feld wird ersatzweise die Fehlermeldung klassifiziert, damit auch die
+    bereits aufgezeichnete Historie korrekt ausgewertet wird.
+    """
+    if res.get("success"):
+        return False
+    failure_class = res.get("failure_class")
+    if failure_class:
+        return is_infrastructure_failure(failure_class)
+    return is_infrastructure_error(res.get("error"))
+
+
 def get_agent_success_rates(limit_runs: int = 50) -> list[dict]:
     """
     Erfolgsquote je Agent über die letzten `limit_runs` Läufe – sortiert nach Anzahl der
     Aufrufe absteigend (die aktivsten Agenten zuerst, statt alphabetisch). Ein Agent, der nie
     aufgerufen wurde, taucht schlicht nicht auf (kein künstlicher 0-Eintrag).
+
+    Fehlschläge, die auf ein erschöpftes API-Kontingent oder einen fehlenden API-Key
+    zurückgehen, werden NICHT als Fehlversuch des Agenten gewertet (siehe
+    is_infrastructure_result) – sie erscheinen separat als `infrastructure_failures`, damit
+    der Ausfall sichtbar bleibt, ohne die Qualitätsbewertung zu verfälschen.
     """
     runs = _load()[-limit_runs:]
     stats: dict[str, dict[str, int]] = {}
     for run in runs:
         for res in run.get("agent_results", []):
             agent_id = res.get("agent_id", "?")
-            entry = stats.setdefault(agent_id, {"calls": 0, "successes": 0})
+            entry = stats.setdefault(agent_id, {"calls": 0, "successes": 0, "infra": 0})
+            if is_infrastructure_result(res):
+                entry["infra"] += 1
+                continue
             entry["calls"] += 1
             if res.get("success"):
                 entry["successes"] += 1
@@ -76,9 +111,14 @@ def get_agent_success_rates(limit_runs: int = 50) -> list[dict]:
             "agent_id": agent_id,
             "calls": s["calls"],
             "successes": s["successes"],
+            "infrastructure_failures": s["infra"],
             "success_rate": round(100 * s["successes"] / s["calls"], 1) if s["calls"] else 0.0,
         }
         for agent_id, s in stats.items()
+        # Ein Agent, dessen Aufrufe AUSSCHLIESSLICH an der Infrastruktur scheiterten, hat keine
+        # belastbare Erfolgsquote - er würde sonst mit 0.0% dastehen und als schlechtester Agent
+        # des Teams erscheinen, obwohl er nie wirklich gearbeitet hat.
+        if s["calls"] > 0
     ]
     return sorted(result, key=lambda r: r["calls"], reverse=True)
 
@@ -100,6 +140,13 @@ def get_agent_model_performance(limit_runs: int = 100) -> list[dict]:
     for run in runs:
         for res in run.get("agent_results", []):
             agent_id = res.get("agent_id", "?")
+            # Infrastruktur-Ausfälle tragen kein aussagekräftiges Modell (agents/base_agent.py
+            # lässt `model_used` dann bewusst leer, weil das konfigurierte Modell nie
+            # kontaktiert wurde) und dürfen die Modell-Bewertung nicht verfälschen - genau
+            # diese Einträge hatten zuvor `claude-sonnet-5` mit 0% Erfolgsquote erscheinen
+            # lassen, obwohl über dieses Modell nie ein Call lief.
+            if is_infrastructure_result(res):
+                continue
             model = res.get("model_used") or "unbekannt"
             entry = stats.setdefault((agent_id, model), {"calls": 0, "successes": 0, "total_tokens": 0})
             entry["calls"] += 1

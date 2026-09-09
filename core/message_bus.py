@@ -71,6 +71,12 @@ class AgentResult:
     # Lauf NICHT als abgeschlossen "Fertig!".
     needs_human_input: bool = False
     clarification_questions: list[str] = field(default_factory=list)
+    # Fehler-Klassifikation (core/provider_exhaustion.py.classify_failure), gesetzt von
+    # agents/base_agent.py bei success=False. Trennt echte, dem Agenten zurechenbare Fehler
+    # ("agent_error"/"timeout") von reinen Infrastruktur-Ausfällen ("provider_exhausted"/
+    # "provider_unavailable"). Realer Fund: ohne diese Trennung wurden 160 Kontingent-Ausfälle
+    # als Qualitätsmängel der Agenten gewertet und flossen in die Selbstoptimierung ein.
+    failure_class: str = ""
 
 
 class MessageBus:

@@ -7,8 +7,13 @@ task.agent_id, parallele Ausführung per asyncio.gather).
 import asyncio
 from collections.abc import Callable
 
+from config import PROVIDER_EXHAUSTION_ABORT_RATIO
 from core.message_bus import AgentResult, AgentTask
-from core.provider_exhaustion import all_failed_on_provider_exhaustion
+from core.provider_exhaustion import (
+    all_failed_on_provider_exhaustion,
+    infrastructure_failure_ratio,
+    should_trip_breaker,
+)
 
 
 class DispatchMixin:
@@ -43,7 +48,20 @@ class DispatchMixin:
                 content="",
                 error=f"Unbekannter Agent: '{task.agent_id}'",
             )
-        return await agent.execute(task)
+        result = await agent.execute(task)
+        # Zentraler Engpass ALLER Agenten-Aufrufe – hier (und nur hier) wird jeder Aufruf für
+        # die spätere Diagnose persistiert. Zuvor existierte überhaupt kein Datei-Log
+        # (logs/ war leer), sodass ein im Hintergrund gescheiterter Lauf hinterher nicht mehr
+        # untersucht werden konnte. Protokollierung darf einen Lauf nie gefährden.
+        try:
+            run_logger = getattr(self, "_run_logger", None)
+            if run_logger is not None:
+                run_logger.log_agent_result(
+                    result, requested_model=getattr(getattr(agent, "_llm", None), "model_name", ""),
+                )
+        except Exception:
+            pass
+        return result
 
     async def _run_agents_parallel(
         self,
@@ -79,5 +97,22 @@ class DispatchMixin:
                 notify(
                     "⚠️ [yellow]Alle Agenten dieser Welle scheiterten an einer API-Kontingent-"
                     "Erschöpfung (429/RESOURCE_EXHAUSTED) - nicht an einem echten Befund.[/yellow]"
+                )
+
+        # Circuit Breaker (realer Fund workspace/event_ticket_api: 19 von 21 Aufrufen an
+        # erschöpften Kontingenten gescheitert, 0 geschriebene Dateien - der Lauf arbeitete
+        # trotzdem alle Phasen ab, startete die Verifikation und schrieb einen irreführenden
+        # Projektstatus). all_failed_on_provider_exhaustion() oben greift nur bei einer
+        # VOLLSTÄNDIG gescheiterten Welle; real ist das Bild fast immer gemischt, weil einzelne
+        # Aufrufe noch aus einem Restkontingent bedient werden. Deshalb zusätzlich eine Quote.
+        if should_trip_breaker(results, PROVIDER_EXHAUSTION_ABORT_RATIO):
+            self._provider_exhausted_this_run = True
+            self._provider_breaker_tripped = True
+            anteil = infrastructure_failure_ratio(results)
+            if notify:
+                notify(
+                    f"🛑 [red]{anteil:.0%} der Agenten dieser Welle scheiterten an fehlenden API-"
+                    "Kontingenten/Schlüsseln. Der Lauf wird sauber beendet, statt weiter Tokens "
+                    "für einen Lauf zu verbrauchen, der nichts produzieren kann.[/red]"
                 )
         return results

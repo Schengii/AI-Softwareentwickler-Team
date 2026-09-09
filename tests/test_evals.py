@@ -7,6 +7,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from evals.runner import (
@@ -101,18 +102,26 @@ class TestBenchmarkRunner(unittest.TestCase):
 
     @patch("evals.runner.WorkspaceManager")
     def test_run_single_task_mocked(self, mock_ws_cls):
+        # Die erwarteten Dateien muessen WAEHREND des Laufs entstehen. Frueher legte dieser Test
+        # sie vorab an - genau das Muster, das den Benchmark unbrauchbar machte: Dateien eines
+        # frueheren Laufs liessen einen spaeteren, gescheiterten Lauf bestehen. run_single_task
+        # archiviert ein vorhandenes Verzeichnis deshalb jetzt vor dem Lauf.
         mock_ws = MagicMock()
         proj_dir = Path(self.temp_dir) / "ping_service"
-        proj_dir.mkdir(parents=True, exist_ok=True)
-        (proj_dir / "main.py").write_text("# app")
-        (proj_dir / "requirements.txt").write_text("fastapi")
-        (proj_dir / "test_main.py").write_text("# test")
-
         mock_ws.get_project_dir.return_value = proj_dir
         mock_ws_cls.return_value = mock_ws
 
+        async def _erzeuge_projekt(*args, **kwargs):
+            proj_dir.mkdir(parents=True, exist_ok=True)
+            (proj_dir / "main.py").write_text("# app", encoding="utf-8")
+            (proj_dir / "requirements.txt").write_text("fastapi", encoding="utf-8")
+            (proj_dir / "test_main.py").write_text("# test", encoding="utf-8")
+            return "✅ Verifikation erfolgreich abgeschlossen."
+
         fake_orch = MagicMock()
-        fake_orch.process = AsyncMock(return_value="✅ Verifikation erfolgreich abgeschlossen.")
+        fake_orch.process = _erzeuge_projekt
+        fake_orch.last_verification_ok = True
+        fake_orch.last_agent_results = [SimpleNamespace(total_tokens=4200)]
 
         task = get_task("fastapi_ping")
         res = asyncio.run(run_single_task(task, orchestrator=fake_orch))
@@ -121,20 +130,46 @@ class TestBenchmarkRunner(unittest.TestCase):
         self.assertTrue(res.verification_ok)
         self.assertEqual(res.missing_files, [])
         self.assertIn("main.py", res.found_files)
+        # total_tokens wurde frueher nie zugewiesen und war in jedem Report 0.
+        self.assertEqual(res.total_tokens, 4200)
+
+    @patch("evals.runner.WorkspaceManager")
+    def test_gescheiterte_verifikation_faellt_durch(self, mock_ws_cls):
+        """Kernbefund: Der Marker "Verifikations-Protokoll" steht auch in GESCHEITERTEN
+        Berichten - er darf einen Lauf nie mehr als bestanden werten."""
+        mock_ws = MagicMock()
+        proj_dir = Path(self.temp_dir) / "ping_service"
+        mock_ws.get_project_dir.return_value = proj_dir
+        mock_ws_cls.return_value = mock_ws
+
+        fake_orch = MagicMock()
+        fake_orch.process = AsyncMock(
+            return_value="### 🧪 Verifikations-Protokoll\n- ⚠️ pip install (exit_code=1)"
+        )
+        fake_orch.last_verification_ok = False
+        fake_orch.last_agent_results = [SimpleNamespace(total_tokens=100)]
+
+        res = asyncio.run(run_single_task(get_task("fastapi_ping"), orchestrator=fake_orch))
+        self.assertFalse(res.verification_ok)
+        self.assertFalse(res.success)
 
     @patch("evals.runner.WorkspaceManager")
     def test_run_benchmark_mocked_suite(self, mock_ws_cls):
         mock_ws = MagicMock()
         proj_dir = Path(self.temp_dir) / "ping_service"
-        proj_dir.mkdir(parents=True, exist_ok=True)
-        for f in ["main.py", "requirements.txt", "test_main.py"]:
-            (proj_dir / f).write_text("# code")
-
         mock_ws.get_project_dir.return_value = proj_dir
         mock_ws_cls.return_value = mock_ws
 
+        async def _erzeuge_projekt(*args, **kwargs):
+            proj_dir.mkdir(parents=True, exist_ok=True)
+            for f in ["main.py", "requirements.txt", "test_main.py"]:
+                (proj_dir / f).write_text("# code", encoding="utf-8")
+            return "🧪 Verifikations-Protokoll: Alles bestanden."
+
         fake_orch = MagicMock()
-        fake_orch.process = AsyncMock(return_value="🧪 Verifikations-Protokoll: Alles bestanden.")
+        fake_orch.process = _erzeuge_projekt
+        fake_orch.last_verification_ok = True
+        fake_orch.last_agent_results = [SimpleNamespace(total_tokens=1000)]
 
         with patch("evals.runner.EVALS_HISTORY_FILE", self.history_file):
             suite_res = asyncio.run(

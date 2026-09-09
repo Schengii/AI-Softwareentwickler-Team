@@ -116,6 +116,39 @@ def save_benchmark_result(suite_result: BenchmarkSuiteResult, history_path: Path
     history_path.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def _archive_previous_project(
+    workspace: WorkspaceManager, project_name: str, status_callback: StatusCallback | None = None,
+) -> None:
+    """
+    Benennt ein bereits existierendes Benchmark-Projektverzeichnis vor dem Lauf um, damit die
+    Datei-Existenzprüfung ausschließlich das misst, was DIESER Lauf erzeugt hat.
+
+    Bewusst umbenennen statt löschen: Ein Benchmark darf nie Arbeit vernichten, falls jemand
+    versehentlich einen echten Projektnamen als `expected_project_name` einträgt. Das Archiv
+    trägt einen Zeitstempel und bleibt zur Nachanalyse erhalten. Fehler beim Umbenennen (z.B.
+    ein unter Windows noch offener Datei-Handle) dürfen den Benchmark nicht abbrechen - dann
+    läuft die Prüfung wie bisher gegen das bestehende Verzeichnis, was allenfalls zu optimistisch
+    misst, aber keinen Lauf verliert.
+    """
+    try:
+        project_dir = workspace.get_project_dir(project_name)
+    except Exception:
+        return
+    if not project_dir.exists():
+        return
+    archive_dir = project_dir.with_name(f"{project_dir.name}__eval_archiv_{datetime.now():%Y%m%d_%H%M%S}")
+    try:
+        project_dir.rename(archive_dir)
+        if status_callback:
+            status_callback(f"🧹 Vorheriges Benchmark-Verzeichnis archiviert nach `{archive_dir.name}`")
+    except OSError as e:
+        if status_callback:
+            status_callback(
+                f"⚠️ Benchmark-Verzeichnis `{project_dir.name}` konnte nicht archiviert werden "
+                f"({e}) – die Datei-Prüfung kann dadurch Ergebnisse eines früheren Laufs mitzählen."
+            )
+
+
 async def run_single_task(
     task: BenchmarkTask,
     orchestrator: Orchestrator | None = None,
@@ -128,6 +161,13 @@ async def run_single_task(
     if status_callback:
         status_callback(f"🚀 Starte Benchmark-Task: {task.name} ({task.slug})...")
 
+    # Frisches Verzeichnis erzwingen (realer Fund, KI-Team-Masterplan-Analyse): Die
+    # Datei-Existenzprüfung unten lief gegen ein Verzeichnis, das zwischen Benchmark-Läufen
+    # NICHT geleert wurde. Dateien aus einem früheren, erfolgreichen Lauf ließen damit einen
+    # späteren, gescheiterten Lauf bestehen - der Benchmark maß also teilweise die Vergangenheit.
+    workspace = WorkspaceManager()
+    _archive_previous_project(workspace, task.expected_project_name, status_callback)
+
     start_time = time.monotonic()
     success = False
     verification_ok = False
@@ -138,7 +178,22 @@ async def run_single_task(
     try:
         result_text = await orchestrator.process(task.prompt, status_callback=status_callback)
         success = True
-        verification_ok = "✅ Verifikation erfolgreich" in result_text or "🧪 Verifikations-Protokoll" in result_text
+        # Realer Fund: Hier stand zuvor ein Substring-Match auf dem Report-TEXT:
+        #   verification_ok = "✅ Verifikation erfolgreich" in result_text
+        #                     or "🧪 Verifikations-Protokoll" in result_text
+        # Der zweite Marker steht aber in JEDEM Verifikationsbericht - auch in gescheiterten
+        # (belegt in workspace/event_ticket_api/.ai_team_status.json: `verification_ok: false`
+        # bei gleichzeitig vorhandenem "### 🧪 Verifikations-Protokoll"). Dadurch war
+        # `verification_ok` praktisch immer True und der Benchmark konnte strukturell nicht
+        # durchfallen: 50 von 50 aufgezeichneten Läufen "bestanden". Jetzt wird das
+        # STRUKTURIERTE Ergebnis des Orchestrators gelesen, nie wieder Report-Prosa geparst.
+        verification_ok = bool(getattr(orchestrator, "last_verification_ok", False))
+        # `total_tokens` wurde zuvor mit 0 initialisiert und NIE zugewiesen - jeder
+        # Benchmark-Report wies deshalb 0 Tokens aus (die Kennzahl war tot).
+        total_tokens = sum(
+            getattr(r, "total_tokens", 0) or 0
+            for r in (getattr(orchestrator, "last_agent_results", None) or [])
+        )
     except Exception as e:
         error_msg = str(e)
         success = False
@@ -146,7 +201,6 @@ async def run_single_task(
     duration = round(time.monotonic() - start_time, 2)
 
     # Prüfe erwartete Dateien im Projektverzeichnis
-    workspace = WorkspaceManager()
     project_dir = workspace.get_project_dir(task.expected_project_name)
     found_files = []
     missing_files = []

@@ -102,6 +102,7 @@ from config import (
 from core.adr import format_adr_summary_for_context
 from core.backlog_store import get_ticket, upsert_ticket
 from core.decision_log import log_decision
+from core.definition_of_done import build_definition_of_done, write_definition_of_done
 from core.design_system import format_design_system_for_agents
 from core.git_isolation import (
     GitIsolationError,
@@ -132,6 +133,7 @@ from core.project_status import (
 )
 from core.quota_estimator import QuotaEstimator
 from core.result_aggregator import ResultAggregator
+from core.run_logger import RunLogger
 from core.task_manager import TaskManager
 from core.team_memory import format_team_lessons_for_agents, record_lesson
 from core.token_guard import token_guard
@@ -284,6 +286,20 @@ class Orchestrator(
         # unübersehbar zu machen wie eine fehlgeschlagene Verifikation, statt dass nur
         # .ai_team_status.json davon weiß.
         self.last_budget_aborted: bool = False
+        # Strukturiertes Lauf-Protokoll (core/run_logger.py). Erst in process() gesetzt,
+        # sobald der Projektname feststeht - bis dahin None, damit jeder Aufrufer (z.B.
+        # agents/orchestrator/dispatch.py) defensiv auf Vorhandensein prüfen muss.
+        self._run_logger: RunLogger | None = None
+        # Beide Provider-Flags werden zu Beginn jedes process()-Laufs zurückgesetzt, hier aber
+        # zusätzlich vorbelegt: agents/orchestrator/dispatch.py kann auch von Aufrufern genutzt
+        # werden, die nicht über process() gehen (z.B. core/backlog_worker.py). Ohne Vorbelegung
+        # existierte das Attribut dann bis zum ersten Setzen gar nicht.
+        self._provider_exhausted_this_run: bool = False
+        self._provider_breaker_tripped: bool = False
+        # Ergebnis der maschinenlesbaren Fertigstellungs-Pruefung des letzten Laufs
+        # (core/definition_of_done.py) - von interface/ und evals/ als belastbare Quelle
+        # nutzbar, statt den Zustand aus Berichtstext zu raten.
+        self.last_definition_of_done = None
         # Pro-Projekt-Kostenbudget (core/project_constitution.py `max_project_tokens`,
         # /constitution) - unabhängig vom globalen MAX_RUN_TOKENS (das begrenzt nur EINEN
         # einzelnen Lauf). Bei jedem process()-Aufruf frisch aus der Konstitution des jeweils
@@ -314,13 +330,17 @@ class Orchestrator(
         war, aber keiner davon ein bekannter Fachagent ist - z.B. ein Fachbereichsleiter statt
         eines Spezialisten).
         """
-        from core.llm_factory import LLMFactory
+        from core.llm_factory import LLMFactory, is_same_model
         targets = self._agents.items() if agent_ids is None else (
             (aid, self._agents[aid]) for aid in agent_ids if aid in self._agents
         )
         escalated: set[str] = set()
         for agent_id, agent in targets:
-            if agent._llm.model_name == HEAVY_MODEL:
+            # Kanonischer Vergleich statt `==`: Client-Wrapper entfernen das Provider-Präfix
+            # ("groq:openai/gpt-oss-120b" -> "openai/gpt-oss-120b"). Ein direkter Vergleich
+            # hielte deshalb jeden bereits hochgestuften Agenten für nicht hochgestuft, sobald
+            # HEAVY_MODEL ein präfixbehaftetes Modell ist (siehe core/llm_factory.py).
+            if is_same_model(agent._llm.model_name, HEAVY_MODEL):
                 continue
             try:
                 agent._llm = LLMFactory.create_for_model(HEAVY_MODEL)
@@ -537,6 +557,20 @@ class Orchestrator(
         # forced_project_dir) – zuverlässiger Commit-Message-Fallback, siehe last_project_slug oben.
         self.last_project_slug = Path(project_dir).name
 
+        # Ab hier ist der Projektname bekannt – erst jetzt kann das Lauf-Log unter einem
+        # sprechenden Dateinamen angelegt werden. Rein additiv: Schlägt das Anlegen fehl,
+        # schaltet sich der Logger selbst still ab (core/run_logger.py), der Lauf geht weiter.
+        try:
+            self._run_logger = RunLogger(project_slug=self.last_project_slug)
+            self._run_logger.log_event(
+                "run_started",
+                task_summary=task_summary,
+                user_request=user_request[:2000],
+                project_dir=str(project_dir),
+            )
+        except Exception:
+            self._run_logger = None
+
         # Realer Fund (vier separate Läufe an praktisch derselben Aufgabe, alle mit
         # verification_ok=false): der rein informative Duplikat-Hinweis oben wird beim
         # WIEDERHOLTEN Scheitern DESSELBEN Projekts leicht überlesen - "einfach nochmal
@@ -609,6 +643,9 @@ class Orchestrator(
         # auch noch DIESEN neuen Lauf als betroffen kennzeichnet - siehe agents/orchestrator/
         # dispatch.py._run_agents_parallel() für die volle Herleitung.
         self._provider_exhausted_this_run = False
+        # Circuit Breaker je Lauf zurücksetzen (agents/orchestrator/dispatch.py setzt ihn,
+        # wenn eine Welle überwiegend an Kontingenten/fehlenden Schlüsseln scheitert).
+        self._provider_breaker_tripped = False
 
         # Pro-Projekt-Kostenbudget (siehe __init__): MAX_RUN_TOKENS begrenzt nur DIESEN einen
         # Lauf - ein Projekt mit vielen aufeinanderfolgenden Läufen (z.B. für einen externen
@@ -828,6 +865,29 @@ class Orchestrator(
             )
             verification_ok = False
             log_decision(project_dir, "budget_or_cancel_aborted", reason)
+        elif getattr(self, "_provider_breaker_tripped", False):
+            # Circuit Breaker (agents/orchestrator/dispatch.py). Realer Fund
+            # (workspace/event_ticket_api, 09.09.2026): 19 von 21 Agenten scheiterten an
+            # erschöpften Kontingenten und schrieben keine einzige Datei - der Lauf startete
+            # trotzdem die Verifikation, dispatchte daraufhin einen Fix-Auftrag für "keine
+            # Tests gefunden" und eröffnete ein Ticket. Beides beschrieb ein Problem, das es
+            # nicht gab: Es fehlten keine Tests, es fehlte schlicht das Kontingent. Die
+            # Verifikation wird deshalb übersprungen, statt aus dem Nichts einen Befund zu
+            # erzeugen.
+            reason = (
+                "Der Lauf wurde abgebrochen, weil der überwiegende Teil der Agenten-Aufrufe an "
+                "erschöpften API-Kontingenten bzw. fehlenden API-Schlüsseln scheiterte - nicht "
+                "an einem inhaltlichen Problem. Ein erneuter Versuch mit wieder verfügbarem "
+                "Kontingent (oder nach Hinterlegen des fehlenden Schlüssels) sollte genügen."
+            )
+            verification_summary = (
+                "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n"
+                f"- 🛑 Übersprungen: {reason}"
+            )
+            verification_ok = False
+            budget_aborted = True  # nutzt die bestehenden Abbruch-Pfade (kein "✅ Fertig!")
+            log_decision(project_dir, "provider_exhaustion_breaker_tripped", reason)
+            notify(f"🛑 [red]{reason}[/red]")
         else:
             results, verification_summary, budget_aborted, manually_cancelled, verification_ok = await self._run_verification_loop(
                 project_dir=project_dir,
@@ -993,6 +1053,30 @@ class Orchestrator(
         retro_result = None
         trainer_result = None
         self.last_budget_aborted = budget_aborted
+
+        # Maschinenlesbare "Definition of Done" (core/definition_of_done.py). Realer Fund:
+        # PROJECT_STATE.md meldete "In Entwicklung / Verifikation ausstehend" auch dann, wenn
+        # null Dateien geschrieben wurden - ein Prosa-Status kann "fast fertig", "gar nicht
+        # angefangen" und "an der Infrastruktur gescheitert" nicht unterscheiden. Rein additiv:
+        # ein Fehler hier darf einen sonst erfolgreichen Lauf nicht kippen.
+        try:
+            geschriebene_dateien = len({f for r in results for f in (r.files_written or [])})
+            self.last_definition_of_done = build_definition_of_done(
+                project_slug=self.last_project_slug,
+                project_dir=project_dir,
+                files_written=geschriebene_dateien,
+                tests_ran=verification_ok or "Testlauf" in (verification_summary or ""),
+                tests_passed=verification_ok,
+            )
+            write_definition_of_done(project_dir, self.last_definition_of_done)
+            if self._run_logger is not None:
+                self._run_logger.log_event(
+                    "definition_of_done",
+                    is_done=self.last_definition_of_done.is_done,
+                    blocking=[c.key for c in self.last_definition_of_done.blocking_criteria],
+                )
+        except Exception as e:
+            notify(f"⚠️ [dim yellow]Definition of Done konnte nicht geschrieben werden: {e}[/dim yellow]")
 
         if budget_aborted:
             notify(f"🚫 [bold red]{self._budget_exceeded_label(run_start_tokens)} erreicht:[/bold red] Retrospektive & Selbstoptimierung werden übersprungen ({self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf).")
@@ -1196,12 +1280,36 @@ class Orchestrator(
                 total_tokens=sum(r.total_tokens for r in results),
                 duration_seconds=total_duration,
                 agent_results=[
-                    {"agent_id": r.agent_id, "success": r.success, "total_tokens": r.total_tokens, "model_used": r.model_used}
+                    {
+                        "agent_id": r.agent_id,
+                        "success": r.success,
+                        "total_tokens": r.total_tokens,
+                        "model_used": r.model_used,
+                        # Ohne diese Klassifikation ließ sich in der Historie nicht mehr
+                        # unterscheiden, ob ein Agent an einem echten Fehler oder nur an einem
+                        # erschöpften Tageskontingent scheiterte - memory/run_history.py rechnet
+                        # Infrastruktur-Ausfälle jetzt aus allen Erfolgsquoten heraus.
+                        "failure_class": r.failure_class,
+                    }
                     for r in results
                 ],
             )
         except Exception as e:
             notify(f"⚠️ [dim yellow]Lauf-Historie (record_run_history) konnte nicht aktualisiert werden: {e}[/dim yellow]")
+
+        # Lauf-Log abschließen (schreibt die Abschlusszeile und räumt alte Logs auf).
+        try:
+            if self._run_logger is not None:
+                self._run_logger.close(
+                    verification_ok=verification_ok,
+                    total_tokens=sum(r.total_tokens for r in results),
+                    agent_calls=len(results),
+                    failed_agent_calls=sum(1 for r in results if not r.success),
+                    provider_exhausted=bool(getattr(self, "_provider_exhausted_this_run", False)),
+                    budget_aborted=self.last_budget_aborted,
+                )
+        except Exception:
+            pass
 
         # Realer Fund: bisher endete JEDER Lauf mit demselben uneingeschränkten "✅ Fertig!",
         # auch wenn die Verifikation nie bestätigt werden konnte (keine Tests gefunden,

@@ -123,7 +123,12 @@ class TestRuntimeSmokeInVerificationLoop(unittest.TestCase):
         )
         result, logs, mock_verifier = self._run(smoke_report)
 
-        mock_verifier.check_runtime_smoke.assert_called_once()
+        # Der Smoke-Test läuft seit dem Smoke-Test-Gate (KI-Team-Masterplan, Stufe 2) ZWEIMAL:
+        # einmal VOR der Testschleife als Gate (startet die App überhaupt? – sonst scheitert
+        # jeder Test an derselben Ursache und die Fix-Schleife arbeitet an Symptomen) und einmal
+        # danach als finale Prüfung des Endzustands, nachdem Fix-Agenten Dateien geändert haben
+        # können. Beide Läufe sind reine Subprozess-Starts und kosten keine Tokens.
+        self.assertEqual(mock_verifier.check_runtime_smoke.call_count, 2)
         self.assertIn("Runtime-Smoke-Test", result)
         self.assertIn("startet fehlerfrei", result)
         self.assertTrue(any("Fertig!" in line and "NICHT" not in line for line in logs))

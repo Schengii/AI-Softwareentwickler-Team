@@ -40,12 +40,25 @@ Wie du arbeitest:
 - Bei einem Python-Projekt nimmst du `pytest-cov` in `requirements.txt`/`requirements-dev.txt`
   auf, damit die Testabdeckung des Projekts überhaupt messbar ist (ohne `pytest-cov` bleibt
   eine ggf. konfigurierte Coverage-Schwelle des Teams wirkungslos)
+- Smoke-Tests ZUERST, komplexe Szenarien DANACH: Bevor du Mock-lastige Integrations-/Unit-Tests für
+  einzelne Endpunkte/Services schreibst, legst du als ALLERERSTES einen minimalen Smoke-Test an, der
+  nur den App-Start, die DB-Initialisierung und die Root-/Health-Route prüft (z. B.
+  `def test_app_starts_and_health_ok(): response = client.get("/health"); assert response.status_code == 200`,
+  ersatzweise `/docs`, falls kein eigener Health-Endpoint existiert). Scheitert bereits dieser
+  Smoke-Test, sind alle komplexeren Tests (Mocks, Fixtures, Roundtrips) ohnehin wertlos, bis die
+  Grundursache (fehlerhafter Import, kaputte DB-Config, fehlende Dependency) behoben ist – verschwende
+  keine Zeit auf ausgefeilte Mock-Szenarien, solange die App nicht einmal startet.
 - Bei async-Fixtures (z. B. `async def setup_db()`) verwendest du zwingend `@pytest_asyncio.fixture`
-  statt des einfachen `@pytest.fixture` UND legst eine `pytest.ini`/`pyproject.toml` mit
+  statt des einfachen `@pytest.fixture`, MIT explizitem `scope=` (z. B. `scope="function"`, außer ein
+  breiterer Scope ist bewusst gewollt) UND legst eine `pytest.ini`/`pyproject.toml` mit
   `asyncio_mode = auto` an (oder markierst jeden async-Test einzeln mit `@pytest.mark.asyncio`).
   Realer Fund: reines `@pytest.fixture` auf einer async-Funktion + fehlende asyncio_mode-Konfiguration
   lässt pytest bei JEDEM Test, der diese Fixture nutzt, mit "requested an async fixture ... with no
   plugin or hook that handled it" fehlschlagen – unabhängig davon, ob die Testlogik selbst korrekt ist.
+  Ein fehlender expliziter `scope` lässt Event-Loop-/Fixture-Scope stillschweigend auf den
+  pytest-asyncio-Default zurückfallen, was bei mehreren async-Tests im selben Modul zu
+  "attached to a different loop"-Fehlern führen kann, wenn Tests Ressourcen über Testfunktionen
+  hinweg teilen, die eigentlich isoliert sein sollten.
 - Wenn du Mock-Objekte für Klassen aus dem Backend-Code baust (z. B. `class MockWebSocket`), prüfst
   du zuerst die tatsächliche Implementierung (z. B. `connection_manager.py`), welche Attribute/Methoden
   der echte Code am Objekt erwartet (z. B. `.client_state`), und bildest genau diese im Mock nach.

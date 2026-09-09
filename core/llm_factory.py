@@ -6,6 +6,7 @@ mit präziser Token-Messung und automatischer Failover-Kette.
 import asyncio
 import json
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -169,6 +170,91 @@ def _exhaustion_cooldown_seconds(err_str: str) -> float | None:
 # alle Gemini-Aufrufe dieses Prozesses (nicht pro Client), da sich alle dasselbe Kontingent
 # teilen.
 _gemini_rate_limiter = RateLimiter(max_calls=GEMINI_MAX_CALLS_PER_MINUTE, window_seconds=60.0)
+
+
+# ── Sichtbare Modell-Abwertung (KI-Team-Masterplan-Optimierung, Stufe 1) ───────────────────
+#
+# Realer, live reproduzierter Fund (09.09.2026): Ein GeminiClient für `gemini-3.8-flash`
+# lieferte eine Antwort von `gemini-3.6-flash`, und einer für `gemini-3.6-flash` eine von
+# `gemini-3.1-flash-lite` - AUCH mit _allow_self_fallback=False. Der Grund: Die
+# `models_to_try`-Ketten unten wurden bedingungslos aus MODEL_FALLBACKS aufgebaut; der
+# Pin-Schalter steuerte nur den Groq-Hop am Methodenanfang. Zwei Folgen:
+#
+# 1. Das Pinning aus agents/base_agent.py (`active_llm`, _allow_self_fallback=False) war für
+#    Gemini-Modelle wirkungslos - genau der Zustand, den der dortige Kommentar als Ursache des
+#    "Function call is missing a thought_signature"-Abbruchs beschreibt.
+# 2. Die Abwertung geschah lautlos. In Summe liefen 82% ALLER Calls auf der schwächsten Stufe
+#    (`gemini-3.1-flash-lite`: 4.380 von 5.368), ohne dass das irgendwo sichtbar wurde.
+#
+# `_model_downgrade_listener` erlaubt es der Oberfläche/dem Lauf-Log, jede tatsächliche
+# Abwertung mitzubekommen. Bewusst ein einzelner, optionaler Callback statt eines
+# Logging-Frameworks: llm_factory ist ein Basismodul und soll keine UI-Abhängigkeit bekommen.
+_model_downgrade_listener: Callable[[str, str, str], None] | None = None
+
+
+def set_model_downgrade_listener(listener) -> None:
+    """Registriert einen Callback `(angefordert, tatsaechlich, grund)`, der bei jeder echten
+    Modell-Abwertung aufgerufen wird. `None` schaltet die Benachrichtigung wieder ab."""
+    global _model_downgrade_listener
+    _model_downgrade_listener = listener
+
+
+def _notify_model_downgrade(requested: str, actual: str, reason: str = "") -> None:
+    """Meldet eine Abwertung - schluckt jeden Fehler des Listeners, damit eine reine
+    Benachrichtigung nie einen laufenden LLM-Aufruf zum Scheitern bringt."""
+    # Kanonischer Vergleich (siehe normalize_model_name unten): Ohne ihn meldete jeder
+    # Groq-/OpenRouter-/DeepSeek-Aufruf eine Abwertung, nur weil der Client das
+    # Provider-Praefix aus dem Namen entfernt.
+    if _model_downgrade_listener is None or is_same_model(requested, actual):
+        return
+    try:
+        _model_downgrade_listener(requested, actual, reason)
+    except Exception:
+        pass
+
+
+# Provider-Präfixe, die die jeweiligen Client-Wrapper bei der Instanziierung ENTFERNEN
+# (GroqClient/OpenRouterClient/DeepSeekClient setzen `self.model_name = name.replace("<p>:", "")`,
+# weil die jeweilige API den reinen Modellnamen erwartet).
+_PROVIDER_PREFIXES = ("groq:", "openrouter:", "deepseek:", "huggingface:")
+
+
+def normalize_model_name(model_name: str) -> str:
+    """
+    Kanonische Form eines Modellnamens für VERGLEICHE (nie für API-Aufrufe).
+
+    Latenter Fund, aktiviert durch die Umstellung von HEAVY_MODEL auf einen providerneutralen
+    Wert (config.py): Vergleiche der Form `agent._llm.model_name == HEAVY_MODEL` sind für jedes
+    präfixbehaftete Modell strukturell falsch, weil der Client das Präfix beim Anlegen entfernt
+    ("groq:openai/gpt-oss-120b" wird zu "openai/gpt-oss-120b"). Solange HEAVY_MODEL auf Claude
+    zeigte, fiel das nie auf. Ohne diese Normalisierung hielte
+    agents/orchestrator/__init__.py._escalate_agent_models() JEDEN Agenten für "noch nicht
+    hochgestuft" und legte bei jedem Eskalationsversuch neue Clients an.
+    """
+    name = (model_name or "").strip()
+    for prefix in _PROVIDER_PREFIXES:
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    return name
+
+
+def is_same_model(a: str, b: str) -> bool:
+    """True, wenn beide Namen dasselbe Modell bezeichnen - unabhängig vom Provider-Präfix."""
+    return normalize_model_name(a) == normalize_model_name(b)
+
+
+def _resolve_gemini_candidates(start_model: str, allow_fallback: bool) -> list[str]:
+    """
+    Ermittelt die tatsächlich zu versuchenden Modelle für einen Gemini-Aufruf.
+
+    Ist `allow_fallback` False, ist der Aufruf bewusst auf GENAU EIN Modell festgenagelt (ein
+    Fallback-Hop innerhalb einer fremden Kette oder ein per agents/base_agent.py gepinnter
+    Provider). Dann darf hier KEINE Ersatzkette aufgebaut werden - zuvor geschah genau das und
+    hebelte das Pinning aus.
+    """
+    if not allow_fallback:
+        return [start_model]
+    return [start_model] + MODEL_FALLBACKS.get(start_model, [])
 
 # Realer Fund aus einem echten End-to-End-Lauf: governance_lead (HEAVY-Tier, kein
 # ANTHROPIC_API_KEY) war innerhalb EINER Aufgabe bereits erfolgreich auf Groq gepinnt
@@ -685,7 +771,7 @@ class GeminiClient:
             tools=[genai_tool] if genai_tool else None,
         )
 
-        all_candidates = [self.model_name] + MODEL_FALLBACKS.get(self.model_name, [])
+        all_candidates = _resolve_gemini_candidates(self.model_name, _allow_self_fallback)
         models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)]
         if not models_to_try:
             # Komplette Kette gerade erschöpft (siehe MAX_EXHAUSTION_WAIT_SECONDS oben) -
@@ -723,6 +809,10 @@ class GeminiClient:
                     response = await asyncio.to_thread(
                         _gemini_client.models.generate_content, model=model, contents=contents, config=config,
                     )
+                    # Abwertung sichtbar machen: `model` ist das Modell, das TATSÄCHLICH
+                    # geantwortet hat - `self.model_name` das, was die Rolle laut config.py
+                    # angefordert hatte. Zuvor geschah dieser Wechsel vollkommen lautlos.
+                    _notify_model_downgrade(self.model_name, model, "Fallback-Kette (generate_with_tools)")
                     return self._parse_gemini_tool_response(response, model)
                 except Exception as e:
                     last_error = e
@@ -824,7 +914,7 @@ class GeminiClient:
             raise RuntimeError("Gemini Client nicht initialisiert. Bitte GEMINI_API_KEY setzen.")
 
         start_model = self.model_name
-        all_candidates = [start_model] + MODEL_FALLBACKS.get(start_model, [])
+        all_candidates = _resolve_gemini_candidates(start_model, _allow_self_fallback)
         models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)]
         if not models_to_try:
             # Siehe generate_with_tools() weiter oben: kurz auf den kürzesten bekannten
@@ -879,6 +969,7 @@ class GeminiClient:
                         total_tokens = prompt_tokens + completion_tokens
 
                     token_guard.record_usage(model, prompt_tokens, completion_tokens, cache_read_tokens=cache_read_tokens)
+                    _notify_model_downgrade(start_model, model, "Fallback-Kette (generate_with_usage)")
 
                     return LLMResponse(
                         text=text,

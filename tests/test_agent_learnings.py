@@ -50,6 +50,25 @@ class TestAgentKnowledgeBase(unittest.TestCase):
         self.assertIn("GELERNTE BEST PRACTICES", augmented)
         self.assertIn("async def", augmented)
 
+    def test_semantically_near_duplicate_learning_is_not_added_again(self):
+        """
+        Realer Fund (ki_team_analyse_und_optimierungen.md, Punkt 5): memory/agent_learnings.json
+        enthielt beim backend-Agenten drei Fast-Duplikate zum Thema "Import in requirements.txt
+        nachtragen", jeweils in leicht anderem Wortlaut - der bisherige exakte String-Vergleich
+        erkannte das nicht. Eine Jaccard-Ähnlichkeit der Wortmengen >= 60% gilt als Dublette und
+        wird nicht erneut gespeichert.
+        """
+        self.kb.add_learning("backend", "Jeder neue Import muss sofort in requirements.txt nachgetragen werden.")
+        self.kb.add_learning("backend", "Jeder neue Import muss sofort und zwingend in die requirements.txt nachgetragen werden.")
+
+        self.assertEqual(len(self.kb.get_learnings("backend")), 1)
+
+    def test_clearly_distinct_learning_is_still_added(self):
+        self.kb.add_learning("backend", "Jeder neue Import muss sofort in requirements.txt nachgetragen werden.")
+        self.kb.add_learning("backend", "Verwende niemals `assert` im Produktionscode (B101).")
+
+        self.assertEqual(len(self.kb.get_learnings("backend")), 2)
+
 
 class TestEditableLearnings(unittest.TestCase):
     """

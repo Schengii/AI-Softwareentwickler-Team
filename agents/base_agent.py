@@ -21,6 +21,7 @@ from config import MAX_AGENT_TOOL_ITERATIONS
 from core.agent_toolbox import AgentToolbox
 from core.llm_factory import AgentMessage, GeminiClient, LLMFactory, LLMResponse
 from core.message_bus import AgentResult, AgentTask
+from core.provider_exhaustion import classify_failure, is_infrastructure_failure
 
 # Realer Fund aus einem echten Lauf: Groq (häufig der Fallback für HEAVY-Rollen ohne
 # ANTHROPIC_API_KEY, siehe config.py) lehnte einen rein lesenden Konsolidierungs-Aufruf
@@ -97,15 +98,33 @@ class BaseAgent(ABC):
 
         try:
             from memory.agent_knowledge_base import agent_knowledge_base
-            effective_system_prompt = agent_knowledge_base.get_augmented_prompt(self.agent_id, self.system_prompt)
 
+            # Cache-stabile Reihenfolge (KI-Team-Masterplan, Stufe 3): STATISCHE Bestandteile
+            # zuerst, VOLATILE zuletzt.
+            #
+            # Zuvor lautete die Reihenfolge: Basis-Prompt → Learnings → Werkzeug-Anweisungen. Der
+            # Learnings-Block ändert sich aber, sobald der Agent etwas Neues lernt - er stand
+            # damit MITTEN im Prompt und entwertete alles, was danach kam. Da Prompt-Caching
+            # ausschließlich über ein gemeinsames PRÄFIX funktioniert, wurde dadurch bei jeder
+            # neuen Lernregel auch der vollkommen unveränderte, große Werkzeugkatalog aus dem
+            # Cache geworfen. Passend dazu der reale Befund: 21,08 Mio. Prompt-Tokens gegenüber
+            # 0,84 Mio. Completion-Tokens (25:1) bei nur 12% Cache-Trefferquote.
+            #
+            # Jetzt: Basis-Prompt + Werkzeug-Anweisungen (beide über viele Läufe hinweg
+            # bytegleich) bilden das stabile Präfix, die Learnings hängen hinten an.
             if use_tools:
                 toolbox = AgentToolbox(project_dir=task.project_dir, agent_id=self.agent_id, read_only=task.tools_read_only)
-                effective_system_prompt = self._augment_with_tool_instructions(effective_system_prompt, read_only=task.tools_read_only)
+                stable_prompt = self._augment_with_tool_instructions(self.system_prompt, read_only=task.tools_read_only)
+                effective_system_prompt = agent_knowledge_base.get_augmented_prompt(self.agent_id, stable_prompt)
                 response, prompt_tokens, completion_tokens = await self._run_agentic_loop(
                     task=task, toolbox=toolbox, system_prompt=effective_system_prompt,
                 )
             else:
+                # Ohne Werkzeuge gibt es keinen Werkzeugkatalog - der Basis-Prompt ist hier
+                # bereits das stabile Präfix, die Learnings hängen wie oben hinten an.
+                effective_system_prompt = agent_knowledge_base.get_augmented_prompt(
+                    self.agent_id, self.system_prompt,
+                )
                 prompt = self._build_prompt(task)
                 response = await self._llm.generate_with_usage(prompt, effective_system_prompt)
                 prompt_tokens, completion_tokens = response.prompt_tokens, response.completion_tokens
@@ -130,6 +149,15 @@ class BaseAgent(ABC):
 
         except Exception as e:
             duration = time.monotonic() - start_time
+            # Realer Fund (KI-Team-Masterplan-Analyse): hier stand bisher unbedingt
+            # `model_used=self._llm.model_name` - also das KONFIGURIERTE Modell. Scheiterte der
+            # Call, BEVOR überhaupt ein Provider antwortete (fehlender API-Key, erschöpftes
+            # Tageskontingent), wurde der Fehlschlag damit einem Modell zugeschrieben, das nie
+            # einen Call gemacht hat: memory/run_history.json zeigte 160 Fehler unter
+            # `claude-sonnet-5`, während memory/cost_history.json für dieses Modell null Calls
+            # kennt (ANTHROPIC_API_KEY war leer). Bei Infrastruktur-Ausfällen bleibt das Feld
+            # deshalb leer - ein nie kontaktiertes Modell darf keine Fehlerstatistik erben.
+            failure_class = classify_failure(str(e))
             return AgentResult(
                 task_id=task.task_id,
                 agent_id=self.agent_id,
@@ -138,7 +166,8 @@ class BaseAgent(ABC):
                 content="",
                 error=str(e),
                 duration_seconds=duration,
-                model_used=self._llm.model_name,
+                model_used="" if is_infrastructure_failure(failure_class) else self._llm.model_name,
+                failure_class=failure_class,
                 files_written=sorted(toolbox.files_written) if toolbox else [],
                 tool_calls_count=toolbox.call_count if toolbox else 0,
                 needs_human_input=bool(toolbox and toolbox.clarification_requests),

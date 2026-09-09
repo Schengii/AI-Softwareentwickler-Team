@@ -6,6 +6,7 @@ import json
 import re
 import uuid
 
+from config import ENABLE_NICHE_AGENT_FILTER
 from core.llm_factory import LLMFactory
 from core.message_bus import AgentTask
 
@@ -24,6 +25,49 @@ from core.message_bus import AgentTask
 # EINE Stelle, die beide Listen (Beschreibung unten in decompose() UND die ID-Liste im
 # System-Prompt) gemeinsam speist.
 _DECOMPOSE_EXCLUDED_AGENT_IDS = ("retrospective", "agent_trainer")
+
+# Team-Optimierung (KI-Team-Masterplan, Stufe 3): Nischen-Rollen werden nur dann im
+# Zerlegungs-Prompt angeboten, wenn die Anfrage inhaltlich zu ihnen passt.
+#
+# Realer Fund über die letzten 30 Läufe: `mobile` wurde 0-mal aufgerufen, `i18n`, `finops` und
+# `team_lead` je 1-mal, `prompt_engineer` 2-mal, `web_research` und `copywriter` je 3-mal. Diese
+# Rollen stehen trotzdem mit Name UND Beschreibung in JEDEM Zerlegungs-Prompt - bei jedem Lauf
+# aufs Neue. Das kostet nicht nur Tokens (das Prompt-zu-Completion-Verhältnis lag bei 25:1),
+# sondern verwässert auch die Auswahl: Je länger die Liste, desto eher greift das Modell zu einer
+# unpassenden Spezialrolle.
+#
+# Bewusst NICHT gelöscht: Die Rollen bleiben vollwertig und werden eingeblendet, sobald die
+# Anfrage ein passendes Stichwort enthält oder die Rolle ausdrücklich benennt. Ein Projekt, das
+# wirklich Mehrsprachigkeit braucht, bekommt weiterhin den i18n-Agenten.
+_NICHE_AGENT_TRIGGERS: dict[str, tuple[str, ...]] = {
+    "mobile": ("mobile", "android", "ios", "app-store", "react native", "flutter", "smartphone"),
+    "i18n": ("i18n", "mehrsprach", "übersetz", "ubersetz", "lokalisier", "internationalisier", "sprachen"),
+    "finops": ("finops", "kosten", "budget", "hosting", "cloud-kosten", "preis", "abrechnung"),
+    "prompt_engineer": ("prompt", "llm", "ki-modell", "sprachmodell", "rag", "embedding", "agent"),
+    "copywriter": ("copy", "marketing", "werbe", "landing", "slogan", "texte", "content"),
+    "web_research": ("recherch", "research", "vergleich", "marktanalyse", "wettbewerb", "aktuelle"),
+    "ml": ("machine learning", "ml-", "modelltraining", "neuronale", "klassifikation", "vorhersage", "ki-modell"),
+    "data_engineer": ("etl", "datenpipeline", "data warehouse", "datenstrom", "ingest", "airflow"),
+    "image_generator": ("bild", "grafik", "logo", "illustration", "icon"),
+}
+
+
+def _relevant_agent_ids(user_request: str, enable_filter: bool = True) -> set[str]:
+    """
+    IDs der Nischen-Rollen, die für DIESE Anfrage NICHT angeboten werden sollen.
+
+    Eine Rolle bleibt im Prompt, wenn die Anfrage eines ihrer Stichworte enthält ODER ihre ID
+    ausdrücklich nennt (damit "nutze den i18n-Agenten" immer funktioniert). `enable_filter=False`
+    schaltet die Filterung komplett ab - dann verhält sich die Zerlegung exakt wie zuvor.
+    """
+    if not enable_filter:
+        return set()
+    text = (user_request or "").lower()
+    return {
+        agent_id
+        for agent_id, triggers in _NICHE_AGENT_TRIGGERS.items()
+        if agent_id not in text and not any(trigger in text for trigger in triggers)
+    }
 
 AVAILABLE_AGENTS = {
     # ── Phase 1: Führung, Planung & Recherche ─────────────
@@ -430,13 +474,19 @@ class TaskManager:
         conversation_context: str | None = None,
         existing_projects: list[str] | None = None,
     ) -> tuple[str, str, list[AgentTask]]:
+        # Dauerhaft ausgeschlossene Rollen PLUS die Nischen-Rollen, die zu dieser konkreten
+        # Anfrage nicht passen (siehe _NICHE_AGENT_TRIGGERS oben). Beide Listen unten werden aus
+        # DERSELBEN Menge gespeist, damit Beschreibung und ID-Liste nie auseinanderdriften.
+        ausgeschlossen = set(_DECOMPOSE_EXCLUDED_AGENT_IDS) | _relevant_agent_ids(
+            user_request, enable_filter=ENABLE_NICHE_AGENT_FILTER,
+        )
         agents_description = "\n".join([
             f"- {agent_id} [Phase {info['phase']}]: {info['description']}"
             for agent_id, info in AVAILABLE_AGENTS.items()
-            if agent_id not in _DECOMPOSE_EXCLUDED_AGENT_IDS
+            if agent_id not in ausgeschlossen
         ])
         available_agent_ids = ", ".join(
-            agent_id for agent_id in AVAILABLE_AGENTS if agent_id not in _DECOMPOSE_EXCLUDED_AGENT_IDS
+            agent_id for agent_id in AVAILABLE_AGENTS if agent_id not in ausgeschlossen
         )
         decompose_system_prompt = DECOMPOSE_SYSTEM_PROMPT.replace(
             "__AVAILABLE_AGENT_IDS__", available_agent_ids,

@@ -69,6 +69,20 @@ def main():
         run_watcher()
         return
 
+    if "--check-models" in sys.argv:
+        # Beantwortet die Frage, die sich das Framework zuvor nie gestellt hat: Mit welchen
+        # Modellen arbeitet das Team gerade WIRKLICH? Live-Fund der Masterplan-Analyse: Alle
+        # drei Komplexitätsstufen wurden von ein und demselben Modell beantwortet, obwohl
+        # config.py drei verschiedene vorsieht.
+        import asyncio
+
+        from core.model_preflight import format_preflight_report, run_model_preflight
+
+        print("🔎 Prüfe die tatsächliche Verfügbarkeit aller Modell-Stufen ...\n")
+        ergebnisse = asyncio.run(run_model_preflight())
+        print(format_preflight_report(ergebnisse))
+        return
+
     if "--list-evals" in sys.argv:
 
         from evals.tasks import list_tasks

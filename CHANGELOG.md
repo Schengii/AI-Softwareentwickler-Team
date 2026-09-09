@@ -7,6 +7,81 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔴 Masterplan Stufe 0-3: Modell-Tiering, Telemetrie und Benchmark waren wirkungslos
+
+Umsetzung des `/goal`-Auftrags zum Masterplan (`KI_TEAM_MASTERPLAN_OPTIMIERUNG.md`). Die Analyse
+von 200 Laeufen, 5.368 LLM-Calls und 50 Benchmark-Laeufen foerderte drei sich gegenseitig
+verstaerkende Defekte zutage, die zusammen die Luecke zwischen einer gruenen Testsuite und einer
+Verifikationsrate von ~20% erklaeren.
+
+**Stufe 0 - Ehrliche Messung**
+- `agents/base_agent.py` protokollierte im Fehlerpfad das KONFIGURIERTE statt des tatsaechlich
+  kontaktierten Modells. Folge: 160 Fehlschlaege unter `claude-sonnet-5` - fuer ein Modell, das
+  laut `memory/cost_history.json` nie einen einzigen Call gemacht hat (`ANTHROPIC_API_KEY` war
+  leer). `core/provider_exhaustion.py.classify_failure()` trennt jetzt echte Agentenfehler von
+  Infrastruktur-Ausfaellen; `memory/run_history.py` rechnet Letztere aus allen Erfolgsquoten
+  heraus. Zuvor lernte die Selbstoptimierung aus Rate-Limits statt aus Qualitaetsmaengeln.
+- `evals/runner.py` bestimmte `verification_ok` per Substring-Match auf dem Report-TEXT - der
+  gepruefte Marker "Verifikations-Protokoll" steht aber in JEDEM Bericht, auch in gescheiterten.
+  Der Benchmark konnte strukturell nicht durchfallen (50 von 50 "bestanden", jeweils mit
+  `total_tokens: 0`, weil die Kennzahl nie zugewiesen wurde). Liest jetzt das strukturierte
+  Orchestrator-Ergebnis, summiert die echten Tokens und archiviert ein vorhandenes
+  Projektverzeichnis, damit Dateien frueherer Laeufe keinen gescheiterten Lauf bestehen lassen.
+- `core/run_logger.py` (neu): `logs/` war vollstaendig leer, es existierte kein einziges
+  `logging.basicConfig` und kein `FileHandler`. Ein im Hintergrund gescheiterter Lauf war
+  hinterher nicht untersuchbar. Schreibt jetzt ein JSONL je Lauf (mit angefordertem UND
+  effektivem Modell je Agenten-Call) plus die rohen Verifikationsausgaben.
+
+**Stufe 1 - Funktionierende Modelle**
+- `HEAVY_MODEL` und `ORCHESTRATOR_MODEL` zeigten bedingungslos auf Claude - ohne
+  `ANTHROPIC_API_KEY` hatten damit 13 Rollen und der Orchestrator kein funktionierendes
+  Primaermodell. Live reproduziert: Alle drei Komplexitaetsstufen wurden von ein und demselben
+  Modell beantwortet. `config._first_available_model()` waehlt pro Stufe jetzt das staerkste
+  Modell, dessen Provider tatsaechlich einen Schluessel hat.
+- `_allow_self_fallback=False` steuerte im `GeminiClient` nur den Groq-Hop, nicht die
+  Fallback-Kette - das Provider-Pinning aus `base_agent.py` war fuer Gemini wirkungslos. Jede
+  echte Abwertung wird jetzt zusaetzlich ueber `set_model_downgrade_listener()` sichtbar.
+- `main.py --check-models` (neu, `core/model_preflight.py`) beantwortet die Frage, die sich das
+  Framework nie gestellt hat: Mit welchen Modellen arbeitet das Team wirklich?
+- Circuit Breaker: Im Lauf `event_ticket_api` scheiterten 19 von 21 Agenten an erschoepften
+  Kontingenten, 0 Dateien wurden geschrieben - und der Lauf startete trotzdem die Verifikation,
+  dispatchte einen Fix-Auftrag fuer "keine Tests gefunden" und schrieb einen irrefuehrenden
+  Projektstatus. `PROVIDER_EXHAUSTION_ABORT_RATIO` beendet solche Laeufe jetzt sauber.
+
+**Stufe 2 - Qualitaet**
+- Smoke-Test-Gate VOR der Testschleife: Startet die App nicht, scheitert jeder Test an derselben
+  Ursache und die Fix-Schleife arbeitet an Symptomen (opspilot: 1.038.910 Tokens ohne bestandene
+  Verifikation). Der Startfehler wird jetzt zuerst und isoliert behoben.
+- `core/definition_of_done.py` (neu): `PROJECT_STATE.md` meldete "In Entwicklung" auch bei null
+  geschriebenen Dateien. `.ai_team_dod.json` ersetzt den Prosa-Status durch harte Kriterien und
+  unterscheidet "nicht geprueft" von "geprueft und durchgefallen".
+
+**Stufe 3 - Effizienz**
+- Learning-Verdraengung war FIFO: Bei den 7 Agenten am Limit verdraengte jede neue - auch jede
+  belanglose - Regel die aelteste und oft konkreteste. Verdraengt wird jetzt die generischste.
+- Cache-stabile Prompt-Reihenfolge: Der volatile Learnings-Block stand zwischen Basis-Prompt und
+  Werkzeugkatalog und warf bei jeder neuen Lernregel den unveraenderten Katalog aus dem Cache
+  (21,08 Mio. Prompt- gegen 0,84 Mio. Completion-Tokens bei 12% Cache-Trefferquote).
+- Nischen-Rollen (`mobile` 0 Aufrufe, `i18n`/`finops` je 1) werden nur noch bei inhaltlich
+  passender Anfrage in den Zerlegungs-Prompt aufgenommen - 22 statt 33 Rollen bei einer
+  Standard-Backend-Aufgabe.
+- Env-Namen-Mapping: Bei 7 Rollen (`PO_MODEL` statt `PRODUCT_OWNER_MODEL` etc.) pruefte
+  `get_model_for_agent()` den falschen Variablennamen, wodurch ein Rollen-Override still vom
+  Fachbereichs-Override ueberstimmt wurde - die Vorrang-Regel kehrte sich um.
+
+**Dabei aufgedeckte latente Bugs:** Die Provider-Wrapper entfernen ihr Praefix beim Anlegen
+(`groq:openai/gpt-oss-120b` -> `openai/gpt-oss-120b`). Vergleiche der Form
+`agent._llm.model_name == HEAVY_MODEL` waren dadurch strukturell falsch -
+`_escalate_agent_models()` haette jeden Agenten fuer nicht hochgestuft gehalten, sobald HEAVY ein
+praefixbehaftetes Modell ist. `core/llm_factory.normalize_model_name()`/`is_same_model()` loesen
+das an allen betroffenen Stellen.
+
+Verifiziert: `ruff check` sauber, vollstaendige pytest-Suite **1683 passed** (von zuvor 1504;
+179 neue Tests in 9 neuen Testdateien). `main.py --check-models` bestaetigt live, dass jetzt alle
+vier Stufen mit dem konfigurierten Modell antworten - zuvor kollabierten alle drei auf dasselbe.
+
+---
+
 ## ⚡ Sync/Async-SQLAlchemy-Konflikt jetzt schon im schnellen Pre-Flight-Check erkannt
 
 Fortsetzung des `/goal`-Auftrags (Database Architecture Drift): `core/verifier/completeness.

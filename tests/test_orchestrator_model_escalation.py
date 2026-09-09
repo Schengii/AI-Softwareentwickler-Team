@@ -13,6 +13,7 @@ import unittest
 
 from agents.orchestrator import Orchestrator
 from config import HEAVY_MODEL
+from core.llm_factory import is_same_model
 
 
 class TestOrchestratorModelEscalation(unittest.TestCase):
@@ -20,14 +21,21 @@ class TestOrchestratorModelEscalation(unittest.TestCase):
         orchestrator = Orchestrator()
         # Mindestens ein regulär auf STANDARD_MODEL/LITE_MODEL laufender Agent muss OHNE
         # escalate_models unverändert bleiben.
-        self.assertNotEqual(orchestrator._agents["frontend"]._llm.model_name, HEAVY_MODEL)
+        self.assertFalse(
+            is_same_model(orchestrator._agents["frontend"]._llm.model_name, HEAVY_MODEL)
+        )
 
     def test_escalate_models_upgrades_non_heavy_agents(self):
         orchestrator = Orchestrator(escalate_models=True)
         for agent_id, agent in orchestrator._agents.items():
-            self.assertEqual(
-                agent._llm.model_name, HEAVY_MODEL,
-                f"Agent '{agent_id}' wurde nicht auf HEAVY_MODEL hochgestuft.",
+            # Kanonischer Vergleich: Groq-/OpenRouter-/DeepSeek-Clients entfernen das
+            # Provider-Praefix beim Anlegen ("groq:openai/gpt-oss-120b" ->
+            # "openai/gpt-oss-120b"). Ein direkter Vergleich schlaegt deshalb fehl, sobald
+            # HEAVY_MODEL ein praefixbehaftetes Modell ist.
+            self.assertTrue(
+                is_same_model(agent._llm.model_name, HEAVY_MODEL),
+                f"Agent '{agent_id}' wurde nicht auf HEAVY_MODEL hochgestuft "
+                f"(ist: {agent._llm.model_name!r}, erwartet: {HEAVY_MODEL!r}).",
             )
 
     def test_escalate_models_leaves_already_heavy_agents_unchanged(self):

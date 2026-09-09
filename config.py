@@ -66,11 +66,74 @@ GEMINI_MAX_CALLS_PER_MINUTE: int = int(os.getenv("GEMINI_MAX_CALLS_PER_MINUTE", 
 
 # Primäre Zuordnung pro Komplexitätsstufe: Standard/Lite laufen primär über Gemini
 # (schnell & günstig), Heavy primär über Claude (stärkeres Trade-off-Reasoning).
-LITE_MODEL: str = GEMINI_LITE_MODEL
-STANDARD_MODEL: str = GEMINI_STANDARD_MODEL
-HEAVY_MODEL: str = CLAUDE_STANDARD_MODEL
+#
+# KRITISCHER FUND (KI-Team-Masterplan-Analyse, 09.09.2026): HEAVY_MODEL zeigte BEDINGUNGSLOS
+# auf Claude - auch in Setups ohne ANTHROPIC_API_KEY. Genau das war hier der Fall, mit
+# messbaren Folgen: 13 Rollen (architect, backend, database, security, code_reviewer,
+# refactoring, compliance, ml, prompt_engineer, agent_trainer sowie die drei Leads) UND der
+# Orchestrator hatten damit KEIN funktionierendes Primärmodell. In memory/cost_history.json
+# stand über 5.368 Calls hinweg kein einziger Claude-Aufruf, während 4.380 Calls (81,6%) auf
+# der SCHWÄCHSTEN Stufe `gemini-3.1-flash-lite` landeten - jene Stufe, die laut der Zuordnung
+# unten ausdrücklich nur für "kleine, klar umrissene Aufgaben" wie readme/github gedacht ist.
+# Auffällig konsistent dazu: Die schlechtesten Erfolgsquoten hatten exakt die HEAVY-Rollen
+# (architect 68%, backend 74%), die besten die LITE-Rollen (project_cleaner 90%).
+#
+# Die Fallback-Kette in core/llm_factory.py fing das zwar auf - aber erst NACH einem
+# vergeblichen Anlauf und ohne dass irgendwo sichtbar wurde, dass die gesamte Tier-Strategie
+# zur Laufzeit wirkungslos ist. Ein Primärmodell, für das kein Schlüssel existiert, ist keine
+# Konfiguration, sondern eine Fehlkonfiguration. `_first_available_model()` wählt deshalb pro
+# Stufe das stärkste Modell, dessen Provider TATSÄCHLICH einen Schlüssel hat.
+def _first_available_model(*candidates: tuple[str, str]) -> str:
+    """
+    Erstes Modell, dessen Provider-Schlüssel gesetzt ist. `candidates` ist eine Folge von
+    (api_key, model_name)-Paaren in absteigender Präferenz; das letzte Paar dient als
+    bedingungsloser Rückfall, damit hier nie ein leerer Modellname herauskommt (eine fehlende
+    Konfiguration soll später an einer aussagekräftigen Stelle auffallen, nicht als leerer
+    String durch das halbe Framework wandern).
+    """
+    for api_key, model_name in candidates:
+        if api_key:
+            return model_name
+    return candidates[-1][1] if candidates else ""
 
-ORCHESTRATOR_MODEL: str = os.getenv("ORCHESTRATOR_MODEL", CLAUDE_HEAVY_MODEL)
+
+LITE_MODEL: str = os.getenv("LITE_MODEL", "") or _first_available_model(
+    (GEMINI_API_KEY, GEMINI_LITE_MODEL),
+    (GROQ_API_KEY, GROQ_HEAVY_MODEL),
+    (ANTHROPIC_API_KEY, CLAUDE_LITE_MODEL),
+    ("", GEMINI_LITE_MODEL),
+)
+STANDARD_MODEL: str = os.getenv("STANDARD_MODEL", "") or _first_available_model(
+    (GEMINI_API_KEY, GEMINI_STANDARD_MODEL),
+    (GROQ_API_KEY, GROQ_HEAVY_MODEL),
+    (ANTHROPIC_API_KEY, CLAUDE_STANDARD_MODEL),
+    ("", GEMINI_STANDARD_MODEL),
+)
+# Reihenfolge für HEAVY: Claude zuerst (stärkstes Trade-off-Reasoning), sonst Groq mit einem
+# starken Open-Weight-Modell und echtem kostenlosem Kontingent - dieselbe Rangfolge, die
+# core/llm_factory.py.ClaudeClient._free_heavy_fallback_client() bereits als Ausweichkette
+# implementiert. Der Unterschied: Sie greift jetzt VOR dem ersten vergeblichen Anlauf.
+HEAVY_MODEL: str = os.getenv("HEAVY_MODEL", "") or _first_available_model(
+    (ANTHROPIC_API_KEY, CLAUDE_STANDARD_MODEL),
+    (GROQ_API_KEY, GROQ_HEAVY_MODEL),
+    (DEEPSEEK_API_KEY, "deepseek:deepseek-chat"),
+    (OPENROUTER_API_KEY, "openrouter:openrouter/auto"),
+    (GEMINI_API_KEY, GEMINI_HEAVY_MODEL),
+    ("", CLAUDE_STANDARD_MODEL),
+)
+
+# Der Orchestrator litt unter demselben Defekt wie HEAVY_MODEL (siehe oben): Er zeigte
+# bedingungslos auf claude-opus-5, obwohl ohne ANTHROPIC_API_KEY nie ein Claude-Aufruf möglich
+# war. Da JEDE Aufgabenzerlegung und JEDE Abschluss-Synthese über ihn läuft, scheiterte damit
+# der wichtigste Einzelaufruf des gesamten Laufs zuverlässig im ersten Anlauf.
+ORCHESTRATOR_MODEL: str = os.getenv("ORCHESTRATOR_MODEL", "") or _first_available_model(
+    (ANTHROPIC_API_KEY, CLAUDE_HEAVY_MODEL),
+    (GROQ_API_KEY, GROQ_HEAVY_MODEL),
+    (DEEPSEEK_API_KEY, "deepseek:deepseek-chat"),
+    (OPENROUTER_API_KEY, "openrouter:openrouter/auto"),
+    (GEMINI_API_KEY, GEMINI_HEAVY_MODEL),
+    ("", CLAUDE_HEAVY_MODEL),
+)
 DEFAULT_AGENT_MODEL: str = os.getenv("DEFAULT_AGENT_MODEL", STANDARD_MODEL)
 
 # Rollen- und aufgabengerechte Modell-Zuordnung (33 Spezialisten + 5 Fachbereichsleiter)
@@ -154,10 +217,33 @@ DEPARTMENT_MODELS: dict[str, str] = {
 }
 
 
+# Umgebungsvariablen-Namen je Rolle, SOWEIT sie von der Konvention `<AGENT_ID>_MODEL`
+# abweichen. Realer Fund (KI-Team-Masterplan-Analyse): get_model_for_agent() prüfte in Schritt 1
+# hart `f"{agent_id.upper()}_MODEL"` - für sieben Rollen heißt die tatsächlich ausgewertete
+# Variable aber anders (siehe AGENT_MODELS oben). Folge: Bei genau diesen Rollen wurde ein
+# ausdrücklich gesetzter Rollen-Override still von einem Fachbereichs-Override überstimmt -
+# die Vorrang-Regel, die Schritt 1 herstellen soll, kehrte sich also ins Gegenteil um.
+# tests/test_agent_model_env_keys.py hält dieses Dict mit den echten os.getenv-Namen synchron.
+AGENT_MODEL_ENV_KEYS: dict[str, str] = {
+    "product_owner":    "PO_MODEL",
+    "business_analyst": "BA_MODEL",
+    "prompt_engineer":  "PROMPT_ENG_MODEL",
+    "resilience_guard": "RESILIENCE_MODEL",
+    "image_generator":  "IMAGE_GEN_MODEL",
+    "accessibility":    "A11Y_MODEL",
+    "documentation":    "DOCS_MODEL",
+}
+
+
+def get_model_env_key(agent_id: str) -> str:
+    """Name der Umgebungsvariable, die das Modell dieser Rolle überschreibt."""
+    return AGENT_MODEL_ENV_KEYS.get(agent_id, f"{agent_id.upper()}_MODEL")
+
+
 def get_model_for_agent(agent_id: str) -> str:
     """Ermittelt das konfigurierte LLM-Modell für einen Agenten unter Berücksichtigung von Overrides."""
     # 1. Spezifischer Rollen-Override
-    if agent_id in AGENT_MODELS and os.getenv(f"{agent_id.upper()}_MODEL"):
+    if agent_id in AGENT_MODELS and os.getenv(get_model_env_key(agent_id)):
         return AGENT_MODELS[agent_id]
 
     # 2. Fachbereichsweiter Override
@@ -288,6 +374,28 @@ LOAD_TEST_TIMEOUT_SECONDS: float = float(os.getenv("LOAD_TEST_TIMEOUT_SECONDS", 
 # wie ein Lint-Fund, weil ein Stub-Kommentar eine nicht erfüllte fachliche Anforderung ist.
 ENABLE_COMPLETENESS_CHECK: bool = os.getenv("ENABLE_COMPLETENESS_CHECK", "true").lower() in ("true", "1", "yes")
 
+# ──────────────────────────────────────────
+# Smoke-Test-Gate vor der Testschleife (agents/orchestrator/verification.py)
+# ──────────────────────────────────────────
+# Der Runtime-Smoke-Test lief bisher ERST NACH der kompletten Testschleife. Realer Befund
+# (KI-Team-Masterplan-Analyse): Der `tester` ist mit 78 Aufrufen der meistgerufene und mit
+# 65,4% der schwaechste Kern-Agent - und ein grosser Teil dieser Fehlschlaege entsteht, weil
+# die Anwendung gar nicht erst startet. Dann scheitert JEDER Test an derselben Ursache, und die
+# Fix-Schleife arbeitet an Symptomen statt an der Wurzel (opspilot: 1.038.910 Tokens ohne
+# bestandene Verifikation). Das Gate prueft den Start VORHER und laesst nur diesen einen Fehler
+# beheben.
+ENABLE_SMOKE_TEST_GATE: bool = os.getenv("ENABLE_SMOKE_TEST_GATE", "true").lower() in ("true", "1", "yes")
+
+# ──────────────────────────────────────────
+# Nischen-Rollen bedarfsgerecht einblenden (core/task_manager.py)
+# ──────────────────────────────────────────
+# Realer Befund ueber die letzten 30 Laeufe: `mobile` wurde 0-mal aufgerufen, `i18n`/`finops`/
+# `team_lead` je 1-mal, `prompt_engineer` 2-mal. Sie standen trotzdem mit Name UND Beschreibung
+# in JEDEM Zerlegungs-Prompt - das kostet Tokens (Prompt-zu-Completion-Verhaeltnis 25:1) und
+# verwaessert die Auswahl. Die Rollen bleiben vollwertig erhalten und werden eingeblendet,
+# sobald die Anfrage inhaltlich zu ihnen passt oder sie ausdruecklich nennt.
+ENABLE_NICHE_AGENT_FILTER: bool = os.getenv("ENABLE_NICHE_AGENT_FILTER", "true").lower() in ("true", "1", "yes")
+
 # Realer Fund (Bestandsaufnahme cloudvault-Projekt): 13 ruff-Lint-Funde standen im
 # Verifikations-Protokoll, wurden aber nie behoben - Lint ist rein informativ (siehe
 # core/verifier/lint.py.LintReport-Docstring), kein Agent war je beauftragt, sie zu fixen.
@@ -346,6 +454,18 @@ MAX_TASK_TOKENS: int = int(os.getenv("MAX_TASK_TOKENS", "40000"))
 # automatisch nach Push/Merge ausgelöst - echte Container-Ausführung startet einen laufenden
 # Prozess und belegt Ports, verdient dieselbe Bestätigungs-Gate-Philosophie wie /push.
 DEPLOY_TIMEOUT_SECONDS: float = float(os.getenv("DEPLOY_TIMEOUT_SECONDS", "300"))
+
+# ──────────────────────────────────────────
+# Circuit Breaker bei Massen-Ausfall der Provider (core/provider_exhaustion.py)
+# ──────────────────────────────────────────
+# Realer Fund (workspace/event_ticket_api, 09.09.2026): 19 von 21 Agenten-Aufrufen scheiterten
+# an erschöpften Kontingenten, `files_written_count: 0` - und der Lauf lief trotzdem komplett
+# durch: Verifikation gestartet, Fix-Auftrag dispatcht, PROJECT_STATE.md mit "In Entwicklung"
+# geschrieben, obwohl kein Agent auch nur eine Zeile produziert hatte. Das erzeugt irreführende
+# Projektzustände und Backlog-Tickets für Probleme, die es gar nicht gibt.
+# Anteil (0.0-1.0) infrastrukturbedingt gescheiterter Aufrufe EINER Welle, ab dem der Lauf
+# sauber beendet wird. 0 schaltet den Breaker ab (altes Verhalten).
+PROVIDER_EXHAUSTION_ABORT_RATIO: float = float(os.getenv("PROVIDER_EXHAUSTION_ABORT_RATIO", "0.6"))
 
 # ──────────────────────────────────────────
 # Fachbereichs-Teamleiter: echte Delegation & Konsolidierung per LLM-Call

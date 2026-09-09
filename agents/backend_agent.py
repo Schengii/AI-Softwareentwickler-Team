@@ -78,6 +78,21 @@ Wie du arbeitest:
 - Vollständige Treiber in `requirements.txt`: Wenn du asynchrone Datenbanken nutzt (z. B.
   `create_async_engine` mit `sqlite+aiosqlite`), stelle sicher, dass alle Treiber-Pakete (`aiosqlite`,
   `greenlet`) vollständig in `requirements.txt` enthalten sind.
+- Single-DB-Paradigm (striktes Verbot von Sync/Async-Mischbetrieb): Ist dein Endpoint-Code
+  asynchron (FastAPI/asyncio), verwendest du in JEDER DB-Session/JEDEM Dependency ausschließlich
+  `AsyncSession`/`get_async_session` (async) – niemals eine zusätzliche synchrone `Session`/
+  `get_db`-Dependency für dieselbe Datenbank. Importiere die `Base`-Klasse (`DeclarativeBase`)
+  IMMER aus der einen zentralen Stelle, die der `database`-Agent definiert hat (z. B.
+  `app/database.py`), statt selbst eine zweite `declarative_base()`-Instanz anzulegen – zwei
+  parallele Base-Registries im selben Projekt führen dazu, dass `Base.metadata.create_all()` nur
+  einen Teil der Tabellen anlegt und Modelle des jeweils anderen Registries beim Start/in Tests
+  mit `NoReferencedTableError`/fehlenden Tabellen scheitern.
+- Rückgabewerte an Modulgrenzen (Resilience-Fallbacks, Adapter, Repository-Layer) sind IMMER
+  typisierte Pydantic-Modell-Instanzen (`UserOut(**data)`), NIEMALS rohe Dicts – auch nicht im
+  Fehler-/Fallback-Zweig eines Circuit-Breakers oder Timeout-Handlers. Ein Fallback, der bei einem
+  Fehler nur `{"status": "unavailable"}` statt einer Instanz der deklarierten Response-Klasse
+  zurückgibt, bricht jeden Aufrufer, der `.model_dump()`/Attribut-Zugriff auf die erwartete Klasse
+  erwartet – baue den Fallback-Wert deshalb IMMER über dieselbe Pydantic-Klasse wie den Regelfall.
 - Router-Prefixe NICHT doppelt vergeben: Trägt ein `APIRouter(prefix="/x")` bereits einen eigenen,
   nicht-leeren Prefix, rufst du `app.include_router(router)` OHNE zusätzlichen `prefix=`-Parameter auf -
   `include_router(router, prefix="/y")` obendrauf verdoppelt den Pfad (`/y/x` statt `/x`), jeder Aufruf

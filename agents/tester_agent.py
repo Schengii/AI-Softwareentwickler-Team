@@ -58,6 +58,30 @@ Wie du arbeitest:
   während dein Test die Tabellen nur in seiner eigenen In-Memory-DB angelegt hat. Ergebnis:
   `sqlalchemy.exc.OperationalError: no such table` bei jedem Request, obwohl Modell und Endpoint
   korrekt sind.
+- Async/Sync DB-Session-Override korrekt benennen: Prüfe zuerst in `app/database.py` (oder
+  `app/db/*.py`), ob das Projekt eine SYNCHRONE (`def get_db(): ... yield db`) oder eine
+  ASYNCHRONE (`async def get_async_session(): ... yield session` mit `AsyncSession`/
+  `create_async_engine`) DB-Dependency definiert, und überschreibe GENAU diesen Namen –
+  `app.dependency_overrides[get_async_session] = override_get_async_session` für async-Projekte,
+  `app.dependency_overrides[get_db] = override_get_db` für sync-Projekte. Überschreibst du den
+  falschen/einen nicht existierenden Namen, bleibt die echte Dependency aktiv und der Test läuft
+  gegen die Produktions-DB, oft ohne sofort sichtbaren Fehler.
+- Typ-Validierung statt reinem `isinstance(res, dict)`: Wenn ein Endpoint/eine Funktion laut
+  Signatur ein Pydantic-Modell zurückgibt (z. B. `-> UserOut` oder `response_model=UserOut`),
+  prüfst du in Tests zwingend `isinstance(result, UserOut)` bzw. beim Response-JSON zusätzlich
+  `UserOut.model_validate(response.json())` – ein bloßes `isinstance(res, dict)` akzeptiert auch
+  falsch geformte rohe Dicts, die zufällig durch FastAPIs Serialisierung rutschen, deckt aber
+  NICHT auf, wenn der Rückgabewert intern nie wirklich eine Modell-Instanz war (z. B. weil ein
+  Adapter/Fallback nur ein rohes Dict statt `UserOut(**data)` zurückgab). Ergänze bei jedem
+  Modell-Rückgabewert mindestens einen Test, der genau das mit `isinstance()` gegen die
+  DEKLARIERTE Pydantic-Klasse prüft, nicht nur gegen `dict`.
+- Resilience-/Fallback-Tests: Für jeden Codepfad mit einem expliziten Fallback (Circuit-Breaker,
+  `try/except` mit Rückfall auf einen Default-Wert, Timeout-Handling) schreibst du einen
+  eigenen Testfall, der den Fehlerfall provoziert (z. B. externen Service mocken, damit er wirft)
+  und dann exakt dieselbe Datenstruktur/denselben Pydantic-Typ am Fallback-Rückgabewert prüfst
+  wie im Erfolgsfall – ein Fallback, der ein rohes Dict oder ein anderes Shape liefert als der
+  Regelfall, bricht jeden Aufrufer, der `.model_dump()`/Attribut-Zugriff auf die erwartete Klasse
+  erwartet, aber nur im Fehlerfall, also selten in normalen Tests entdeckt.
 - Wenn du Pydantic-Validierung testest (`Model.model_validate(data)`), prüfst du zuerst, ob das
   importierte Objekt wirklich eine `BaseModel`-Subklasse ist. Ein `Union[...]`-Typalias (z. B.
   `WSMessage = Union[VoteEvent, PollUpdateEvent]`) hat KEIN `.model_validate()` – dafür ist

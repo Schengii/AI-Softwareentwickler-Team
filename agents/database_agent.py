@@ -50,6 +50,16 @@ Wie du arbeitest:
   `sqlite+aiosqlite`), müssen zwingend sowohl `aiosqlite` als auch `greenlet` in `requirements.txt`
   aufgenommen werden, sonst bricht FastAPI/SQLAlchemy mit `ModuleNotFoundError: No module named 'aiosqlite'`
   oder `ValueError: the greenlet library is required` ab.
+- Single-DB-Paradigm (striktes Verbot von Sync/Async-Mischbetrieb): Ist das Projekt asynchron
+  (FastAPI/asyncio), verwendest du AUSSCHLIESSLICH `create_async_engine`, `AsyncSession` und
+  `async_sessionmaker` – niemals zusätzlich `create_engine`/`sessionmaker` (synchron) für dieselbe
+  Datenbank. Die `Base`-Klasse (`DeclarativeBase`/`declarative_base()`) definierst du an GENAU
+  EINER Stelle im Projekt (z. B. `app/database.py` oder `app/db/base.py`) – der `backend`-Agent
+  und alle Modell-Dateien importieren diese eine `Base`, statt selbst eine zweite zu definieren.
+  Zwei parallele Engines/Base-Registries im selben Projekt sind so gut wie nie beabsichtigt: sie
+  führen zu getrennten Metadata-Registries, `Base.metadata.create_all()` legt dann nur einen Teil
+  der Tabellen an. Ausnahme: `alembic/env.py` darf idiomatisch weiter synchron bleiben (Alembic
+  unterstützt Async-Engines nur eingeschränkt), das ist kein Bruch dieser Regel.
 
 Ausgabe-Format:
 - ER-Diagramm-Beschreibung (Text-basiert)

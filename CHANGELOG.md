@@ -7,6 +7,35 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🛠️ Agenten-Prompts für Contract-/Typ- und DB-Architektur-Konsistenz geschärft
+
+Nutzeranfrage (`/goal`): gezieltes Framework- & Agenten-Refactoring gegen fünf konkrete
+Schwachstellen aus den letzten Läufen (Contract-/Typ-Inkonsistenzen, Import-Drift/Phantom-
+Symbole, sync/async-DB-Architektur-Drift, schwache `tester`/`accessibility`-Agenten,
+Wissens-Transfer aus `memory/team_lessons.jsonl`). Bestandsaufnahme ergab: der Symbol-
+Existenz-Check (AST) und die Sync/Async-SQLAlchemy-Konflikt-Erkennung waren in
+`core/verifier/completeness.py` bereits vollständig implementiert und getestet (siehe
+`tests/test_verifier_completeness.py`), ebenso die geschärften `AVAILABLE_AGENTS`-Trigger-
+Beschreibungen für `accessibility`/`data_engineer`/`performance` in `core/task_manager.py` -
+diese Punkte waren aus früheren Retrospektiven bereits erledigt.
+
+Ergänzt wurden die noch offenen Lücken direkt in den Agenten-Systemprompts, die diese
+Fehlerklassen überhaupt erst vermeiden sollen: `tester_agent` prüft jetzt explizit
+`isinstance(result, <PydanticKlasse>)` statt eines bloßen `isinstance(res, dict)`, benennt
+`app.dependency_overrides[get_async_session]` vs. `[get_db]` korrekt je nach Projekt-Typ und
+verlangt eigene Testfälle für Resilience-/Fallback-Rückgaben mit identischem Datentyp wie der
+Regelfall. `database_agent` und `backend_agent` tragen jetzt beide ein striktes
+"Single-DB-Paradigm" (keine Mischung aus `create_engine`/`create_async_engine`, genau eine
+zentrale `Base`-Definition, Fallback-Werte als typisierte Pydantic-Instanzen statt roher
+Dicts). `accessibility_agent` liefert jetzt verbindlich datei- und zeilenbezogene Korrekturen
+am tatsächlichen Projekt-Code (inkl. `onKeyDown`-Handlern bei `role="button"`) statt eines
+generischen WCAG-Checklisten-Berichts.
+
+Verifiziert: `ruff check` (agents/, core/, interface/, memory/) sowie die vollständige
+pytest-Suite (1490 passed) laufen fehlerfrei durch.
+
+---
+
 ## 🛑 Deutliche Eskalation, wenn ein Governance-Ticket seine automatischen Retries ausschöpft
 
 Nutzeranfrage: Fortsetzung der Framework-Optimierungen. Realer Fund im aktuellen Backlog

@@ -1155,6 +1155,72 @@ class TestCompletenessCheck(unittest.TestCase):
             report = verifier.check_completeness()
             self.assertTrue(report.passed)
 
+    def test_detects_direct_dict_return_type_mismatch(self):
+        # Team-Optimierung (KI-Team-Weiterentwicklung, echter Fund: agent_governance-Projekt,
+        # 2026-09-09) - `SASTAdapter.scan()` ist annotiert, ein `SASTReport`-Objekt
+        # zurückzugeben, liefert aber ein rohes Dict-Literal, OHNE dass ein Resilience-/
+        # Circuit-Breaker-Except-Block beteiligt ist (siehe test_detects_resilience_fallback_
+        # dict_type_mismatch oben für das verwandte, aber enger gefasste Muster).
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "sast_adapter.py").write_text(
+                "class SASTAdapter:\n"
+                "    def scan(self, target: str) -> SASTReport:\n"
+                "        return {\"findings\": [], \"target\": target}\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any(
+                "SASTReport" in i.message and "scan" in i.message for i in report.issues
+            ))
+
+    def test_direct_dict_return_matching_annotation_not_flagged(self):
+        # Gegen-Test: Rückgabetyp-Annotation ist bereits `dict` - ein Dict-Literal ist dann
+        # genau das Erwartete, kein Fund.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "adapter.py").write_text(
+                "def scan(target: str) -> dict:\n"
+                "    return {\"findings\": [], \"target\": target}\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_direct_dict_return_constructing_model_not_flagged(self):
+        # Gegen-Test: die Funktion konstruiert tatsächlich eine Instanz des annotierten Typs -
+        # kein Dict-Literal, kein Fund.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "adapter.py").write_text(
+                "class SASTAdapter:\n"
+                "    def scan(self, target: str) -> SASTReport:\n"
+                "        return SASTReport(findings=[], target=target)\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_direct_dict_return_nested_function_not_flagged(self):
+        # Gegen-Test: das Dict-Literal steht in einer VERSCHACHTELTEN inneren Funktion mit
+        # eigener, unabhängiger Signatur - die äußere Funktion selbst gibt kein Dict zurück.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "adapter.py").write_text(
+                "def build_report(target: str) -> SASTReport:\n"
+                "    def _to_payload() -> dict:\n"
+                "        return {\"target\": target}\n"
+                "    return SASTReport(**_to_payload())\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
 
 if __name__ == "__main__":
     unittest.main()

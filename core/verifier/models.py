@@ -613,6 +613,24 @@ _RESILIENCE_FALLBACK_EXCEPT_RE = re.compile(
 )
 _DICT_LITERAL_RETURN_RE = re.compile(r"^\s*return\s*\{")
 
+# Team-Optimierung (KI-Team-Weiterentwicklung, echter Fund: agent_governance-Projekt,
+# 2026-09-09 - `SASTAdapter` gibt ein `Dict` zurück statt das in `schemas.py` definierte
+# `SASTReport`-Modell zu nutzen): _RESILIENCE_FALLBACK_EXCEPT_RE oben erkennt dasselbe
+# Fehlerbild bereits, aber NUR innerhalb eines Resilience-/Circuit-Breaker-`except`-Blocks
+# (opspilot-Fund, 2026-09-08). Der agent_governance-Fund war kein Resilience-Fallback, sondern
+# schlicht die normale Implementierung einer Methode - CompletenessMixin._direct_dict_return_
+# type_mismatch() prüft deshalb ALLGEMEIN jede Funktion/Methode, deren Rückgabetyp-Annotation
+# ein einfacher, groß geschriebener Name ist (Heuristik: "sieht wie ein eigenes Pydantic-
+# Modell/Dataclass aus"), gegen jede eigene `return`-Stelle. Diese Menge grenzt die generischen/
+# Builtin-Rückgabetypen aus, für die ein Dict-Literal legitim ist (u.a. `dict`/`Dict` selbst,
+# sowie Namen, die auf ein TypedDict/JSON-artiges Ergebnis hindeuten) - nur ein NICHT hier
+# gelisteter, groß geschriebener Name gilt als "modellartig" genug für einen Fund.
+_GENERIC_RETURN_TYPE_NAMES = frozenset({
+    "dict", "Dict", "list", "List", "set", "Set", "tuple", "Tuple", "str", "int", "float",
+    "bool", "bytes", "None", "Any", "object", "Mapping", "MutableMapping", "JSON", "JSONType",
+    "Optional", "Union", "Callable", "Iterable", "Iterator", "Generator", "Sequence",
+})
+
 # Dieselbe Team-Optimierung, zweiter Teil (logpulse-Fund vom 2026-09-05, bisher nie umgesetzt):
 # `create_async_engine()` braucht das Paket `greenlet` zur LAUFZEIT, um synchronen DBAPI-Code aus
 # async Kontext heraus aufzurufen (SQLAlchemy's Greenlet-basierte async-Bridge) - der Code

@@ -61,6 +61,7 @@ from core.backlog_store import Ticket, count_by_status, is_ticket_ready, list_ti
 from core.git_isolation import copy_worktree_changes_to_target, remove_worktree
 from core.merge_watcher import check_merged_tickets
 from core.notifier import notify_external
+from core.provider_exhaustion import all_failed_on_provider_exhaustion, is_provider_exhaustion_error
 from core.workspace import WorkspaceManager
 
 StatusCallback = Callable[[str], None]
@@ -103,32 +104,13 @@ _GOVERNANCE_RETRY_PREFIXES = (
 )
 
 
-_PROVIDER_EXHAUSTION_MARKERS = ("429", "resource_exhausted", "quota")
 
-
-def _is_provider_exhaustion_error(error: str | None) -> bool:
-    """Erkennt eine API-Kontingent-/Rate-Limit-Erschöpfung (429/RESOURCE_EXHAUSTED/quota) in
-    einer AgentResult.error-Meldung - siehe _process_single_ticket()-Aufrufstelle für die
-    volle Herleitung (echter Fund, KI-Team-Optimierungs-Session: ein Lauf, bei dem JEDER
-    Agenten-Aufruf inkl. aller konfigurierten Fallback-Modelle an genau diesem Fehler
-    scheiterte, öffnete trotzdem einen PR - der enthielt aber ausschließlich automatisch
-    aktualisierte Statusdateien, keine einzige echte Code-Änderung, weil kein Agent je
-    erfolgreich lief)."""
-    if not error:
-        return False
-    lowered = error.lower()
-    return any(marker in lowered for marker in _PROVIDER_EXHAUSTION_MARKERS)
-
-
-def _all_agents_failed_on_provider_exhaustion(results: list) -> bool:
-    """True, wenn DIESER Lauf mindestens ein Agenten-Ergebnis hatte UND ALLE davon an einer
-    API-Kontingent-Erschöpfung scheiterten - eine leere Ergebnisliste (kein Agent lief
-    überhaupt) zählt bewusst NICHT als "alle gescheitert", das ist ein anderer, hier nicht
-    behandelter Fall."""
-    return bool(results) and all(
-        not getattr(r, "success", True) and _is_provider_exhaustion_error(getattr(r, "error", None))
-        for r in results
-    )
+# Team-Optimierung (KI-Team-Weiterentwicklung): die Erschöpfungserkennung selbst lebt jetzt in
+# core/provider_exhaustion.py (siehe dessen Moduldocstring) - agents/orchestrator/dispatch.py
+# braucht dieselbe Logik für den interaktiven Lauf, nicht nur für diesen autonomen Worker-Pfad.
+# Lokale Alias-Namen bleiben erhalten, damit bestehende Aufrufer/Tests unten unverändert bleiben.
+_is_provider_exhaustion_error = is_provider_exhaustion_error
+_all_agents_failed_on_provider_exhaustion = all_failed_on_provider_exhaustion
 
 
 def _governance_retry_pool(all_tickets: list[Ticket]) -> list[Ticket]:
@@ -222,6 +204,13 @@ class BacklogPollReport:
     # "niemals stumm überspringen"-Linie wie reason_skipped an anderer Stelle im Projekt.
     skipped_reason: str = ""
     merged_ticket_ids: list[str] = field(default_factory=list)
+    # Team-Optimierung (KI-Team-Weiterentwicklung): siehe run_backlog_poll_cycle() für die volle
+    # Herleitung - Governance-Retry-Tickets, die GENAU in diesem Zyklus ihren letzten erlaubten
+    # automatischen Versuch verbraucht haben (retries erreicht MAX_GOVERNANCE_TICKET_RETRIES) UND
+    # weiterhin nicht "pr_opened" erreichten, landen hier zusätzlich zu `results` - für eine
+    # Erfolgsmeldung/einen CLI-Hinweis, der diese besonders hervorheben kann, statt sie in der
+    # generischen Ergebnisliste untergehen zu lassen.
+    retries_exhausted_ticket_ids: list[str] = field(default_factory=list)
 
 
 async def run_backlog_poll_cycle(
@@ -333,10 +322,34 @@ async def run_backlog_poll_cycle(
             status=_OUTCOME_TO_TICKET_STATUS.get(result.outcome, "blocked"), detail=preserved_detail,
         )
         if result.outcome != "pr_opened":
-            await asyncio.to_thread(
-                notify_external, "Backlog-Ticket benötigt Aufmerksamkeit",
-                f"`{result.ticket_id}` '{result.title}' ({result.outcome}): {result.detail[:200]}",
+            # Team-Optimierung (KI-Team-Weiterentwicklung, echter Fund: memory/backlog.json-
+            # Tickets `recurring-failure-sentinelproxy`/`recurring-lint-sentinelproxy`, beide
+            # dauerhaft "blocked" mit retries==MAX_GOVERNANCE_TICKET_RETRIES): der GENAU
+            # gleiche, generische Hinweis "Backlog-Ticket benötigt Aufmerksamkeit" feuerte bei
+            # JEDEM erfolglosen Versuch - beim finalen, letztlich erfolglosen Versuch (danach
+            # greift `_governance_retry_pool()` dieses Ticket NIE wieder auf, siehe deren
+            # Docstring) sah die Meldung identisch aus wie bei einem Versuch, dem noch ein
+            # weiterer automatischer Retry folgt. Ohne dieses Wissen wirkte ein dauerhaft
+            # "blocked" liegendes Ticket wie "wird schon noch automatisch behoben" - bis
+            # jemand zufällig `retries`/MAX_GOVERNANCE_TICKET_RETRIES nachschlägt.
+            retries_exhausted = (
+                is_retry and (ticket.retries + 1) >= MAX_GOVERNANCE_TICKET_RETRIES
             )
+            if retries_exhausted:
+                report.retries_exhausted_ticket_ids.append(ticket.id)
+                await asyncio.to_thread(
+                    notify_external,
+                    "🛑 Automatische Wiederholungsversuche ausgeschöpft - menschliche Prüfung erforderlich",
+                    f"`{result.ticket_id}` '{result.title}': nach {MAX_GOVERNANCE_TICKET_RETRIES} "
+                    f"automatischen Versuchen weiterhin nicht gelöst ({result.outcome}) - "
+                    "`--work-backlog` greift dieses Ticket nicht mehr eigenständig erneut auf.\n\n"
+                    f"{result.detail[:200]}",
+                )
+            else:
+                await asyncio.to_thread(
+                    notify_external, "Backlog-Ticket benötigt Aufmerksamkeit",
+                    f"`{result.ticket_id}` '{result.title}' ({result.outcome}): {result.detail[:200]}",
+                )
         report.results.append(result)
     return report
 

@@ -216,6 +216,15 @@ def main():
         for r in report.results:
             detail = f" – {r.detail}" if r.detail else ""
             print(f"`{r.ticket_id}` '{r.title}' -> {r.outcome}{detail}")
+        # Team-Optimierung (KI-Team-Weiterentwicklung): siehe core/backlog_worker.py.
+        # BacklogPollReport.retries_exhausted_ticket_ids-Docstring - separat und deutlich
+        # hervorgehoben, statt in der generischen results-Liste oben untergehen zu lassen.
+        if report.retries_exhausted_ticket_ids:
+            print(
+                f"🛑 {len(report.retries_exhausted_ticket_ids)} Ticket(s) haben ihre automatischen "
+                f"Wiederholungsversuche ausgeschöpft und benötigen jetzt menschliche Prüfung: "
+                f"{', '.join(report.retries_exhausted_ticket_ids)}"
+            )
         return
 
     if "--check-deployments" in sys.argv:

@@ -7,6 +7,78 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🧠 Proaktive Import-Namen-Prüfung, ehrliche Kennzeichnung von Kontingent-Erschöpfung in Tickets
+
+Nutzerauftrag: Analyse der letzten realen KI-Team-Läufe (`workspace/agent_governance`,
+`memory/history_default.json`, `memory/team_lessons.jsonl`) und Umsetzung sinnvoller
+Verbesserungen AM FRAMEWORK selbst (nicht an einzelnen Workspace-Projekten). Zwei konkrete,
+echte Lücken gefunden und behoben:
+
+1. **`ImportError: cannot import name 'X' from 'Y'` trat wiederholt identisch auf, bevor je ein
+   Testlauf lief:** `memory/history_default.json` zeigte denselben
+   `ImportError: cannot import name 'RateLimitMiddleware' from 'app.middleware.rate_limit'` an
+   mehreren, verschiedenen Läufen - die importierte Klasse existierte im Zielmodul tatsächlich
+   unter einem anderen Namen. `core/pre_flight_check.py` prüfte bisher nur, ob das MODUL
+   existiert (`_is_local_module`/`_check_missing_init`), nie, ob der konkret importierte NAME
+   darin auch wirklich definiert ist - eine bereits vorhandene, aber rein REAKTIVE
+   Selbstlern-Logik (`agents/orchestrator/verification.py._import_name_error_target()`,
+   `tests/test_import_name_error_learning.py`) griff erst NACH einem echten pytest-Fehlschlag.
+   Neue `_check_imported_names_exist()` (neuer Befund-Typ `unresolved_import_name`, blockierend
+   wie `missing_init`/`syntax_error`) erkennt dieselbe Fehlerklasse jetzt per `ast.parse()` -
+   ohne LLM-Aufruf, Millisekunden statt eines vollen Testlaufs. Bewusst konservativ, um keine
+   falschen Befunde zu erzeugen: überspringt jedes Zielmodul mit `from x import *`
+   (Namen dann statisch nicht mehr bestimmbar) und behandelt `from <package> import <submodul>`
+   immer als gültig, wenn `<submodul>.py`/`<submodul>/` existiert - unabhängig davon, ob
+   `__init__.py` den Namen explizit re-exportiert (Python löst Submodul-Importe so auf).
+2. **Ein durch API-Kontingent-Erschöpfung verursachter Laufabbruch sah in einem
+   `unresolved-governance-critical-`/`recurring-failure-`-Ticket identisch aus wie ein echter,
+   ungelöster Code-Defekt:** derselbe Lauf an `agent_governance` endete mit 11 von 32
+   Agenten-Aufrufen, die in Folge mit `total_tokens: 0` scheiterten, weil alle konfigurierten
+   Provider gleichzeitig ihr Tages-Kontingent ausgeschöpft hatten (`429 RESOURCE_EXHAUSTED`) -
+   das eröffnete Ticket enthielt keinen Hinweis darauf, war für eine spätere Prüfung nicht von
+   einem echten Bug zu unterscheiden. `core/backlog_worker.py._is_provider_exhaustion_error()`/
+   `_all_agents_failed_on_provider_exhaustion()` erkannten dieses Muster bereits, aber nur für
+   den autonomen `--work-backlog`-Ticket-Pfad. Diese Erkennung lebt jetzt in
+   `core/provider_exhaustion.py` (von `core/backlog_worker.py` weiterhin per Alias genutzt) und
+   ist zusätzlich in `agents/orchestrator/dispatch.py._run_agents_parallel()` verdrahtet: scheitert
+   eine ganze Welle von Agenten-Aufrufen ausschließlich an einer Kontingent-Erschöpfung, setzt das
+   `self._provider_exhausted_this_run` für den Rest des Laufs - jedes danach eröffnete
+   `unresolved-governance-critical-`/`unresolved-permission-blocked-`/`recurring-failure-`-Ticket
+   trägt jetzt einen expliziten Hinweis, dass die Ursache (auch) ein Kontingent-Engpass statt
+   zwingend ein echter Defekt gewesen sein könnte.
+
+3. **`SASTAdapter` gibt ein `Dict` zurück statt des annotierten Pydantic-Modells - dasselbe
+   Fehlerbild wie der bereits behobene opspilot-Fund, aber OHNE Resilience-/Circuit-Breaker-
+   Kontext:** `core/verifier/completeness.py._resilience_fallback_type_mismatch()` (Retrospektive
+   2026-09-08) erkennt "Dict-Literal statt Pydantic-Modell" bisher NUR innerhalb eines
+   `except CircuitBreakerError`-artigen Fallback-Zweigs - der `agent_governance`-Fund
+   (`unresolved-governance-critical-agent_governance`-Ticket, 2026-09-09) war aber die normale
+   Implementierung einer Methode, kein Resilience-Fallback, und blieb deshalb unerkannt. Neue,
+   allgemeinere `_direct_dict_return_type_mismatch()` (AST-basiert statt zeilenbasiert): prüft
+   JEDE Funktion/Methode mit einer "modellartigen" Rückgabetyp-Annotation (einfacher, groß
+   geschriebener `ast.Name`, nicht in der neuen `core/verifier/models.py._GENERIC_RETURN_TYPE_
+   NAMES`-Liste) gegen jede eigene `return`-Stelle - verschachtelte innere Funktionen mit
+   eigener Signatur werden dabei bewusst nicht mitgeprüft (`_own_return_statements()`).
+
+Bewusst NICHT umgesetzt, weil es eine bereits bestehende, dokumentierte Design-Entscheidung
+gebrochen hätte (kein offener Punkt, sondern eine geprüfte und verworfene Idee): Governance-/
+Recurring-Tickets künstlich vor reguläre "todo"-Tickets zu priorisieren -
+`core/backlog_worker.py.run_backlog_poll_cycle()` sortiert automatische Wiederholungsversuche
+bewusst HINTER frischen, vom Nutzer/Dashboard eingereichten Tickets gleicher Priorität ("ein
+bewusst eingereichtes Ticket soll nicht hinter einem automatischen Retry zurückstehen müssen").
+Ein `priority=1`-Versuch wurde umgesetzt, beim Test gegen diese Dokumentation als Regression
+erkannt und wieder vollständig zurückgenommen (kein Diff in `agents/orchestrator/__init__.py`,
+`agents/orchestrator/verification.py`, `core/workspace_audit.py` gegenüber dem Ausgangsstand).
+
+Neue Tests: `tests/test_pre_flight_check.py` (6 neue Fälle: RateLimitMiddleware-Reproduktion
+absolut/relativ, korrekter Import, gültiger Submodul-Import, Wildcard-Re-Export,
+Drittanbieter-Import unberührt), `tests/test_provider_exhaustion.py` (13 Fälle für
+`core/provider_exhaustion.py` und die neue Verdrahtung in `DispatchMixin._run_agents_parallel()`),
+`tests/test_verifier_completeness.py` (4 neue Fälle für `_direct_dict_return_type_mismatch()`).
+Volle Suite (1487 Tests) grün, `ruff check` clean.
+
+---
+
 ## 🔐 Dependency-Audit über alle requirements-Dateien, Bandit-B101-False-Positives, Fehlerbehandlungs-Disziplin
 
 Nutzerauftrag: Analyse von vier vermuteten System-/Workflow-Hürden (Sandbox-Dependency-

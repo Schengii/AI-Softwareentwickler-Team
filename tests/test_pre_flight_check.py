@@ -498,5 +498,98 @@ class TestPreFlightCheckIntegration(unittest.TestCase):
             self.assertIsNotNone(dep)
 
 
+class TestUnresolvedImportName(unittest.TestCase):
+    """
+    Team-Optimierung (KI-Team-Weiterentwicklung): echter, wiederholt aufgetretener Fund
+    (memory/history_default.json, 2026-09-08/09) - `ImportError: cannot import name
+    'RateLimitMiddleware' from 'app.middleware.rate_limit'` trat identisch an mehreren Laeufen
+    auf, weil die importierte Klasse im Zielmodul tatsaechlich anders hiess
+    (`SimpleRateLimiter`). Die bisherige Import-Analyse pruefte nur, ob das MODUL existiert,
+    nie den konkret importierten NAMEN darin - dieser Test haelt die neue,
+    proaktive (kein LLM-Aufruf noetige) Erkennung dieser Fehlerklasse fest.
+    """
+
+    def test_detects_renamed_class_absolute_import(self):
+        """Der real aufgetretene Fall: absoluter Import einer Klasse, die im Zielmodul
+        unter einem anderen Namen existiert."""
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "app" / "__init__.py", "")
+            _write(proj / "app" / "middleware" / "__init__.py", "")
+            _write(proj / "app" / "middleware" / "rate_limit.py",
+                   "class SimpleRateLimiter:\n    pass\n")
+            _write(proj / "app" / "main.py",
+                   "from app.middleware.rate_limit import RateLimitMiddleware\napp = None\n")
+            report = run_pre_flight_check(proj)
+            hit = next((i for i in report.issues if i.issue_type == "unresolved_import_name"), None)
+            self.assertIsNotNone(hit, f"Erwarteter Fund fehlt: {report.issues}")
+            self.assertIn("RateLimitMiddleware", hit.message)
+            self.assertTrue(report.has_blocking_issues)
+
+    def test_detects_renamed_name_relative_import(self):
+        """Derselbe Fehlerklasse, aber ueber einen relativen Import (`from .x import Y`)."""
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "app" / "__init__.py", "")
+            _write(proj / "app" / "security.py", "def hash_password(pw):\n    return pw\n")
+            _write(proj / "app" / "auth.py",
+                   "from .security import create_access_token\n")
+            report = run_pre_flight_check(proj)
+            hit = next((i for i in report.issues if i.issue_type == "unresolved_import_name"), None)
+            self.assertIsNotNone(hit, f"Erwarteter Fund fehlt: {report.issues}")
+            self.assertIn("create_access_token", hit.message)
+
+    def test_no_false_positive_for_correct_import(self):
+        """Der Gegen-Test: existiert der Name tatsaechlich, gibt es keinen Fund."""
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "app" / "__init__.py", "")
+            _write(proj / "app" / "middleware" / "__init__.py", "")
+            _write(proj / "app" / "middleware" / "rate_limit.py",
+                   "class RateLimitMiddleware:\n    pass\n")
+            _write(proj / "app" / "main.py",
+                   "from app.middleware.rate_limit import RateLimitMiddleware\napp = None\n")
+            report = run_pre_flight_check(proj)
+            self.assertEqual([i for i in report.issues if i.issue_type == "unresolved_import_name"], [])
+
+    def test_no_false_positive_for_submodule_import(self):
+        """`from <package> import <submodul>` ist in Python immer gueltig, wenn die Datei
+        existiert - UNABHAENGIG davon, ob __init__.py den Namen explizit re-exportiert."""
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "app" / "__init__.py", "")
+            _write(proj / "app" / "routers" / "__init__.py", "")
+            _write(proj / "app" / "routers" / "users.py", "def get_users():\n    pass\n")
+            _write(proj / "app" / "main.py",
+                   "from app import routers\nfrom app.routers import users\n"
+                   "from .routers.users import get_users\napp = None\n")
+            report = run_pre_flight_check(proj)
+            self.assertEqual([i for i in report.issues if i.issue_type == "unresolved_import_name"], [])
+
+    def test_no_false_positive_for_wildcard_reexport(self):
+        """Ein `from x import *` im Zielmodul macht die tatsaechlich verfuegbaren Namen
+        statisch unbestimmbar - bewusst kein Fund statt eines moeglichen Fehlalarms."""
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "app" / "__init__.py", "")
+            _write(proj / "app" / "constants.py", "from .other_constants import *\n")
+            _write(proj / "app" / "other_constants.py", "MAX_RETRIES = 3\n")
+            _write(proj / "app" / "main.py",
+                   "from app.constants import MAX_RETRIES\napp = None\n")
+            report = run_pre_flight_check(proj)
+            self.assertEqual([i for i in report.issues if i.issue_type == "unresolved_import_name"], [])
+
+    def test_third_party_imports_not_checked(self):
+        """Drittanbieter-Importe werden von diesem Check nicht angefasst (bleiben Sache der
+        bestehenden missing_dependency-Pruefung)."""
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "app" / "__init__.py", "")
+            _write(proj / "app" / "main.py", "from fastapi import FastAPI\napp = FastAPI()\n")
+            _write(proj / "requirements.txt", "fastapi\n")
+            report = run_pre_flight_check(proj)
+            self.assertEqual([i for i in report.issues if i.issue_type == "unresolved_import_name"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

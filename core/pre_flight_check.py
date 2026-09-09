@@ -139,6 +139,163 @@ def _check_passlib_bcrypt_pin(project_dir: Path, sources_by_file: dict[str, str]
     )
 
 
+def _resolve_module_file(project_dir: Path, importer_rel_path: str, module: str | None, level: int) -> Path | None:
+    """Findet die tatsaechliche .py-Datei/das __init__.py hinter einem lokalen `from ... import`
+    - Grundlage fuer _check_imported_names_exist() unten. Gibt None zurueck, wenn das Ziel nicht
+    lokal aufloesbar ist (Drittanbieter-Paket, Stdlib, oder schlicht nicht gefunden) - solche
+    Faelle sind bewusst kein Fund hier (Drittanbieter/Stdlib werden von den Checks oben bzw. gar
+    nicht geprueft, ein nicht gefundenes lokales Modul faellt bereits durch den bestehenden
+    Import-Analyse-Zweig oben als eigener Befund auf)."""
+    if level and level > 0:
+        # Relative Importe: "from . import X" (module=None) zielt auf das Package des
+        # importierenden Moduls selbst, "from .foo import X" auf das Sibling-Modul/-Package
+        # "foo" darin, "from ..foo import X" eine Ebene hoeher usw.
+        base = (project_dir / importer_rel_path).parent
+        for _ in range(level - 1):
+            base = base.parent
+        if not module:
+            init_file = base / "__init__.py"
+            return init_file if init_file.is_file() else None
+        candidate = base
+        for part in module.split("."):
+            candidate = candidate / part
+        return _existing_module_file(candidate)
+
+    if not module:
+        return None
+    parts = module.split(".")
+    for root in (project_dir, project_dir / "app", project_dir / "src"):
+        candidate = root
+        for part in parts:
+            candidate = candidate / part
+        resolved = _existing_module_file(candidate)
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def _existing_module_file(candidate: Path) -> Path | None:
+    """`candidate` ist ein Modul-Pfad OHNE Dateiendung (z.B. `app/middleware/rate_limit`) -
+    gibt die zugehoerige .py-Datei zurueck, oder deren __init__.py, falls es ein Package ist."""
+    py_file = candidate.with_suffix(".py")
+    if py_file.is_file():
+        return py_file
+    init_file = candidate / "__init__.py"
+    if init_file.is_file():
+        return init_file
+    return None
+
+
+def _collect_defined_names(source: str) -> set[str] | None:
+    """Sammelt alle auf Modulebene gebundenen Namen (Klassen, Funktionen, Variablen, Imports) -
+    Grundlage fuer _check_imported_names_exist() unten. Gibt None zurueck, wenn das Modul einen
+    Wildcard-Import (`from x import *`) enthaelt - in dem Fall lassen sich die tatsaechlich
+    verfuegbaren Namen nicht mehr statisch bestimmen, ein Fund waere reines Rauschen."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    names.add(target.id)
+                elif isinstance(target, ast.Tuple):
+                    names.update(elt.id for elt in target.elts if isinstance(elt, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+        elif isinstance(node, ast.Import):
+            names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if any(alias.name == "*" for alias in node.names):
+                return None
+            names.update(alias.asname or alias.name for alias in node.names)
+    return names
+
+
+def _check_imported_names_exist(
+    project_path: Path, sources_by_file: dict[str, str], seen_issues: set[tuple[str, str, str]],
+) -> list[PreFlightIssue]:
+    """
+    Team-Optimierung (KI-Team-Weiterentwicklung, echter wiederholter Fund: derselbe
+    `ImportError: cannot import name 'RateLimitMiddleware' from 'app.middleware.rate_limit'`
+    trat in memory/history_default.json an VERSCHIEDENEN Laeufen mehrfach identisch auf, weil
+    die importierte Klasse im Zielmodul tatsaechlich anders hiess. Die bestehende Import-Analyse
+    oben prueft nur, ob das MODUL existiert (_is_local_module/_check_missing_init) - nie, ob der
+    konkret importierte NAME darin auch wirklich definiert ist. ast.parse() erkennt das ohne
+    LLM-Aufruf, bevor ein teurer Testlauf denselben Fehler erst zur Laufzeit aufdeckt.
+
+    Bewusst konservativ (lieber einen echten Fund verpassen als einen falschen melden):
+    - Ueberspringt jedes Zielmodul mit einem Wildcard-Import (`from x import *`,
+      _collect_defined_names() gibt dafuer None zurueck) - die tatsaechlich verfuegbaren Namen
+      sind dann statisch nicht mehr bestimmbar.
+    - Behandelt `from <package> import <submodul>` als gueltig, wenn `<submodul>.py` bzw.
+      `<submodul>/` direkt im Package-Ordner existiert, UNABHAENGIG davon, ob __init__.py den
+      Namen explizit importiert/exportiert - Python loest ein Submodul-Import so grundsaetzlich
+      immer auf, auch ohne expliziten Re-Export im __init__.py.
+    """
+    issues: list[PreFlightIssue] = []
+    for rel_path, source in sources_by_file.items():
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if any(alias.name == "*" for alias in node.names):
+                continue
+            target_file = _resolve_module_file(project_path, rel_path, node.module, node.level or 0)
+            if target_file is None:
+                continue
+            try:
+                target_rel = str(target_file.relative_to(project_path)).replace("\\", "/")
+            except ValueError:
+                continue
+            target_source = sources_by_file.get(target_rel)
+            if target_source is None:
+                try:
+                    target_source = target_file.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+            defined = _collect_defined_names(target_source)
+            if defined is None:
+                continue
+            package_dir = target_file.parent if target_file.name == "__init__.py" else None
+            for alias in node.names:
+                imported_name = alias.name
+                if imported_name in defined:
+                    continue
+                if package_dir is not None and (
+                    (package_dir / f"{imported_name}.py").is_file() or (package_dir / imported_name).is_dir()
+                ):
+                    continue  # gueltiges Submodul-Import, siehe Docstring oben
+                key = ("import_name", rel_path, imported_name, target_rel)
+                if key in seen_issues:
+                    continue
+                seen_issues.add(key)
+                dots = "." * (node.level or 0)
+                issues.append(PreFlightIssue(
+                    file=rel_path,
+                    line=node.lineno,
+                    issue_type="unresolved_import_name",
+                    message=(
+                        f"`from {dots}{node.module or ''} import {imported_name}` - `{imported_name}` "
+                        f"ist in `{target_rel}` nicht definiert (weder Klasse, Funktion, Variable "
+                        "noch Re-Export)."
+                    ),
+                    suggestion=(
+                        f"Pruefe den tatsaechlichen Namen in `{target_rel}` (haeufige Ursache: "
+                        "Klasse/Funktion wurde dort umbenannt, aber nicht alle Imports angepasst) "
+                        "und korrigiere den Import."
+                    ),
+                ))
+    return issues
+
+
 @dataclass
 class PreFlightIssue:
     """Ein einzelner gefundener Vorab-Import-Befund."""
@@ -166,7 +323,7 @@ class PreFlightReport:
     def has_blocking_issues(self) -> bool:
         """True, wenn Befunde vorliegen, die einen Testlauf mit hoher Wahrscheinlichkeit
         zum Scheitern bringen (missing_init, syntax_error)."""
-        blocking_types = {"missing_init", "syntax_error"}
+        blocking_types = {"missing_init", "syntax_error", "unresolved_import_name"}
         return any(i.issue_type in blocking_types for i in self.issues)
 
     def format_for_agent(self) -> str:
@@ -485,6 +642,8 @@ def _run_checks(project_path: Path, report: PreFlightReport) -> None:
             seen_issues.add(key)
             report.issues.append(empty_test_issue)
 
+    report.issues.extend(_check_imported_names_exist(project_path, sources_by_file, seen_issues))
+
 
 def format_pre_flight_issues_for_fix(report: PreFlightReport) -> str:
     """Formatiert die Befunde als kompakten Fix-Auftrag fuer den backend-Agenten."""
@@ -494,7 +653,7 @@ def format_pre_flight_issues_for_fix(report: PreFlightReport) -> str:
         "Vorab-Import-Check hat Probleme gefunden (bevor Tests laufen koennen):",
         "",
     ]
-    blocking = [i for i in report.issues if i.issue_type in {"missing_init", "syntax_error"}]
+    blocking = [i for i in report.issues if i.issue_type in {"missing_init", "syntax_error", "unresolved_import_name"}]
     deps = [i for i in report.issues if i.issue_type == "missing_dependency"]
     hidden_deps = [i for i in report.issues if i.issue_type == "hidden_runtime_dependency"]
 

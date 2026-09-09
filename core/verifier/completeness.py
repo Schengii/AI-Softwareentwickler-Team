@@ -35,6 +35,7 @@ from core.verifier.models import (
     _CORS_ALLOW_CREDENTIALS_RE,
     _CORS_WILDCARD_ORIGIN_RE,
     _DICT_LITERAL_RETURN_RE,
+    _GENERIC_RETURN_TYPE_NAMES,
     _GREENLET_PACKAGE_NAME,
     _IGNORED_DIRS,
     _IMPORT_TO_PACKAGE_NAME,
@@ -133,6 +134,7 @@ class CompletenessMixin:
         issues.extend(self._missing_sqlalchemy_dsn_driver(py_texts))
         issues.extend(self._missing_greenlet_dependency(py_texts))
         issues.extend(self._resilience_fallback_type_mismatch(py_texts))
+        issues.extend(self._direct_dict_return_type_mismatch(py_texts))
         issues.extend(self._wildcard_security_middleware(py_texts))
 
         return CompletenessReport(attempted=True, passed=not issues, issues=issues)
@@ -863,6 +865,77 @@ class CompletenessMixin:
                         ))
                         break
         return issues
+
+    def _direct_dict_return_type_mismatch(self, py_texts: dict[str, str]) -> list[CompletenessIssue]:
+        """Team-Optimierung (KI-Team-Weiterentwicklung, echter Fund: agent_governance-Projekt,
+        2026-09-09) - siehe core/verifier/models.py._GENERIC_RETURN_TYPE_NAMES-Docstring für die
+        volle Herleitung und die Abgrenzung zu _resilience_fallback_type_mismatch() oben (dort:
+        NUR innerhalb eines Resilience-/Circuit-Breaker-`except`-Blocks; hier: JEDE Funktion/
+        Methode mit einer "modellartigen" Rückgabetyp-Annotation, unabhängig vom Kontext).
+
+        AST-basiert (nicht zeilenbasiert wie die Schwester-Checks oben): eine Rückgabetyp-
+        Annotation ist nur dann relevant, wenn sie ein einfacher `ast.Name` ist (kein
+        `Optional[X]`/`X | None`/`dict[str, Any]` - das sind `ast.Subscript`/`ast.BinOp`,
+        bewusst NICHT geprüft, um keinen legitimen TypedDict-artigen Rückgabetyp fälschlich zu
+        melden) UND groß geschrieben ist (Heuristik: eigene Klasse/Pydantic-Modell) UND nicht in
+        _GENERIC_RETURN_TYPE_NAMES steht. Prüft NUR `return`-Anweisungen, die direkt zur
+        Funktion selbst gehören (verschachtelte innere Funktionen/Lambdas haben ihre eigene,
+        unabhängige Signatur und werden hier bewusst nicht mitgeprüft)."""
+        issues: list[CompletenessIssue] = []
+        for rel, text in sorted(py_texts.items()):
+            try:
+                tree = ast.parse(text)
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                returns = node.returns
+                if not isinstance(returns, ast.Name):
+                    continue
+                if returns.id in _GENERIC_RETURN_TYPE_NAMES or not returns.id[:1].isupper():
+                    continue
+                for ret in self._own_return_statements(node):
+                    if not isinstance(ret.value, ast.Dict):
+                        continue
+                    issues.append(CompletenessIssue(
+                        file_path=rel, line_number=ret.lineno,
+                        message=(
+                            f"Funktion/Methode `{node.name}` ist annotiert, ein "
+                            f"`{returns.id}`-Objekt zurückzugeben, liefert an dieser Stelle "
+                            "aber ein rohes Dict-Literal zurück - jeder Aufrufer, der Pydantic-"
+                            "Validierung oder `.attribut`-Zugriff auf dem Ergebnis erwartet, "
+                            "bricht mit `AttributeError`/Validierungsfehler ab. Entweder eine "
+                            f"echte `{returns.id}`-Instanz konstruieren oder die Rückgabetyp-"
+                            "Annotation korrigieren."
+                        ),
+                    ))
+        return issues
+
+    @staticmethod
+    def _own_return_statements(func_node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Return]:
+        """Sammelt alle `return`-Anweisungen, die DIREKT zu `func_node` gehören - steigt bewusst
+        NICHT in verschachtelte `def`/`async def`/`lambda` ab (die haben eine eigene, unabhängige
+        Signatur/Rückgabetyp). Grundlage für _direct_dict_return_type_mismatch() oben."""
+        collected: list[ast.Return] = []
+
+        class _OwnReturnVisitor(ast.NodeVisitor):
+            def visit_FunctionDef(self, node: ast.AST) -> None:
+                pass  # nicht in verschachtelte Funktionsdefinitionen absteigen
+
+            def visit_AsyncFunctionDef(self, node: ast.AST) -> None:
+                pass
+
+            def visit_Lambda(self, node: ast.AST) -> None:
+                pass
+
+            def visit_Return(self, node: ast.Return) -> None:
+                collected.append(node)
+
+        visitor = _OwnReturnVisitor()
+        for child in ast.iter_child_nodes(func_node):
+            visitor.visit(child)
+        return collected
 
     def _wildcard_security_middleware(self, py_texts: dict[str, str]) -> list[CompletenessIssue]:
         """Elfter realer Fund (taskboard-Projekt, Governance-Review 2026-09-07): `app.add_

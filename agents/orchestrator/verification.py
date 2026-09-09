@@ -576,7 +576,7 @@ class VerificationMixin:
                 # war also unwiederbringlich weg. Einmal ungekürzt berechnen, überall gleich
                 # verwenden (log_decision() deckelt selbst noch auf core.decision_log.
                 # MAX_DETAIL_CHARS, aber deutlich großzügiger als vorher).
-                unresolved_detail = "\n\n".join(block for _agent_id, block in findings)
+                unresolved_detail = "\n\n".join(block for _agent_id, block in findings) + self._provider_exhaustion_ticket_note()
                 try:
                     upsert_ticket(
                         ticket_id=f"unresolved-governance-critical-{getattr(self, 'last_project_slug', 'project')}",
@@ -857,7 +857,7 @@ class VerificationMixin:
                         f"{len(still_critical)} kritische(n) Befund(e) – Backlog-Ticket eröffnet statt "
                         "stillschweigend zu übernehmen."
                     )
-                    still_critical_detail = "\n\n".join(still_critical)
+                    still_critical_detail = "\n\n".join(still_critical) + self._provider_exhaustion_ticket_note()
                     # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echte PR-Review-
                     # Kommentare): dieselben still_critical-Blöcke, die gerade als Fließtext im
                     # Backlog-Ticket landen, werden hier ZUSÄTZLICH in ReviewFinding-Objekte
@@ -1043,7 +1043,7 @@ class VerificationMixin:
                         f"- 🛑 Re-Review bestätigt den Fix NICHT – {len(still_critical)} weiterhin kritische(r) "
                         "Befund(e). Backlog-Ticket für menschliche Prüfung eröffnet."
                     )
-                    still_critical_detail = "\n\n".join(still_critical)
+                    still_critical_detail = "\n\n".join(still_critical) + self._provider_exhaustion_ticket_note()
                     # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echte PR-Review-
                     # Kommentare) - siehe die ausführliche Begründung bei der Schwester-Stelle in
                     # _run_governance_fix_loop() oben.
@@ -1784,7 +1784,8 @@ class VerificationMixin:
                             title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
                             source="orchestrator", status="blocked", project_slug=self.last_project_slug,
                             detail=f"Fixversuch änderte nichts an {len(report.failures)} Testfehler(n) – "
-                                   "vermutlich falscher/unzureichend instruierter Agent.\n\n" + top_failures,
+                                   "vermutlich falscher/unzureichend instruierter Agent.\n\n" + top_failures
+                                   + self._provider_exhaustion_ticket_note(),
                         )
                     except Exception as e:
                         notify(f"  ⚠️ [dim yellow]Ticket für ungelösten Testfehler konnte nicht angelegt werden: {e}[/dim yellow]")
@@ -1882,7 +1883,7 @@ class VerificationMixin:
                             ticket_id=f"recurring-failure-{self.last_project_slug}",
                             title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
                             source="orchestrator", status="blocked", project_slug=self.last_project_slug,
-                            detail="\n".join(summary_lines).strip()[:300],
+                            detail="\n".join(summary_lines).strip()[:300] + self._provider_exhaustion_ticket_note(),
                         )
                     except Exception as e:
                         notify(f"  ⚠️ [dim yellow]Ticket für ungelösten Testfehler konnte nicht angelegt werden: {e}[/dim yellow]")

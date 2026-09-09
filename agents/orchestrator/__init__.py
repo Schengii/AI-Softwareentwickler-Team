@@ -604,6 +604,12 @@ class Orchestrator(
                     "Verifikation.",
                 )
 
+        # Team-Optimierung (KI-Team-Weiterentwicklung): pro-Lauf zurückgesetzt (nicht im
+        # Konstruktor), damit ein früherer Lauf mit Provider-Erschöpfung nicht fälschlich
+        # auch noch DIESEN neuen Lauf als betroffen kennzeichnet - siehe agents/orchestrator/
+        # dispatch.py._run_agents_parallel() für die volle Herleitung.
+        self._provider_exhausted_this_run = False
+
         # Pro-Projekt-Kostenbudget (siehe __init__): MAX_RUN_TOKENS begrenzt nur DIESEN einen
         # Lauf - ein Projekt mit vielen aufeinanderfolgenden Läufen (z.B. für einen externen
         # Auftraggeber mit festem Kostenrahmen) hatte bisher kein Limit über ALLE Läufe hinweg.
@@ -879,7 +885,7 @@ class Orchestrator(
                 # Eskalation, Governance-Funde) schnitt das den eigentlichen Grund oft mitten im
                 # Satz ab, ohne dass irgendwo eine Vollversion übrig blieb. Einmal ungekürzt
                 # berechnen, überall gleich verwenden.
-                recurring_failure_detail = verification_summary.strip()
+                recurring_failure_detail = verification_summary.strip() + self._provider_exhaustion_ticket_note()
                 try:
                     upsert_ticket(
                         ticket_id=f"recurring-failure-{self.last_project_slug}",

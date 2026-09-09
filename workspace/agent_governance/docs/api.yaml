@@ -1,0 +1,31 @@
+openapi: 3.0.0
+info:
+  title: Governance & Code-Inspection API
+  version: 1.0.0
+  description: API für automatisierte Code-Qualität, SAST-Audits und ADR-Compliance.
+paths:
+  /api/v1/auth/token:
+    post:
+      summary: JWT Access Token generieren
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                username: {type: string}
+                password: {type: string}
+      responses:
+        '200':
+          description: Erfolgreiche Authentifizierung
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Token'
+components:
+  schemas:
+    Token:
+      type: object
+      properties:
+        access_token: {type: string}
+        token_type: {type: string}

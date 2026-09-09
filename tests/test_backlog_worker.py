@@ -446,6 +446,51 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
         ticket = backlog_store.get_ticket("unresolved-governance-critical-mockforge")
         self.assertEqual(ticket.retries, MAX_GOVERNANCE_TICKET_RETRIES)  # unverändert
 
+    def test_final_failed_retry_reported_as_retries_exhausted(self):
+        # Team-Optimierung (KI-Team-Weiterentwicklung, echter Fund: memory/backlog.json-Tickets
+        # `recurring-failure-sentinelproxy`/`recurring-lint-sentinelproxy`, beide dauerhaft
+        # "blocked" mit retries==MAX_GOVERNANCE_TICKET_RETRIES): der LETZTE erlaubte automatische
+        # Versuch, der weiterhin nicht "pr_opened" erreicht, muss sich von einem Versuch, dem
+        # noch ein weiterer Retry folgt, im Bericht unterscheiden lassen.
+        from config import MAX_GOVERNANCE_TICKET_RETRIES
+        self.fake_github.get_status.return_value = ""  # keine Änderung -> "no_changes"
+        backlog_store.upsert_ticket(
+            "unresolved-governance-critical-mockforge", "Ungelöster kritischer Governance-Befund",
+            "orchestrator", "blocked", project_slug="mockforge", detail="...",
+            retries=MAX_GOVERNANCE_TICKET_RETRIES - 1,  # dieser Versuch ist der letzte erlaubte
+        )
+        report = asyncio.run(run_backlog_poll_cycle())
+
+        self.assertEqual(report.retries_exhausted_ticket_ids, ["unresolved-governance-critical-mockforge"])
+        ticket = backlog_store.get_ticket("unresolved-governance-critical-mockforge")
+        self.assertEqual(ticket.retries, MAX_GOVERNANCE_TICKET_RETRIES)
+
+    def test_non_final_failed_retry_not_reported_as_retries_exhausted(self):
+        # Gegenprobe: derselbe erfolglose Ausgang, aber NICHT der letzte erlaubte Versuch - darf
+        # nicht fälschlich als "ausgeschöpft" gemeldet werden, `_governance_retry_pool()` greift
+        # dieses Ticket im nächsten Zyklus schließlich noch einmal auf.
+        self.fake_github.get_status.return_value = ""  # keine Änderung -> "no_changes"
+        backlog_store.upsert_ticket(
+            "unresolved-governance-critical-mockforge", "Ungelöster kritischer Governance-Befund",
+            "orchestrator", "blocked", project_slug="mockforge", detail="...",
+        )
+        report = asyncio.run(run_backlog_poll_cycle())
+
+        self.assertEqual(report.retries_exhausted_ticket_ids, [])
+
+    def test_pr_opened_on_final_retry_not_reported_as_retries_exhausted(self):
+        # Gegenprobe: der letzte erlaubte Versuch war tatsächlich ERFOLGREICH (PR eröffnet) -
+        # kein Grund, das als "ausgeschöpft"/gescheitert zu melden.
+        from config import MAX_GOVERNANCE_TICKET_RETRIES
+        backlog_store.upsert_ticket(
+            "unresolved-governance-critical-mockforge", "Ungelöster kritischer Governance-Befund",
+            "orchestrator", "blocked", project_slug="mockforge", detail="...",
+            retries=MAX_GOVERNANCE_TICKET_RETRIES - 1,
+        )
+        report = asyncio.run(run_backlog_poll_cycle())  # fake_github liefert einen echten Diff -> pr_opened
+
+        self.assertEqual(report.retries_exhausted_ticket_ids, [])
+
     def test_manually_blocked_non_governance_ticket_is_not_touched(self):
         # Ein Ticket, das ein MENSCH bewusst als "blocked" markiert hat (z.B. wartet auf eine
         # externe Entscheidung) - source/ID passen nicht auf das Governance-Retry-Muster und

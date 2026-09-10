@@ -94,3 +94,15 @@ def _reset_token_guard_exhaustion():
     token_guard._exhausted_models.clear()
     yield
     token_guard._exhausted_models.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_gemini_key_pool():
+    import core.llm_factory as lf
+    lf._gemini_clients_by_key.clear()
+    lf._gemini_exhausted_keys.clear()
+    lf._gemini_active_key_index = 0
+    yield
+    lf._gemini_clients_by_key.clear()
+    lf._gemini_exhausted_keys.clear()
+    lf._gemini_active_key_index = 0

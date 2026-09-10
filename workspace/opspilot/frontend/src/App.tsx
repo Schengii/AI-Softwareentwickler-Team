@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import IncidentTable, { type Incident } from "./components/IncidentTable";
 import WebhookSimulator from "./components/WebhookSimulator";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+const API_BASE_URL = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_BASE_URL ?? "http://localhost:8000";
 
 /**
  * Fallback-Daten für die lokale Entwicklung/Demo, falls das Backend (noch) keine

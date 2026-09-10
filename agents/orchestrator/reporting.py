@@ -248,6 +248,15 @@ class ReportingMixin:
             f"| **Hauptagent (Synthese)** | `orchestrator` | `{ORCHESTRATOR_MODEL}` | - | {synth_tokens:,} | - | ✅ |"
         )
 
+        # Kritische Rollen, die unterhalb ihrer konfigurierten Modellstufe liefen, sichtbar machen
+        # (core/model_capability.py) - eine Abstufung darf nie nur in der Modell-Spalte versteckt sein.
+        from core.model_capability import describe_degraded_results
+
+        degraded = describe_degraded_results(results)
+        if degraded:
+            lines.append("\n### ⚠️ Modell-Abstufung bei kritischen Rollen\n")
+            lines += [f"- {line}" for line in degraded]
+
         # Rohe Fehlertexte GARANTIERT sichtbar machen – nicht nur (verkürzt/paraphrasiert) über
         # die Retrospektive, die als eigener LLM-Aufruf den Fehler frei zusammenfasst und dabei
         # auch ungenau werden kann. Realer Fund: Ohne dies verschwand die einzige Fehlerursache

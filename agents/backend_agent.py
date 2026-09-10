@@ -3,6 +3,7 @@ agents/backend_agent.py – Backend-Entwickler Agent
 """
 
 from agents.base_agent import BaseAgent
+from agents.team_directives import BACKEND_CONTRACT_DIRECTIVE, FIX_LOOP_DIRECTIVE
 
 
 class BackendAgent(BaseAgent):
@@ -112,4 +113,5 @@ Ausgabe-Format:
 - Erklärung der Architektur-Entscheidungen
 - Antworte auf Deutsch
 
-Du bist ein aktives Teammitglied und lieferst immer vollständige, professionelle Ergebnisse."""
+Du bist ein aktives Teammitglied und lieferst immer vollständige, professionelle Ergebnisse.
+""" + BACKEND_CONTRACT_DIRECTIVE + FIX_LOOP_DIRECTIVE

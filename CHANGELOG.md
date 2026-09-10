@@ -7,6 +7,48 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔴 Contract First, strukturelle Fehler-Triage und Modell-Mindeststufe
+
+Vier systemische Fehlerbilder aus den vaultguard-/logipulse-Läufen: Interface-Drift zwischen
+architect und tester (`class EncryptionService` vs. `from ... import encrypt`), Pydantic-Settings
+ohne Dev-Defaults, stille Abstufung aller HEAVY-Rollen auf flash-lite bei Groq-Quota und
+Fix-Loops, die bei Import-/Syntaxfehlern requirements.txt editierten.
+
+**1. Contract First (Prompts)**
+- `agents/team_directives.py` (neu): architect schreibt `interface_contract.json` (Symbol ->
+  class/function/instance/constant, genau EINE Form pro Fähigkeit, Settings mit Dev-Defaults);
+  backend implementiert exakt dagegen, tester importiert nur real existierende Symbole,
+  backend/tester/refactoring folgen einer Fix-Loop-Klassifikationstabelle (Manifeste nur bei
+  echten Drittanbieter-Paketen). Statische Prompt-Suffixe, Caching-Präfix bleibt stabil.
+
+**2. Fehler-Routing (Verifier/Orchestrator)**
+- `core/verifier/testrunner.py`: pytest-`ERROR collecting`-Blöcke waren kein Muster und kamen
+  nur als letzte 800 Zeichen der Rohausgabe an (die `E   ImportError`-Zeile fehlte oft). Jetzt
+  ein Fehlschlag pro Modul mit vollständigem Block; `ERROR <nodeid> - ...` (Setup-Fehler) wird
+  ebenfalls erkannt.
+- `core/failure_triage.py` (neu, AST + Regex): SyntaxError -> Owner der defekten Datei;
+  `cannot import name` -> Vertrag entscheidet, ohne Vertrag der reale Anbieter-Code (Methode
+  einer Klasse/ähnlicher Name = Konsument zuständig, ersatzlos fehlend = Anbieter);
+  Settings-`ValidationError` -> Owner der Settings-Klasse mit Liste der Pflichtfelder; lokales
+  `ModuleNotFoundError` -> nie Dependency (prüft jetzt auch das Dateisystem, nicht nur
+  file_owners); `No module named 'app'` bei vorhandenem Paket -> pythonpath/tester.
+- `agents/orchestrator/verification.py`: Collection-/Syntaxfehler werden zuerst und allein
+  dispatcht; bei reinen Strukturfehlern werden Dependency-Manifeste vor dem Fix gesichert und
+  danach zurückgesetzt; die ImportError-Lernregel für backend greift nicht mehr bei Drift.
+
+**3. Graceful Degradation**
+- `core/model_capability.py` (neu): Stufen lite/standard/heavy; `config.CRITICAL_AGENT_IDS`
+  setzen pro Aufgabe eine Mindeststufe (`HEAVY_ROLE_MIN_TIER`, Default `standard`) als
+  ContextVar, die alle verschachtelten Fallback-Hops filtern. Ohne ausreichend starkes Modell
+  -> `CapabilityFloorError` (als Provider-Erschöpfung klassifiziert, Circuit Breaker greift)
+  statt stiller Abstufung. Abstufungen werden geloggt und im Lauf-Report unter
+  "Modell-Abstufung bei kritischen Rollen" gelistet.
+
+Tests: `tests/test_failure_triage.py`, `tests/test_capability_floor.py`,
+`tests/test_team_directives.py`.
+
+---
+
 ## 🔴 Masterplan Stufe 0-3: Modell-Tiering, Telemetrie und Benchmark waren wirkungslos
 
 Umsetzung des `/goal`-Auftrags zum Masterplan (`KI_TEAM_MASTERPLAN_OPTIMIERUNG.md`). Die Analyse

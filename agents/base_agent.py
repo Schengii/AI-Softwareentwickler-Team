@@ -21,6 +21,7 @@ from config import MAX_AGENT_TOOL_ITERATIONS
 from core.agent_toolbox import AgentToolbox
 from core.llm_factory import AgentMessage, GeminiClient, LLMFactory, LLMResponse
 from core.message_bus import AgentResult, AgentTask
+from core.model_capability import min_tier_for_agent, pop_capability_floor, push_capability_floor
 from core.provider_exhaustion import classify_failure, is_infrastructure_failure
 
 # Realer Fund aus einem echten Lauf: Groq (häufig der Fallback für HEAVY-Rollen ohne
@@ -80,6 +81,9 @@ class BaseAgent(ABC):
         self.name = name
         self._llm: GeminiClient = LLMFactory.create_for_agent(agent_id) if not model_name \
             else LLMFactory.create_gemini(model_name)
+        # Mindest-Modellstufe für kritische Rollen (core/model_capability.py): verhindert, dass
+        # Fallback-Ketten Architektur-/Security-Aufgaben still auf ein Lite-Modell abstufen.
+        self._min_tier = min_tier_for_agent(agent_id, self._llm.model_name)
 
     @property
     @abstractmethod
@@ -95,6 +99,7 @@ class BaseAgent(ABC):
         start_time = time.monotonic()
         use_tools = bool(task.project_dir) and task.allow_tools
         toolbox: AgentToolbox | None = None
+        floor_tokens = push_capability_floor(self._min_tier, owner=self.agent_id)
 
         try:
             from memory.agent_knowledge_base import agent_knowledge_base
@@ -173,6 +178,8 @@ class BaseAgent(ABC):
                 needs_human_input=bool(toolbox and toolbox.clarification_requests),
                 clarification_questions=list(toolbox.clarification_requests) if toolbox else [],
             )
+        finally:
+            pop_capability_floor(floor_tokens)
 
     async def _run_agentic_loop(
         self,

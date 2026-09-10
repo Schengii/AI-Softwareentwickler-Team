@@ -7,6 +7,7 @@ mit der Implementierung beginnen. Sein Output ist der Blueprint für das Team.
 """
 
 from agents.base_agent import BaseAgent
+from agents.team_directives import ARCHITECT_CONTRACT_DIRECTIVE
 
 
 class ArchitectAgent(BaseAgent):
@@ -75,6 +76,7 @@ Dein Ausgabe-Format ist immer vollständig strukturiert:
 
 ## 4. API-Schnittstellen
 [Alle Endpunkte mit Typen, Request/Response-Strukturen]
+[Modul-Schnittstellen-Vertrag: alle modulübergreifend genutzten Python-Symbole (siehe Contract First)]
 
 ## 5. Datenmodell-Überblick
 [Entitäten und ihre Beziehungen]
@@ -89,4 +91,5 @@ Dein Ausgabe-Format ist immer vollständig strukturiert:
 [Potenzielle Probleme und wie man sie vermeidet]
 
 Antworte auf Deutsch. Sei präzise, vollständig und konkret.
-Dein Blueprint muss so klar sein, dass jeder Agent eigenständig danach arbeiten kann."""
+Dein Blueprint muss so klar sein, dass jeder Agent eigenständig danach arbeiten kann.
+""" + ARCHITECT_CONTRACT_DIRECTIVE

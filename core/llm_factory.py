@@ -18,7 +18,6 @@ from google.genai import types as genai_types
 from config import (
     ANTHROPIC_API_KEY,
     DEEPSEEK_API_KEY,
-    GEMINI_API_KEY,
     GEMINI_API_KEYS,
     GEMINI_MAX_CALLS_PER_MINUTE,
     GEMINI_STANDARD_MODEL,
@@ -29,6 +28,7 @@ from config import (
     OPENROUTER_API_KEY,
     TEMPERATURE,
 )
+from core.model_capability import CapabilityFloorError, filter_by_floor, record_downgrade
 from core.rate_limiter import RateLimiter
 from core.token_guard import token_guard
 
@@ -84,10 +84,12 @@ def _get_gemini_client() -> tuple[genai.Client | None, str]:
 def _mark_gemini_key_exhausted(key: str, cooldown_seconds: float = 3600.0) -> bool:
     """Markiert einen Gemini-Key als erschöpft. Gibt True zurück, wenn ein weiterer funktionierender Key verfügbar ist."""
     global _gemini_active_key_index
+    import os
     import time
     if key:
         _gemini_exhausted_keys[key] = time.time() + cooldown_seconds
-    keys = GEMINI_API_KEYS or ([GEMINI_API_KEY] if GEMINI_API_KEY else [])
+    from config import _collect_gemini_api_keys
+    keys = GEMINI_API_KEYS or _collect_gemini_api_keys() or ([os.getenv("GEMINI_API_KEY")] if os.getenv("GEMINI_API_KEY") else [])
     remaining = [k for k in keys if k not in _gemini_exhausted_keys]
     if remaining:
         _gemini_active_key_index = 0
@@ -343,7 +345,10 @@ def _notify_model_downgrade(requested: str, actual: str, reason: str = "") -> No
     # Kanonischer Vergleich (siehe normalize_model_name unten): Ohne ihn meldete jeder
     # Groq-/OpenRouter-/DeepSeek-Aufruf eine Abwertung, nur weil der Client das
     # Provider-Praefix aus dem Namen entfernt.
-    if _model_downgrade_listener is None or is_same_model(requested, actual):
+    if is_same_model(requested, actual):
+        return
+    record_downgrade(requested, actual, reason)
+    if _model_downgrade_listener is None:
         return
     try:
         _model_downgrade_listener(requested, actual, reason)
@@ -391,14 +396,21 @@ def _resolve_gemini_candidates(start_model: str, allow_fallback: bool) -> list[s
     hebelte das Pinning aus.
     """
     if not allow_fallback:
-        return [start_model]
-    candidates = [start_model] + MODEL_FALLBACKS.get(start_model, [])
-    if _is_lite_model(start_model):
-        return candidates
-    # Eine Lite-Stufe ist nur letzte Rettung: vollwertige Modelle ANDERER Provider (z.B. Groq
-    # gpt-oss-120b) gehen vor, sonst landen HEAVY-Rollen lautlos auf flash-lite (siehe
-    # _INDEPENDENT_FAILOVER_MODELS-Kommentar).
-    return [m for m in candidates if not _is_lite_model(m)] + [m for m in candidates if _is_lite_model(m)]
+        ordered = [start_model]
+    else:
+        candidates = [start_model] + MODEL_FALLBACKS.get(start_model, [])
+        # Eine Lite-Stufe ist nur letzte Rettung: vollwertige Modelle ANDERER Provider (z.B. Groq
+        # gpt-oss-120b) gehen vor, sonst landen HEAVY-Rollen lautlos auf flash-lite (siehe
+        # _INDEPENDENT_FAILOVER_MODELS-Kommentar).
+        ordered = candidates if _is_lite_model(start_model) else (
+            [m for m in candidates if not _is_lite_model(m)] + [m for m in candidates if _is_lite_model(m)]
+        )
+    # Kritische Rollen setzen eine Mindeststufe (core/model_capability.py): Kandidaten darunter
+    # entfallen ganz, statt als "letzte Rettung" Architektur-/Security-Aufgaben still zu übernehmen.
+    floored = filter_by_floor(ordered)
+    if not floored:
+        raise CapabilityFloorError(start_model, ordered)
+    return floored
 
 # Realer Fund aus einem echten End-to-End-Lauf: governance_lead (HEAVY-Tier, kein
 # ANTHROPIC_API_KEY) war innerhalb EINER Aufgabe bereits erfolgreich auf Groq gepinnt
@@ -496,10 +508,10 @@ def _prefer_independent_providers(pending: list[str], failed_provider: str) -> l
 
 
 def _independent_failover_candidates(failed_provider: str) -> list[str]:
-    return [
+    return filter_by_floor(
         m for m in _INDEPENDENT_FAILOVER_MODELS
         if _provider_of(m) != failed_provider and _provider_available(m) and not token_guard.is_model_exhausted(m)
-    ]
+    )
 
 
 async def _cross_provider_failover_with_usage(
@@ -1011,7 +1023,9 @@ class GeminiClient:
             wait_s = min(token_guard.seconds_until_available(all_candidates), MAX_EXHAUSTION_WAIT_SECONDS)
             if wait_s > 0:
                 await asyncio.sleep(wait_s)
-            models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)] or [self.model_name]
+            # all_candidates[:1] statt self.model_name: das angeforderte Modell kann unter der
+            # Mindeststufe liegen (core/model_capability.py) und wurde dann bereits aussortiert.
+            models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)] or all_candidates[:1]
 
         last_error: Exception | None = None
         chain_errors: dict[str, str] = {}
@@ -1179,7 +1193,7 @@ class GeminiClient:
             wait_s = min(token_guard.seconds_until_available(all_candidates), MAX_EXHAUSTION_WAIT_SECONDS)
             if wait_s > 0:
                 await asyncio.sleep(wait_s)
-            models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)] or [start_model]
+            models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)] or all_candidates[:1]
 
         last_error: Exception | None = None
         chain_errors: dict[str, str] = {}

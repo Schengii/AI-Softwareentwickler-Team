@@ -15,7 +15,10 @@ aus wie ein echter, ungelöster Bug. Diese Logik hierher ausgelagert, damit beid
 Erkennung nutzen, statt sie ein zweites Mal (und potenziell abweichend) zu duplizieren.
 """
 
-_PROVIDER_EXHAUSTION_MARKERS = ("429", "resource_exhausted", "quota")
+# "capability_floor": core/model_capability.CapabilityFloorError - alle ausreichend starken
+# Modelle einer kritischen Rolle sind erschöpft. Infrastruktur, kein Agentenfehler: der Circuit
+# Breaker soll pausieren, statt die Aufgabe einem zu schwachen Modell zu überlassen.
+_PROVIDER_EXHAUSTION_MARKERS = ("429", "resource_exhausted", "quota", "capability_floor")
 
 
 def is_provider_exhaustion_error(error: str | None) -> bool:

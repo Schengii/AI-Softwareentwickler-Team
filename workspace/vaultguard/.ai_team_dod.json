@@ -1,6 +1,6 @@
 {
   "project_slug": "vaultguard",
-  "timestamp": "2026-09-10T11:38:12+00:00",
+  "timestamp": "2026-09-10T11:55:16+00:00",
   "is_done": false,
   "blocking": [
     "tests_exist",
@@ -12,7 +12,7 @@
       "label": "Es wurde tatsächlich Code erzeugt",
       "passed": true,
       "required": true,
-      "detail": "6 Datei(en) geschrieben",
+      "detail": "16 Datei(en) geschrieben",
       "applicable": true
     },
     {

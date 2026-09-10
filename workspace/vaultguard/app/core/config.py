@@ -19,12 +19,12 @@ class Settings(BaseSettings):
 
     # Security Settings
     SECRET_KEY: str = Field(
-        ...,
+        default="super-secret-key-that-is-at-least-32-chars-long",
         min_length=32,
         description="Secret key for JWT and encryption derivation"
     )
     ENCRYPTION_SALT: str = Field(
-        ...,
+        default="a-very-long-salt",
         min_length=16,
         description="Salt for KDF key derivation"
     )

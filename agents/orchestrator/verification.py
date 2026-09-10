@@ -38,6 +38,17 @@ from config import (
 )
 from core.backlog_store import get_ticket, upsert_ticket
 from core.decision_log import log_decision
+from core.failure_triage import (
+    KIND_MISSING_SYMBOL,
+    StructuralTriage,
+    blocking_failures_first,
+    is_local_module,
+    is_test_file,
+    resolve_triage_owner,
+    restore_dependency_manifests,
+    snapshot_dependency_manifests,
+    triage_structural_failure,
+)
 from core.message_bus import AgentResult, AgentTask
 from core.notifier import notify_external
 from core.pre_flight_check import PreFlightIssue, run_pre_flight_check
@@ -178,32 +189,19 @@ def _diagnose_runtime_failure(message: str) -> str | None:
     return None
 
 
-def _is_test_file(path: str) -> bool:
-    """True für Testcode (test_*.py, *_test.py, conftest.py, alles unter tests/)."""
-    p = PurePosixPath(path.replace("\\", "/"))
-    return (
-        p.name.startswith("test_") or p.name.endswith("_test.py") or p.name == "conftest.py"
-        or "tests" in p.parts[:-1]
-    )
+# Gemeinsame Definition mit core/failure_triage.py (Testcode-Erkennung für das Routing).
+_is_test_file = is_test_file
 
 
-def _is_local_module(module: str, file_owners: dict[str, str]) -> bool:
-    """True, wenn der Top-Level-Name von `module` einer Projektdatei/einem Projektordner
-    entspricht - dann ist ein Attribut-/Import-Fehler ein Code-, kein Dependency-Problem."""
-    top = module.split(".")[0]
-    for rel in file_owners:
-        p = PurePosixPath(rel.replace("\\", "/"))
-        if (p.suffix == ".py" and p.stem == top) or top in p.parts[:-1]:
-            return True
-    return False
-
-
-def _dependency_error_module(message: str, file_owners: dict[str, str]) -> str | None:
+def _dependency_error_module(message: str, file_owners: dict[str, str], project_dir: str | None = None) -> str | None:
     """Name des Drittanbieter-Moduls, falls die Fehlermeldung ein Dependency-Problem zeigt
-    (`AttributeError: module 'jwt' ...` bzw. `ModuleNotFoundError` eines Nicht-Projektmoduls)."""
+    (`AttributeError: module 'jwt' ...` bzw. `ModuleNotFoundError` eines Nicht-Projektmoduls).
+    Mit `project_dir` zählt auch ein nur im Dateisystem vorhandenes Projektmodul als lokal - die
+    frühere, rein auf file_owners gestützte Prüfung hielt Module aus früheren Läufen für PyPI-
+    Pakete und schickte den Refactoring-Agenten an requirements.txt."""
     for pattern in (_MODULE_ATTRIBUTE_ERROR_RE, _MODULE_NOT_FOUND_RE):
         m = pattern.search(message)
-        if m and not _is_local_module(m.group(1), file_owners):
+        if m and not is_local_module(m.group(1), project_dir, file_owners):
             return m.group(1)
     return None
 
@@ -235,6 +233,7 @@ def _route_failure_owners(
     file_owners: dict[str, str],
     available_agents: Collection[str],
     tester_participated: bool,
+    project_dir: str | None = None,
 ) -> set[str]:
     """Ursachen-basierte Zuordnung eines echten Testfehlers zu den Fix-Agenten.
 
@@ -246,6 +245,13 @@ def _route_failure_owners(
     wenn sonst niemand zuständig ist.
     """
     files = list(files)
+    # Strukturelle Fehler (Syntax/Collection/Import/Settings) zuerst: core/failure_triage.py
+    # entscheidet anhand von interface_contract.json bzw. des realen Anbieter-Codes, WER vom
+    # Vertrag abweicht (Konsument oder Anbieter), statt pauschal den Owner des Zielmoduls zu
+    # beauftragen oder den Fehler als Dependency-Problem an requirements.txt zu schicken.
+    triage = triage_structural_failure(message, files, file_owners, project_dir)
+    if triage is not None and (triage_owner := resolve_triage_owner(triage, file_owners, available_agents)):
+        return {triage_owner}
     owners = {file_owners[f] for f in files if f in file_owners}
     # Team-Optimierung (dieser Auftrag: `workspace/opspilot` scheiterte wiederholt mit
     # `ImportError: cannot import name 'X' from 'Y'`) - der Traceback zeigt bei diesem
@@ -292,7 +298,7 @@ def _route_failure_owners(
         # Nicht registrierter Endpunkt: die Assert-Zeile liegt zwar im Test, die Ursache
         # (fehlendes app.include_router/abweichender Pfad) aber im Backend.
         owners = {route_owner}
-    elif _dependency_error_module(message, file_owners) and (dep_owner := _dependency_fix_owner(file_owners, available_agents)):
+    elif _dependency_error_module(message, file_owners, project_dir) and (dep_owner := _dependency_fix_owner(file_owners, available_agents)):
         owners = {dep_owner}
     elif "tester" in owners and any(
         not _is_test_file(f) and file_owners.get(f) not in (None, "tester") for f in files
@@ -397,6 +403,14 @@ def _diagnose_no_tests_ran(message: str) -> str | None:
             "Testdateien inhaltlich änderst."
         )
     return None
+
+
+def _failure_diagnosis(message: str, triage: StructuralTriage | None) -> str | None:
+    """Konkrete Ursache für den Fix-Auftrag: strukturelle Triage (core/failure_triage.py) vor
+    den regex-basierten Diagnosen oben."""
+    if triage is not None:
+        return triage.diagnosis
+    return _diagnose_import_failure(message) or _diagnose_no_tests_ran(message) or _diagnose_runtime_failure(message)
 
 
 _T = TypeVar("_T")
@@ -2183,13 +2197,30 @@ class VerificationMixin:
 
             agents_to_fix: dict[str, list] = {}
             tester_participated = any(r.agent_id == "tester" for r in all_results)
-            for failure in report.failures:
+            # Collection-/Syntaxfehler blockieren die gesamte Suite - alle übrigen Fehlschläge sind
+            # bis dahin Folgefehler bzw. nicht aussagekräftig und werden erst danach bearbeitet.
+            dispatch_failures = blocking_failures_first(report.failures)
+            if len(dispatch_failures) < len(report.failures):
+                notify(
+                    f"  🧱 [yellow]{len(dispatch_failures)} Collection-/Syntaxfehler blockieren die Testsuite[/yellow] – "
+                    f"{len(report.failures) - len(dispatch_failures)} weitere Fehlschläge folgen erst danach."
+                )
+            triages = {
+                id(f): triage_structural_failure(f.message, f.files, file_owners, project_dir) for f in dispatch_failures
+            }
+            for failure in dispatch_failures:
+                triage = triages[id(failure)]
                 # Persistentes Lernen (siehe _record_verification_learning) für künftige Läufe
                 # desselben Agenten - bewusst außerhalb der seiteneffektfreien Routing-Funktion.
-                if _import_name_error_target(failure.message) is not None:
+                # Bei Schnittstellen-Drift liegt der Fehler beim Konsumenten, die Backend-Regel
+                # ("Symbol im Zielmodul definieren") wäre dann eine falsche Lektion.
+                if _import_name_error_target(failure.message) is not None and (
+                    triage is None or triage.kind == KIND_MISSING_SYMBOL
+                ):
                     _record_verification_learning(failure.message)
                 owners = _route_failure_owners(
                     failure.message, failure.files, file_owners, self._agents, tester_participated,
+                    project_dir=project_dir,
                 )
                 for owner in owners:
                     if owner in self._agents:
@@ -2204,15 +2235,7 @@ class VerificationMixin:
             for agent_id, fails in agents_to_fix.items():
                 failure_text = "\n\n".join(
                     f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(f.files) or 'unbekannt'}"
-                    + (
-                        f"\n{diag}"
-                        if (diag := (
-                            _diagnose_import_failure(f.message)
-                            or _diagnose_no_tests_ran(f.message)
-                            or _diagnose_runtime_failure(f.message)
-                        ))
-                        else ""
-                    )
+                    + (f"\n{diag}" if (diag := _failure_diagnosis(f.message, triages.get(id(f)))) else "")
                     for f in fails
                 )
                 fix_tasks.append(AgentTask(
@@ -2230,7 +2253,18 @@ class VerificationMixin:
                 ))
 
             notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix:[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())} (nicht blind alle Dev-Agenten)...")
+            # Reine Strukturfehler sind nie durch Manifest-Änderungen zu beheben (realer Fehl-Loop:
+            # refactoring editierte requirements.txt bei einem ImportError) - Manifeste werden
+            # deshalb gesichert und nach dem Fix-Schritt zurückgesetzt.
+            structural_only = all(triages.get(id(f)) is not None for fails in agents_to_fix.values() for f in fails)
+            manifest_snapshot = snapshot_dependency_manifests(project_dir) if project_dir and structural_only else None
             fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+            if manifest_snapshot is not None and (restored := restore_dependency_manifests(project_dir, manifest_snapshot)):
+                notify(f"  ⛔ [yellow]Manifest-Änderungen bei reinem Strukturfehler zurückgesetzt:[/yellow] {', '.join(restored)}")
+                summary_lines.append(
+                    f"- ⛔ Versuch {attempt}: unnötige Änderungen an {', '.join(restored)} zurückgesetzt "
+                    "(Ursache war die Code-Struktur, keine Abhängigkeit)."
+                )
             self._update_file_owners(file_owners, fix_results)
             all_results.extend(fix_results)
             summary_lines.append(f"- 🛠️ Versuch {attempt}: {len(report.failures)} echte Testfehler → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt.")

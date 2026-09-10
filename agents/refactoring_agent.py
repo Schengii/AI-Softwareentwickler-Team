@@ -6,6 +6,7 @@ Architekturverletzungen, Typsicherheit, zirkuläre Abhängigkeiten und Komplexit
 """
 
 from agents.base_agent import BaseAgent
+from agents.team_directives import FIX_LOOP_DIRECTIVE
 
 
 class RefactoringAgent(BaseAgent):
@@ -56,4 +57,5 @@ Dein Standard-Ausgabeformat:
 - **Komplexität:** [z. B. Cyclomatic Complexity von 14 auf 3 gesenkt]
 - **Wartbarkeit & Testbarkeit:** [Konkreter Gewinn]
 
-Antworte auf Deutsch. Liefere stets sofort einsatzbereiten, hochqualitativen und modernsten Code."""
+Antworte auf Deutsch. Liefere stets sofort einsatzbereiten, hochqualitativen und modernsten Code.
+""" + FIX_LOOP_DIRECTIVE

@@ -215,6 +215,19 @@ AGENT_MODELS: dict[str, str] = {
     "project_cleaner":   os.getenv("PROJECT_CLEANER_MODEL", LITE_MODEL),
 }
 
+# Rollen mit echten Architektur-/Sicherheits-/Qualitäts-Trade-offs. Sie dürfen bei
+# Kontingent-Erschöpfung nie unbemerkt unter HEAVY_ROLE_MIN_TIER abrutschen (siehe
+# core/model_capability.py) - realer Fund: bei erschöpftem Groq-Tageslimit liefen architect,
+# security und backend auf gemini-flash-lite weiter und produzierten wiederholt Strukturfehler.
+# Bewusst explizit statt aus AGENT_MODELS abgeleitet, da Env-Overrides die Werte verändern.
+CRITICAL_AGENT_IDS: frozenset[str] = frozenset({
+    "planning_lead", "dev_lead", "governance_lead", "architect", "backend", "database", "ml",
+    "prompt_engineer", "security", "code_reviewer", "refactoring", "agent_trainer", "compliance",
+})
+# Mindeststufe für CRITICAL_AGENT_IDS: "lite" (keine Sperre), "standard" (Default: keine
+# Lite-Modelle) oder "heavy" (nur Opus/Sonnet/Pro/gpt-oss-120b-Klasse).
+HEAVY_ROLE_MIN_TIER: str = os.getenv("HEAVY_ROLE_MIN_TIER", "standard")
+
 # Fachbereichs-Zuweisungen für bereichsweite Modell-Konfiguration
 DEPARTMENT_PLANNING_AGENTS = {"planning_lead", "team_lead", "product_owner", "business_analyst", "web_research", "architect", "finops"}
 DEPARTMENT_DESIGN_AGENTS = {"design_lead", "image_generator", "copywriter", "ui_ux"}

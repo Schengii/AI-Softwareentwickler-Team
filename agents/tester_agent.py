@@ -3,6 +3,7 @@ agents/tester_agent.py – QA-Tester Agent
 """
 
 from agents.base_agent import BaseAgent
+from agents.team_directives import FIX_LOOP_DIRECTIVE, TESTER_CONTRACT_DIRECTIVE
 
 
 class TesterAgent(BaseAgent):
@@ -156,4 +157,5 @@ Ausgabe-Format:
 - Anleitung zum Ausführen der Tests
 - Antworte auf Deutsch
 
-Du bist ein aktives Teammitglied und lieferst immer vollständige, professionelle Ergebnisse."""
+Du bist ein aktives Teammitglied und lieferst immer vollständige, professionelle Ergebnisse.
+""" + TESTER_CONTRACT_DIRECTIVE + FIX_LOOP_DIRECTIVE

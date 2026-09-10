@@ -13,6 +13,7 @@ _find_incomplete_project_reason), bei denen bisher fälschlich "nichts zu testen
 import re
 import shutil
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 from core.code_sandbox import CodeSandbox, ExecutionResult
@@ -26,6 +27,18 @@ from core.verifier.models import (
     TestFailure,
     VerificationReport,
 )
+
+_COLLECTION_ERROR_HEADER_RE = re.compile(r"^_{3,} ERROR collecting (\S+) _{3,}[ \t]*\r?$", re.MULTILINE)
+_OUTPUT_SECTION_BOUNDARY_RE = re.compile(r"^(?:_{3,} .+ _{3,}|={3,}.*)[ \t]*\r?$", re.MULTILINE)
+
+
+def _iter_pytest_collection_errors(output: str) -> Iterator[tuple[str, str]]:
+    """(Testmodul, Fehlerblock) je `ERROR collecting`-Abschnitt einer pytest-Ausgabe."""
+    for header in _COLLECTION_ERROR_HEADER_RE.finditer(output):
+        rest = output[header.end():]
+        boundary = _OUTPUT_SECTION_BOUNDARY_RE.search(rest)
+        block = rest[: boundary.start()] if boundary else rest
+        yield header.group(1).replace("\\", "/"), block.strip()
 
 
 class TestRunnerMixin:
@@ -219,23 +232,47 @@ class TestRunnerMixin:
         """Parst echte pytest-/unittest-Ausgaben – keine Schlagwortsuche in Freitext."""
         output = f"{exec_result.stdout}\n{exec_result.stderr}"
         failures: dict[str, TestFailure] = {}
+        specific_files: dict[str, list[str]] = {}
 
-        # pytest-Format: "FAILED tests/test_x.py::test_foo - AssertionError: ..."
-        for m in re.finditer(r'^FAILED (\S+)(?:\s+-\s+(.*))?$', output, re.MULTILINE):
+        # pytest-Collection-Fehler ("_____ ERROR collecting tests/x.py _____"): Realer Fund
+        # (vaultguard) - diese Blöcke passten auf kein Muster unten und landeten nur als letzte
+        # 800 Zeichen der Rohausgabe beim Fix-Agenten; die eigentliche `E   ImportError`-Zeile
+        # fehlte dort oft, der Fix-Loop riet und änderte requirements.txt. Jetzt ein eigener
+        # Fehlschlag pro Modul mit vollständigem Block und nur den darin genannten Dateien.
+        for test_id, block in _iter_pytest_collection_errors(output):
+            failures[test_id] = TestFailure(test_id=test_id, message=f"ERROR collecting {test_id}\n{block[-1400:]}")
+            specific_files[test_id] = self._project_relative_files(block)
+
+        # pytest-Format: "FAILED tests/test_x.py::test_foo - AssertionError: ..." sowie
+        # "ERROR tests/test_x.py::test_foo - ..." (Setup-/Fixture-Fehler)
+        for m in re.finditer(r'^(?:FAILED|ERROR) (\S+)(?:\s+-\s+(.*))?$', output, re.MULTILINE):
             test_id = m.group(1)
-            failures[test_id] = TestFailure(test_id=test_id, message=(m.group(2) or "").strip())
+            failures.setdefault(test_id, TestFailure(test_id=test_id, message=(m.group(2) or "").strip()))
 
         # unittest-Format: "FAIL: test_foo (module.TestCase)" / "ERROR: test_foo (module.TestCase)"
         for m in re.finditer(r'^(?:FAIL|ERROR): (.+)$', output, re.MULTILINE):
             test_id = m.group(1).strip()
             failures.setdefault(test_id, TestFailure(test_id=test_id, message=""))
 
-        # Tracebacks: welche Projektdateien tauchen tatsächlich auf? (site-packages/venv ausgeschlossen)
+        implicated_files = self._project_relative_files(output)
+
+        if not failures:
+            # Kein strukturiertes FAILED/FAIL/ERROR-Muster erkannt (z.B. Sammel-/Importfehler
+            # beim Einsammeln der Tests) – trotzdem als generischer Fehlschlag mit realem Output melden.
+            failures["<Testlauf>"] = TestFailure(test_id="<Testlauf>", message=output.strip()[-800:])
+
+        for test_id, failure in failures.items():
+            failure.files = specific_files.get(test_id, implicated_files)
+
+        return list(failures.values())
+
+    def _project_relative_files(self, text: str) -> list[str]:
+        """Projektdateien, die in Tracebacks auftauchen (site-packages/venv ausgeschlossen)."""
         # Zwei Formate müssen erkannt werden:
         #   1. Klassischer Python-/unittest-Traceback:  File "pfad/datei.py", line 42
         #   2. pytest --tb=short:                        pfad/datei.py:42: in test_foo
-        raw_paths = re.findall(r'File "([^"]+)", line \d+', output)
-        raw_paths += re.findall(r'^([^\s:][^\n:]*?\.py):\d+: in ', output, re.MULTILINE)
+        raw_paths = re.findall(r'File "([^"]+)", line \d+', text)
+        raw_paths += re.findall(r'^([^\s:][^\n:]*?\.py):\d+: in ', text, re.MULTILINE)
 
         implicated_files: list[str] = []
         for fp in raw_paths:
@@ -249,16 +286,7 @@ class TestRunnerMixin:
                 continue
             if rel not in implicated_files:
                 implicated_files.append(rel)
-
-        if not failures:
-            # Kein strukturiertes FAILED/FAIL/ERROR-Muster erkannt (z.B. Sammel-/Importfehler
-            # beim Einsammeln der Tests) – trotzdem als generischer Fehlschlag mit realem Output melden.
-            failures["<Testlauf>"] = TestFailure(test_id="<Testlauf>", message=output.strip()[-800:])
-
-        for failure in failures.values():
-            failure.files = implicated_files
-
-        return list(failures.values())
+        return implicated_files
 
     def _parse_node_failures(self, exec_result: ExecutionResult, node_dir: Path) -> list[TestFailure]:
         """

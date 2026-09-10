@@ -18,12 +18,29 @@ Traversal), und run_command ist auf eine Sicherheits-Whitelist begrenzt.
 """
 
 import fnmatch
+import os
 import shlex
 import sys
 from pathlib import Path
 from typing import Any
 
 from core.code_sandbox import CodeSandbox
+
+
+def split_command_line(command: str, *, windows: bool | None = None) -> list[str]:
+    """Zerlegt eine Agenten-Befehlszeile in Argumente, ohne Windows-Pfade zu zerstören.
+
+    Realer Fund (Framework-Analyse 2026-09-10): `shlex.split()` im POSIX-Modus behandelt `\\`
+    als Escape-Zeichen - `pytest tests\\test_auth.py` wurde auf Windows zu `teststest_auth.py`,
+    der Agent bekam ein irreführendes "file not found". Auf Windows deshalb `posix=False` und
+    nur umschließende Anführungszeichen entfernen.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows:
+        return shlex.split(command)
+    parts = shlex.split(command, posix=False)
+    return [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p for p in parts]
 
 TOOL_SPECS: list[dict[str, Any]] = [
     {
@@ -524,7 +541,9 @@ class AgentToolbox:
             }
 
         import asyncio
-        parts = self._split_command(cmd_stripped)
+        # In einem Thread: das erstmalige Anlegen der Projekt-venv (siehe _project_python) dauert
+        # mehrere Sekunden und darf die Event-Loop paralleler Agenten nicht blockieren.
+        parts = await asyncio.to_thread(self._split_command, cmd_stripped)
         result = await asyncio.to_thread(CodeSandbox.run_command, parts, self.project_dir, 60.0)
         return {"exit_code": result.exit_code, "stdout": result.stdout, "stderr": result.stderr, "timed_out": result.timed_out}
 
@@ -636,15 +655,48 @@ class AgentToolbox:
             "imported_in": impact.imported_in,
         }
 
-    @staticmethod
-    def _split_command(command: str) -> list[str]:
-        parts = shlex.split(command)
+    def _split_command(self, command: str) -> list[str]:
+        """Zerlegt den Befehl und bindet `python`/`pip` an die Projekt-venv.
+
+        Realer Fund (Framework-Analyse 2026-09-10): `pip`/`python` wurden bisher auf
+        `sys.executable` gemappt - den Interpreter des FRAMEWORKS. CodeSandbox.run_command()
+        übernimmt einen absoluten Pfad unverändert, die venv-Auflösung griff also nie: jedes
+        `pip install` eines Agenten landete in der globalen Python-Installation des Nutzers.
+        """
+        parts = split_command_line(command)
         if not parts:
             return parts
-        # 'python'/'pip' generisch auf den aktuell laufenden Interpreter mappen,
-        # damit im richtigen (venv-)Environment ausgeführt wird.
+        if parts[0] in ("pip", "pip3"):
+            return [str(self._project_python(create=True)), "-m", "pip", *parts[1:]]
         if parts[0] in ("python", "python3"):
-            parts[0] = sys.executable
-        elif parts[0] in ("pip", "pip3"):
-            parts = [sys.executable, "-m", "pip"] + parts[1:]
+            parts[0] = str(self._project_python(create=False))
         return parts
+
+    def _project_python(self, create: bool) -> Path:
+        """Interpreter der Projekt-venv. Mit `create=True` (Paketinstallation) wird dieselbe venv
+        wie von der Verifikation (VENV_DIRNAME) angelegt und NIE auf den Framework-Interpreter
+        ausgewichen; ohne `create` (reiner Skript-/Testaufruf) bleibt `sys.executable` Fallback."""
+        from core.verifier.models import VENV_DIRNAME
+
+        venv = CodeSandbox.get_project_venv(self.project_dir)
+        if venv is None and create:
+            venv = self.project_dir / VENV_DIRNAME
+            result = CodeSandbox.run_command(
+                [sys.executable, "-m", "venv", str(venv)], cwd=self.project_dir, timeout_seconds=180.0,
+            )
+            if result.exit_code != 0:
+                raise ToolExecutionError(
+                    "Projekt-venv konnte nicht angelegt werden – Paketinstallation abgebrochen, statt in "
+                    f"den Framework-Interpreter zu installieren: {(result.stderr or result.stdout)[:300]}"
+                )
+        if venv is None:
+            return Path(sys.executable)
+        python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+        if python.is_file():
+            return python
+        if create:
+            raise ToolExecutionError(
+                f"Projekt-venv '{venv.name}' ist unvollständig (kein Interpreter unter {python}) – "
+                "Paketinstallation abgebrochen. Lösche die venv oder führe run_tests aus, um sie neu anzulegen."
+            )
+        return Path(sys.executable)

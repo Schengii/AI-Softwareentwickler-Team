@@ -40,6 +40,7 @@ import asyncio
 import contextlib
 import hmac
 import json
+import logging
 import os
 import queue
 import re
@@ -48,10 +49,11 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlparse
 
 from agents.orchestrator import Orchestrator
 from config import DASHBOARD_AUTH_TOKEN, DASHBOARD_HOST, DASHBOARD_MAX_CONCURRENT_JOBS, MAX_RUN_TOKENS
@@ -62,6 +64,10 @@ from memory.run_history import get_agent_success_rates, get_recent_runs
 
 MAX_LOG_LINES_KEPT = 500
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+# HttpOnly-Session-Cookie, gegen das ein einmaliges `/?token=...` getauscht wird (siehe _check_auth).
+AUTH_COOKIE_NAME = "ai_team_dashboard_session"
+
+_logger = logging.getLogger(__name__)
 # Wie oft während eines laufenden Jobs ein "tokens"-SSE-Event mit dem aktuellen Verbrauch
 # gepusht wird. Reiner Dict-Lesezugriff auf core/token_guard.py (kein LLM-Aufruf, keine
 # nennenswerten Kosten) - 4s reicht, um MAX_RUN_TOKENS-Ausreißer früh sichtbar zu machen,
@@ -104,6 +110,9 @@ class DashboardServer:
         self._loop = asyncio.new_event_loop()
         self._async_queue: asyncio.Queue[str] | None = None  # im Loop-Thread erzeugt, siehe _run_event_loop
         self._dispatch_task: asyncio.Task | None = None  # im Loop-Thread erzeugt, siehe _run_event_loop
+        # Starke Referenzen auf laufende Hintergrund-Tasks (siehe _spawn): asyncio hält Tasks nur
+        # schwach - ohne diese Menge können Jobs/Deploys mitten im Lauf vom GC eingesammelt werden.
+        self._background_tasks: set[asyncio.Task] = set()
         loop_ready = threading.Event()
         self._thread = threading.Thread(target=self._run_event_loop, args=(loop_ready,), daemon=True)
         self._thread.start()
@@ -127,7 +136,28 @@ class DashboardServer:
 
         while True:
             job_id = await self._async_queue.get()
-            self._loop.create_task(_run_with_semaphore(job_id))
+            self._spawn(_run_with_semaphore(job_id))
+
+    def _spawn(self, coro) -> asyncio.Task:
+        """Startet eine Hintergrund-Task im Loop-Thread, hält sie bis zum Ende referenziert und
+        protokolliert eine unbehandelte Exception, statt sie lautlos zu verlieren.
+
+        Realer Fund (Framework-Analyse 2026-09-10): Jobs und Deploys wurden per
+        `loop.create_task()` ohne gespeicherte Referenz gestartet - asyncio hält Tasks nur schwach
+        referenziert, und eine Exception außerhalb der eigenen try-Blöcke verschwand ohne Spur.
+        MUSS im Loop-Thread aufgerufen werden (aus anderen Threads: call_soon_threadsafe)."""
+        task = self._loop.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._on_background_task_done)
+        return task
+
+    def _on_background_task_done(self, task: asyncio.Task) -> None:
+        self._background_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            _logger.error("Dashboard-Hintergrund-Task '%s' fehlgeschlagen: %r", task.get_coro().__qualname__, exc)
 
     def enqueue(self, prompt: str) -> str:
         job_id = uuid.uuid4().hex[:12]
@@ -293,7 +323,7 @@ class DashboardServer:
         (core/deployment.py) - läuft im Hintergrund-Event-Loop, Status via
         GET /api/deploy-status/<projekt> pollbar (dasselbe Prinzip wie Jobs)."""
         self.deployments[project_name] = {"status": "running"}
-        self._loop.call_soon_threadsafe(self._loop.create_task, self._execute_deploy(project_name))
+        self._loop.call_soon_threadsafe(self._spawn, self._execute_deploy(project_name))
 
     async def _execute_deploy(self, project_name: str) -> None:
         from core.deployment import deploy_project
@@ -315,7 +345,7 @@ class DashboardServer:
     def stop_deploy(self, project_name: str) -> None:
         """Fährt ein per deploy() gestartetes Deployment wieder herunter."""
         self.deployments[project_name] = {"status": "stopping"}
-        self._loop.call_soon_threadsafe(self._loop.create_task, self._execute_stop_deploy(project_name))
+        self._loop.call_soon_threadsafe(self._spawn, self._execute_stop_deploy(project_name))
 
     async def _execute_stop_deploy(self, project_name: str) -> None:
         from core.deployment import stop_deployment
@@ -336,7 +366,7 @@ class DashboardServer:
         GET /api/deploy-cloud-status/<projekt> pollbar (dasselbe Prinzip wie deploy())."""
         self.cloud_deployments[project_name] = {"status": "running"}
         self._loop.call_soon_threadsafe(
-            self._loop.create_task, self._execute_cloud_deploy(project_name, provider, real)
+            self._spawn, self._execute_cloud_deploy(project_name, provider, real)
         )
 
     async def _execute_cloud_deploy(self, project_name: str, provider: str, real: bool) -> None:
@@ -909,29 +939,59 @@ def make_handler(server: DashboardServer):
             self.end_headers()
             self.wfile.write(body)
 
+        def _provided_token(self) -> tuple[str, str]:
+            """(Token, Quelle) aus Bearer-Header, Session-Cookie oder `?token=` - in dieser Reihenfolge."""
+            auth_header = self.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                return auth_header[len("Bearer "):], "header"
+            cookie = SimpleCookie()
+            try:
+                cookie.load(self.headers.get("Cookie", ""))
+            except CookieError:
+                cookie = SimpleCookie()
+            if AUTH_COOKIE_NAME in cookie:
+                return unquote(cookie[AUTH_COOKIE_NAME].value), "cookie"
+            query = parse_qs(urlparse(self.path).query)
+            return (query.get("token") or [""])[0], "query"
+
         def _check_auth(self) -> bool:
+            """Realer Fund (Framework-Analyse 2026-09-10): Mit gesetztem DASHBOARD_AUTH_TOKEN
+            akzeptierte der Server nur Bearer-Header oder `?token=` - das eingebettete JavaScript
+            sendet bei keinem seiner fetch()/EventSource-Aufrufe einen Token, die Oberfläche
+            scheiterte also komplett an 401, und der Token stand dauerhaft in URL/Verlauf. Ein
+            HttpOnly-Session-Cookie (gesetzt beim ersten Aufruf von `/?token=...`, siehe do_GET)
+            wird jetzt von allen Same-Origin-Requests automatisch mitgesendet."""
             if not DASHBOARD_AUTH_TOKEN:
                 return True
 
-            provided = ""
-            auth_header = self.headers.get("Authorization", "")
-            if auth_header.startswith("Bearer "):
-                provided = auth_header[len("Bearer "):]
-            else:
-                query = parse_qs(urlparse(self.path).query)
-                provided = (query.get("token") or [""])[0]
-
+            provided, _source = self._provided_token()
             if provided and hmac.compare_digest(provided, DASHBOARD_AUTH_TOKEN):
                 return True
 
-            self._send_json({"error": "Unauthorized – gültiger Token via 'Authorization: Bearer <token>' oder '?token=' erforderlich."}, status=401)
+            self._send_json({"error": "Unauthorized – gültiger Token via 'Authorization: Bearer <token>', Session-Cookie oder einmalig '/?token=' erforderlich."}, status=401)
             return False
+
+        def _redirect_with_session_cookie(self, parsed_url) -> None:
+            """Tauscht `/?token=...` gegen ein HttpOnly-Cookie und entfernt den Token aus der URL."""
+            remaining = [(k, v) for k, v in parse_qsl(parsed_url.query, keep_blank_values=True) if k != "token"]
+            location = parsed_url.path + (f"?{urlencode(remaining)}" if remaining else "")
+            self.send_response(303)
+            self.send_header(
+                "Set-Cookie",
+                f"{AUTH_COOKIE_NAME}={quote(DASHBOARD_AUTH_TOKEN, safe='')}; HttpOnly; SameSite=Strict; Path=/",
+            )
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def do_GET(self):
             if not self._check_auth():
                 return
             parsed_url = urlparse(self.path)
             path_only = parsed_url.path
+            if DASHBOARD_AUTH_TOKEN and path_only in ("/", "/index.html") and self._provided_token()[1] == "query":
+                self._redirect_with_session_cookie(parsed_url)
+                return
 
             if path_only in ("/", "/index.html"):
                 body = HTML_DASHBOARD.encode("utf-8")

@@ -12,7 +12,7 @@ der nicht ohnehin bereits auf HEAVY_MODEL läuft, für diesen Lauf hoch.
 import unittest
 
 from agents.orchestrator import Orchestrator
-from config import HEAVY_MODEL
+import config
 from core.llm_factory import is_same_model
 
 
@@ -22,7 +22,7 @@ class TestOrchestratorModelEscalation(unittest.TestCase):
         # Mindestens ein regulär auf STANDARD_MODEL/LITE_MODEL laufender Agent muss OHNE
         # escalate_models unverändert bleiben.
         self.assertFalse(
-            is_same_model(orchestrator._agents["frontend"]._llm.model_name, HEAVY_MODEL)
+            is_same_model(orchestrator._agents["frontend"]._llm.model_name, config.HEAVY_MODEL)
         )
 
     def test_escalate_models_upgrades_non_heavy_agents(self):
@@ -33,9 +33,9 @@ class TestOrchestratorModelEscalation(unittest.TestCase):
             # "openai/gpt-oss-120b"). Ein direkter Vergleich schlaegt deshalb fehl, sobald
             # HEAVY_MODEL ein praefixbehaftetes Modell ist.
             self.assertTrue(
-                is_same_model(agent._llm.model_name, HEAVY_MODEL),
+                is_same_model(agent._llm.model_name, config.HEAVY_MODEL),
                 f"Agent '{agent_id}' wurde nicht auf HEAVY_MODEL hochgestuft "
-                f"(ist: {agent._llm.model_name!r}, erwartet: {HEAVY_MODEL!r}).",
+                f"(ist: {agent._llm.model_name!r}, erwartet: {config.HEAVY_MODEL!r}).",
             )
 
     def test_escalate_models_leaves_already_heavy_agents_unchanged(self):

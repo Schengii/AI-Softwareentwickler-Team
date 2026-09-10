@@ -96,7 +96,6 @@ from config import (
     AGENT_MAX_TOOL_ITERATIONS,
     AUTO_SAVE_WORKSPACE,
     BASE_DIR,
-    HEAVY_MODEL,
     ORCHESTRATOR_MODEL,
     PLAN_CONFIRMATION_MIN_TASKS,
 )
@@ -331,7 +330,9 @@ class Orchestrator(
         war, aber keiner davon ein bekannter Fachagent ist - z.B. ein Fachbereichsleiter statt
         eines Spezialisten).
         """
+        import config
         from core.llm_factory import LLMFactory, is_same_model
+        heavy_model = config.HEAVY_MODEL
         targets = self._agents.items() if agent_ids is None else (
             (aid, self._agents[aid]) for aid in agent_ids if aid in self._agents
         )
@@ -341,10 +342,10 @@ class Orchestrator(
             # ("groq:openai/gpt-oss-120b" -> "openai/gpt-oss-120b"). Ein direkter Vergleich
             # hielte deshalb jeden bereits hochgestuften Agenten für nicht hochgestuft, sobald
             # HEAVY_MODEL ein präfixbehaftetes Modell ist (siehe core/llm_factory.py).
-            if is_same_model(agent._llm.model_name, HEAVY_MODEL):
+            if is_same_model(agent._llm.model_name, heavy_model):
                 continue
             try:
-                agent._llm = LLMFactory.create_for_model(HEAVY_MODEL)
+                agent._llm = LLMFactory.create_for_model(heavy_model)
                 escalated.add(agent_id)
             except Exception:
                 continue

@@ -28,6 +28,7 @@ import re
 import subprocess
 
 from config import BASE_DIR
+from core.git_runtime import GIT_NETWORK_TIMEOUT_SECONDS, run_git
 
 _VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 _BREAKING_MARKERS = ("BREAKING CHANGE", "BREAKING-CHANGE")
@@ -35,9 +36,8 @@ _CONVENTIONAL_TYPE_PATTERN = re.compile(r"^(\w+)(!)?(\([^)]*\))?:\s*(.*)$")
 
 
 def _run_git(*args: str) -> tuple[bool, str]:
-    result = subprocess.run(
-        ["git", *args], cwd=BASE_DIR, capture_output=True, text=True, encoding="utf-8",
-    )
+    # `git push --tags` u.ä. brauchen das Netzwerk-Timeout; lokale Kommandos sind weit darunter.
+    result = run_git(args, cwd=BASE_DIR, timeout=GIT_NETWORK_TIMEOUT_SECONDS)
     return result.returncode == 0, (result.stdout + result.stderr).strip()
 
 

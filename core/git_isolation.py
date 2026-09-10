@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from core.git_runtime import non_interactive_git_env
+
 # Branch-Präfix, an dem isolierte Selbstverbesserungs-Worktrees erkannt werden (siehe
 # create_isolated_worktree). Zentral definiert, damit prune_stale_worktrees() garantiert
 # dasselbe Muster nutzt wie die Erstellung – keine zwei Stellen, die auseinanderlaufen können.
@@ -56,8 +58,11 @@ class IsolatedWorktree:
 
 
 def _run_git(args: list[str], cwd: str, timeout: float = 30.0) -> subprocess.CompletedProcess:
+    # Nicht-interaktiv (siehe core/git_runtime.py): TimeoutExpired bleibt hier bewusst eine
+    # Exception, weil die Aufrufer darauf bereits reagieren.
     return subprocess.run(
         ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout,
+        env=non_interactive_git_env(),
     )
 
 

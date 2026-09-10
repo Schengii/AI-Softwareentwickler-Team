@@ -15,6 +15,7 @@ import uuid
 from agents.base_agent import BaseAgent
 from config import BASE_DIR
 from core.git_isolation import slugify
+from core.git_runtime import GIT_NETWORK_TIMEOUT_SECONDS, run_git
 from core.secret_scanner import SecretFinding, scan_diff
 
 
@@ -103,13 +104,7 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
         self._run_git("add", "-A")
 
         # Commit
-        result = subprocess.run(
-            ["git", "commit", "-m", message],
-            cwd=BASE_DIR,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
+        result = run_git(["commit", "-m", message], cwd=BASE_DIR)
         success = result.returncode == 0
         output = result.stdout + result.stderr
         return success, output.strip()
@@ -156,13 +151,7 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
             (Erfolg, Ausgabe)
         """
         target_branch = branch or self.get_current_branch()
-        result = subprocess.run(
-            ["git", "push", "-u", remote, target_branch],
-            cwd=BASE_DIR,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
+        result = run_git(["push", "-u", remote, target_branch], cwd=BASE_DIR, timeout=GIT_NETWORK_TIMEOUT_SECONDS)
         success = result.returncode == 0
         output = result.stdout + result.stderr
         return success, output.strip()
@@ -267,10 +256,7 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
         if base:
             status = self._run_git("status", "--short")
             if status.strip():
-                stash_result = subprocess.run(
-                    ["git", "stash", "push", "-u", "-m", f"auto-stash-vor-{branch_name}"],
-                    cwd=BASE_DIR, capture_output=True, text=True, encoding="utf-8",
-                )
+                stash_result = run_git(["stash", "push", "-u", "-m", f"auto-stash-vor-{branch_name}"], cwd=BASE_DIR)
                 # "No local changes to save" kann trotz nicht-leerem `status --short` auftreten
                 # (z.B. reine Konflikt-/Merge-Marker) - dann wurde nichts tatsächlich gestasht,
                 # ein späteres `stash pop` darf dann auch nicht versucht werden.
@@ -279,18 +265,12 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
         args = ["checkout", "-b", branch_name]
         if base:
             args.append(base)
-        result = subprocess.run(
-            ["git", *args],
-            cwd=BASE_DIR, capture_output=True, text=True, encoding="utf-8",
-        )
+        result = run_git(args, cwd=BASE_DIR)
         success = result.returncode == 0
         output = result.stdout + result.stderr
 
         if stashed:
-            pop_result = subprocess.run(
-                ["git", "stash", "pop"],
-                cwd=BASE_DIR, capture_output=True, text=True, encoding="utf-8",
-            )
+            pop_result = run_git(["stash", "pop"], cwd=BASE_DIR)
             if pop_result.returncode != 0:
                 # Der Stash bleibt in diesem Fall bewusst ERHALTEN (kein `stash drop`) - die
                 # Änderungen sind damit nicht verloren, sondern warten auf manuelle Prüfung
@@ -314,10 +294,7 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
         NÄCHSTE Aufgabe wieder von einem sauberen Hauptbranch-Stand aus einen neuen
         Feature-Branch anlegt, statt unbemerkt auf demselben Feature-Branch weiterzuarbeiten.
         """
-        result = subprocess.run(
-            ["git", "checkout", branch],
-            cwd=BASE_DIR, capture_output=True, text=True, encoding="utf-8",
-        )
+        result = run_git(["checkout", branch], cwd=BASE_DIR)
         success = result.returncode == 0
         output = result.stdout + result.stderr
         return success, output.strip()
@@ -666,10 +643,7 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
         bleibt. Ein Merge-Konflikt beim Revert selbst (z.B. weil seitdem überlappender Code
         dazukam) ist KEIN Absturz, nur ein Fehlschlag – der Aufrufer bricht dann sauber ab.
         """
-        result = subprocess.run(
-            ["git", "revert", "--no-edit", commit_sha],
-            cwd=BASE_DIR, capture_output=True, text=True, encoding="utf-8",
-        )
+        result = run_git(["revert", "--no-edit", commit_sha], cwd=BASE_DIR)
         success = result.returncode == 0
         output = result.stdout + result.stderr
         return success, output.strip()
@@ -762,24 +736,12 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
 
     def add_remote(self, name: str, url: str) -> tuple[bool, str]:
         """Fügt ein Remote-Repository hinzu."""
-        result = subprocess.run(
-            ["git", "remote", "add", name, url],
-            cwd=BASE_DIR,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
+        result = run_git(["remote", "add", name, url], cwd=BASE_DIR)
         success = result.returncode == 0
         output = result.stdout + result.stderr
         return success, output.strip()
 
     def _run_git(self, *args: str) -> str:
-        """Führt ein Git-Kommando aus und gibt die Ausgabe zurück."""
-        result = subprocess.run(
-            ["git", *args],
-            cwd=BASE_DIR,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
+        """Führt ein Git-Kommando aus und gibt die Ausgabe zurück (nicht-interaktiv, mit Timeout)."""
+        result = run_git(args, cwd=BASE_DIR)
         return (result.stdout + result.stderr).strip()

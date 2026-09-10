@@ -19,6 +19,7 @@ from config import (
     OBSIDIAN_TARGET_DIR,
     OBSIDIAN_VAULT_PATH,
 )
+from core.git_runtime import non_interactive_git_env
 
 
 @dataclass
@@ -76,17 +77,23 @@ def _get_current_git_info(base_dir: Path) -> dict[str, str]:
     """Liest Branch und Commit-Hash des Projekts aus, falls git verfügbar ist."""
     info = {"branch": "unknown", "commit": "unknown"}
     try:
+        # Timeout + nicht-interaktive Umgebung: ein hängendes git darf den Sync nie blockieren
+        # (siehe core/git_runtime.py).
         branch = subprocess.check_output(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=base_dir,
             stderr=subprocess.DEVNULL,
             text=True,
+            timeout=10,
+            env=non_interactive_git_env(),
         ).strip()
         commit = subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=base_dir,
             stderr=subprocess.DEVNULL,
             text=True,
+            timeout=10,
+            env=non_interactive_git_env(),
         ).strip()
         info["branch"] = branch
         info["commit"] = commit

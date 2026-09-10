@@ -1,0 +1,39 @@
+{
+  "design_system": {
+    "theme": "dark",
+    "colors": {
+      "background": "#0B0F19",
+      "surface": "#1E293B",
+      "border": "#334155",
+      "primary": "#6366F1",
+      "success": "#10B981",
+      "warning": "#F59E0B",
+      "error": "#EF4444"
+    },
+    "typography": {
+      "font_family": "Inter, system-ui, sans-serif",
+      "code_font": "JetBrains Mono, monospace"
+    }
+  },
+  "dashboard_layout": {
+    "sections": ["metrics_summary", "anomaly_feed", "latency_chart", "trace_details"],
+    "responsive_breakpoints": {
+      "mobile": "640px",
+      "tablet": "1024px",
+      "desktop": "1280px"
+    }
+  },
+  "dev_interfaces": {
+    "static_mount": "/static",
+    "api_endpoints": [
+      "/api/v1/metrics/summary",
+      "/api/v1/anomalies",
+      "/api/v1/traces/{trace_id}",
+      "/api/v1/health"
+    ],
+    "database_conventions": {
+      "optional_fields": "nullable=True"
+    }
+  },
+  "status": "READY_FOR_DEV_IMPLEMENTATION"
+}

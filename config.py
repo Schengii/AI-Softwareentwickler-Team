@@ -15,7 +15,25 @@ load_dotenv()
 # ──────────────────────────────────────────
 # API Keys
 # ──────────────────────────────────────────
-GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+def _collect_gemini_api_keys() -> list[str]:
+    """Sammelt alle konfigurierten Gemini-Keys (kommagetrennt in GEMINI_API_KEY oder als GEMINI_API_KEY_1..N / GEMINI_API_KEY_FALLBACK_1..N)."""
+    keys: list[str] = []
+    primary = os.getenv("GEMINI_API_KEY", "").strip()
+    if primary:
+        for part in primary.split(","):
+            cleaned = part.strip()
+            if cleaned and cleaned not in keys:
+                keys.append(cleaned)
+    for i in range(1, 10):
+        for candidate_var in (f"GEMINI_API_KEY_{i}", f"GEMINI_API_KEY_FALLBACK_{i}"):
+            k = os.getenv(candidate_var, "").strip()
+            if k and k not in keys:
+                keys.append(k)
+    return keys
+
+
+GEMINI_API_KEYS: list[str] = _collect_gemini_api_keys()
+GEMINI_API_KEY: str = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
 DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
 OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")

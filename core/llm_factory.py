@@ -19,6 +19,7 @@ from config import (
     ANTHROPIC_API_KEY,
     DEEPSEEK_API_KEY,
     GEMINI_API_KEY,
+    GEMINI_API_KEYS,
     GEMINI_MAX_CALLS_PER_MINUTE,
     GEMINI_STANDARD_MODEL,
     GROQ_API_KEY,
@@ -31,8 +32,81 @@ from config import (
 from core.rate_limiter import RateLimiter
 from core.token_guard import token_guard
 
-# Globaler Gemini-Client
-_gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+# ──────────────────────────────────────────
+# Gemini API-Key-Pool & Client-Manager
+# ──────────────────────────────────────────
+# Ermöglicht das Hinterlegen mehrerer Gemini-API-Keys (z.B. kommagetrennt in GEMINI_API_KEY
+# oder als GEMINI_API_KEY_1..N / GEMINI_API_KEY_FALLBACK_1..N). Erreicht ein Key sein
+# Tageskontingent (429 RESOURCE_EXHAUSTED), wird dieser Key temporär deaktiviert und
+# automatisch auf den nächsten verfügbaren Key im Pool umgeschaltet.
+_gemini_clients_by_key: dict[str, genai.Client] = {}
+_gemini_exhausted_keys: dict[str, float] = {}  # key -> timestamp bis wann erschöpft
+_gemini_active_key_index: int = 0
+
+
+def _get_gemini_client() -> tuple[genai.Client | None, str]:
+    """Gibt das aktive (nicht erschöpfte) Gemini Client-Objekt und den zugehörigen Key zurück."""
+    global _gemini_active_key_index
+    import time
+    now = time.time()
+
+    # Abgelaufene Cooldowns bei Keys bereinigen
+    expired = [k for k, until in _gemini_exhausted_keys.items() if now >= until]
+    for k in expired:
+        _gemini_exhausted_keys.pop(k, None)
+
+    keys = GEMINI_API_KEYS or ([GEMINI_API_KEY] if GEMINI_API_KEY else [])
+    if not keys:
+        return None, ""
+
+    # Verfügbare Keys suchen
+    available_keys = [k for k in keys if k not in _gemini_exhausted_keys]
+    if not available_keys:
+        # Alle Keys sind erschöpft - nimm den mit dem kürzesten Cooldown
+        best_key = min(keys, key=lambda k: _gemini_exhausted_keys.get(k, 0))
+        if best_key not in _gemini_clients_by_key:
+            _gemini_clients_by_key[best_key] = genai.Client(api_key=best_key)
+        return _gemini_clients_by_key[best_key], best_key
+
+    # Aktuellen bevorzugten Key wählen
+    _gemini_active_key_index = _gemini_active_key_index % len(available_keys)
+    selected_key = available_keys[_gemini_active_key_index]
+
+    if selected_key not in _gemini_clients_by_key:
+        _gemini_clients_by_key[selected_key] = genai.Client(api_key=selected_key)
+
+    return _gemini_clients_by_key[selected_key], selected_key
+
+
+def _mark_gemini_key_exhausted(key: str, cooldown_seconds: float = 3600.0) -> bool:
+    """Markiert einen Gemini-Key als erschöpft. Gibt True zurück, wenn ein weiterer funktionierender Key verfügbar ist."""
+    global _gemini_active_key_index
+    import time
+    if key:
+        _gemini_exhausted_keys[key] = time.time() + cooldown_seconds
+    keys = GEMINI_API_KEYS or ([GEMINI_API_KEY] if GEMINI_API_KEY else [])
+    remaining = [k for k in keys if k not in _gemini_exhausted_keys]
+    if remaining:
+        _gemini_active_key_index = 0
+        return True
+    return False
+
+
+# Globaler Gemini-Client (Kompatibilität für bestehende Zugriffe)
+class _DynamicGeminiClientProxy:
+    """Proxy, der Aufrufe immer an den aktuellen, nicht-erschöpften Client aus dem Pool weiterleitet."""
+    def __getattr__(self, name: str):
+        client, _ = _get_gemini_client()
+        if client is None:
+            raise RuntimeError("Gemini Client nicht initialisiert. Bitte GEMINI_API_KEY setzen.")
+        return getattr(client, name)
+
+    def __bool__(self) -> bool:
+        keys = GEMINI_API_KEYS or ([GEMINI_API_KEY] if GEMINI_API_KEY else [])
+        return bool(keys)
+
+
+_gemini_client = _DynamicGeminiClientProxy()
 
 # Globaler Groq-Client
 _groq_client = None
@@ -982,11 +1056,24 @@ class GeminiClient:
                         continue
 
                     if is_rate_limit:
-                        token_guard.mark_model_exhausted(
-                            model, "429 Quota Exceeded", cooldown_seconds=_exhaustion_cooldown_seconds(err_str),
-                        )
                         if is_quota_exhausted:
+                            # Prüfe, ob im Gemini API-Key-Pool ein weiterer funktionsfähiger Key existiert
+                            _, active_key = _get_gemini_client()
+                            has_next_gemini_key = _mark_gemini_key_exhausted(
+                                active_key, cooldown_seconds=_exhaustion_cooldown_seconds(err_str) or 86400.0
+                            )
+                            if has_next_gemini_key:
+                                # Es gibt einen weiteren Gemini-Key! Sofort mit dem neuen Key für dasselbe Modell wiederholen
+                                continue
+                            # Alle Gemini-Keys erschöpft -> Modell als erschöpft markieren & Alternativprovider priorisieren
+                            token_guard.mark_model_exhausted(
+                                model, "429 Quota Exceeded (alle Gemini-Keys erschöpft)", cooldown_seconds=_exhaustion_cooldown_seconds(err_str),
+                            )
                             pending = _prefer_independent_providers(pending, failed_provider="gemini")
+                        else:
+                            token_guard.mark_model_exhausted(
+                                model, "429 Quota Exceeded", cooldown_seconds=_exhaustion_cooldown_seconds(err_str),
+                            )
                     elif is_unavailable:
                         token_guard.mark_model_exhausted(model, "503 High Demand", cooldown_seconds=20.0)
                     break
@@ -1161,11 +1248,24 @@ class GeminiClient:
                         continue
 
                     if is_rate_limit:
-                        token_guard.mark_model_exhausted(
-                            model, "429 Quota Exceeded", cooldown_seconds=_exhaustion_cooldown_seconds(err_str),
-                        )
                         if is_quota_exhausted:
+                            # Prüfe, ob im Gemini API-Key-Pool ein weiterer funktionsfähiger Key existiert
+                            _, active_key = _get_gemini_client()
+                            has_next_gemini_key = _mark_gemini_key_exhausted(
+                                active_key, cooldown_seconds=_exhaustion_cooldown_seconds(err_str) or 86400.0
+                            )
+                            if has_next_gemini_key:
+                                # Es gibt einen weiteren Gemini-Key! Sofort mit dem neuen Key für dasselbe Modell wiederholen
+                                continue
+                            # Alle Gemini-Keys erschöpft -> Modell als erschöpft markieren & Alternativprovider priorisieren
+                            token_guard.mark_model_exhausted(
+                                model, "429 Quota Exceeded (alle Gemini-Keys erschöpft)", cooldown_seconds=_exhaustion_cooldown_seconds(err_str),
+                            )
                             pending = _prefer_independent_providers(pending, failed_provider="gemini")
+                        else:
+                            token_guard.mark_model_exhausted(
+                                model, "429 Quota Exceeded", cooldown_seconds=_exhaustion_cooldown_seconds(err_str),
+                            )
                     elif is_unavailable:
                         token_guard.mark_model_exhausted(model, "503 High Demand", cooldown_seconds=20.0)
                     break

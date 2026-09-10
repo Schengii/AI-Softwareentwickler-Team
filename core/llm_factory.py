@@ -5,6 +5,7 @@ mit präziser Token-Messung und automatischer Failover-Kette.
 
 import asyncio
 import json
+import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -156,11 +157,68 @@ _DAILY_QUOTA_MARKER = "PerDay"
 DAILY_QUOTA_COOLDOWN_SECONDS = 4 * 3600.0
 
 
+# Realer Fund (Smoke-Lauf 2026-09-10, logs/runs/20260910_105833_smoke_jwt_router.jsonl): nur
+# Gemini-Tageskontingente bekamen einen langen Cooldown. Groq meldete "tokens per day (TPD) ...
+# Please try again in 2h42m9.504s", DeepSeek "Insufficient Balance", OpenRouter "requires more
+# credits" - alle drei landeten beim 60-s-Standard-Cooldown und wurden jede Minute erneut vergeblich
+# angefragt. Kein Guthaben erholt sich nicht von selbst; Groq nennt die Wartezeit exakt.
+_BILLING_EXHAUSTION_MARKERS = (
+    "insufficient balance", "requires more credits", "insufficient credits", "insufficient_quota",
+    "payment required",
+)
+BILLING_EXHAUSTION_COOLDOWN_SECONDS = 6 * 3600.0
+_DAILY_TEXT_MARKERS = ("tokens per day", "requests per day")
+_RETRY_AFTER_RE = re.compile(r"(?:try again|retry) in\s+(?P<spec>(?:\d+(?:\.\d+)?(?:ms|h|m|s))+)", re.IGNORECASE)
+_DURATION_PART_RE = re.compile(r"(\d+(?:\.\d+)?)(ms|h|m|s)")
+_DURATION_FACTORS = {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 0.001}
+# Gemini nennt auch bei TAGES-Kontingenten nur die Minuten-Wartezeit ("retry in 56s") - eine
+# kürzere Angabe als diese Schwelle ist bei einem Tageskontingent kein verlässlicher Reset-Zeitpunkt.
+_MIN_TRUSTED_DAILY_RETRY_SECONDS = 300.0
+
+
+def _retry_after_seconds(err_str: str) -> float | None:
+    """Vom Provider genannte Wartezeit ("try again in 2h42m9.5s", "retry in 56.8s", "in 850ms")."""
+    match = _RETRY_AFTER_RE.search(err_str or "")
+    if not match:
+        return None
+    return sum(float(value) * _DURATION_FACTORS[unit] for value, unit in _DURATION_PART_RE.findall(match.group("spec")))
+
+
 def _exhaustion_cooldown_seconds(err_str: str) -> float | None:
-    """None (Standard-Cooldown des Aufrufers bleibt gültig), außer der Fehlertext deutet auf ein
-    TAGES- statt ein Minuten-Kontingent hin (siehe Konstanten-Kommentar oben) - dann
-    DAILY_QUOTA_COOLDOWN_SECONDS."""
-    return DAILY_QUOTA_COOLDOWN_SECONDS if _DAILY_QUOTA_MARKER in err_str else None
+    """Cooldown für einen Kontingent-/Guthaben-Fehler - None = Standard-Cooldown des Aufrufers.
+
+    Reihenfolge: fehlendes Guthaben (BILLING_EXHAUSTION_COOLDOWN_SECONDS) > Tageskontingent
+    (exakte Provider-Angabe, sonst DAILY_QUOTA_COOLDOWN_SECONDS) > sonstige Provider-Wartezeit."""
+    text = (err_str or "").lower()
+    if any(marker in text for marker in _BILLING_EXHAUSTION_MARKERS):
+        return BILLING_EXHAUSTION_COOLDOWN_SECONDS
+    retry_after = _retry_after_seconds(err_str)
+    if _DAILY_QUOTA_MARKER in (err_str or "") or any(marker in text for marker in _DAILY_TEXT_MARKERS):
+        if retry_after is not None and retry_after >= _MIN_TRUSTED_DAILY_RETRY_SECONDS:
+            return retry_after
+        return DAILY_QUOTA_COOLDOWN_SECONDS
+    return retry_after if retry_after else None
+
+
+def _short_error(exc: BaseException | None, limit: int = 160) -> str:
+    return re.sub(r"\s+", " ", str(exc) if exc is not None else "unbekannter Fehler")[:limit]
+
+
+def _describe_chain_failures(all_candidates: list[str], attempted: dict[str, str]) -> str:
+    """Anhang für die finale Fehlermeldung einer Fallback-Kette: warum JEDER Kandidat ausfiel.
+
+    Realer Fund (Smoke-Lauf 2026-09-10): die Meldung zeigte nur den letzten Gemini-Fehler - dass
+    DeepSeek/OpenRouter kein Guthaben mehr hatten und Groq sein Tageskontingent aufgebraucht hatte,
+    war erst durch manuelle Einzelaufrufe erkennbar."""
+    parts: list[str] = []
+    for model in dict.fromkeys(all_candidates):
+        if model in attempted:
+            parts.append(f"{model}: {attempted[model]}")
+        elif not _provider_available(model):
+            parts.append(f"{model}: übersprungen (kein API-Key)")
+        elif (reason := token_guard.get_exhausted_reason(model)) is not None:
+            parts.append(f"{model}: übersprungen ({_short_error(reason, 120)})")
+    return (" | Kette: " + "; ".join(parts)) if parts else ""
 
 # Proaktive Rate-Begrenzung (core/rate_limiter.py): reduziert, WIE OFT ein Minutenlimit
 # überhaupt erst erreicht wird – ergänzt MAX_EXHAUSTION_WAIT_SECONDS oben (das nur REAGIERT,
@@ -595,13 +653,13 @@ class OpenRouterClient:
                 else:
                     err_msg = data.get("error", {}).get("message", "OpenRouter API Error")
                     if response.status_code in (401, 402, 429) or "balance" in err_msg.lower() or "limit" in err_msg.lower():
-                        token_guard.mark_model_exhausted(f"openrouter:{self.model_name}", f"OpenRouter: {err_msg}")
+                        token_guard.mark_model_exhausted(f"openrouter:{self.model_name}", f"OpenRouter: {err_msg}", cooldown_seconds=_exhaustion_cooldown_seconds(err_msg))
                     if not _allow_self_fallback:
                         raise RuntimeError(f"OpenRouter-Fehler innerhalb einer Fallback-Kette: {err_msg}")
                     return await _cross_provider_failover_with_usage("openrouter", prompt, system_prompt)
 
         except Exception as e:
-            token_guard.mark_model_exhausted(f"openrouter:{self.model_name}", str(e))
+            token_guard.mark_model_exhausted(f"openrouter:{self.model_name}", str(e), cooldown_seconds=_exhaustion_cooldown_seconds(str(e)))
             if not _allow_self_fallback:
                 raise
             return await _cross_provider_failover_with_usage("openrouter", prompt, system_prompt)
@@ -657,13 +715,13 @@ class OpenRouterClient:
 
                 err_msg = data.get("error", {}).get("message", "OpenRouter API Error")
                 if response.status_code in (401, 402, 429) or "balance" in err_msg.lower() or "limit" in err_msg.lower():
-                    token_guard.mark_model_exhausted(f"openrouter:{self.model_name}", f"OpenRouter: {err_msg}")
+                    token_guard.mark_model_exhausted(f"openrouter:{self.model_name}", f"OpenRouter: {err_msg}", cooldown_seconds=_exhaustion_cooldown_seconds(err_msg))
                 if not _allow_self_fallback:
                     raise RuntimeError(f"OpenRouter-Fehler innerhalb einer Fallback-Kette: {err_msg}")
                 return await _cross_provider_failover_with_tools("openrouter", messages, system_prompt, tools)
 
         except Exception as e:
-            token_guard.mark_model_exhausted(f"openrouter:{self.model_name}", str(e))
+            token_guard.mark_model_exhausted(f"openrouter:{self.model_name}", str(e), cooldown_seconds=_exhaustion_cooldown_seconds(str(e)))
             if not _allow_self_fallback:
                 raise
             return await _cross_provider_failover_with_tools("openrouter", messages, system_prompt, tools)
@@ -729,13 +787,13 @@ class DeepSeekClient:
                 else:
                     err_msg = data.get("error", {}).get("message", "DeepSeek API Error")
                     if response.status_code in (402, 429) or "balance" in err_msg.lower() or "quota" in err_msg.lower():
-                        token_guard.mark_model_exhausted(f"deepseek:{self.model_name}", f"DeepSeek: {err_msg}")
+                        token_guard.mark_model_exhausted(f"deepseek:{self.model_name}", f"DeepSeek: {err_msg}", cooldown_seconds=_exhaustion_cooldown_seconds(err_msg))
                     if not _allow_self_fallback:
                         raise RuntimeError(f"DeepSeek-Fehler innerhalb einer Fallback-Kette: {err_msg}")
                     return await _cross_provider_failover_with_usage("deepseek", prompt, system_prompt)
 
         except Exception as e:
-            token_guard.mark_model_exhausted(f"deepseek:{self.model_name}", str(e))
+            token_guard.mark_model_exhausted(f"deepseek:{self.model_name}", str(e), cooldown_seconds=_exhaustion_cooldown_seconds(str(e)))
             if not _allow_self_fallback:
                 raise
             return await _cross_provider_failover_with_usage("deepseek", prompt, system_prompt)
@@ -786,13 +844,13 @@ class DeepSeekClient:
 
                 err_msg = data.get("error", {}).get("message", "DeepSeek API Error")
                 if response.status_code in (402, 429) or "balance" in err_msg.lower() or "quota" in err_msg.lower():
-                    token_guard.mark_model_exhausted(f"deepseek:{self.model_name}", f"DeepSeek: {err_msg}")
+                    token_guard.mark_model_exhausted(f"deepseek:{self.model_name}", f"DeepSeek: {err_msg}", cooldown_seconds=_exhaustion_cooldown_seconds(err_msg))
                 if not _allow_self_fallback:
                     raise RuntimeError(f"DeepSeek-Fehler innerhalb einer Fallback-Kette: {err_msg}")
                 return await _cross_provider_failover_with_tools("deepseek", messages, system_prompt, tools)
 
         except Exception as e:
-            token_guard.mark_model_exhausted(f"deepseek:{self.model_name}", str(e))
+            token_guard.mark_model_exhausted(f"deepseek:{self.model_name}", str(e), cooldown_seconds=_exhaustion_cooldown_seconds(str(e)))
             if not _allow_self_fallback:
                 raise
             return await _cross_provider_failover_with_tools("deepseek", messages, system_prompt, tools)
@@ -876,6 +934,7 @@ class GeminiClient:
             models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)] or [self.model_name]
 
         last_error: Exception | None = None
+        chain_errors: dict[str, str] = {}
         pending = list(models_to_try)
         while pending:
             model = pending.pop(0)
@@ -894,6 +953,7 @@ class GeminiClient:
                     )
                 except Exception as e:
                     last_error = e
+                    chain_errors[model] = _short_error(e)
                     continue
 
             for attempt in range(MAX_RETRIES):
@@ -930,8 +990,12 @@ class GeminiClient:
                     elif is_unavailable:
                         token_guard.mark_model_exhausted(model, "503 High Demand", cooldown_seconds=20.0)
                     break
+            chain_errors[model] = _short_error(last_error)
 
-        raise RuntimeError(f"Gemini Function-Calling Fehler nach allen Fallback-Modellen ({self.model_name}): {last_error}") from last_error
+        raise RuntimeError(
+            f"Gemini Function-Calling Fehler nach allen Fallback-Modellen ({self.model_name}): {last_error}"
+            + _describe_chain_failures(all_candidates, chain_errors)
+        ) from last_error
 
     @staticmethod
     def _build_gemini_contents(messages: list["AgentMessage"]) -> list:
@@ -1025,6 +1089,7 @@ class GeminiClient:
             models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)] or [start_model]
 
         last_error: Exception | None = None
+        chain_errors: dict[str, str] = {}
         pending = list(models_to_try)
         while pending:
             model = pending.pop(0)
@@ -1039,6 +1104,7 @@ class GeminiClient:
                     )
                 except Exception as e:
                     last_error = e
+                    chain_errors[model] = _short_error(e)
                     continue
 
             for attempt in range(MAX_RETRIES):
@@ -1103,9 +1169,11 @@ class GeminiClient:
                     elif is_unavailable:
                         token_guard.mark_model_exhausted(model, "503 High Demand", cooldown_seconds=20.0)
                     break
+            chain_errors[model] = _short_error(last_error)
 
         raise RuntimeError(
             f"Gemini API Fehler nach allen Versuchen ({self.model_name}): {last_error}"
+            + _describe_chain_failures(all_candidates, chain_errors)
         ) from last_error
 
     async def generate_json(self, prompt: str, system_prompt: str | None = None) -> str:
@@ -1167,7 +1235,10 @@ class GroqClient:
         except Exception as e:
             is_rate_limit = _is_rate_limit_error(e)
             if is_rate_limit:
-                token_guard.mark_model_exhausted(f"groq:{self.model_name}", "Groq Rate Limit")
+                token_guard.mark_model_exhausted(
+                    f"groq:{self.model_name}", f"Groq Rate Limit: {_short_error(e, 200)}",
+                    cooldown_seconds=_exhaustion_cooldown_seconds(str(e)),
+                )
             if not _allow_self_fallback:
                 if is_rate_limit:
                     raise _pinned_provider_failure("Groq", self.model_name, e) from e
@@ -1223,7 +1294,10 @@ class GroqClient:
         except Exception as e:
             is_rate_limit = _is_rate_limit_error(e)
             if is_rate_limit:
-                token_guard.mark_model_exhausted(f"groq:{self.model_name}", "Groq Rate Limit")
+                token_guard.mark_model_exhausted(
+                    f"groq:{self.model_name}", f"Groq Rate Limit: {_short_error(e, 200)}",
+                    cooldown_seconds=_exhaustion_cooldown_seconds(str(e)),
+                )
             if not _allow_self_fallback:
                 if is_rate_limit:
                     raise _pinned_provider_failure("Groq", self.model_name, e) from e

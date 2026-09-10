@@ -134,6 +134,12 @@ class TokenGuard:
 
         return True
 
+    def get_exhausted_reason(self, model_name: str) -> str | None:
+        """Grund einer noch aktiven Erschöpfung - None, wenn das Modell (wieder) verfügbar ist."""
+        if not self.is_model_exhausted(model_name):
+            return None
+        return self._exhausted_models[model_name].reason
+
     def seconds_until_available(self, model_names: list[str]) -> float:
         """
         Gibt zurück, wie viele Sekunden mindestens gewartet werden muss, bis WENIGSTENS

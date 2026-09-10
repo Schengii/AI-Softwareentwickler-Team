@@ -26,7 +26,9 @@ Dependency-Manifeste verwendet wird:
 from __future__ import annotations
 
 import json
-from pathlib import PurePosixPath
+import re
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 
 _PYTHON_REQUIREMENTS_MANIFESTS = {
     "requirements.txt", "requirements-dev.txt", "requirements-test.txt", "requirements-prod.txt",
@@ -91,3 +93,155 @@ def detect_corrupted_manifest(rel_path: str, content: str) -> str | None:
             )
 
     return None
+
+
+# ── Toxische Paket-Kollisionen ──────────────────────────────────────────────────────────────
+#
+# Realer Fund (logipulse-Projekt, 2026-09-10, logs/verification/20260910_084833_logipulse.log):
+# `requirements.txt` enthielt `pyjwt>=2.8.0` UND zusätzlich `jwt`. Das PyPI-Paket `jwt` ist ein
+# veraltetes, unverwandtes Projekt, das denselben Import-Namespace `jwt` belegt und PyJWT beim
+# Installieren überschreibt. Folge: `AttributeError: module 'jwt' has no attribute 'encode'` in
+# JEDEM Auth-Test - syntaktisch ist das Manifest völlig gültig, pip meldet exit_code=0, deshalb
+# griff keine bisherige Prüfung. Dieselbe Fehlerklasse existiert für `crypto` (unverwandtes
+# CLI-Werkzeug), das auf case-insensitiven Dateisystemen (Windows) mit dem `Crypto`-Namespace
+# von pycryptodome kollidiert und fast immer `cryptography`/`pycryptodome` meinte.
+#
+# Die Bereinigung ist deterministisch: Steht die legitime Alternative bereits im Manifest, wird
+# der toxische Eintrag entfernt. Fehlt sie, wird er - sofern eindeutig - durch die Alternative
+# ersetzt (`import jwt` + `jwt.encode` ist praktisch immer PyJWT), sonst ebenfalls entfernt
+# (eine dann tatsächlich fehlende Abhängigkeit meldet completeness.py über
+# _missing_known_packages_in_manifest separat).
+
+
+@dataclass(frozen=True)
+class ToxicDependencyRule:
+    """Ein bekanntes Paket, das einen fremden Import-Namespace überschreibt."""
+
+    legitimate_packages: tuple[str, ...]
+    replacement: str | None
+    reason: str
+
+
+@dataclass(frozen=True)
+class ToxicDependencyFinding:
+    """Ein konkreter toxischer Eintrag in einem Requirements-Manifest."""
+
+    line_number: int
+    line: str
+    package: str
+    action: str  # "remove" | "replace"
+    replacement: str | None
+    reason: str
+
+    def describe(self) -> str:
+        if self.action == "replace" and self.replacement:
+            outcome = f"ersetzt durch `{self.replacement}`"
+        else:
+            outcome = "entfernt"
+        return f"Zeile {self.line_number}: `{self.line.strip()}` {outcome} – {self.reason}"
+
+
+TOXIC_DEPENDENCY_RULES: dict[str, ToxicDependencyRule] = {
+    "jwt": ToxicDependencyRule(
+        legitimate_packages=("pyjwt",),
+        replacement="PyJWT",
+        reason=(
+            "das veraltete PyPI-Paket `jwt` überschreibt den Namespace von PyJWT "
+            "(`AttributeError: module 'jwt' has no attribute 'encode'`)"
+        ),
+    ),
+    "crypto": ToxicDependencyRule(
+        legitimate_packages=("cryptography", "pycryptodome", "pycryptodomex"),
+        replacement=None,
+        reason=(
+            "das PyPI-Paket `crypto` ist ein unverwandtes CLI-Werkzeug und kollidiert mit dem "
+            "`Crypto`-Namespace von pycryptodome – gemeint ist `cryptography` oder `pycryptodome`"
+        ),
+    ),
+}
+
+_REQUIREMENT_NAME_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def normalize_package_name(name: str) -> str:
+    """PEP-503-Normalisierung (`PyJWT`, `py_jwt`, `py.jwt` -> `pyjwt` bzw. `py-jwt`)."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _requirement_package_name(line: str) -> str | None:
+    """Normalisierter Paketname einer Requirements-Zeile - None für Kommentare, pip-Optionen
+    (`-r`, `-e`, `--index-url`) und direkte URL-Referenzen."""
+    stripped = line.split("#", 1)[0].strip()
+    if not stripped or stripped.startswith("-") or "://" in stripped:
+        return None
+    match = _REQUIREMENT_NAME_RE.match(stripped)
+    return normalize_package_name(match.group(1)) if match else None
+
+
+def find_toxic_dependencies(rel_path: str, content: str) -> list[ToxicDependencyFinding]:
+    """Findet bekannte toxische Paket-Kollisionen (siehe TOXIC_DEPENDENCY_RULES) in einem
+    Python-Requirements-Manifest. Andere Dateien liefern immer eine leere Liste."""
+    if PurePosixPath(rel_path.replace("\\", "/")).name not in _PYTHON_REQUIREMENTS_MANIFESTS:
+        return []
+
+    lines = (content or "").splitlines()
+    declared = {name for line in lines if (name := _requirement_package_name(line))}
+    findings: list[ToxicDependencyFinding] = []
+    for line_number, line in enumerate(lines, start=1):
+        package = _requirement_package_name(line)
+        rule = TOXIC_DEPENDENCY_RULES.get(package) if package else None
+        if rule is None or package is None:
+            continue
+        has_legitimate = any(p in declared for p in rule.legitimate_packages)
+        if has_legitimate or rule.replacement is None:
+            action = "remove"
+        else:
+            action = "replace"
+            # Ein zweiter toxischer Eintrag desselben Pakets darf die Alternative nicht doppelt anlegen.
+            declared.add(normalize_package_name(rule.replacement))
+        findings.append(ToxicDependencyFinding(
+            line_number=line_number, line=line, package=package, action=action,
+            replacement=rule.replacement if action == "replace" else None, reason=rule.reason,
+        ))
+    return findings
+
+
+def sanitize_requirements(rel_path: str, content: str) -> tuple[str, list[ToxicDependencyFinding]]:
+    """Entfernt/ersetzt toxische Einträge deterministisch. Gibt den bereinigten Inhalt und die
+    angewendeten Funde zurück - ohne Funde bleibt `content` byte-identisch."""
+    findings = find_toxic_dependencies(rel_path, content)
+    if not findings:
+        return content, []
+
+    by_line = {f.line_number: f for f in findings}
+    cleaned: list[str] = []
+    for line_number, line in enumerate(content.splitlines(), start=1):
+        finding = by_line.get(line_number)
+        if finding is None:
+            cleaned.append(line)
+        elif finding.action == "replace" and finding.replacement:
+            cleaned.append(finding.replacement)
+    text = "\n".join(cleaned)
+    if content.endswith("\n") and text:
+        text += "\n"
+    return text, findings
+
+
+def describe_toxic_dependencies(rel_path: str, findings: list[ToxicDependencyFinding]) -> str:
+    """Deutschsprachige Zusammenfassung für Agenten-Feedback und Verifikations-Reports."""
+    details = "; ".join(f.describe() for f in findings)
+    return (
+        f"'{rel_path}' enthielt toxische Paket-Kollisionen, die einen fremden Import-Namespace "
+        f"überschreiben ({details}). Trage NIE beide Varianten ein – nur das legitime Paket."
+    )
+
+
+def sanitize_requirements_file(path: Path) -> list[ToxicDependencyFinding]:
+    """Bereinigt eine Requirements-Datei auf der Platte (vor `pip install`). Wirft OSError, wenn
+    die Datei nicht gelesen oder geschrieben werden kann - der Aufrufer entscheidet, ob das den
+    Lauf blockiert."""
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    sanitized, findings = sanitize_requirements(path.name, text)
+    if findings:
+        path.write_text(sanitized, encoding="utf-8")
+    return findings

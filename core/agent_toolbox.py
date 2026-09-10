@@ -386,6 +386,19 @@ class AgentToolbox:
 
         return detect_corrupted_manifest(path, content)
 
+    @staticmethod
+    def _sanitize_toxic_dependencies(path: str, content: str) -> tuple[str, str | None]:
+        """Entfernt toxische Paket-Kollisionen (z.B. `jwt` neben `pyjwt`, siehe
+        core/manifest_guard.py) deterministisch VOR dem Schreiben, statt die Datei abzulehnen -
+        ein Agent auf einem schwachen Modell würde sonst oft dieselbe Kollision erneut schreiben.
+        Gibt den (ggf. bereinigten) Inhalt und einen Hinweis für den Agenten zurück."""
+        from core.manifest_guard import describe_toxic_dependencies, sanitize_requirements
+
+        sanitized, findings = sanitize_requirements(path, content or "")
+        if not findings:
+            return content, None
+        return sanitized, describe_toxic_dependencies(path, findings) + " Automatisch bereinigt."
+
     async def _tool_write_file(self, path: str, content: str) -> dict:
         rejection = self._reject_if_invalid_python(path, content)
         if rejection:
@@ -393,13 +406,17 @@ class AgentToolbox:
         rejection = self._reject_if_corrupted_manifest(path, content)
         if rejection:
             return {"error": rejection}
+        content, sanitize_note = self._sanitize_toxic_dependencies(path, content)
 
         target = self._resolve(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content if content is not None else "", encoding="utf-8")
         clean_rel = str(target.relative_to(self.project_dir)).replace("\\", "/")
         self.files_written.add(clean_rel)
-        return {"path": clean_rel, "bytes_written": len((content or "").encode("utf-8")), "status": "ok"}
+        result = {"path": clean_rel, "bytes_written": len((content or "").encode("utf-8")), "status": "ok"}
+        if sanitize_note:
+            result["warning"] = sanitize_note
+        return result
 
     async def _tool_edit_file(self, path: str, old_text: str, new_text: str) -> dict:
         target = self._resolve(path)
@@ -426,11 +443,15 @@ class AgentToolbox:
         rejection = self._reject_if_corrupted_manifest(path, updated)
         if rejection:
             return {"error": rejection}
+        updated, sanitize_note = self._sanitize_toxic_dependencies(path, updated)
 
         target.write_text(updated, encoding="utf-8")
         clean_rel = str(target.relative_to(self.project_dir)).replace("\\", "/")
         self.files_written.add(clean_rel)
-        return {"path": clean_rel, "status": "ok"}
+        result = {"path": clean_rel, "status": "ok"}
+        if sanitize_note:
+            result["warning"] = sanitize_note
+        return result
 
     async def _tool_patch_file(self, path: str, patch: str) -> dict:
         from core.diff_patcher import patch_content
@@ -457,6 +478,7 @@ class AgentToolbox:
         manifest_err = self._reject_if_corrupted_manifest(path, new_content)
         if manifest_err:
             return {"error": manifest_err}
+        new_content, sanitize_note = self._sanitize_toxic_dependencies(path, new_content)
 
         try:
             target.write_text(new_content, encoding="utf-8")
@@ -465,7 +487,10 @@ class AgentToolbox:
 
         clean_rel = str(target.relative_to(self.project_dir)).replace("\\", "/")
         self.files_written.add(clean_rel)
-        return {"path": clean_rel, "status": "ok", "message": msg}
+        result = {"path": clean_rel, "status": "ok", "message": msg}
+        if sanitize_note:
+            result["warning"] = sanitize_note
+        return result
 
     # ── Such-Werkzeug ────────────────────────────────────────────────
 

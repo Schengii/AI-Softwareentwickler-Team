@@ -17,7 +17,8 @@ einen gezielten Korrekturauftrag auslöst statt nur verification_ok zurückzuset
 
 import asyncio
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Iterable
+from pathlib import PurePosixPath
 from typing import TypeVar
 
 from agents.department_lead_agent import DEPARTMENT_DEFINITIONS
@@ -81,6 +82,26 @@ _DICT_ATTRIBUTE_ERROR_RE = re.compile(r"AttributeError:\s*'dict' object has no a
 # (einmal `prefix=` im APIRouter() selbst, ein zweites Mal identisch in `include_router()`).
 _DUPLICATE_URL_PREFIX_RE = re.compile(r"(/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)?)\1")
 
+# Team-Optimierung (logipulse-Lauf 2026-09-10, logs/verification/20260910_084833_logipulse.log):
+# `assert 404 == 202` in tests/test_events.py und `AttributeError: module 'jwt' has no attribute
+# 'encode'` landeten beim `tester`, weil die fehlschlagende Zeile in einer Testdatei lag. Der
+# tester kann aber weder einen fehlenden Router in main.py mounten noch eine toxische
+# Paket-Kollision in requirements.txt beheben - die Fix-Schleife lief dreimal wirkungslos.
+# Erkennt "Endpunkt nicht registriert": der Test erwartete einen ANDEREN Status als 404
+# (pytest: `assert <ist> == <soll>`, unittest: `<ist> != <soll>`) oder FastAPIs Default-Body.
+_ROUTE_NOT_FOUND_RE = re.compile(
+    r"assert 404 == (?!404\b)\d{3}\b"
+    r"|\b404 != (?!404\b)\d{3}\b"
+    r"|['\"]detail['\"]\s*:\s*['\"]Not Found['\"]"
+    r"|\bRoute Not Found\b",
+    re.IGNORECASE,
+)
+_MODULE_ATTRIBUTE_ERROR_RE = re.compile(
+    r"AttributeError: module ['\"]([\w.]+)['\"] has no attribute ['\"](\w+)['\"]"
+)
+# Agenten, die ein Dependency-Manifest fachlich pflegen dürfen (siehe _dependency_fix_owner).
+_DEPENDENCY_FIX_AGENT_IDS = ("backend", "refactoring")
+
 
 def _diagnose_runtime_failure(message: str) -> str | None:
     """Analog zu _diagnose_import_failure() oben, aber für die vier häufigsten NICHT-Import-
@@ -126,7 +147,160 @@ def _diagnose_runtime_failure(message: str) -> str | None:
                 f"`app.include_router(router, prefix=\"{dup}\")` eingebunden. Entferne den Prefix an "
                 f"GENAU einer der beiden Stellen."
             )
+    if _ROUTE_NOT_FOUND_RE.search(message):
+        return (
+            "⚠️ KONKRETE URSACHE: HTTP 404 statt des erwarteten Statuscodes – der aufgerufene "
+            "Endpunkt ist in der laufenden App NICHT registriert. Prüfe in `main.py`/der App-Fabrik, "
+            "ob der zuständige Router per `app.include_router(...)` eingebunden ist und ob Pfad und "
+            "Prefix exakt dem dokumentierten Endpunkt (README/docs) entsprechen. Ändere NICHT die "
+            "Test-Assertion, um den 404 zu akzeptieren."
+        )
+    m = _MODULE_ATTRIBUTE_ERROR_RE.search(message)
+    if m:
+        module, attr = m.group(1), m.group(2)
+        from core.manifest_guard import TOXIC_DEPENDENCY_RULES
+
+        rule = TOXIC_DEPENDENCY_RULES.get(module.split(".")[0].lower())
+        if rule is not None:
+            return (
+                f"⚠️ KONKRETE URSACHE: `AttributeError: module '{module}' has no attribute '{attr}'` – "
+                f"toxische Paket-Kollision: {rule.reason}. Entferne das Paket `{module}` aus "
+                f"requirements.txt und behalte nur `{rule.legitimate_packages[0]}` – Code und Tests "
+                "sind nicht die Ursache."
+            )
+        return (
+            f"⚠️ KONKRETE URSACHE: `AttributeError: module '{module}' has no attribute '{attr}'` – "
+            f"ist `{module}` ein Drittanbieter-Paket, ist in requirements.txt ein falsches oder "
+            "kollidierendes Paket bzw. eine inkompatible Version eingetragen. Ist es ein lokales "
+            f"Modul, fehlt `{attr}` dort tatsächlich."
+        )
     return None
+
+
+def _is_test_file(path: str) -> bool:
+    """True für Testcode (test_*.py, *_test.py, conftest.py, alles unter tests/)."""
+    p = PurePosixPath(path.replace("\\", "/"))
+    return (
+        p.name.startswith("test_") or p.name.endswith("_test.py") or p.name == "conftest.py"
+        or "tests" in p.parts[:-1]
+    )
+
+
+def _is_local_module(module: str, file_owners: dict[str, str]) -> bool:
+    """True, wenn der Top-Level-Name von `module` einer Projektdatei/einem Projektordner
+    entspricht - dann ist ein Attribut-/Import-Fehler ein Code-, kein Dependency-Problem."""
+    top = module.split(".")[0]
+    for rel in file_owners:
+        p = PurePosixPath(rel.replace("\\", "/"))
+        if (p.suffix == ".py" and p.stem == top) or top in p.parts[:-1]:
+            return True
+    return False
+
+
+def _dependency_error_module(message: str, file_owners: dict[str, str]) -> str | None:
+    """Name des Drittanbieter-Moduls, falls die Fehlermeldung ein Dependency-Problem zeigt
+    (`AttributeError: module 'jwt' ...` bzw. `ModuleNotFoundError` eines Nicht-Projektmoduls)."""
+    for pattern in (_MODULE_ATTRIBUTE_ERROR_RE, _MODULE_NOT_FOUND_RE):
+        m = pattern.search(message)
+        if m and not _is_local_module(m.group(1), file_owners):
+            return m.group(1)
+    return None
+
+
+def _dependency_fix_owner(file_owners: dict[str, str], available_agents: Collection[str]) -> str | None:
+    """Bevorzugt den bisherigen Owner von requirements.txt (sofern backend/refactoring), sonst
+    backend, sonst refactoring - nie den tester, der Manifeste fachlich nicht verantwortet."""
+    manifest_owner = file_owners.get("requirements.txt")
+    preferred = manifest_owner if manifest_owner in _DEPENDENCY_FIX_AGENT_IDS else None
+    for candidate in (preferred, *_DEPENDENCY_FIX_AGENT_IDS):
+        if candidate and candidate in available_agents:
+            return candidate
+    return None
+
+
+def _route_not_found_owner(file_owners: dict[str, str], available_agents: Collection[str]) -> str | None:
+    """backend (mountet Router in main.py); ohne backend der Owner einer main.py."""
+    if "backend" in available_agents:
+        return "backend"
+    for rel, owner in file_owners.items():
+        if PurePosixPath(rel.replace("\\", "/")).name == "main.py" and not _is_test_file(rel) and owner in available_agents:
+            return owner
+    return None
+
+
+def _route_failure_owners(
+    message: str,
+    files: Iterable[str],
+    file_owners: dict[str, str],
+    available_agents: Collection[str],
+    tester_participated: bool,
+) -> set[str]:
+    """Ursachen-basierte Zuordnung eines echten Testfehlers zu den Fix-Agenten.
+
+    Reihenfolge: Datei-Owner laut Traceback als Ausgangsbasis, danach überschreiben bekannte
+    Ursachenklassen diese Zuordnung (Import-Ziel, DB-Schema, dict-Rückgabe/doppelter Prefix,
+    nicht registrierte Route -> backend, Dependency-Kollision -> backend/refactoring). Der
+    `tester` bleibt nur für reine Test-Code-Fehler zuständig: Zeigt der Traceback zusätzlich
+    Produktivcode eines anderen Agenten, wird er entfernt; als letzter Fallback greift er nur,
+    wenn sonst niemand zuständig ist.
+    """
+    files = list(files)
+    owners = {file_owners[f] for f in files if f in file_owners}
+    # Team-Optimierung (dieser Auftrag: `workspace/opspilot` scheiterte wiederholt mit
+    # `ImportError: cannot import name 'X' from 'Y'`) - der Traceback zeigt bei diesem
+    # Fehlerbild nur die IMPORTIERENDE Datei (z.B. app/api/auth.py), nicht das Zielmodul
+    # `Y` selbst, in dem das Symbol tatsächlich fehlt. Die generische Owner-Ermittlung
+    # oben adressiert deshalb oft den falschen/gar keinen Agenten und der Fehler landete
+    # zusätzlich beim `tester`-Fallback, der `Y` nicht besitzt und das Symbol strukturell
+    # nicht ergänzen kann. Löst hier deterministisch den Owner von `Y` selbst auf (statt
+    # nur der importierenden Datei) und dispatcht GEZIELT dorthin, BEVOR der generische
+    # tester-Fallback greift.
+    import_target = _import_name_error_target(message)
+    if import_target is not None:
+        _name, module = import_target
+        module_owner = file_owners.get(module.replace(".", "/") + ".py")
+        if module_owner:
+            owners = {module_owner}
+        elif not owners and "backend" in available_agents:
+            owners = {"backend"}
+    # Team-Optimierung (echter Fund: memory/backlog.json-Tickets `recurring-failure-
+    # event_relay`/`recurring-failure-service_bookmark_monitor`) - ein "Ran 0 tests"/
+    # "NO TESTS RAN"-Befund hat NIE einen Datei-Bezug im Traceback (reine Testlauf-
+    # Diagnostik, kein Stacktrace), landete deshalb blind beim `tester` (siehe Fallback
+    # unten) - der konnte die meist umgebungsbedingte Ursache (fehlende Testabhängigkeit
+    # in requirements.txt) strukturell nie beheben. Bevorzugt jetzt den Owner von
+    # requirements.txt (meist backend/database) für GENAU dieses Fehlerbild, bevor der
+    # generische tester-Fallback greift.
+    if not owners and _NO_TESTS_RAN_RE.search(message) and "requirements.txt" in file_owners:
+        owners = {file_owners["requirements.txt"]}
+    # Team-Optimierung (ki_team_analyse_und_optimierungen.md, Punkt 1.2/2): DB-Schema-
+    # Fehler (IntegrityError/"no such table") und dict-statt-Modell-Rückgaben treffen
+    # im Traceback oft nur eine unbeteiligte Aufrufer-Datei (z.B. den Router), nicht die
+    # eigentlich zuständige Datei (Modell-Definition bzw. Service-Funktion) - deshalb
+    # hier GEZIELT an den fachlich zuständigen Agenten geroutet, analog zum
+    # import_target-Zweig oben, statt sich auf die generische Datei-Zuordnung zu
+    # verlassen.
+    if (_INTEGRITY_ERROR_RE.search(message) or _NO_SUCH_TABLE_RE.search(message)) and "database" in available_agents:
+        owners = {"database"}
+    elif (
+        _DICT_ATTRIBUTE_ERROR_RE.search(message)
+        or ("404" in message and _DUPLICATE_URL_PREFIX_RE.search(message))
+    ) and "backend" in available_agents:
+        owners = {"backend"}
+    elif _ROUTE_NOT_FOUND_RE.search(message) and (route_owner := _route_not_found_owner(file_owners, available_agents)):
+        # Nicht registrierter Endpunkt: die Assert-Zeile liegt zwar im Test, die Ursache
+        # (fehlendes app.include_router/abweichender Pfad) aber im Backend.
+        owners = {route_owner}
+    elif _dependency_error_module(message, file_owners) and (dep_owner := _dependency_fix_owner(file_owners, available_agents)):
+        owners = {dep_owner}
+    elif "tester" in owners and any(
+        not _is_test_file(f) and file_owners.get(f) not in (None, "tester") for f in files
+    ):
+        # Der Fehler entsteht im Produktivcode eines anderen Agenten - kein reiner Test-Code-Fehler.
+        owners.discard("tester")
+    if not owners and tester_participated:
+        owners = {"tester"}
+    return owners
 
 
 def _diagnose_import_failure(message: str) -> str | None:
@@ -2003,56 +2177,15 @@ class VerificationMixin:
             previous_failure_signature = current_signature
 
             agents_to_fix: dict[str, list] = {}
+            tester_participated = any(r.agent_id == "tester" for r in all_results)
             for failure in report.failures:
-                owners = {file_owners[f] for f in failure.files if f in file_owners}
-                # Team-Optimierung (dieser Auftrag: `workspace/opspilot` scheiterte wiederholt mit
-                # `ImportError: cannot import name 'X' from 'Y'`) - der Traceback zeigt bei diesem
-                # Fehlerbild nur die IMPORTIERENDE Datei (z.B. app/api/auth.py), nicht das Zielmodul
-                # `Y` selbst, in dem das Symbol tatsächlich fehlt. Die generische Owner-Ermittlung
-                # oben adressiert deshalb oft den falschen/gar keinen Agenten und der Fehler landete
-                # zusätzlich beim `tester`-Fallback, der `Y` nicht besitzt und das Symbol strukturell
-                # nicht ergänzen kann. Löst hier deterministisch den Owner von `Y` selbst auf (statt
-                # nur der importierenden Datei) und dispatcht GEZIELT dorthin, BEVOR der generische
-                # tester-Fallback greift - inkl. persistentem Lernen (siehe
-                # _record_verification_learning) für künftige Läufe desselben Agenten.
-                import_target = _import_name_error_target(failure.message)
-                if import_target is not None:
+                # Persistentes Lernen (siehe _record_verification_learning) für künftige Läufe
+                # desselben Agenten - bewusst außerhalb der seiteneffektfreien Routing-Funktion.
+                if _import_name_error_target(failure.message) is not None:
                     _record_verification_learning(failure.message)
-                    _name, module = import_target
-                    module_path = module.replace(".", "/") + ".py"
-                    module_owner = file_owners.get(module_path)
-                    if module_owner:
-                        owners = {module_owner}
-                    elif not owners and "backend" in self._agents:
-                        owners = {"backend"}
-                # Team-Optimierung (echter Fund: memory/backlog.json-Tickets `recurring-failure-
-                # event_relay`/`recurring-failure-service_bookmark_monitor`) - ein "Ran 0 tests"/
-                # "NO TESTS RAN"-Befund hat NIE einen Datei-Bezug im Traceback (reine Testlauf-
-                # Diagnostik, kein Stacktrace), landete deshalb blind beim `tester` (siehe Fallback
-                # unten) - der konnte die meist umgebungsbedingte Ursache (fehlende Testabhängigkeit
-                # in requirements.txt) strukturell nie beheben. Bevorzugt jetzt den Owner von
-                # requirements.txt (meist backend/database) für GENAU dieses Fehlerbild, bevor der
-                # generische tester-Fallback greift.
-                if not owners and _NO_TESTS_RAN_RE.search(failure.message) and "requirements.txt" in file_owners:
-                    owners = {file_owners["requirements.txt"]}
-                # Team-Optimierung (ki_team_analyse_und_optimierungen.md, Punkt 1.2/2): DB-Schema-
-                # Fehler (IntegrityError/"no such table") und dict-statt-Modell-Rückgaben treffen
-                # im Traceback oft nur eine unbeteiligte Aufrufer-Datei (z.B. den Router), nicht die
-                # eigentlich zuständige Datei (Modell-Definition bzw. Service-Funktion) - deshalb
-                # hier GEZIELT an den fachlich zuständigen Agenten geroutet, analog zum
-                # import_target-Zweig oben, statt sich auf die generische Datei-Zuordnung zu
-                # verlassen.
-                if (
-                    _INTEGRITY_ERROR_RE.search(failure.message) or _NO_SUCH_TABLE_RE.search(failure.message)
-                ) and "database" in self._agents:
-                    owners = {"database"}
-                elif (
-                    _DICT_ATTRIBUTE_ERROR_RE.search(failure.message)
-                    or ("404" in failure.message and _DUPLICATE_URL_PREFIX_RE.search(failure.message))
-                ) and "backend" in self._agents:
-                    owners = {"backend"}
-                if not owners and any(r.agent_id == "tester" for r in all_results):
-                    owners = {"tester"}
+                owners = _route_failure_owners(
+                    failure.message, failure.files, file_owners, self._agents, tester_participated,
+                )
                 for owner in owners:
                     if owner in self._agents:
                         agents_to_fix.setdefault(owner, []).append(failure)

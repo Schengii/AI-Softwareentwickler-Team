@@ -25,6 +25,7 @@ externe Referenzen.
 """
 
 import ast
+import logging
 import re
 from pathlib import Path
 
@@ -71,6 +72,8 @@ from core.verifier.models import (
     CompletenessIssue,
     CompletenessReport,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 class CompletenessMixin:
@@ -144,8 +147,19 @@ class CompletenessMixin:
         Merge-/Diff-Korruption – siehe core/manifest_guard.py für den realen Fund. Ergänzt die
         Schreibzeit-Prüfung in core/agent_toolbox.py/core/workspace.py als zweite
         Verteidigungslinie: erkennt auch Korruption, die auf einem anderen Weg (z.B. manuelles
-        Kopieren, ältere Läufe vor dieser Prüfung) ins Projekt gelangt ist."""
-        from core.manifest_guard import _JSON_MANIFESTS, _PYTHON_REQUIREMENTS_MANIFESTS, detect_corrupted_manifest
+        Kopieren, ältere Läufe vor dieser Prüfung) ins Projekt gelangt ist.
+
+        Toxische Paket-Kollisionen (`jwt` neben `pyjwt`, `crypto` neben `cryptography`, siehe
+        core/manifest_guard.TOXIC_DEPENDENCY_RULES) werden hier deterministisch auf der Platte
+        bereinigt, BEVOR die Verifikation `pip install -r` ausführt. Nur wenn das Zurückschreiben
+        scheitert, bleibt ein blockierender `corrupted_dependency_manifest`-Fund stehen."""
+        from core.manifest_guard import (
+            _JSON_MANIFESTS,
+            _PYTHON_REQUIREMENTS_MANIFESTS,
+            describe_toxic_dependencies,
+            detect_corrupted_manifest,
+            sanitize_requirements,
+        )
 
         issues: list[CompletenessIssue] = []
         for name in _PYTHON_REQUIREMENTS_MANIFESTS | _JSON_MANIFESTS:
@@ -158,7 +172,21 @@ class CompletenessMixin:
                 continue
             message = detect_corrupted_manifest(name, text)
             if message:
-                issues.append(CompletenessIssue(file_path=name, message=message))
+                issues.append(CompletenessIssue(file_path=name, message=message, kind="corrupted_dependency_manifest"))
+                continue
+            sanitized, toxic = sanitize_requirements(name, text)
+            if not toxic:
+                continue
+            try:
+                candidate.write_text(sanitized, encoding="utf-8")
+                _logger.warning("Dependency-Manifest automatisch bereinigt: %s", describe_toxic_dependencies(name, toxic))
+            except OSError as e:
+                issues.append(CompletenessIssue(
+                    file_path=name,
+                    line_number=toxic[0].line_number,
+                    message=f"{describe_toxic_dependencies(name, toxic)} Automatische Bereinigung fehlgeschlagen: {e}",
+                    kind="corrupted_dependency_manifest",
+                ))
         return issues
 
     def _scan_text_for_stubs(self, rel: str, text: str) -> list[CompletenessIssue]:

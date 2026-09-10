@@ -57,8 +57,13 @@ class TestDiagnoseRuntimeFailure(unittest.TestCase):
     def test_does_not_fire_on_unrelated_error(self):
         self.assertIsNone(_diagnose_runtime_failure("AssertionError: 3 != 4"))
 
-    def test_does_not_fire_on_404_without_duplicate_prefix(self):
-        self.assertIsNone(_diagnose_runtime_failure("AssertionError: 404 != 200 for GET /api/v1/users"))
+    def test_plain_404_gets_route_not_registered_diagnosis_not_duplicate_prefix(self):
+        # Ohne wiederholten Prefix ist die Ursache ein nicht gemounteter Router (logipulse-Lauf
+        # 2026-09-10), kein doppelter Prefix - siehe _ROUTE_NOT_FOUND_RE in verification.py.
+        diag = _diagnose_runtime_failure("AssertionError: 404 != 200 for GET /api/v1/users")
+        self.assertIsNotNone(diag)
+        self.assertIn("include_router", diag)
+        self.assertNotIn("doppelter Router-Prefix", diag)
 
 
 class TestRuntimeFailureRouting(unittest.TestCase):

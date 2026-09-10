@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from core.code_sandbox import CodeSandbox
+from core.manifest_guard import describe_toxic_dependencies, sanitize_requirements_file
 from core.verifier.models import _IGNORED_DIRS, VENV_DIRNAME
 
 
@@ -103,6 +104,16 @@ class EnvironmentMixin:
                 return f"⚠️ Konnte keine isolierte venv anlegen (nutze System-Interpreter als Fallback): {create_result.stderr[:300]}"
 
         target_python = venv_python if venv_python.exists() else Path(sys.executable)
+        # Letzte Verteidigungslinie vor pip: toxische Paket-Kollisionen (`jwt` neben `pyjwt`)
+        # überschreiben sonst lautlos einen Namespace, obwohl pip exit_code=0 meldet.
+        sanitize_note = ""
+        if req_file.name.startswith("requirements"):
+            try:
+                toxic = sanitize_requirements_file(req_file)
+                if toxic:
+                    sanitize_note = describe_toxic_dependencies(req_file.name, toxic) + "\n"
+            except OSError as e:
+                sanitize_note = f"⚠️ Konnte {req_file.name} nicht auf toxische Paket-Kollisionen bereinigen: {e}\n"
         install_result = CodeSandbox.run_command(
             [str(target_python), "-m", "pip", "install", "-q", "-r", str(req_file)],
             cwd=self.project_dir,
@@ -110,7 +121,7 @@ class EnvironmentMixin:
         )
         status = "✅" if install_result.exit_code == 0 else "⚠️"
         tail = (install_result.stdout + install_result.stderr).strip()[-800:]
-        return f"{status} pip install -r {req_file.name} (exit_code={install_result.exit_code})" + (f"\n{tail}" if install_result.exit_code != 0 else "")
+        return sanitize_note + f"{status} pip install -r {req_file.name} (exit_code={install_result.exit_code})" + (f"\n{tail}" if install_result.exit_code != 0 else "")
 
     def _ensure_pytest_available(self, timeout_seconds: float) -> str:
         """

@@ -73,7 +73,12 @@ class TestPinning:
     def test_freier_aufruf_nutzt_die_volle_kette(self):
         kandidaten = _resolve_gemini_candidates("gemini-3.8-flash", True)
         assert kandidaten[0] == "gemini-3.8-flash"
-        assert kandidaten[1:] == MODEL_FALLBACKS["gemini-3.8-flash"]
+        # Volle Kette, aber flash-lite als letzte Rettung hinter allen vollwertigen Modellen
+        # (logipulse-Lauf 2026-09-10: HEAVY-Rollen landeten sonst vor Groq auf flash-lite).
+        erwartet = MODEL_FALLBACKS["gemini-3.8-flash"]
+        assert sorted(kandidaten[1:]) == sorted(erwartet)
+        assert kandidaten[-1] == "gemini-3.1-flash-lite"
+        assert [m for m in kandidaten[1:] if "lite" not in m] == [m for m in erwartet if "lite" not in m]
 
     def test_unbekanntes_modell_bleibt_alleinstehend(self):
         assert _resolve_gemini_candidates("gemini-experimentell", True) == ["gemini-experimentell"]

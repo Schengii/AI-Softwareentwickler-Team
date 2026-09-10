@@ -11,8 +11,8 @@ der nicht ohnehin bereits auf HEAVY_MODEL läuft, für diesen Lauf hoch.
 
 import unittest
 
-from agents.orchestrator import Orchestrator
 import config
+from agents.orchestrator import Orchestrator
 from core.llm_factory import is_same_model
 
 

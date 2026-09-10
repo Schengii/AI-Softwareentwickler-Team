@@ -25,6 +25,15 @@ from pathlib import Path
 from typing import Any
 
 from core.code_sandbox import CodeSandbox
+from core.docker_sandbox import DockerSandbox
+
+# Befehle, die Projektcode ausführen und deshalb bei aktiver Docker-Sandbox im Container laufen.
+# ruff/mypy/flake8/black analysieren nur statisch und bleiben lokal.
+_SANDBOXED_COMMAND_KINDS = {
+    "pip": "python", "pip3": "python", "python": "python", "python3": "python", "pytest": "python",
+    "npm": "node", "npx": "node", "node": "node",
+}
+SANDBOX_COMMAND_TIMEOUT_SECONDS = 300.0
 
 
 def split_command_line(command: str, *, windows: bool | None = None) -> list[str]:
@@ -541,6 +550,23 @@ class AgentToolbox:
             }
 
         import asyncio
+
+        argv = split_command_line(cmd_stripped)
+        sandbox_kind = _SANDBOXED_COMMAND_KINDS.get(argv[0]) if argv else None
+        if sandbox_kind and await asyncio.to_thread(DockerSandbox.is_active):
+            if sandbox_kind == "python":
+                sandboxed = await asyncio.to_thread(
+                    DockerSandbox.run_python, argv, self.project_dir, SANDBOX_COMMAND_TIMEOUT_SECONDS,
+                )
+            else:
+                sandboxed = await asyncio.to_thread(
+                    DockerSandbox.run_node, argv, self.project_dir, self.project_dir, SANDBOX_COMMAND_TIMEOUT_SECONDS,
+                )
+            return {
+                "exit_code": sandboxed.exit_code, "stdout": sandboxed.stdout, "stderr": sandboxed.stderr,
+                "timed_out": sandboxed.timed_out, "sandbox": "docker",
+            }
+
         # In einem Thread: das erstmalige Anlegen der Projekt-venv (siehe _project_python) dauert
         # mehrere Sekunden und darf die Event-Loop paralleler Agenten nicht blockieren.
         parts = await asyncio.to_thread(self._split_command, cmd_stripped)

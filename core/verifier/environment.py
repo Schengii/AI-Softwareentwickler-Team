@@ -12,7 +12,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from core.code_sandbox import CodeSandbox
+from core.code_sandbox import CodeSandbox, ExecutionResult
+from core.docker_sandbox import DockerSandbox
 from core.manifest_guard import describe_toxic_dependencies, sanitize_requirements_file
 from core.verifier.models import _IGNORED_DIRS, VENV_DIRNAME
 
@@ -92,18 +93,16 @@ class EnvironmentMixin:
         status = "✅" if result.exit_code == 0 else "⚠️"
         return f"{status} go mod download (exit_code={result.exit_code})"
 
-    def _ensure_python_environment(self, req_file: Path, timeout_seconds: float) -> str:
-        venv_python = self._venv_python()
-        if not venv_python.exists():
-            create_result = CodeSandbox.run_command(
-                [sys.executable, "-m", "venv", str(self.project_dir / VENV_DIRNAME)],
-                cwd=self.project_dir,
-                timeout_seconds=60.0,
-            )
-            if create_result.exit_code != 0:
-                return f"⚠️ Konnte keine isolierte venv anlegen (nutze System-Interpreter als Fallback): {create_result.stderr[:300]}"
+    @staticmethod
+    def _pip_status_line(req_file: Path, install_result: ExecutionResult, suffix: str = "") -> str:
+        status = "✅" if install_result.exit_code == 0 else "⚠️"
+        tail = (install_result.stdout + install_result.stderr).strip()[-800:]
+        return (
+            f"{status} pip install -r {req_file.name} (exit_code={install_result.exit_code}){suffix}"
+            + (f"\n{tail}" if install_result.exit_code != 0 else "")
+        )
 
-        target_python = venv_python if venv_python.exists() else Path(sys.executable)
+    def _ensure_python_environment(self, req_file: Path, timeout_seconds: float) -> str:
         # Letzte Verteidigungslinie vor pip: toxische Paket-Kollisionen (`jwt` neben `pyjwt`)
         # überschreiben sonst lautlos einen Namespace, obwohl pip exit_code=0 meldet.
         sanitize_note = ""
@@ -114,14 +113,31 @@ class EnvironmentMixin:
                     sanitize_note = describe_toxic_dependencies(req_file.name, toxic) + "\n"
             except OSError as e:
                 sanitize_note = f"⚠️ Konnte {req_file.name} nicht auf toxische Paket-Kollisionen bereinigen: {e}\n"
+
+        if DockerSandbox.is_active():
+            # setup.py-/Build-Skripte der Pakete laufen im Container ohne Zugriff auf die Framework-.env
+            # (siehe core/docker_sandbox.py) - keine Host-venv.
+            rel = req_file.relative_to(self.project_dir).as_posix()
+            install_result = DockerSandbox.run_python(["pip", "install", "-q", "-r", rel], self.project_dir, timeout_seconds)
+            return sanitize_note + self._pip_status_line(req_file, install_result, " [Docker-Sandbox]")
+
+        venv_python = self._venv_python()
+        if not venv_python.exists():
+            create_result = CodeSandbox.run_command(
+                [sys.executable, "-m", "venv", str(self.project_dir / VENV_DIRNAME)],
+                cwd=self.project_dir,
+                timeout_seconds=60.0,
+            )
+            if create_result.exit_code != 0:
+                return sanitize_note + f"⚠️ Konnte keine isolierte venv anlegen (nutze System-Interpreter als Fallback): {create_result.stderr[:300]}"
+
+        target_python = venv_python if venv_python.exists() else Path(sys.executable)
         install_result = CodeSandbox.run_command(
             [str(target_python), "-m", "pip", "install", "-q", "-r", str(req_file)],
             cwd=self.project_dir,
             timeout_seconds=timeout_seconds,
         )
-        status = "✅" if install_result.exit_code == 0 else "⚠️"
-        tail = (install_result.stdout + install_result.stderr).strip()[-800:]
-        return sanitize_note + f"{status} pip install -r {req_file.name} (exit_code={install_result.exit_code})" + (f"\n{tail}" if install_result.exit_code != 0 else "")
+        return sanitize_note + self._pip_status_line(req_file, install_result)
 
     def _ensure_pytest_available(self, timeout_seconds: float) -> str:
         """
@@ -148,6 +164,19 @@ class EnvironmentMixin:
         auf den bereits bestehenden `import pytest`-Check/unittest-Fallback zurückfallen, statt
         den gesamten Lauf zu blockieren.
         """
+        if DockerSandbox.is_active():
+            sandbox_result = DockerSandbox.run_python(
+                ["sh", "-c", "python -c 'import pytest' 2>/dev/null && exit 0; pip install -q pytest && echo AI_TEAM_PYTEST_INSTALLED"],
+                self.project_dir, timeout_seconds,
+            )
+            if sandbox_result.exit_code == 0 and "AI_TEAM_PYTEST_INSTALLED" not in sandbox_result.stdout:
+                return ""
+            status = "✅" if sandbox_result.exit_code == 0 else "⚠️"
+            return (
+                f"{status} `pytest` fehlte in der Umgebung (nicht in requirements.txt/"
+                f"requirements-dev.txt) - im Docker-Sandbox-Volume nachinstalliert (exit_code={sandbox_result.exit_code})"
+            )
+
         target_python = self._venv_python() if self._venv_python().exists() else Path(sys.executable)
         check = CodeSandbox.run_command(
             [str(target_python), "-c", "import pytest"], cwd=self.project_dir, timeout_seconds=10.0,
@@ -166,14 +195,19 @@ class EnvironmentMixin:
 
     def _ensure_node_environment(self, node_dir: Path, timeout_seconds: float) -> str:
         rel = self._relative_label(node_dir)
-        if shutil.which("npm") is None:
+        command = ["npm", "ci"] if (node_dir / "package-lock.json").exists() else ["npm", "install"]
+        sandbox_active = DockerSandbox.is_active()
+        if not sandbox_active and shutil.which("npm") is None:
             return f"⚠️ `npm` ist auf diesem System nicht installiert/verfügbar – Node-Abhängigkeiten ({rel}) übersprungen."
 
-        command = ["npm", "ci"] if (node_dir / "package-lock.json").exists() else ["npm", "install"]
-        install_result = CodeSandbox.run_command(command, cwd=node_dir, timeout_seconds=timeout_seconds)
+        if sandbox_active:
+            # postinstall-Skripte laufen im Container; node_modules liegt in einem Volume.
+            install_result = DockerSandbox.run_node(command, self.project_dir, node_dir, timeout_seconds)
+        else:
+            install_result = CodeSandbox.run_command(command, cwd=node_dir, timeout_seconds=timeout_seconds)
         status = "✅" if install_result.exit_code == 0 else "⚠️"
         tail = (install_result.stdout + install_result.stderr).strip()[-800:]
-        label = f"{' '.join(command)} ({rel})"
+        label = f"{' '.join(command)} ({rel})" + (" [Docker-Sandbox]" if sandbox_active else "")
         return f"{status} {label} (exit_code={install_result.exit_code})" + (f"\n{tail}" if install_result.exit_code != 0 else "")
 
     def _relative_label(self, directory: Path) -> str:

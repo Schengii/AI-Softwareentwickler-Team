@@ -156,5 +156,6 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
 | **MCP-Server** | `interface/mcp_server.py` | Standardisiertes Model Context Protocol für IDE-Integrationen (VS Code, Cursor, Antigravity). |
 | **GitHub-Issue-Watcher** | `core/issue_watcher.py` | Automatische Bearbeitung von GitHub-Issues mit Label-Trigger (`--check-issues`). |
 | **PR-Review-Watcher** | `core/pr_review_watcher.py` | Automatische Einarbeitung von menschlichem PR-Feedback (`--check-pr-reviews`). |
+| **Ausführungs-Sandbox** | `core/docker_sandbox.py` | Mit `SANDBOX_BACKEND=docker` laufen pip/npm-Installation, Testsuiten, Frontend-Build und `run_command` (pip/python/pytest/npm/npx/node) in einem Container, der nur das Projektverzeichnis sieht – kein Zugriff auf die `.env` des Frameworks. Ohne erreichbaren Daemon: Warnung + lokale Ausführung. Weiterhin lokal: Runtime-Smoke-/Lasttests und Browser-Checks (starten lokal erreichbare Server). |
 | **Dependency-Scanner** | `core/dependency_watch.py`, `core/dependency_updater.py` | Regelmäßige Sicherheitsprüfung aller Workspace-Projekte (`--check-dependencies`) – hebt verwundbare Python-Pakete mit bekannter `fix_versions`-Angabe automatisch an und öffnet dafür einen Pull Request. |
 | **Benchmark-Suite** | `evals/runner.py` | Ausführung standardisierter Benchmarks (`python main.py --eval`). |

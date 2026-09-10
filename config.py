@@ -673,6 +673,17 @@ DASHBOARD_AUTH_TOKEN: str = os.getenv("DASHBOARD_AUTH_TOKEN", "")
 # Läufe unnötig zu strapazieren – bei Bedarf über .env erhöhen.
 DASHBOARD_MAX_CONCURRENT_JOBS: int = int(os.getenv("DASHBOARD_MAX_CONCURRENT_JOBS", "2"))
 
+# ── Ausführungs-Sandbox für Agenten-Code (core/docker_sandbox.py) ─────────────────────────
+# "local" (Standard): Tests/pip/npm von Agenten-Code laufen direkt auf dem Host.
+# "docker": dieselben Schritte laufen in einem Container, der NUR das Projektverzeichnis sieht -
+# kein Zugriff auf die .env des Frameworks. Ohne erreichbaren Docker-Daemon wird gewarnt und
+# lokal ausgeführt.
+SANDBOX_BACKEND: str = os.getenv("SANDBOX_BACKEND", "local").strip().lower()
+SANDBOX_PYTHON_IMAGE: str = os.getenv("SANDBOX_PYTHON_IMAGE", "python:3.12-slim")
+SANDBOX_NODE_IMAGE: str = os.getenv("SANDBOX_NODE_IMAGE", "node:20-slim")
+SANDBOX_MEMORY: str = os.getenv("SANDBOX_MEMORY", "2g")
+SANDBOX_CPUS: str = os.getenv("SANDBOX_CPUS", "2")
+
 # ──────────────────────────────────────────
 # Autonomer Ziel- & Iterations-Loop (core/goal_loop.py)
 # ──────────────────────────────────────────

@@ -26,6 +26,7 @@ import urllib.request
 from pathlib import Path
 
 from core.code_sandbox import CodeSandbox
+from core.docker_sandbox import DockerSandbox
 from core.verifier.models import (
     _DOCKER_DAEMON_UNAVAILABLE_RE,
     LOAD_TEST_DIRNAME,
@@ -198,6 +199,25 @@ class RuntimeMixin:
 
     def _build_frontend(self, node_dir: Path, timeout_seconds: float) -> FrontendBuildReport:
         rel = self._relative_label(node_dir)
+        if DockerSandbox.is_active():
+            # node_modules liegt im Sandbox-Volume (core/docker_sandbox.py), nicht auf dem Host -
+            # der Build muss deshalb ebenfalls im Container laufen. Exit 90 = keine Installation.
+            result = DockerSandbox.run_node(
+                ["sh", "-c", 'if [ -z "$(ls -A node_modules 2>/dev/null)" ]; then exit 90; fi; exec npm run build'],
+                self.project_dir, node_dir, timeout_seconds,
+            )
+            if result.exit_code == 0:
+                return FrontendBuildReport(attempted=True, passed=True, directory=rel)
+            if result.exit_code == 90:
+                return FrontendBuildReport(
+                    attempted=True, passed=False, directory=rel,
+                    output=f"`npm install`/`npm ci` hat unter {rel} im Docker-Sandbox-Volume keine node_modules "
+                           "erzeugt (Installation fehlgeschlagen oder abgebrochen) - der Frontend-Build kann so "
+                           "nicht ausgeführt werden.",
+                )
+            return FrontendBuildReport(
+                attempted=True, passed=False, directory=rel, output=(result.stdout + result.stderr).strip()[-4000:],
+            )
         if shutil.which("npm") is None:
             return FrontendBuildReport(
                 attempted=False, passed=True, directory=rel,

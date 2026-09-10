@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from core.code_sandbox import CodeSandbox, ExecutionResult
+from core.docker_sandbox import DockerSandbox
 from core.verifier.models import (
     _IGNORED_DIRS,
     _NODE_ENV_ERROR_PATTERN,
@@ -94,7 +95,10 @@ class TestRunnerMixin:
         start = time.monotonic()
         python_test_files = self._find_python_test_files()
         node_projects = self._find_node_projects()
-        npm_available = shutil.which("npm") is not None
+        # Mit aktiver Docker-Sandbox laufen Tests im Container (core/docker_sandbox.py) - dort ist
+        # npm unabhängig von der Host-Installation verfügbar.
+        sandbox_active = DockerSandbox.is_active()
+        npm_available = sandbox_active or shutil.which("npm") is not None
         runnable_node_projects = node_projects if npm_available else []
 
         has_rust = self._has_rust_project()
@@ -130,8 +134,10 @@ class TestRunnerMixin:
         failures: list[TestFailure] = []
 
         if python_test_files:
-            python_exe = self._resolve_python()
-            exec_result = self._run_pytest_or_unittest(python_exe, timeout_seconds)
+            if sandbox_active:
+                exec_result = self._run_pytest_or_unittest_in_sandbox(timeout_seconds)
+            else:
+                exec_result = self._run_pytest_or_unittest(self._resolve_python(), timeout_seconds)
             stdout_chunks.append(f"--- Python (pytest/unittest) ---\n{exec_result.stdout}")
             stderr_chunks.append(exec_result.stderr)
             if exec_result.exit_code != 0:
@@ -140,9 +146,12 @@ class TestRunnerMixin:
                 failures.extend(self._parse_python_failures(exec_result))
 
         for node_dir in runnable_node_projects:
-            exec_result = CodeSandbox.run_command(
-                ["npm", "test", "--silent"], cwd=node_dir, timeout_seconds=timeout_seconds,
-            )
+            if sandbox_active:
+                exec_result = DockerSandbox.run_node(["npm", "test", "--silent"], self.project_dir, node_dir, timeout_seconds)
+            else:
+                exec_result = CodeSandbox.run_command(
+                    ["npm", "test", "--silent"], cwd=node_dir, timeout_seconds=timeout_seconds,
+                )
             rel = self._relative_label(node_dir)
             stdout_chunks.append(f"--- npm test ({rel}) ---\n{exec_result.stdout}")
             stderr_chunks.append(exec_result.stderr)
@@ -180,6 +189,18 @@ class TestRunnerMixin:
             ran=True, passed=passed, exit_code=exit_code,
             stdout="\n".join(stdout_chunks), stderr="\n".join(stderr_chunks),
             duration_seconds=time.monotonic() - start, failures=failures,
+        )
+
+    def _run_pytest_or_unittest_in_sandbox(self, timeout_seconds: float) -> ExecutionResult:
+        """Wie _run_pytest_or_unittest(), aber im Container: relative Pfade statt Host-Pfade, der
+        erste Aufruf legt dabei die venv im Projekt-Volume an (daher großzügiger Check-Timeout)."""
+        pytest_check = DockerSandbox.run_python(["python", "-c", "import pytest"], self.project_dir, 120.0)
+        if pytest_check.exit_code == 0:
+            return DockerSandbox.run_python(
+                ["python", "-m", "pytest", "-q", "--tb=short", "."], self.project_dir, timeout_seconds,
+            )
+        return DockerSandbox.run_python(
+            ["python", "-m", "unittest", "discover", "-s", ".", "-p", "test_*.py"], self.project_dir, timeout_seconds,
         )
 
     def _run_pytest_or_unittest(self, python_exe: str, timeout_seconds: float) -> ExecutionResult:

@@ -88,6 +88,7 @@ class RunLogger:
         self.run_log_path = RUN_LOGS_DIR / f"{name}.jsonl"
         self.verification_log_path = VERIFICATION_LOGS_DIR / f"{name}.log"
         self._verification_started = False
+        self.closed = False
         if self.enabled:
             self._prepare_directories()
 
@@ -178,7 +179,11 @@ class RunLogger:
         })
 
     def close(self, **fields: Any) -> None:
-        """Schließt den Lauf ab und räumt alte Log-Dateien auf."""
+        """Schließt den Lauf ab und räumt alte Log-Dateien auf. Idempotent: ein zweiter Aufruf
+        (z.B. die Absicherung in Orchestrator.process()) schreibt keine doppelte Abschlusszeile."""
+        if self.closed:
+            return
+        self.closed = True
         self._write({
             "event": "run_closed",
             "duration_seconds": round((datetime.now(UTC) - self.started_at).total_seconds(), 1),

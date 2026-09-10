@@ -43,6 +43,7 @@ unverändert nutzbar – siehe Re-Exports unten.
 """
 
 import asyncio
+import logging
 import time
 import uuid
 from collections.abc import Callable
@@ -350,6 +351,43 @@ class Orchestrator(
         return escalated
 
     async def process(
+        self,
+        user_request: str,
+        status_callback: StatusCallback | None = None,
+        forced_project_dir: str | None = None,
+        plan_confirmation_callback: PlanConfirmationCallback | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> str:
+        """Führt einen Lauf aus (siehe _process_impl) und garantiert, dass sein Lauf-Log IMMER mit
+        `run_closed` endet.
+
+        Realer Fund (Framework-Analyse 2026-09-10): Der Abschluss stand nur am regulären Ende von
+        _process_impl() - ein früher Return (Projekt-Budget erschöpft) oder eine Exception
+        hinterließ Logs ohne `run_closed`, die in jeder Auswertung fehlten. Zusätzlich wird der
+        Logger vor dem Lauf zurückgesetzt, damit frühe Agenten-Aufrufe nie in das Log des
+        VORHERIGEN Laufs derselben Orchestrator-Instanz geschrieben werden."""
+        self._run_logger = None
+        try:
+            return await self._process_impl(
+                user_request, status_callback, forced_project_dir, plan_confirmation_callback, cancel_requested,
+            )
+        except BaseException as exc:
+            self._close_unfinished_run_log(f"exception:{type(exc).__name__}")
+            raise
+        finally:
+            self._close_unfinished_run_log("returned_without_close")
+
+    def _close_unfinished_run_log(self, reason: str) -> None:
+        """Schließt ein noch offenes Lauf-Log als abgebrochen - No-Op, wenn bereits geschlossen."""
+        run_logger = self._run_logger
+        if run_logger is None or run_logger.closed:
+            return
+        try:
+            run_logger.close(verification_ok=False, aborted=True, abort_reason=reason)
+        except Exception as e:
+            logging.getLogger(__name__).warning("Lauf-Log konnte nicht abgeschlossen werden: %s", e)
+
+    async def _process_impl(
         self,
         user_request: str,
         status_callback: StatusCallback | None = None,
@@ -666,6 +704,7 @@ class Orchestrator(
                     "Limit höher oder starte ein neues Projekt."
                 )
                 self._history.add_assistant_message(response)
+                self._close_unfinished_run_log("project_budget_exhausted")
                 return response
 
         # Team-Optimierung (Retrospektive 2026-09-07): core/token_guard.py schaltet bisher rein

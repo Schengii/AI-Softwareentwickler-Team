@@ -73,6 +73,21 @@ def _reset_gemini_rate_limiter():
     _gemini_rate_limiter._call_times.clear()
 
 
+@pytest.fixture(scope="session")
+def _run_log_sandbox(tmp_path_factory):
+    return tmp_path_factory.mktemp("run_logs")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_run_logs(_run_log_sandbox, monkeypatch):
+    """Realer Fund (Framework-Analyse 2026-09-10): 189 von 200 Dateien in logs/runs stammten aus
+    Testläufen - core/run_logger.prune_old_logs() behält nur die jüngsten MAX_RUN_LOGS_KEPT,
+    jeder Suite-Lauf löschte dadurch echte Lauf-Logs. Leitet beide Log-Verzeichnisse für JEDEN
+    Test in ein temporäres Verzeichnis um."""
+    monkeypatch.setattr("core.run_logger.RUN_LOGS_DIR", _run_log_sandbox / "runs")
+    monkeypatch.setattr("core.run_logger.VERIFICATION_LOGS_DIR", _run_log_sandbox / "verification")
+
+
 @pytest.fixture(autouse=True)
 def _reset_token_guard_exhaustion():
     from core.token_guard import token_guard

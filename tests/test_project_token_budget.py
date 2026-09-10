@@ -210,6 +210,47 @@ class TestProcessAbortsBeforeRunWhenProjectBudgetAlreadyExhausted(unittest.TestC
         self.assertIn("Projekt-Budget erschöpft", result)
         self.assertIn("1,000", result)  # bereits verbrauchte Tokens
 
+    def _run_log_events(self) -> list[dict]:
+        import json
+
+        run_log_path = self.orchestrator._run_logger.run_log_path
+        return [json.loads(line) for line in run_log_path.read_text(encoding="utf-8").splitlines()]
+
+    def test_exhausted_project_budget_still_closes_the_run_log(self):
+        """Framework-Analyse 2026-09-10: der frühe Budget-Return hinterließ Logs ohne run_closed."""
+        project_dir = Path(self.temp_workspace) / "kunde_projekt3"
+        project_dir.mkdir()
+        write_constitution(str(project_dir), {"max_project_tokens": "1000"})
+        tasks = [AgentTask(task_id="t1", agent_id="backend", description="Baue etwas")]
+
+        with patch("core.task_manager.TaskManager.decompose") as mock_decompose, \
+             patch("agents.orchestrator.get_total_tokens_for_project", return_value=1000), \
+             patch.object(Orchestrator, "_run_department_hierarchy"):
+            mock_decompose.return_value = ("Kurze Aufgabe", "kunde_projekt3", tasks)
+            asyncio.run(self.orchestrator.process("Baue etwas"))
+
+        events = self._run_log_events()
+        self.assertEqual(events[-1]["event"], "run_closed")
+        self.assertEqual(events[-1]["abort_reason"], "project_budget_exhausted")
+        self.assertEqual(sum(1 for e in events if e["event"] == "run_closed"), 1)
+
+    def test_exception_during_run_closes_the_run_log_and_reraises(self):
+        project_dir = Path(self.temp_workspace) / "kunde_projekt4"
+        project_dir.mkdir()
+        tasks = [AgentTask(task_id="t1", agent_id="backend", description="Baue etwas")]
+
+        with patch("core.task_manager.TaskManager.decompose") as mock_decompose, \
+             patch("agents.orchestrator.get_max_project_tokens", side_effect=RuntimeError("kaputt")), \
+             patch.object(Orchestrator, "_run_department_hierarchy"):
+            mock_decompose.return_value = ("Kurze Aufgabe", "kunde_projekt4", tasks)
+            with self.assertRaises(RuntimeError):
+                asyncio.run(self.orchestrator.process("Baue etwas"))
+
+        events = self._run_log_events()
+        self.assertEqual(events[-1]["event"], "run_closed")
+        self.assertEqual(events[-1]["abort_reason"], "exception:RuntimeError")
+        self.assertFalse(events[-1]["verification_ok"])
+
     def test_project_budget_not_yet_exhausted_lets_the_run_start(self):
         project_dir = Path(self.temp_workspace) / "kunde_projekt2"
         project_dir.mkdir()

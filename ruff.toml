@@ -11,6 +11,7 @@ extend-exclude = [
     "workspace",
     "test_proj",
     "zip_proj",
+    "scratch",  # lokale, unversionierte Notiz-/Experimentierdateien (kein Framework-Code)
 ]
 
 [lint]

@@ -15,8 +15,15 @@
 # Bewusst NUR ein Gate, kein automatischer Fix: ein Commit, der sich lautlos selbst verändert,
 # wäre überraschender als ein abgebrochener Commit mit klarer Fehlermeldung.
 
-staged_py=$(git diff --cached --name-only --diff-filter=ACMR -- '*.py')
-if [ -z "$staged_py" ]; then
+#
+# Realer Fund (Framework-Analyse 2026-09-10, Backlog-Tickets cli-9b95ab3e/cli-034e08e5): das
+# Gate prüfte mit `ruff check .` das GANZE Repository. Eine nicht gestagte Notizdatei
+# (scratch/test_keys.py) oder eine gerade parallel bearbeitete Framework-Datei blockierte
+# dadurch Commits, die diese Dateien gar nicht enthielten. Geprüft werden jetzt nur die
+# gestagten Python-Dateien; --force-exclude hält die Excludes aus ruff.toml auch für explizit
+# übergebene Pfade ein. -z/xargs -0 macht das robust gegen Leerzeichen in Dateinamen.
+
+if [ -z "$(git diff --cached --name-only --diff-filter=ACMR -- '*.py')" ]; then
     exit 0
 fi
 
@@ -25,14 +32,14 @@ if ! command -v ruff >/dev/null 2>&1; then
     exit 0
 fi
 
-echo "🧹 Pre-Commit-Lint-Gate: ruff check . ..."
-ruff check .
+echo "🧹 Pre-Commit-Lint-Gate: ruff check (gestagte Python-Dateien) ..."
+git diff --cached --name-only -z --diff-filter=ACMR -- '*.py' | xargs -0 ruff check --force-exclude --
 status=$?
 
 if [ $status -ne 0 ]; then
     echo ""
-    echo "❌ Commit abgebrochen: ruff hat Lint-Fehler gefunden (siehe oben)."
-    echo "   Viele lassen sich automatisch beheben: ruff check . --fix"
+    echo "❌ Commit abgebrochen: ruff hat Lint-Fehler in gestagten Dateien gefunden (siehe oben)."
+    echo "   Viele lassen sich automatisch beheben: ruff check <datei> --fix"
     echo "   Absichtlich trotzdem committen: git commit --no-verify"
     exit 1
 fi

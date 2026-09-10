@@ -6,7 +6,7 @@ export const TimerWidget: React.FC = () => {
   const [description, setDescription] = useState('');
 
   useEffect(() => {
-    let interval: NodeJS.Timeout;
+    let interval: ReturnType<typeof setInterval>;
     if (isRunning) {
       interval = setInterval(() => setSeconds((s) => s + 1), 1000);
     }

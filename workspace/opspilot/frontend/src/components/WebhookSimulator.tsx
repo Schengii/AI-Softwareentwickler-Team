@@ -1,38 +1,3 @@
-import { useState } from "react";
-
-interface WebhookSimulatorProps {
-  apiBaseUrl: string;
-  onIngested?: () => void;
-}
-
-const DEFAULT_PAYLOAD = JSON.stringify(
-  { title: "Beispiel-Incident aus Webhook-Simulator", severity: "high" },
-  null,
-  2,
-);
-
-/**
- * Entspricht dem Dev-Default-Secret aus src/api/webhooks.py (WEBHOOK_SECRET). Nur für lokale
- * Entwicklung/Demo gedacht - in Produktion kommt das echte Secret aus einer Umgebungsvariable
- * und wird niemals im Frontend-Code hinterlegt.
- */
-const DEV_DEFAULT_SECRET = "super-secret-key";
-
-async function computeHmacSignature(secret: string, payload: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const signatureBuffer = await crypto.subtle.sign("HMAC", key, encoder.encode(payload));
-  return Array.from(new Uint8Array(signatureBuffer))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 

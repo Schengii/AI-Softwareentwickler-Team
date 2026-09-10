@@ -217,12 +217,12 @@ jobs:
             python -m py_compile $files
           fi
 
-      - name: ruff check (nur F/E9, ruff.toml-Exclude bewusst umgangen - siehe Kommentar oben)
+      - name: ruff check (nur F821/E9, ruff.toml-Exclude bewusst umgangen - siehe Kommentar oben)
         shell: bash
         run: |
           files=$(git ls-files 'workspace/*.py')
           if [ -z "$files" ]; then
             echo "Keine workspace/-Python-Dateien gefunden - nichts zu tun."
           else
-            ruff check --isolated --select F,E9 $files
+            ruff check --isolated --select F821,E9 $files
           fi

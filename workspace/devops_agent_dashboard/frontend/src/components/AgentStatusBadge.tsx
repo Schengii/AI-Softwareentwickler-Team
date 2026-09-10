@@ -21,3 +21,5 @@ export const AgentStatusBadge: React.FC<Props> = ({ status }) => {
     </span>
   );
 };
+
+export default AgentStatusBadge;

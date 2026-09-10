@@ -47,6 +47,7 @@ _gemini_active_key_index: int = 0
 def _get_gemini_client() -> tuple[genai.Client | None, str]:
     """Gibt das aktive (nicht erschöpfte) Gemini Client-Objekt und den zugehörigen Key zurück."""
     global _gemini_active_key_index
+    import os
     import time
     now = time.time()
 
@@ -55,7 +56,9 @@ def _get_gemini_client() -> tuple[genai.Client | None, str]:
     for k in expired:
         _gemini_exhausted_keys.pop(k, None)
 
-    keys = GEMINI_API_KEYS or ([GEMINI_API_KEY] if GEMINI_API_KEY else [])
+    from config import _collect_gemini_api_keys
+    # Priorisiere GEMINI_API_KEYS (falls im Modul gepatcht/gesetzt) vor _collect_gemini_api_keys()
+    keys = GEMINI_API_KEYS or _collect_gemini_api_keys() or ([os.getenv("GEMINI_API_KEY")] if os.getenv("GEMINI_API_KEY") else [])
     if not keys:
         return None, ""
 
@@ -102,7 +105,10 @@ class _DynamicGeminiClientProxy:
         return getattr(client, name)
 
     def __bool__(self) -> bool:
-        keys = GEMINI_API_KEYS or ([GEMINI_API_KEY] if GEMINI_API_KEY else [])
+        import os
+
+        from config import _collect_gemini_api_keys
+        keys = _collect_gemini_api_keys() or GEMINI_API_KEYS or ([os.getenv("GEMINI_API_KEY")] if os.getenv("GEMINI_API_KEY") else [])
         return bool(keys)
 
 

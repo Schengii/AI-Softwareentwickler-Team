@@ -606,7 +606,8 @@ class Orchestrator(
                 user_request=user_request[:2000],
                 project_dir=str(project_dir),
             )
-        except Exception:
+        except Exception as e:
+            logging.getLogger(__name__).warning("Lauf-Log konnte nicht angelegt werden – Lauf ohne Protokoll: %r", e)
             self._run_logger = None
 
         # Realer Fund (vier separate Läufe an praktisch derselben Aufgabe, alle mit

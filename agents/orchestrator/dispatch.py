@@ -5,6 +5,7 @@ task.agent_id, parallele Ausführung per asyncio.gather).
 """
 
 import asyncio
+import logging
 from collections.abc import Callable
 
 from config import PROVIDER_EXHAUSTION_ABORT_RATIO
@@ -59,8 +60,12 @@ class DispatchMixin:
                 run_logger.log_agent_result(
                     result, requested_model=getattr(getattr(agent, "_llm", None), "model_name", ""),
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            # Nie den Lauf gefährden - aber eine Telemetrie-Lücke muss sichtbar sein, sonst fehlen
+            # Agenten-Aufrufe lautlos in jeder späteren Auswertung (Framework-Analyse 2026-09-10).
+            logging.getLogger(__name__).warning(
+                "Agenten-Aufruf '%s' konnte nicht ins Lauf-Log geschrieben werden: %r", task.agent_id, e,
+            )
         return result
 
     async def _run_agents_parallel(

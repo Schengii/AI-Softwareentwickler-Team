@@ -16,6 +16,7 @@ einen gezielten Korrekturauftrag auslöst statt nur verification_ok zurückzuset
 """
 
 import asyncio
+import logging
 import re
 from collections.abc import Callable, Collection, Iterable
 from pathlib import PurePosixPath
@@ -1553,8 +1554,12 @@ class VerificationMixin:
                         f"\n--- stderr ---\n{report.stderr}" if report.stderr else ""
                     ),
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            # Sichtbar statt verschluckt: ohne Rohausgabe ist ein roter Lauf später nicht mehr
+            # diagnostizierbar (Framework-Analyse 2026-09-10).
+            logging.getLogger(__name__).warning(
+                "Testausgabe (%s) konnte nicht ins Verifikations-Log geschrieben werden: %r", phase, e,
+            )
         return report
 
     async def _run_verification_loop(

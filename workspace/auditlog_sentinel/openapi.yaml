@@ -1,0 +1,38 @@
+openapi: 3.0.3
+info:
+  title: AuditLog Sentinel API
+  version: 1.0.0
+  description: API zur Verwaltung und Abfrage von Audit-Log-Ereignissen.
+paths:
+  /api/v1/logs:
+    get:
+      summary: Liste alle Logs ab
+      responses:
+        '200':
+          description: Erfolgreiche Abfrage
+    post:
+      summary: Erstelle ein neues Log-Ereignis
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuditLog'
+  /api/v1/logs/{id}:
+    get:
+      summary: Detailansicht eines Logs
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+components:
+  schemas:
+    AuditLog:
+      type: object
+      properties:
+        user_id: {type: string}
+        action: {type: string}
+        resource: {type: string}
+        status: {type: string}
+        metadata_json: {type: object}

@@ -1,0 +1,37 @@
+{
+  "design_system": {
+    "colors": {
+      "background": "#0F172A",
+      "surface": "#1E293B",
+      "primary": "#38BDF8",
+      "text_primary": "#F8FAFC",
+      "text_secondary": "#94A3B8",
+      "error": "#EF4444",
+      "warning": "#F59E0B",
+      "info": "#3B82F6"
+    },
+    "typography": {
+      "font_family": "'Inter', sans-serif",
+      "sizes": {
+        "h1": "24px",
+        "body": "14px",
+        "small": "12px"
+      }
+    },
+    "spacing": {
+      "xs": "4px",
+      "sm": "8px",
+      "md": "16px",
+      "lg": "24px"
+    }
+  },
+  "components": {
+    "log_table": {
+      "columns": ["Timestamp", "Level", "Service", "Message"],
+      "row_height": "48px"
+    },
+    "filter_bar": {
+      "elements": ["Date Range Picker", "Service Dropdown", "Level Multi-select", "Search Input"]
+    }
+  }
+}

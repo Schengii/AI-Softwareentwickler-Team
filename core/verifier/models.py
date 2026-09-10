@@ -75,6 +75,7 @@ _ESLINT_CONFIG_NAMES = (
 @dataclass
 class TestFailure:
     """Ein einzelner, aus der echten Testausgabe geparster Fehlschlag."""
+    __test__ = False  # Verhindert fälschliche Pytest-Sammlung als Testklasse
     test_id: str
     message: str
     files: list[str] = field(default_factory=list)  # Relative Projektpfade, die im Traceback auftauchen

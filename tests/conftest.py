@@ -106,3 +106,20 @@ def _reset_gemini_key_pool():
     lf._gemini_clients_by_key.clear()
     lf._gemini_exhausted_keys.clear()
     lf._gemini_active_key_index = 0
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _ensure_ci_test_gemini_key():
+    """Stellt sicher, dass in CI/Umgebungen ohne echte .env immer ein Dummy-Key für gemockte
+    Gemini-Tests vorhanden ist, sodass _DynamicGeminiClientProxy und GeminiClient initialisierbar sind."""
+    import os
+
+    import config
+    import core.llm_factory as lf
+
+    if not config.GEMINI_API_KEYS and not os.getenv("GEMINI_API_KEY"):
+        dummy_key = "test-ci-dummy-gemini-key"
+        os.environ["GEMINI_API_KEY"] = dummy_key
+        config.GEMINI_API_KEY = dummy_key
+        config.GEMINI_API_KEYS = [dummy_key]
+        lf.GEMINI_API_KEYS = [dummy_key]

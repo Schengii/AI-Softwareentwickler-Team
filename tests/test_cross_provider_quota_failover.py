@@ -74,6 +74,7 @@ class TestFailoverHelpers(unittest.TestCase):
 
 
 class TestGeminiQuotaSwitchesProvider(_CleanTokenGuardMixin, unittest.TestCase):
+    @patch("core.llm_factory.GEMINI_API_KEYS", ["test-key"])
     @patch("core.llm_factory.ANTHROPIC_API_KEY", "")
     @patch("core.llm_factory.DEEPSEEK_API_KEY", "")
     @patch("core.llm_factory.OPENROUTER_API_KEY", "")
@@ -83,7 +84,7 @@ class TestGeminiQuotaSwitchesProvider(_CleanTokenGuardMixin, unittest.TestCase):
     @patch("core.llm_factory._gemini_rate_limiter")
     @patch("core.llm_factory._gemini_client")
     def test_quota_on_gemini_switches_to_groq_without_burning_other_gemini_stages(
-        self, mock_gemini_client, mock_limiter, mock_sleep, mock_groq_tools,
+        self, mock_gemini_client, mock_limiter, mock_sleep, mock_groq_tools, mock_gemini_keys=None,
     ):
         mock_limiter.acquire = AsyncMock()
         called_models: list[str] = []

@@ -11,6 +11,7 @@ class TesterAgent(BaseAgent):
     Spezialisierter Agent für Qualitätssicherung und Testing.
     Schreibt Tests, Testpläne und führt Code-Reviews durch.
     """
+    __test__ = False  # Verhindert fälschliche Pytest-Sammlung als Testklasse
 
     def __init__(self):
         super().__init__(agent_id="tester", name="QA-Tester")

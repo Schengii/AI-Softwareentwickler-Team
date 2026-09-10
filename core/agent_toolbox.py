@@ -25,7 +25,9 @@ from pathlib import Path
 from typing import Any
 
 from core.code_sandbox import CodeSandbox
+from core.dependency_manifest import add_requirement
 from core.docker_sandbox import DockerSandbox
+from core.write_guard import check_contract_preserved, check_write_scope, content_digest, file_versions
 
 # Befehle, die Projektcode ausführen und deshalb bei aktiver Docker-Sandbox im Container laufen.
 # ruff/mypy/flake8/black analysieren nur statisch und bleiben lokal.
@@ -105,6 +107,18 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "patch": {"type": "string", "description": "Unified-Diff oder SEARCH/REPLACE Block"},
             },
             "required": ["path", "patch"],
+        },
+    },
+    {
+        "name": "add_dependency",
+        "description": "Trägt ein Python-Paket idempotent in requirements.txt ein, OHNE die Datei zu überschreiben. Nutze dies statt write_file/edit_file auf requirements*.txt – parallel arbeitende Agenten überschreiben sich so nicht gegenseitig.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "package": {"type": "string", "description": "Paket mit optionaler Version, z.B. 'alembic' oder 'sqlalchemy>=2.0'"},
+                "manifest": {"type": "string", "description": "Relativer Pfad zum Manifest, Standard 'requirements.txt'"},
+            },
+            "required": ["package"],
         },
     },
 
@@ -269,6 +283,9 @@ class AgentToolbox:
         # dem Loop-Ende zurück in AgentResult.clarification_questions (dasselbe Muster wie
         # files_written oben).
         self.clarification_requests: list[str] = []
+        # Normalisierter absoluter Pfad -> Inhalts-Hash des zuletzt von DIESEM Agenten gesehenen
+        # Stands (gelesen oder selbst geschrieben), Grundlage für _reject_if_stale().
+        self._seen_digests: dict[str, str] = {}
 
     async def list_files_snapshot(self, subdir: str = "") -> list[str]:
         """Wie das `list_files`-Werkzeug, aber OHNE call_count/call_log zu erhöhen – für einen
@@ -356,6 +373,7 @@ class AgentToolbox:
             content = target.read_text(encoding="utf-8", errors="ignore")
         except Exception as e:
             return {"error": f"Konnte '{path}' nicht lesen: {e}"}
+        self._remember_content(target, content)
         return {"path": path, "content": content}
 
     async def _tool_list_files(self, subdir: str = "") -> dict:
@@ -425,6 +443,44 @@ class AgentToolbox:
             return content, None
         return sanitized, describe_toxic_dependencies(path, findings) + " Automatisch bereinigt."
 
+    # ── Schreibschutz (core/write_guard.py) ──────────────────────────
+
+    def _relative(self, target: Path) -> str:
+        return str(target.relative_to(self.project_dir)).replace("\\", "/")
+
+    @staticmethod
+    def _digest_key(target: Path) -> str:
+        return os.path.normcase(str(target))
+
+    def _remember_content(self, target: Path, content: str) -> None:
+        self._seen_digests[self._digest_key(target)] = content_digest(content)
+
+    def _remember_write(self, target: Path, clean_rel: str, content: str) -> None:
+        self._remember_content(target, content)
+        file_versions.record_write(target, self.agent_id)
+        self.files_written.add(clean_rel)
+
+    def _reject_if_stale(self, target: Path, clean_rel: str, current: str) -> str | None:
+        """Ein vollständiges Überschreiben ist nur erlaubt, wenn dieser Agent den AKTUELLEN Stand
+        der Datei kennt (gelesen oder selbst geschrieben) – sonst gewinnt still der letzte von
+        mehreren parallelen Agenten (realer Fund: requirements.txt, 6 Überschreibungen in 73 s)."""
+        key = self._digest_key(target)
+        seen = self._seen_digests.get(key)
+        if seen == content_digest(current):
+            return None
+        writer = file_versions.last_writer(target)
+        by_writer = f" von `{writer}`" if writer and writer != self.agent_id else ""
+        if seen is None:
+            return (
+                f"'{clean_rel}' existiert bereits (zuletzt geschrieben{by_writer or ' von einem anderen Schritt'}). "
+                "Lies die Datei zuerst mit read_file und übernimm deren Inhalt, statt sie blind zu "
+                "überschreiben – für punktuelle Änderungen nutze edit_file, für Abhängigkeiten add_dependency."
+            )
+        return (
+            f"'{clean_rel}' wurde seit deinem letzten Lesen{by_writer} geändert. Lies sie erneut mit "
+            "read_file und setze deine Änderung auf dem aktuellen Stand um, sonst überschreibst du fremde Arbeit."
+        )
+
     async def _tool_write_file(self, path: str, content: str) -> dict:
         rejection = self._reject_if_invalid_python(path, content)
         if rejection:
@@ -433,21 +489,70 @@ class AgentToolbox:
         if rejection:
             return {"error": rejection}
         content, sanitize_note = self._sanitize_toxic_dependencies(path, content)
+        new_content = content if content is not None else ""
 
         target = self._resolve(path)
+        clean_rel = self._relative(target)
+        rejection = check_write_scope(self.agent_id, clean_rel)
+        if rejection:
+            return {"error": rejection}
+        if target.is_file():
+            current = target.read_text(encoding="utf-8", errors="ignore")
+            if current != new_content:
+                rejection = self._reject_if_stale(target, clean_rel, current) or check_contract_preserved(
+                    self.project_dir, clean_rel, current, new_content,
+                )
+                if rejection:
+                    return {"error": rejection}
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content if content is not None else "", encoding="utf-8")
-        clean_rel = str(target.relative_to(self.project_dir)).replace("\\", "/")
-        self.files_written.add(clean_rel)
-        result = {"path": clean_rel, "bytes_written": len((content or "").encode("utf-8")), "status": "ok"}
+        target.write_text(new_content, encoding="utf-8")
+        self._remember_write(target, clean_rel, new_content)
+        result = {"path": clean_rel, "bytes_written": len(new_content.encode("utf-8")), "status": "ok"}
         if sanitize_note:
             result["warning"] = sanitize_note
+        return result
+
+    async def _tool_add_dependency(self, package: str, manifest: str = "requirements.txt") -> dict:
+        """Ergänzt genau EIN Paket idempotent (core/dependency_manifest.py), statt das Manifest
+        neu zu schreiben – parallele Agenten überschreiben sich dadurch nicht mehr gegenseitig."""
+        from core.manifest_guard import sanitize_requirements
+
+        target = self._resolve(manifest or "requirements.txt")
+        clean_rel = self._relative(target)
+        if not (target.name.lower().startswith("requirements") and target.suffix.lower() == ".txt"):
+            return {"error": "add_dependency unterstützt nur requirements*.txt – für package.json/pyproject.toml nutze edit_file."}
+        rejection = check_write_scope(self.agent_id, clean_rel)
+        if rejection:
+            return {"error": rejection}
+        try:
+            added = add_requirement(target, package)
+        except ValueError as e:
+            return {"error": str(e)}
+        except OSError as e:
+            return {"error": f"Konnte '{clean_rel}' nicht schreiben: {e}"}
+        content = target.read_text(encoding="utf-8", errors="ignore")
+        warning = None
+        if added:
+            sanitized, findings = sanitize_requirements(clean_rel, content)
+            if findings and sanitized != content:
+                target.write_text(sanitized, encoding="utf-8")
+                content = sanitized
+                warning = "Toxische Paket-Kollision automatisch bereinigt."
+            self._remember_write(target, clean_rel, content)
+        else:
+            self._remember_content(target, content)
+        result = {"path": clean_rel, "package": package.strip(), "status": "added" if added else "already_present"}
+        if warning:
+            result["warning"] = warning
         return result
 
     async def _tool_edit_file(self, path: str, old_text: str, new_text: str) -> dict:
         target = self._resolve(path)
         if not target.exists():
             return {"error": f"Datei '{path}' existiert nicht – nutze write_file, um sie neu anzulegen."}
+        rejection = check_write_scope(self.agent_id, self._relative(target))
+        if rejection:
+            return {"error": rejection}
         try:
             current = target.read_text(encoding="utf-8", errors="ignore")
         except Exception as e:
@@ -470,10 +575,13 @@ class AgentToolbox:
         if rejection:
             return {"error": rejection}
         updated, sanitize_note = self._sanitize_toxic_dependencies(path, updated)
+        clean_rel = self._relative(target)
+        rejection = check_contract_preserved(self.project_dir, clean_rel, current, updated)
+        if rejection:
+            return {"error": rejection}
 
         target.write_text(updated, encoding="utf-8")
-        clean_rel = str(target.relative_to(self.project_dir)).replace("\\", "/")
-        self.files_written.add(clean_rel)
+        self._remember_write(target, clean_rel, updated)
         result = {"path": clean_rel, "status": "ok"}
         if sanitize_note:
             result["warning"] = sanitize_note
@@ -487,6 +595,10 @@ class AgentToolbox:
             return {"error": f"Datei '{path}' existiert nicht."}
         if not target.is_file():
             return {"error": f"'{path}' ist keine reguläre Datei."}
+        clean_rel = self._relative(target)
+        rejection = check_write_scope(self.agent_id, clean_rel)
+        if rejection:
+            return {"error": rejection}
 
         try:
             current_content = target.read_text(encoding="utf-8")
@@ -505,14 +617,16 @@ class AgentToolbox:
         if manifest_err:
             return {"error": manifest_err}
         new_content, sanitize_note = self._sanitize_toxic_dependencies(path, new_content)
+        rejection = check_contract_preserved(self.project_dir, clean_rel, current_content, new_content)
+        if rejection:
+            return {"error": rejection}
 
         try:
             target.write_text(new_content, encoding="utf-8")
         except Exception as e:
             return {"error": f"Konnte '{path}' nicht schreiben: {e}"}
 
-        clean_rel = str(target.relative_to(self.project_dir)).replace("\\", "/")
-        self.files_written.add(clean_rel)
+        self._remember_write(target, clean_rel, new_content)
         result = {"path": clean_rel, "status": "ok", "message": msg}
         if sanitize_note:
             result["warning"] = sanitize_note

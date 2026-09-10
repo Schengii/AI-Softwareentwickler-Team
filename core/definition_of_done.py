@@ -21,6 +21,7 @@ zum Scheitern bringen.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -94,6 +95,24 @@ class DefinitionOfDone:
         return "\n".join(zeilen)
 
 
+_TEST_SCAN_IGNORED_DIRS = frozenset({".git", ".venv", "venv", ".ai_team_venv", "node_modules", "__pycache__", "dist", "build"})
+_TEST_FILE_SUFFIXES = (".test.ts", ".test.tsx", ".test.js", ".test.jsx", ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx")
+
+
+def _has_test_files(project_dir: Path, max_files: int = 5000) -> bool:
+    """True, wenn im Projekt mindestens eine Testdatei liegt (Python oder JS/TS)."""
+    seen = 0
+    for _dirpath, dirnames, filenames in os.walk(project_dir):
+        dirnames[:] = [d for d in dirnames if d not in _TEST_SCAN_IGNORED_DIRS]
+        for name in filenames:
+            seen += 1
+            if seen > max_files:
+                return False
+            if (name.startswith("test_") and name.endswith(".py")) or name.endswith("_test.py") or name.endswith(_TEST_FILE_SUFFIXES):
+                return True
+    return False
+
+
 def build_definition_of_done(
     project_slug: str,
     project_dir: str | Path,
@@ -107,6 +126,7 @@ def build_definition_of_done(
     secrets_clean: bool | None = None,
     coverage_percent: float | None = None,
     min_coverage: float = 0.0,
+    verification_skipped: bool = False,
 ) -> DefinitionOfDone:
     """
     Setzt die Einzelsignale eines Laufs zu einer Gesamtaussage zusammen.
@@ -127,17 +147,36 @@ def build_definition_of_done(
         detail=f"{files_written} Datei(en) geschrieben",
     ))
 
+    # Realer Fund (auditlog_sentinel, 2026-09-10): Nach einem Budget-Abbruch meldete die DoD
+    # "keine ausführbaren Tests gefunden", obwohl tests/test_api.py existierte – die Verifikation
+    # war nur übersprungen worden. Übersprungen und "nicht vorhanden" sind verschiedene Befunde.
+    tests_on_disk = verification_skipped and not tests_ran and _has_test_files(pfad)
+    if tests_ran:
+        exist_detail = ""
+    elif verification_skipped:
+        exist_detail = (
+            "Testdateien vorhanden, aber nicht ausgeführt (Lauf vorzeitig abgebrochen)" if tests_on_disk
+            else "nicht geprüft (Lauf vorzeitig abgebrochen)"
+        )
+    else:
+        exist_detail = "keine ausführbaren Tests gefunden"
     kriterien.append(Criterion(
         key="tests_exist",
         label="Eine echte Testsuite existiert",
-        passed=tests_ran,
-        detail="" if tests_ran else "keine ausführbaren Tests gefunden",
+        passed=tests_ran or tests_on_disk,
+        detail=exist_detail,
     ))
+    if tests_passed:
+        pass_detail = ""
+    elif verification_skipped and not tests_ran:
+        pass_detail = "nicht ausgeführt (Lauf vorzeitig abgebrochen)"
+    else:
+        pass_detail = "Tests fehlgeschlagen oder nicht gelaufen"
     kriterien.append(Criterion(
         key="tests_pass",
         label="Die Testsuite läuft grün",
         passed=bool(tests_ran and tests_passed),
-        detail="" if tests_passed else "Tests fehlgeschlagen oder nicht gelaufen",
+        detail=pass_detail,
     ))
 
     kriterien.append(Criterion(

@@ -228,6 +228,40 @@ CRITICAL_AGENT_IDS: frozenset[str] = frozenset({
 # Lite-Modelle) oder "heavy" (nur Opus/Sonnet/Pro/gpt-oss-120b-Klasse).
 HEAVY_ROLE_MIN_TIER: str = os.getenv("HEAVY_ROLE_MIN_TIER", "standard")
 
+# Kapazitätsprüfung vor Laufstart (core/capacity_gate.py): "block" startet einen Lauf nicht,
+# wenn eine eingeplante kritische Rolle kein Modell oberhalb ihrer Mindeststufe mehr erreicht;
+# "warn" meldet es nur; "off" schaltet die Prüfung ab.
+CAPACITY_GATE_MODE: str = os.getenv("CAPACITY_GATE_MODE", "block").strip().lower()
+
+# Schreibrechte pro Rolle (core/write_guard.py, CODEOWNERS-Prinzip). Realer Fund auditlog_sentinel
+# 2026-09-10: architect überschrieb app/config.py, frontend app/main.py, documentation
+# app/models.py. Rollen OHNE Eintrag bleiben unbeschränkt (Entwicklungs-/Fix-Rollen). Muster
+# sind fnmatch-Globs auf den projektrelativen Pfad (`*` umfasst dabei auch `/`).
+ENABLE_ROLE_WRITE_SCOPES: bool = os.getenv("ENABLE_ROLE_WRITE_SCOPES", "true").strip().lower() in ("1", "true", "yes")
+_DOC_WRITE_SCOPE: tuple[str, ...] = ("*.md", "*.rst", "docs/*", "LICENSE*", "CHANGELOG*", "CONTRIBUTING*")
+_FRONTEND_WRITE_SCOPE: tuple[str, ...] = (
+    "src/*", "public/*", "frontend/*", "web/*", "client/*", "static/*", "assets/*", "templates/*",
+    "e2e/*", "*.html", "*.css", "*.scss", "*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs",
+    "*.vue", "*.svelte", "*.svg", "package.json", "package-lock.json", "tsconfig*.json",
+    "vite.config.*", "tailwind.config.*", "postcss.config.*", ".eslintrc*", ".prettierrc*",
+    "playwright.config.*", "vitest.config.*", "jest.config.*",
+)
+AGENT_WRITE_SCOPES: dict[str, dict[str, tuple[str, ...]]] = {
+    "documentation": {"allow": _DOC_WRITE_SCOPE},
+    "readme": {"allow": _DOC_WRITE_SCOPE},
+    "product_owner": {"allow": _DOC_WRITE_SCOPE},
+    "business_analyst": {"allow": _DOC_WRITE_SCOPE},
+    "web_research": {"allow": _DOC_WRITE_SCOPE},
+    "finops": {"allow": _DOC_WRITE_SCOPE},
+    "architect": {"allow": _DOC_WRITE_SCOPE + (
+        "openapi.*", "asyncapi.*", "*.proto", "*.graphql", "contracts/*", "*schemas.py",
+        "*/schemas/*", "*.puml", "*.mmd",
+    )},
+    "ui_ux": {"allow": _DOC_WRITE_SCOPE + _FRONTEND_WRITE_SCOPE + ("design*",), "deny": ("*.py",)},
+    "accessibility": {"allow": _DOC_WRITE_SCOPE + _FRONTEND_WRITE_SCOPE, "deny": ("*.py",)},
+    "frontend": {"allow": _DOC_WRITE_SCOPE + _FRONTEND_WRITE_SCOPE, "deny": ("*.py",)},
+}
+
 # Fachbereichs-Zuweisungen für bereichsweite Modell-Konfiguration
 DEPARTMENT_PLANNING_AGENTS = {"planning_lead", "team_lead", "product_owner", "business_analyst", "web_research", "architect", "finops"}
 DEPARTMENT_DESIGN_AGENTS = {"design_lead", "image_generator", "copywriter", "ui_ux"}

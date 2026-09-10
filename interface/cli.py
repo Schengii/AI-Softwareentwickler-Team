@@ -11,9 +11,11 @@ Bietet:
 
 import asyncio
 import os
+import re
 import signal
 import sys
 import threading
+import time
 import traceback
 import uuid
 from pathlib import Path
@@ -40,6 +42,7 @@ from config import (
 from core import framework_release
 from core.backlog_store import STATUSES, count_by_status, is_ticket_ready, list_tickets, new_ticket_id, upsert_ticket
 from core.code_sandbox import CodeSandbox
+from core.framework_revision import source_fingerprint
 from core.message_bus import AgentTask
 from core.notifier import notify_external
 from core.task_manager import AVAILABLE_AGENTS
@@ -68,6 +71,48 @@ BANNER = """
 # 1=hoch/2=mittel/3=niedrig-Konvention wie core/message_bus.py.AgentTask.priority.
 _PRIORITY_LABELS: dict[str, int] = {"1": 1, "hoch": 1, "2": 2, "mittel": 2, "3": 3, "niedrig": 3}
 _PRIORITY_ICONS: dict[int, str] = {1: "🔴 hoch", 2: "🟡 mittel", 3: "🟢 niedrig"}
+
+# ── Mehrzeilige Eingabe (siehe CLIInterface._read_user_input) ──────────────────────────────
+_BLOCK_DELIMITER = '"""'
+_CONTINUATION_SUFFIXES: tuple[str, ...] = ("\\", " /")
+# Zeitfenster, in dem nach einer gelesenen Zeile weitere, bereits eingefügte Zeilen im
+# Konsolenpuffer auftauchen – ein Mensch tippt nie so schnell, ein Paste liefert sofort nach.
+_PASTE_SETTLE_SECONDS = 0.05
+_FRAGMENT_MAX_CHARS = 80
+_FRAGMENT_HEADING_RE = re.compile(r"^\s*(#{1,6}\s|[-*_=]{3,}\s*$)")
+
+
+def _pending_console_input() -> bool:
+    """True, wenn im Eingabepuffer bereits weitere Zeilen warten (typisch für einen Paste).
+
+    Nur für ein echtes Terminal – bei umgeleitetem stdin (Tests, Pipes) immer False, damit
+    dort weder gewartet noch blockiert wird."""
+    try:
+        if not sys.stdin or not sys.stdin.isatty():
+            return False
+        time.sleep(_PASTE_SETTLE_SECONDS)
+        if sys.platform == "win32":
+            import msvcrt
+
+            return bool(msvcrt.kbhit())
+        import select
+
+        ready, _, _ = select.select([sys.stdin], [], [], 0)
+        return bool(ready)
+    except (OSError, ValueError, ImportError):
+        return False
+
+
+def _looks_like_fragment(text: str) -> bool:
+    """Erkennt Eingaben, die offensichtlich nur der Kopf einer längeren Anforderung sind:
+    eine kurze Zeile, die auf „:“ endet, eine Markdown-Überschrift, eine Trennlinie oder ein
+    Aufzählungs-Kopf („2. Sicherheit & Governance:“). Befehle (`/…`) sind nie Fragmente."""
+    stripped = text.strip()
+    if not stripped or stripped.startswith("/") or "\n" in stripped:
+        return False
+    if len(stripped) > _FRAGMENT_MAX_CHARS:
+        return False
+    return stripped.endswith(":") or bool(_FRAGMENT_HEADING_RE.match(stripped))
 
 HELP_TEXT = """
 **Verfügbare Befehle:**
@@ -133,6 +178,33 @@ class CLIInterface:
         # Gesetzt/geleert bei jedem Lauf (siehe _process_task) - Grundlage für den
         # kooperativen Strg+C-Abbruch (Orchestrator.process(cancel_requested=...)).
         self._cancel_event = threading.Event()
+        # Fingerabdruck der beim Start geladenen Framework-Quelldateien (siehe
+        # _confirm_framework_code_current) - realer Fund auditlog_sentinel 2026-09-10.
+        self._code_fingerprint_at_start = source_fingerprint()
+
+    def _confirm_framework_code_current(self) -> bool:
+        """Warnt, wenn sich der Framework-Code seit dem Start dieser Sitzung geändert hat.
+
+        Realer Fund (2026-09-10): Eine seit dem Vormittag laufende CLI führte einen Lauf mit dem
+        beim Start importierten Code aus – die 40 Minuten zuvor committete Modell-Mindeststufe
+        griff dadurch nie, alle Rollen liefen auf dem schwächsten Modell. Python lädt geänderte
+        Module nicht nach; nur ein Neustart übernimmt Korrekturen. True = Aufgabe starten."""
+        current = source_fingerprint()
+        if current == self._code_fingerprint_at_start:
+            return True
+        console.print(Panel(
+            "Der Framework-Code (agents/, core/, interface/, memory/, config.py) wurde seit dem Start "
+            "dieser Sitzung geändert. Diese Sitzung führt weiterhin den ALTEN, beim Start geladenen "
+            "Code aus – neue Korrekturen greifen erst nach einem Neustart (`/beenden`, dann "
+            "`python main.py`).",
+            title="⚠️ Veralteter Framework-Code geladen",
+            border_style="yellow",
+        ))
+        if Confirm.ask("Trotzdem mit dem alten Code fortfahren?", default=False):
+            self._code_fingerprint_at_start = current
+            return True
+        console.print("[dim]Aufgabe nicht gestartet – bitte die CLI neu starten.[/dim]")
+        return False
 
     def run(self) -> None:
         """Startet das interaktive CLI."""
@@ -149,7 +221,8 @@ class CLIInterface:
         console.print(BANNER, style="bold cyan")
         console.print(
             "💡 Schreibe einfach deine Projektidee in den Chat! (Tippe /hilfe für Befehle)\n"
-            "   Für mehrzeilige Eingaben: Zeile mit \\ beenden, um sie fortzusetzen.\n",
+            "   Mehrzeilige Eingaben: einfach einfügen, Zeile mit \\ beenden oder einen Block\n"
+            "   mit \"\"\" beginnen und mit \"\"\" abschließen.\n",
             style="dim"
         )
 
@@ -161,22 +234,58 @@ class CLIInterface:
         input()` (dünner Wrapper um Pythons `input()`) liest immer nur bis zum ersten
         Zeilenumbruch. Eine mehrzeilige Aufgabenbeschreibung wurde dadurch nicht als EINE
         Eingabe erkannt, sondern jede Zeile einzeln als eigener, meist unsinniger Prompt an
-        `_main_loop()` weitergereicht (im schlimmsten Fall ein mehrzeiliger Paste, der als
-        mehrere separate Läufe endete statt als einer). Endet eine Zeile auf ein einzelnes
-        `\\` (dieselbe Fortsetzungs-Konvention wie in der Shell/in Python selbst), wird die
-        NÄCHSTE Zeile angehängt statt die Eingabe abzuschließen – ein einzelnes Enter am Ende
-        einer normalen, einzeiligen Aufgabe bleibt dadurch unverändert genauso schnell wie
-        bisher, kein zusätzlicher Aufwand für den Alltagsfall.
+        `_main_loop()` weitergereicht.
+
+        Zweiter realer Fund (auditlog_sentinel, 2026-09-10): die `\\`-Konvention allein genügte
+        nicht. Ein eingefügter Auftrag mit Zeilen wie „… (auditlog_sentinel). /“ und
+        „2. Sicherheit & Governance:“ startete ZWEI komplette Läufe (1,36 Mio. Tokens) mit
+        je einer einzigen Zeile als Spezifikation. Eine Eingabe gilt deshalb erst als
+        abgeschlossen, wenn
+        - keine Fortsetzungsmarke (`\\` oder ` /`) am Zeilenende steht,
+        - kein Blockmodus (`\"\"\"` … `\"\"\"`) offen ist,
+        - keine weiteren eingefügten Zeilen bereits im Eingabepuffer warten (Paste-Erkennung),
+        - der bisherige Text nicht erkennbar nur ein Fragment ist (Überschrift, Aufzählungs-
+          Kopf mit „:“, Trennlinie). Eine leere Zeile beendet ein solches Fragment bewusst.
         """
         lines: list[str] = []
         prompt_label = "[bold green]Du[/bold green] → "
+        continuation_label = "[bold green]…[/bold green] → "
+        in_block = False
+        fragment_mode = False
         while True:
             line = console.input(prompt_label)
-            if line.endswith("\\"):
-                lines.append(line[:-1])
-                prompt_label = "[bold green]…[/bold green] → "
+            prompt_label = continuation_label
+            stripped = line.strip()
+
+            if stripped == _BLOCK_DELIMITER:
+                if in_block:
+                    break
+                in_block = True
                 continue
+            if in_block:
+                lines.append(line)
+                continue
+
+            continued = False
+            for suffix in _CONTINUATION_SUFFIXES:
+                if line.endswith(suffix):
+                    line = line[: -len(suffix)]
+                    continued = True
+                    break
             lines.append(line)
+            if continued or _pending_console_input():
+                continue
+            if not stripped and len(lines) > 1:
+                break
+            if fragment_mode:
+                continue
+            if _looks_like_fragment("\n".join(lines)):
+                fragment_mode = True
+                console.print(
+                    "[dim]↳ Das sieht nach dem Anfang einer mehrzeiligen Anforderung aus – schreibe "
+                    "weiter, eine leere Zeile schließt die Eingabe ab.[/dim]"
+                )
+                continue
             break
         return "\n".join(lines).strip()
 
@@ -197,6 +306,9 @@ class CLIInterface:
                 should_exit = await self._handle_command(user_input)
                 if should_exit:
                     break
+                continue
+
+            if not self._confirm_framework_code_current():
                 continue
 
             # Aufgabe an das Team übergeben. _process_task() fängt ein ERSTES Strg+C

@@ -38,6 +38,7 @@ from config import (
 )
 from core.backlog_store import get_ticket, upsert_ticket
 from core.decision_log import log_decision
+from core.dependency_manifest import add_requirement, package_from_finding, primary_python_manifest
 from core.failure_triage import (
     KIND_MISSING_SYMBOL,
     StructuralTriage,
@@ -379,6 +380,23 @@ def _record_verification_learning(message: str, agent_id: str = "backend") -> No
 
 # Team-Optimierung (echter Fund: memory/backlog.json-Tickets `recurring-failure-event_relay`/
 # `recurring-failure-service_bookmark_monitor`) - siehe _diagnose_no_tests_ran()-Docstring.
+# Realer Fund (auditlog_sentinel, 2026-09-10): derselbe Collection-Fehler
+# (`AttributeError: 'AsyncEngine' object has no attribute '_run_ddl_visitor'`) lieferte vor und
+# nach dem Fixversuch unterschiedlich lange pytest-Ausgaben (1521 vs. 862 Zeichen). Die
+# Fortschrittserkennung verglich die ersten 300 Zeichen der Rohmeldung, hielt den unveränderten
+# Fehler deshalb für "Fortschritt" und eskalierte nie. Verglichen wird jetzt die eigentliche
+# Exception-Zeile, bereinigt um flüchtige Anteile (Adressen, Laufzeiten, Zeilennummern).
+_EXCEPTION_LINE_RE = re.compile(r"^(?:E\s+)?([A-Za-z_][\w.]*(?:Error|Exception|Exit)):\s?(.*)$", re.MULTILINE)
+_VOLATILE_TOKEN_RE = re.compile(r"0x[0-9a-fA-F]+|\b\d+(?:\.\d+)?s\b|line \d+|:\d+:")
+
+
+def _failure_fingerprint(message: str) -> str:
+    """Stabiler Vergleichsschlüssel einer Testfehlermeldung für die Fortschrittserkennung."""
+    match = _EXCEPTION_LINE_RE.search(message or "")
+    core = f"{match.group(1)}: {match.group(2)}" if match else (message or "")[:300]
+    return _VOLATILE_TOKEN_RE.sub("#", core).strip()[:300]
+
+
 _NO_TESTS_RAN_RE = re.compile(r"ran 0 tests\b|no tests ran\b|collected 0 items\b", re.IGNORECASE)
 
 
@@ -1742,8 +1760,33 @@ class VerificationMixin:
                 # regulär die gesamte Testsuite und ist damit der fachlich richtige Owner.
                 "empty_test_suite": "tester",
             }
+            # Deterministischer Kurzschluss für "missing_dependency": ein exakt benanntes,
+            # fehlendes PyPI-Paket (z.B. `alembic`, `asyncpg`, `greenlet` - realer Fund
+            # auditlog_sentinel 2026-09-10, dreimal derselbe Fehlerklasse) wird direkt in
+            # requirements.txt eingetragen, OHNE einen LLM-Agenten zu beauftragen - schneller,
+            # günstiger und ohne das Risiko einer parallelen Überschreibung des Manifests.
+            remaining_issues = list(pre_flight_report.issues)
+            manifest = primary_python_manifest(project_dir) if project_dir else None
+            if manifest is not None:
+                resolved_packages: list[str] = []
+                still_open: list[PreFlightIssue] = []
+                for issue in remaining_issues:
+                    package = issue.issue_type == "missing_dependency" and package_from_finding(issue.suggestion)
+                    if not package:
+                        still_open.append(issue)
+                        continue
+                    try:
+                        add_requirement(manifest, package)
+                        resolved_packages.append(package)
+                    except (ValueError, OSError):
+                        still_open.append(issue)
+                if resolved_packages:
+                    notify(f"  📦 [green]Deterministisch ergänzt:[/green] {', '.join(sorted(set(resolved_packages)))} in requirements.txt (kein LLM-Aufruf nötig).")
+                    summary_lines.append(f"- 📦 Versuch {attempt}: {len(resolved_packages)} fehlende Paket(e) deterministisch in requirements.txt ergänzt: {', '.join(sorted(set(resolved_packages)))}.")
+                remaining_issues = still_open
+
             agents_to_fix: dict[str, list[PreFlightIssue]] = {}
-            for issue in pre_flight_report.issues:
+            for issue in remaining_issues:
                 owner = file_owners.get(issue.file)
                 if not owner or owner not in self._agents:
                     owner = _FALLBACK_OWNER_BY_ISSUE_TYPE.get(issue.issue_type, "dev_lead")
@@ -1751,7 +1794,11 @@ class VerificationMixin:
                     agents_to_fix.setdefault(owner, []).append(issue)
 
             if not agents_to_fix:
-                summary_lines.append(f"- 🔍 ❌ Pre-Flight-Check: {len(pre_flight_report.issues)} Fund(e) blieben ungelöst (keinem Agenten eindeutig zuordenbar).")
+                if not remaining_issues:
+                    # Alle Funde deterministisch behoben (siehe oben) - direkt erneut prüfen,
+                    # statt fälschlich "ungelöst" zu melden.
+                    continue
+                summary_lines.append(f"- 🔍 ❌ Pre-Flight-Check: {len(remaining_issues)} Fund(e) blieben ungelöst (keinem Agenten eindeutig zuordenbar).")
                 break
 
             fix_tasks = []
@@ -2038,7 +2085,7 @@ class VerificationMixin:
 
             notify(f"  ❌ [bold red]{len(report.failures)} Testfehler[/bold red] – ermittle betroffene Agenten aus dem echten Traceback...")
 
-            current_signature = _issue_signature(report.failures, lambda f: (f.test_id, f.message[:300]))
+            current_signature = _issue_signature(report.failures, lambda f: (f.test_id, _failure_fingerprint(f.message)))
             if _no_progress(previous_failure_signature, current_signature):
                 escalated_and_resolved = False
                 if not escalation_attempted and not (
@@ -2316,6 +2363,45 @@ class VerificationMixin:
                 # wird - siehe _DOCKER_DAEMON_UNAVAILABLE_RE (core/verifier/models.py).
                 notify(f"  🐳 [dim yellow]{docker_report.reason_skipped}[/dim yellow]")
                 summary_lines.append(f"- 🐳 ⏭️ {docker_report.reason_skipped}")
+
+        # Realer Fund (auditlog_sentinel, 2026-09-10): core/verifier/runtime.py.check_frontend_build()
+        # (echter `npm run build`) existierte bereits, wurde aber NIRGENDS aus der Verifikation
+        # aufgerufen - ein React/Vite-Frontend, das nie tatsächlich baute, bestand die Verifikation
+        # trotzdem. Der Browser-UI-Check unten servierte danach die ROHE `main.tsx` statisch,
+        # der Browser brach mit "Expected a JavaScript-or-Wasm module script but the server
+        # responded with a MIME type of text/plain" ab - ein Fehler, der wie ein Frontend-Bug
+        # aussah, obwohl es ein fehlender Build-Schritt war. Läuft VOR dem Browser-UI-Check, damit
+        # core/browser_verifier.py bereits den echten `dist/`-Output servieren kann.
+        if not (budget_aborted or manually_cancelled):
+            frontend_build_reports = await asyncio.to_thread(verifier.check_frontend_build)
+            for fb_report in frontend_build_reports:
+                if not fb_report.attempted:
+                    if fb_report.reason_skipped:
+                        notify(f"  📦 [dim yellow]Frontend-Build ({fb_report.directory}): {fb_report.reason_skipped}[/dim yellow]")
+                    continue
+                if fb_report.passed:
+                    notify(f"  📦 [bold green]Frontend-Build ({fb_report.directory}) erfolgreich:[/bold green] `npm run build`.")
+                    summary_lines.append(f"- 📦 Frontend-Build (`{fb_report.directory}`) erfolgreich (echter `npm run build`).")
+                else:
+                    notify(f"  📦 [bold red]Frontend-Build ({fb_report.directory}) fehlgeschlagen.[/bold red]")
+                    summary_lines.append(f"- 📦 ❌ Frontend-Build (`{fb_report.directory}`) fehlgeschlagen: {fb_report.output[:500]}")
+                    verification_ok = False
+                    fb_owner = file_owners.get(f"{fb_report.directory}/package.json") if fb_report.directory != "." else file_owners.get("package.json")
+                    fb_owner = fb_owner or next((a for a in ("frontend", "devops") if a in self._agents), None)
+                    if fb_owner and fb_owner in self._agents:
+                        notify(f"  🛠️ [bold yellow]Frontend-Build-Fix:[/bold yellow] Beauftrage {fb_owner}...")
+                        fix_result = (await self._run_agents_parallel([AgentTask(
+                            task_id=f"verify_fix_frontend_build_{fb_owner}",
+                            agent_id=fb_owner,
+                            description=(
+                                f"Der ECHTE Produktions-Build (`npm run build` unter `{fb_report.directory}`) ist "
+                                f"fehlgeschlagen. Nutze read_file, um die betroffene(n) Datei(en) zu prüfen, und "
+                                f"edit_file/write_file, um den Fehler zu beheben.\n\n{fb_report.output[:2000]}"
+                            ),
+                            context="", project_dir=project_dir,
+                        )], notify=notify))
+                        self._update_file_owners(file_owners, fix_result)
+                        all_results.extend(fix_result)
 
         # Ersetzt die rein LLM-basierte Einschätzung des security-Agenten zu Abhängigkeits-
         # Risiken durch einen echten Abgleich gegen eine öffentliche Advisory-Datenbank

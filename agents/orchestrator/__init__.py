@@ -96,14 +96,17 @@ from config import (
     AGENT_MAX_TOOL_ITERATIONS,
     AUTO_SAVE_WORKSPACE,
     BASE_DIR,
+    CAPACITY_GATE_MODE,
     ORCHESTRATOR_MODEL,
     PLAN_CONFIRMATION_MIN_TASKS,
 )
 from core.adr import format_adr_summary_for_context
 from core.backlog_store import get_ticket, upsert_ticket
+from core.capacity_gate import assess_run_capacity
 from core.decision_log import log_decision
 from core.definition_of_done import build_definition_of_done, write_definition_of_done
 from core.design_system import format_design_system_for_agents
+from core.framework_revision import current_revision
 from core.git_isolation import (
     GitIsolationError,
     create_isolated_worktree,
@@ -601,11 +604,16 @@ class Orchestrator(
         # schaltet sich der Logger selbst still ab (core/run_logger.py), der Lauf geht weiter.
         try:
             self._run_logger = RunLogger(project_slug=self.last_project_slug)
+            # Codeversion im Log (core/framework_revision.py): ohne sie ließ sich im Lauf
+            # auditlog_sentinel nicht belegen, dass noch alter Code vor der Mindeststufe lief.
+            revision = current_revision()
             self._run_logger.log_event(
                 "run_started",
                 task_summary=task_summary,
                 user_request=user_request[:2000],
                 project_dir=str(project_dir),
+                framework_commit=revision.commit,
+                framework_dirty=revision.dirty,
             )
         except Exception as e:
             logging.getLogger(__name__).warning("Lauf-Log konnte nicht angelegt werden – Lauf ohne Protokoll: %r", e)
@@ -721,6 +729,31 @@ class Orchestrator(
         # bevor der erste 429 überhaupt eintritt.
         for warning in QuotaEstimator.get_proactive_daily_budget_warnings():
             self._history.add_assistant_message(warning)
+
+        # Kapazitätsprüfung (core/capacity_gate.py): Die Tageswarnung oben war im Lauf
+        # auditlog_sentinel (548 % Gemini, alle übrigen Anbieter erschöpft) rein informativ – der
+        # Lauf startete trotzdem und scheiterte nach 374 k Tokens. Hier wird VOR dem ersten
+        # Agenten-Aufruf geprüft, ob jede eingeplante kritische Rolle überhaupt noch ein Modell
+        # oberhalb ihrer Mindeststufe erreicht.
+        if CAPACITY_GATE_MODE != "off" and agent_tasks:
+            try:
+                capacity = assess_run_capacity([t.agent_id for t in agent_tasks])
+            except Exception as e:
+                logging.getLogger(__name__).warning("Kapazitätsprüfung übersprungen: %r", e)
+                capacity = None
+            if capacity is not None:
+                for warning in capacity.warnings:
+                    notify(f"[yellow]{warning}[/yellow]")
+                    self._history.add_assistant_message(warning)
+                if capacity.blocked:
+                    blocked_ids = ", ".join(r.agent_id for r in capacity.blocked_roles)
+                    if CAPACITY_GATE_MODE == "block":
+                        response = capacity.format_block_message()
+                        log_decision(project_dir, "capacity_gate_blocked", f"Keine ausreichende Modell-Kapazität für: {blocked_ids}")
+                        self._history.add_assistant_message(response)
+                        self._close_unfinished_run_log("capacity_insufficient")
+                        return response
+                    notify(f"[bold yellow]⚠️ Kapazität unzureichend für {blocked_ids} – Lauf startet trotzdem (CAPACITY_GATE_MODE=warn).[/bold yellow]")
 
         # Projekt-Kontinuität über mehrere Sitzungen hinweg (core/project_status.py): eine
         # neue Sitzung (neues Terminal) hat KEINEN Zugriff auf memory/conversation_history.py
@@ -1108,6 +1141,7 @@ class Orchestrator(
                 files_written=geschriebene_dateien,
                 tests_ran=verification_ok or "Testlauf" in (verification_summary or ""),
                 tests_passed=verification_ok,
+                verification_skipped=bool(budget_aborted or manually_cancelled),
             )
             write_definition_of_done(project_dir, self.last_definition_of_done)
             if self._run_logger is not None:

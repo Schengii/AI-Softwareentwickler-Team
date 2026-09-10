@@ -89,6 +89,17 @@ def _isolate_run_logs(_run_log_sandbox, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_conversation_history(_run_log_sandbox, monkeypatch):
+    """Realer Fund (Analyse auditlog_sentinel 2026-09-10): memory/history_default.json enthielt
+    `<MagicMock name='ProjectVerifier().check_runtime_smoke().entrypoint'>`-Texte - jeder Test,
+    der einen echten Orchestrator() baut, schrieb über ConversationHistory in die ECHTE
+    Konsolen-Historie, die der Planer später als Gesprächskontext liest."""
+    history_dir = _run_log_sandbox / "history"
+    history_dir.mkdir(exist_ok=True)
+    monkeypatch.setattr("memory.conversation_history.MEMORY_DIR", str(history_dir))
+
+
+@pytest.fixture(autouse=True)
 def _reset_token_guard_exhaustion():
     from core.token_guard import token_guard
     token_guard._exhausted_models.clear()

@@ -59,7 +59,13 @@ _DOCKER_DAEMON_UNAVAILABLE_RE = re.compile(
     r"|failed to connect to the docker api"
     r"|error during connect.*(?:pipe|socket)"
     r"|docker daemon is not running"
-    r"|Is the docker daemon running",
+    r"|Is the docker daemon running"
+    # Realer Fund auditlog_sentinel 2026-09-10: Docker Desktop war nicht gestartet, die
+    # Named-Pipe antwortete aber mit "request returned 500 Internal Server Error for API route
+    # and version http://%2F%2F.%2Fpipe%2FdockerDesktopLinuxEngine/_ping" - bisher als echter
+    # Build-Fehler des Projekts gewertet.
+    r"|dockerDesktop(?:Linux|Windows)Engine"
+    r"|500 Internal Server Error for API route.*_ping",
     re.IGNORECASE,
 )
 

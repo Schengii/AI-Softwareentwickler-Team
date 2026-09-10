@@ -76,7 +76,11 @@ class TestSmallDepartmentRunsSequentially(unittest.TestCase):
         # VOR "backend" (siehe agents/department_lead_agent.py) - member_tasks übernimmt diese
         # Reihenfolge, frontend läuft also zuerst. backend soll dessen Datei in seiner
         # Dateibaum-Vorschau sehen, wenn wirklich sequenziell (nicht parallel) gelaufen wird.
-        writer_llm = _WritesThenFinishesLLM("app.py")
+        # "index.html" statt "app.py": core/write_guard.py.check_write_scope() (P0-Härtung nach
+        # der auditlog_sentinel-Analyse) verweigert der Rolle `frontend` inzwischen zu Recht das
+        # Schreiben von .py-Dateien - der Test prüft hier ausschließlich Sequenzialität/
+        # Sichtbarkeit, nicht Rollenrechte, deshalb eine Datei, die frontend wirklich schreiben darf.
+        writer_llm = _WritesThenFinishesLLM("index.html")
         observer_llm = _CapturingLLM()
         self.orchestrator._agents["frontend"]._llm = writer_llm
         self.orchestrator._agents["backend"]._llm = observer_llm
@@ -105,7 +109,7 @@ class TestSmallDepartmentRunsSequentially(unittest.TestCase):
 
         assert observer_llm.first_prompt_text is not None
         self.assertIn("BEREITS VORHANDENE DATEIEN", observer_llm.first_prompt_text)
-        self.assertIn("app.py", observer_llm.first_prompt_text)
+        self.assertIn("index.html", observer_llm.first_prompt_text)
 
     def test_department_with_three_or_more_members_still_runs_in_parallel(self):
         """Gegenprobe: der Sequenzialitäts-Fix darf NICHT den Parallelitäts-Nutzen für

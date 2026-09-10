@@ -199,5 +199,54 @@ class TestMissingAssetDeduplication(unittest.TestCase):
         self.assertFalse(report.passed)
 
 
+class TestBuildOutputPreference(unittest.TestCase):
+    """
+    Realer Fund (auditlog_sentinel, 2026-09-10): index.html referenzierte
+    `<script type="module" src="/src/main.tsx">` - ohne einen vorherigen `npm run build` servierte
+    der statische Verifier die rohe .tsx-Quelldatei, der Browser brach mit einem MIME-Type-Fehler
+    ab. Ein echter `dist/`-Build-Output (bereits gebündelte .js-Dateien) muss bevorzugt werden.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_dir = Path(self.temp_dir)
+        # Rohe Quelle: referenziert eine .tsx-Datei, die ein echter Browser nicht ausführen kann.
+        (self.project_dir / "index.html").write_text(
+            "<!DOCTYPE html><html><head><title>App</title></head>"
+            "<body><script type='module' src='/src/main.tsx'></script></body></html>",
+            encoding="utf-8",
+        )
+        (self.project_dir / "src").mkdir()
+        (self.project_dir / "src" / "main.tsx").write_text("console.log('raw source');", encoding="utf-8")
+        # Echter Build-Output: bereits gebündeltes, root-relatives JS (Vite-Konvention).
+        dist = self.project_dir / "dist"
+        dist.mkdir()
+        (dist / "index.html").write_text(
+            "<!DOCTYPE html><html><head><title>App</title></head>"
+            "<body><script type='module' src='/assets/index-abc123.js'></script></body></html>",
+            encoding="utf-8",
+        )
+        (dist / "assets").mkdir()
+        (dist / "assets" / "index-abc123.js").write_text("console.log('built');", encoding="utf-8")
+        self.verifier = BrowserVerifier(self.project_dir)
+
+    def test_dist_entrypoint_is_preferred_over_raw_source(self):
+        entrypoints = self.verifier._find_html_entrypoints()
+        self.assertEqual(len(entrypoints), 1)
+        self.assertEqual(entrypoints[0], self.project_dir / "dist" / "index.html")
+
+    def test_dist_absolute_asset_reference_resolves_against_dist_not_project_root(self):
+        report = self.verifier.verify_frontend()
+        self.assertTrue(report.attempted)
+        self.assertTrue(report.passed, msg=report.missing_assets)
+        self.assertEqual(report.missing_assets, [])
+
+    def test_falls_back_to_raw_source_without_a_build_output(self):
+        import shutil as _shutil
+        _shutil.rmtree(self.project_dir / "dist")
+        entrypoints = self.verifier._find_html_entrypoints()
+        self.assertEqual(entrypoints, [self.project_dir / "index.html"])
+
+
 if __name__ == "__main__":
     unittest.main()

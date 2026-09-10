@@ -1,0 +1,102 @@
+"""
+core/dependency_manifest.py – Deterministische, konfliktfreie Pflege von requirements.txt
+
+Realer Fund (Analyse auditlog_sentinel, 2026-09-10): `requirements.txt` wurde innerhalb von
+73 Sekunden von performance, backend, tester, security, backend und tester PARALLEL per
+`write_file` überschrieben – die jeweils letzte Fassung gewann. Der Vollständigkeits-Check
+meldete danach weiterhin „Projekt importiert `alembic`, aber kein Manifest listet es“, obwohl
+genau dieses eine fehlende Paket bekannt und der Fix trivial war.
+
+Dieses Modul ergänzt EINE Anforderung idempotent (Namensvergleich nach PEP 503), statt die
+Datei neu zu schreiben – genutzt vom Agenten-Werkzeug `add_dependency` und vom
+deterministischen Auto-Fix der Verifikation (kein LLM-Aufruf nötig).
+"""
+
+from __future__ import annotations
+
+import re
+import threading
+from pathlib import Path
+
+_NAME_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+_VERSION_CLAUSE = r"\s*(?:===|==|>=|<=|~=|!=|<|>)\s*[A-Za-z0-9.*+!_-]+"
+_SPEC_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*"
+    r"(?:\[[A-Za-z0-9._,\s-]+\])?"
+    rf"(?:{_VERSION_CLAUSE}(?:\s*,{_VERSION_CLAUSE})*)?"
+    r"(?:\s*;\s*[A-Za-z0-9_.\s'\"<>=!~()-]+)?$"
+)
+_write_lock = threading.Lock()
+
+
+def normalize_package_name(name: str) -> str:
+    """PEP 503: Groß-/Kleinschreibung und `-`/`_`/`.` sind gleichwertig."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def requirement_name(line: str) -> str | None:
+    """Paketname einer requirements.txt-Zeile oder None (Kommentar, Option, Leerzeile, URL)."""
+    text = line.split("#", 1)[0].strip()
+    if not text or text.startswith("-") or "://" in text:
+        return None
+    match = _NAME_RE.match(text)
+    return normalize_package_name(match.group(1)) if match else None
+
+
+def is_valid_requirement_spec(spec: str) -> bool:
+    return bool(_SPEC_RE.match((spec or "").strip()))
+
+
+def listed_requirements(manifest: Path) -> set[str]:
+    if not manifest.is_file():
+        return set()
+    lines = manifest.read_text(encoding="utf-8", errors="ignore").splitlines()
+    return {name for line in lines if (name := requirement_name(line))}
+
+
+# Formulierungen der Verifier-Befunde, die das fehlende PyPI-Paket bereits exakt benennen
+# (core/verifier/completeness.py, core/pre_flight_check.py hidden_runtime_dependency).
+_PACKAGE_HINT_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"erwartetes PyPI-Paket\s+`([^`]+)`"),
+    re.compile(r"benötigte Paket\s+`([^`]+)`"),
+    re.compile(r"Manifest listet\s+`([^`]+)`\s+auf"),
+    re.compile(r"^Fuege\s+`([^`]+)`\s+zu requirements\.txt hinzu\.?$"),
+)
+
+
+def package_from_finding(text: str) -> str | None:
+    """Exakt benanntes PyPI-Paket aus einem Verifier-Befund, sonst None (dann entscheidet ein Agent)."""
+    for pattern in _PACKAGE_HINT_RES:
+        match = pattern.search(text or "")
+        if match and is_valid_requirement_spec(match.group(1)):
+            return match.group(1).strip()
+    return None
+
+
+def primary_python_manifest(project_dir: Path) -> Path | None:
+    """requirements.txt im Projekt-Root, falls vorhanden – niemals neu angelegt (ein Projekt mit
+    pyproject.toml/Poetry soll nicht still ein zweites Manifest bekommen)."""
+    candidate = Path(project_dir) / "requirements.txt"
+    return candidate if candidate.is_file() else None
+
+
+def add_requirement(manifest: Path, spec: str) -> bool:
+    """Trägt `spec` in `manifest` ein. True = hinzugefügt, False = Paket war schon gelistet.
+
+    Raises:
+        ValueError: `spec` ist keine gültige Anforderung (z. B. Shell-Syntax oder Leerstring).
+    """
+    spec = (spec or "").strip()
+    if not is_valid_requirement_spec(spec):
+        raise ValueError(f"Ungültige Paketangabe: {spec!r} (erwartet z. B. 'alembic' oder 'sqlalchemy>=2.0').")
+    name = requirement_name(spec)
+    if name is None:
+        raise ValueError(f"Ungültige Paketangabe: {spec!r}.")
+    with _write_lock:
+        existing = manifest.read_text(encoding="utf-8", errors="ignore") if manifest.is_file() else ""
+        if name in {n for line in existing.splitlines() if (n := requirement_name(line))}:
+            return False
+        separator = "" if not existing or existing.endswith("\n") else "\n"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(f"{existing}{separator}{spec}\n", encoding="utf-8")
+    return True

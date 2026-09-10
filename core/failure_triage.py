@@ -46,6 +46,7 @@ KIND_MISSING_SYMBOL = "missing_symbol"
 KIND_MISSING_LOCAL_MODULE = "missing_local_module"
 KIND_TEST_IMPORT_PATH = "test_import_path"
 KIND_SETTINGS_DEFAULTS = "settings_defaults"
+KIND_ASYNC_SYNC_MISMATCH = "async_sync_mismatch"
 
 MANIFEST_GUARD_NOTE = (
     "⛔ Strukturfehler im Code: Ändere KEINE Dependency-Manifeste (requirements*.txt, Pipfile) – "
@@ -549,6 +550,51 @@ def _triage_module_not_found(message: str, root: Path | None, known: Collection[
     )
 
 
+# Realer Fund (auditlog_sentinel, 2026-09-10): `AttributeError: 'AsyncEngine' object has no
+# attribute '_run_ddl_visitor'` beim Einsammeln der Tests – `Base.metadata.create_all(bind=engine)`
+# lief synchron auf einer `create_async_engine()`-Engine. Der Fehler ging zweimal an security
+# (letzter Schreiber von app/main.py) statt an die fachlich zuständige database-Rolle.
+_ASYNC_SYNC_MISMATCH_RE = re.compile(
+    r"'Async(?:Engine|Connection|Session)' object has no attribute"
+    r"|MissingGreenlet|greenlet_spawn has not been called",
+    re.IGNORECASE,
+)
+_SYNC_CREATE_ALL_RE = re.compile(r"metadata\.create_all\(\s*(?:bind\s*=\s*)?\w*engine")
+
+
+def _triage_async_sync_mismatch(message: str, root: Path | None, known: Collection[str]) -> StructuralTriage | None:
+    if not _ASYNC_SYNC_MISMATCH_RE.search(message):
+        return None
+    culprit: str | None = None
+    if root is not None:
+        for rel in sorted(known):
+            if not rel.endswith(".py") or is_test_file(rel):
+                continue
+            try:
+                text = (root / rel).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if _SYNC_CREATE_ALL_RE.search(text) and "run_sync" not in text:
+                culprit = rel
+                break
+    return StructuralTriage(
+        kind=KIND_ASYNC_SYNC_MISMATCH,
+        # Bewusst None: Der Datei-Owner (z.B. security für app/main.py) ist hier gerade NICHT
+        # zuständig - die Ursache ist DB-Fachwissen, deshalb greift der Fallback database.
+        responsible_file=None,
+        fallback_agent="database",
+        diagnosis=(
+            "⚠️ KONKRETE URSACHE: Eine asynchrone SQLAlchemy-Engine (`create_async_engine`) wird "
+            "synchron benutzt – typischerweise `Base.metadata.create_all(bind=engine)` auf Modulebene. "
+            "Mit einer AsyncEngine muss das in einer async-Funktion laufen: `async with engine.begin() "
+            "as conn: await conn.run_sync(Base.metadata.create_all)` (FastAPI: im lifespan-Handler), "
+            "niemals beim Import."
+            + (f" Betroffene Datei: `{culprit}`." if culprit else "")
+            + f" {MANIFEST_GUARD_NOTE}"
+        ),
+    )
+
+
 def triage_structural_failure(
     message: str,
     files: Iterable[str],
@@ -562,6 +608,7 @@ def triage_structural_failure(
     rel_files = [rel for f in files if (rel := _to_project_rel(f, root, known))]
     return (
         _triage_syntax(message, root, known, rel_files)
+        or _triage_async_sync_mismatch(message, root, known)
         or _triage_settings(message, root, known)
         or _triage_import_name(message, root, known, rel_files)
         or _triage_module_not_found(message, root, known, rel_files)

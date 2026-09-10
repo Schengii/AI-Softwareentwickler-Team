@@ -183,8 +183,40 @@ class BrowserVerifier:
     def __init__(self, project_dir: str | Path):
         self.project_dir = Path(project_dir).resolve()
 
+    # Realer Fund (auditlog_sentinel, 2026-09-10): index.html verwies auf
+    # `<script type="module" src="/src/main.tsx">` - ohne einen vorherigen `npm run build`
+    # (core/verifier/environment.py.check_frontend_build(), bis dahin nirgends in der
+    # Verifikation aufgerufen) serviert der statische Server die rohe .tsx-Quelldatei, der
+    # Browser bricht mit "Expected a JavaScript-or-Wasm module script but the server responded
+    # with a MIME type of text/plain" ab. Ein echter Produktions-Build unter `dist/`/`build/`
+    # referenziert dagegen bereits gebündelte, korrekt typisierte .js-Dateien - genau das, was
+    # ein Deployment tatsächlich ausliefern würde. Bevorzugt deshalb einen vorhandenen
+    # Build-Output vor der rohen Quelle.
+    _BUILD_OUTPUT_DIRNAMES = ("dist", "build")
+
+    def _find_build_output_entrypoint(self) -> Path | None:
+        for dirname in self._BUILD_OUTPUT_DIRNAMES:
+            candidate = self.project_dir / dirname / "index.html"
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _serve_root_for(self, entry_html: Path) -> Path:
+        """Web-Root für `entry_html`: bei einem erkannten Build-Output (dist/build, siehe
+        _find_build_output_entrypoint) dessen EIGENES Verzeichnis, sonst project_dir wie bisher.
+        Bundler wie Vite erzeugen standardmäßig root-relative Asset-Pfade (`/assets/...`), die
+        nur auflösen, wenn genau dieses Verzeichnis die Web-Server-Root ist (project_dir als
+        Root würde `project_dir/assets/...` erwarten, tatsächlich liegt die Datei aber unter
+        `project_dir/dist/assets/...`)."""
+        if entry_html == self._find_build_output_entrypoint():
+            return entry_html.parent
+        return self.project_dir
+
     def _find_html_entrypoints(self) -> list[Path]:
         """Findet alle relevanten HTML-Dateien im Projekt."""
+        build_output = self._find_build_output_entrypoint()
+        if build_output is not None:
+            return [build_output]
         html_files = []
         ignored = {".git", ".venv", "venv", ".ai_team_venv", "node_modules", "dist", "build"}
         for root, dirs, files in os.walk(self.project_dir):
@@ -335,7 +367,7 @@ class BrowserVerifier:
         rel_entry = str(entry_html.relative_to(self.project_dir)).replace("\\", "/")
 
         # 1. Statische Asset- & Referenz-Prüfung
-        static_missing, static_warnings = self._validate_static_assets(entry_html)
+        static_missing, static_warnings = self._validate_static_assets(entry_html, self._serve_root_for(entry_html))
 
         # 2. Prüfe, ob Playwright installiert ist
         playwright_report = self._run_playwright_check(entry_html, timeout_seconds)
@@ -372,8 +404,12 @@ class BrowserVerifier:
             tested_url=f"file://{rel_entry}",
         )
 
-    def _validate_static_assets(self, html_file: Path) -> tuple[list[str], list[str]]:
-        """Prüft, ob alle in HTML verlinkten lokalen JS-, CSS- und Bild-Dateien existieren."""
+    def _validate_static_assets(self, html_file: Path, serve_root: Path | None = None) -> tuple[list[str], list[str]]:
+        """Prüft, ob alle in HTML verlinkten lokalen JS-, CSS- und Bild-Dateien existieren.
+
+        `serve_root` löst root-relative Referenzen (`/assets/...`) auf - bei einem Build-Output
+        (siehe _serve_root_for) dessen eigenes Verzeichnis, sonst project_dir wie bisher."""
+        root = serve_root or self.project_dir
         missing = []
         warnings = []
         try:
@@ -395,7 +431,7 @@ class BrowserVerifier:
 
             # Relativ zum Verzeichnis der HTML-Datei oder Projekt-Root
             candidate1 = html_file.parent / ref_clean
-            candidate2 = self.project_dir / ref_clean.lstrip("/")
+            candidate2 = root / ref_clean.lstrip("/")
             if not (candidate1.exists() or candidate2.exists()):
                 missing.append(f"Fehlendes Asset: '{ref}' in {html_file.name}")
 
@@ -417,7 +453,8 @@ class BrowserVerifier:
         backend_proc, backend_port = self._start_backend()
 
         port = self._find_free_port()
-        serve_dir = str(self.project_dir)
+        serve_root = self._serve_root_for(html_file)
+        serve_dir = str(serve_root)
 
         # Starte lokalen statischen HTTP-Server (proxyt an backend_port, falls erkannt/gestartet)
         QuietHandler = self._make_static_handler(serve_dir, backend_port)
@@ -427,7 +464,7 @@ class BrowserVerifier:
         server_thread.start()
         time.sleep(0.2)
 
-        rel_path = str(html_file.relative_to(self.project_dir)).replace("\\", "/")
+        rel_path = str(html_file.relative_to(serve_root)).replace("\\", "/")
         target_url = f"http://127.0.0.1:{port}/{rel_path}"
 
         # Führe Playwright Test in Subprozess aus (isoliert gegen Crashes). Bewusst KEIN
@@ -518,7 +555,8 @@ class BrowserVerifier:
         entry_html = html_files[0]
         backend_proc, backend_port = self._start_backend()
         port = self._find_free_port()
-        serve_dir = str(self.project_dir)
+        serve_root = self._serve_root_for(entry_html)
+        serve_dir = str(serve_root)
 
         QuietHandler = self._make_static_handler(serve_dir, backend_port)
 
@@ -527,7 +565,7 @@ class BrowserVerifier:
         server_thread.start()
         time.sleep(0.2)
 
-        rel_path = str(entry_html.relative_to(self.project_dir)).replace("\\", "/")
+        rel_path = str(entry_html.relative_to(serve_root)).replace("\\", "/")
         target_url = f"http://127.0.0.1:{port}/{rel_path}"
 
         # axe.run(page) liefert das native axe-core-Ergebnisformat (dieselbe stabile Struktur,

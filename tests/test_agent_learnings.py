@@ -70,6 +70,54 @@ class TestAgentKnowledgeBase(unittest.TestCase):
         self.assertEqual(len(self.kb.get_learnings("backend")), 2)
 
 
+class TestInfrastructureWorkaroundFilter(unittest.TestCase):
+    """
+    Realer Fund (Analyse 2026-09-10, auditlog_sentinel-Lauf): memory/agent_learnings.json enthielt
+    11 reine Provider-/Kontingent-Workarounds statt Code-Lektionen, u.a. "Bei 429-Fehlern:
+    Umschalten auf High-Level-Compliance-Check ohne detaillierte Code-Analyse." (security) und
+    "... nutze gpt-3.5-turbo als Fallback." (database, ein in diesem Framework nirgends
+    konfiguriertes Fremdmodell). Ein einzelner Agent sieht den rohen HTTP-Statuscode eines
+    gescheiterten LLM-Aufrufs nie - core/llm_factory.py/core/token_guard.py behandeln das bereits
+    zentral, VOR dem Agenten. add_learning() weist solche Regeln jetzt zurück.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.file_path = Path(self.temp_dir.name) / "test_learnings.json"
+        self.kb = AgentKnowledgeBase(file_path=self.file_path)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_rejects_rate_limit_reaction_rule(self):
+        self.kb.add_learning("security", "Bei 429-Fehlern: Umschalten auf High-Level-Compliance-Check ohne detaillierte Code-Analyse.")
+        self.assertEqual(self.kb.get_learnings("security"), [])
+
+    def test_rejects_model_fallback_rotation_rule(self):
+        self.kb.add_learning("code_reviewer", "Signalisiere bei API-429-Fehlern sofort <fallback_request> zur Modell-Rotation.")
+        self.assertEqual(self.kb.get_learnings("code_reviewer"), [])
+
+    def test_rejects_foreign_model_recommendation_even_without_error_marker(self):
+        self.kb.add_learning("database", "Begrenze jede Anfrage auf max. 7500 Tokens; bei Überschreitung splitte das Schema und nutze gpt-3.5-turbo als Fallback.")
+        self.assertEqual(self.kb.get_learnings("database"), [])
+
+    def test_rejects_backoff_and_checkpoint_rules(self):
+        self.kb.add_learning("planning_lead", "Bei 429-Fehlern: Stoppe die Ausführung, speichere State-Checkpoint und fordere manuelle Fortsetzung an.")
+        self.kb.add_learning("devops", "Bei 503-Fehlern: Reduziere Output auf minimales JSON-Format ohne Reasoning-Chain.")
+        self.assertEqual(self.kb.get_learnings("planning_lead"), [])
+        self.assertEqual(self.kb.get_learnings("devops"), [])
+
+    def test_genuine_code_lesson_mentioning_http_status_is_kept(self):
+        # Eine fachliche Regel über das Verhalten der ZU BAUENDEN Anwendung (nicht über das
+        # KI-Team selbst) darf nicht am bloßen Vorkommen einer Statuscode-Zahl scheitern.
+        self.kb.add_learning("backend", "Gib bei Überschreiten des Nutzer-Ratenlimits HTTP 429 mit Retry-After-Header zurück.")
+        self.assertEqual(len(self.kb.get_learnings("backend")), 1)
+
+    def test_genuine_code_lesson_without_any_marker_is_kept(self):
+        self.kb.add_learning("database", "Verwende poolclass=StaticPool bei In-Memory-SQLite in Tests.")
+        self.assertEqual(len(self.kb.get_learnings("database")), 1)
+
+
 class TestEditableLearnings(unittest.TestCase):
     """
     Realer Bedarf: der agent_trainer analysiert Läufe automatisch per LLM-Aufruf - eine

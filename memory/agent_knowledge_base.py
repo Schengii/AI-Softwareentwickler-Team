@@ -114,6 +114,41 @@ def _evict_least_valuable(rules: list[str]) -> None:
     rules.pop(index)
 
 
+# Qualitäts-Gate (Analyse 2026-09-10, Fund am auditlog_sentinel-Lauf): memory/agent_learnings.json
+# enthielt Regeln wie "Bei 429-Fehlern: Umschalten auf High-Level-Compliance-Check ohne
+# detaillierte Code-Analyse.", "nutze gpt-3.5-turbo als Fallback." oder "Signalisiere bei
+# API-429-Fehlern sofort <fallback_request> zur Modell-Rotation." - reine Infrastruktur-
+# Workarounds, keine Code-Lektionen. Ein einzelner Agent sieht in seinem Prompt nie den rohen
+# HTTP-Statuscode eines gescheiterten LLM-Aufrufs (das behandelt core/llm_factory.py/
+# core/token_guard.py/core/provider_exhaustion.py bereits zentral, VOR dem Agenten) - eine
+# solche "gelernte" Regel ist bestenfalls wirkungslos, schlimmstenfalls schädlich (z.B. security
+# angewiesen, "ohne detaillierte Code-Analyse" zu prüfen). Setzt zwei UNABHÄNGIGE Marker voraus
+# (Fehler-/Kontingent-Indikator UND eine Reaktions-Formulierung auf den eigenen LLM-Aufruf), damit
+# eine legitime fachliche Regel über HTTP-429-Verhalten der zu bauenden APPLIKATION selbst (z.B.
+# "Backend soll bei Ratenlimit-Überschreitung 429 zurückgeben") nicht fälschlich verworfen wird.
+_INFRA_ERROR_MARKER_RE = re.compile(
+    r"\b(429|503|413)\b|rate.?limit|kontingent|provider-(ausfall|fehler)|api-fehler",
+    re.IGNORECASE,
+)
+_INFRA_REACTION_MARKER_RE = re.compile(
+    r"fallback|modell-?rotation|backoff|governance\s*lead|eskalation|checkpoint|credit|"
+    r"token-limit|reasoning-chain|umschalt",
+    re.IGNORECASE,
+)
+# Fremdmodelle, die in DIESEM Framework nirgends konfiguriert sind (siehe config.py.AGENT_MODELS/
+# MODEL_FALLBACKS) - eine Regel, die ein Agent zur Nutzung anweist, kann nie wirken und verrät,
+# dass sie aus generischem Trainingswissen stammt statt aus einer echten Beobachtung an DIESEM Team.
+_FOREIGN_MODEL_RE = re.compile(r"\bgpt-3\.5-turbo\b|\bgpt-4o?\b", re.IGNORECASE)
+
+
+def _is_infrastructure_workaround(rule: str) -> bool:
+    """True für eine Regel, die tatsächlich einen Provider-/Kontingent-Workaround statt einer
+    Code-/Architektur-Lektion beschreibt - siehe Modul-Docstring oben."""
+    if _FOREIGN_MODEL_RE.search(rule):
+        return True
+    return bool(_INFRA_ERROR_MARKER_RE.search(rule) and _INFRA_REACTION_MARKER_RE.search(rule))
+
+
 def _is_semantic_duplicate(new_rule: str, existing_rules: list[str]) -> bool:
     """True, wenn `new_rule` einer bereits gespeicherten Regel semantisch stark ähnelt (Jaccard-
     Ähnlichkeit der Wortmengen >= _SIMILARITY_DEDUP_THRESHOLD) - verhindert Fast-Dubletten wie die
@@ -154,6 +189,8 @@ class AgentKnowledgeBase:
         """Fügt ein neues Learning/Guardrail für einen Agenten hinzu."""
         clean_rule = rule_or_tip.strip()
         if not clean_rule:
+            return
+        if _is_infrastructure_workaround(clean_rule):
             return
         if len(clean_rule) > MAX_RULE_LENGTH:
             # An der letzten Wortgrenze kürzen statt hart mitten im Wort abzuschneiden

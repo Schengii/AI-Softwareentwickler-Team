@@ -20,6 +20,55 @@ from pathlib import Path
 from config import WORKSPACE_DIR
 from core.code_sandbox import CodeSandbox
 
+# Dieselben drei Muster wie WorkspaceManager.parse_and_save_files() (siehe deren Docstring) -
+# hierher ausgelagert, damit _find_file_blocks()/text_has_extractable_file_blocks() unten UND
+# parse_and_save_files() dieselbe, einmal geprüfte Erkennung teilen, statt sie zu duplizieren.
+_PATTERN_FENCE_COLON = re.compile(
+    r'```(?:[a-zA-Z0-9_\-]+)?:([a-zA-Z0-9_\-\./\\]+)\r?\n(.*?)```',
+    re.DOTALL
+)
+_PATTERN_HEADER_FENCE = re.compile(
+    r'(?:#{1,6}|\*\*)\s*(?:[^\n`\'"]*?)[`\'"]([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9]+)[`\'"][^\n]*?\r?\n\s*```(?:[a-zA-Z0-9_\-]+)?\r?\n(.*?)```',
+    re.IGNORECASE | re.DOTALL
+)
+_PATTERN_EXPLICIT_FILE = re.compile(
+    r'(?:###|\*\*|#)?\s*(?:Datei|File):\s*[`\'"]?([a-zA-Z0-9_\-\./\\]+)[`\'"]?\s*\r?\n\s*```(?:[a-zA-Z0-9_\-]+)?\r?\n(.*?)```',
+    re.IGNORECASE | re.DOTALL
+)
+
+
+def _find_file_blocks(text_content: str) -> dict[str, str]:
+    """Rohe Rel-Pfad -> Inhalt-Treffer aller drei Text-Fallback-Muster, OHNE jede I/O oder
+    Validierung (Syntax-/Manifest-Check passiert erst in parse_and_save_files() beim
+    tatsächlichen Speichern) - reine, günstige Text-Erkennung für beide Aufrufer unten."""
+    matches_found: dict[str, str] = {}
+    for pattern in (_PATTERN_FENCE_COLON, _PATTERN_HEADER_FENCE, _PATTERN_EXPLICIT_FILE):
+        for match in pattern.finditer(text_content):
+            matches_found[match.group(1).strip()] = match.group(2)
+    return matches_found
+
+
+def text_has_extractable_file_blocks(text_content: str) -> bool:
+    """
+    True, wenn `text_content` mindestens einen Codeblock enthält, den parse_and_save_files()
+    als Datei erkennen und (Text-Fallback) speichern WÜRDE - ohne selbst etwas zu speichern.
+
+    Bugfix (bei der KI-Team-Gesamtanalyse gefunden): agents/base_agent.py's "Hard Delivery
+    Gate" wertete bisher JEDEN Abschluss eines Code-schreibenden Agenten ohne write_file/
+    edit_file-Tool-Aufruf als Fehlschlag - unabhängig davon, ob der Antworttext tatsächlich
+    einen für core/workspace.py.parse_and_save_files() (Text-Fallback) erkennbaren Codeblock
+    enthielt. Genau DAFÜR wurde der Text-Fallback-Mechanismus aber gebaut: ein Agent liefert
+    Code im Antworttext statt über ein Werkzeug, der Orchestrator rettet die Datei trotzdem
+    (agents/orchestrator/__init__.py._run_department_hierarchy, `AUTO_SAVE_WORKSPACE`). Da
+    dieser Rettungspfad NUR für `res.success and res.content` greift (siehe dort), erstickte
+    das Hard Delivery Gate ihn faktisch, indem es den Agenten schon VOR dem Text-Fallback als
+    gescheitert markierte - real reproduziert: tests/test_text_fallback_report_visibility.py
+    (dieselbe Fixture, die Text-Fallback ursprünglich absichern sollte, schlug dadurch selbst
+    fehl). Das Gate nutzt diese Funktion jetzt, um einen Abschluss OHNE Werkzeug-Aufruf, der
+    trotzdem einen rettbaren Codeblock enthält, NICHT als Fehlschlag zu werten.
+    """
+    return bool(_find_file_blocks(text_content))
+
 
 @dataclass
 class WorkspaceFile:
@@ -168,37 +217,7 @@ class WorkspaceManager:
         """
         project_dir = self.get_project_dir(project_name)
         saved_files: list[WorkspaceFile] = []
-        matches_found: dict[str, str] = {}
-
-        # Muster 1: Code-Fence mit Doppelpunkt (```python:src/main.py)
-        pattern_fence_colon = re.compile(
-            r'```(?:[a-zA-Z0-9_\-]+)?:([a-zA-Z0-9_\-\./\\]+)\r?\n(.*?)```',
-            re.DOTALL
-        )
-        for match in pattern_fence_colon.finditer(text_content):
-            rel_path = match.group(1).strip()
-            content = match.group(2)
-            matches_found[rel_path] = content
-
-        # Muster 2: Header-Deklaration gefolgt von Codeblock (### 📄 `requirements.txt` \n ```text\n...)
-        pattern_header_fence = re.compile(
-            r'(?:#{1,6}|\*\*)\s*(?:[^\n`\'"]*?)[`\'"]([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9]+)[`\'"][^\n]*?\r?\n\s*```(?:[a-zA-Z0-9_\-]+)?\r?\n(.*?)```',
-            re.IGNORECASE | re.DOTALL
-        )
-        for match in pattern_header_fence.finditer(text_content):
-            rel_path = match.group(1).strip()
-            content = match.group(2)
-            matches_found[rel_path] = content
-
-        # Muster 3: Explizite Datei-Deklaration (Datei: `src/main.py`)
-        pattern_explicit_file = re.compile(
-            r'(?:###|\*\*|#)?\s*(?:Datei|File):\s*[`\'"]?([a-zA-Z0-9_\-\./\\]+)[`\'"]?\s*\r?\n\s*```(?:[a-zA-Z0-9_\-]+)?\r?\n(.*?)```',
-            re.IGNORECASE | re.DOTALL
-        )
-        for match in pattern_explicit_file.finditer(text_content):
-            rel_path = match.group(1).strip()
-            content = match.group(2)
-            matches_found[rel_path] = content
+        matches_found = _find_file_blocks(text_content)
 
         # Speichere alle gefundenen Dateien ab
         for rel_path, content in matches_found.items():

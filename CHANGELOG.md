@@ -7,6 +7,37 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Hard Delivery Gate erstickte den Text-Fallback-Rettungsmechanismus
+
+Bei der Analyse eines nach der Performance-Optimierung vollständig durchlaufenden Testlaufs
+gefunden: `tests/test_text_fallback_report_visibility.py` (beide Tests) schlug reproduzierbar
+fehl – ein latenter, wahrscheinlich schon lange bestehender Konflikt zwischen zwei
+unabhängig gebauten Härtungsmaßnahmen, keine neue Regression dieser Session.
+
+- **Der Konflikt:** `agents/base_agent.py`'s „Hard Delivery Gate“ markiert einen
+  Code-schreibenden Agenten ohne `write_file`/`edit_file`-Aufruf als `success=False`, sobald
+  ein Korrektur-Hinweis nichts half. `core/workspace.py.parse_and_save_files()` („Text-
+  Fallback“) rettet aber genau diesen Fall – Code im Antworttext statt über ein Werkzeug –,
+  indem der Orchestrator ihn nachträglich per Regex extrahiert und speichert
+  (`agents/orchestrator/__init__.py`, `AUTO_SAVE_WORKSPACE`). Dieser Rettungspfad greift
+  jedoch nur für `res.success and res.content` – das Hard Delivery Gate erstickte ihn also
+  strukturell, indem es den Agenten schon VOR dem Text-Fallback-Aufruf als gescheitert
+  markierte, obwohl die Datei am Ende doch gerettet worden wäre.
+- **Fix:** `core/workspace.py.text_has_extractable_file_blocks()` (neu, teilt die drei
+  Erkennungsmuster mit `parse_and_save_files()` statt sie zu duplizieren) prüft, ob der
+  Antworttext einen rettbaren Codeblock enthält. Nur wenn das NICHT der Fall ist (echte
+  Prosa ohne jeden Codeblock – der ursprüngliche `pulseflow_gateway`-Fund, den das Gate
+  eigentlich fangen soll), markiert das Gate final als Fehlschlag. Der Korrektur-Hinweis
+  selbst (Aufforderung, `write_file` zu nutzen) bleibt unverändert bestehen – nur die
+  ENDGÜLTIGE Fehlschlag-Markierung wird softened, wenn eine Rettung noch möglich ist.
+
+Verifikation: beide vorher fehlschlagenden Tests grün, `tests/test_agentic_loop.py`/
+`test_agentic_loop_resilience.py`/`test_duplicate_work_avoidance.py`/`test_mock_workflow.py`
+(31 Tests, decken u.a. den reinen-Prosa-ohne-Fence-Fall weiterhin als echten Fehlschlag ab)
+weiterhin grün, `ruff check` fehlerfrei.
+
+---
+
 ## 🟢 `Orchestrator()`-Konstruktion 15x langsamer als nötig: geteilter Anthropic-Client
 
 Bei der Untersuchung von 6 reproduzierbar fehlschlagenden Dashboard-Tests

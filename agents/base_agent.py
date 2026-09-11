@@ -23,6 +23,7 @@ from core.llm_factory import AgentMessage, GeminiClient, LLMFactory, LLMResponse
 from core.message_bus import AgentResult, AgentTask
 from core.model_capability import min_tier_for_agent, pop_capability_floor, push_capability_floor
 from core.provider_exhaustion import FAILURE_CLASS_AGENT_ERROR, classify_failure, is_infrastructure_failure
+from core.workspace import text_has_extractable_file_blocks
 
 # Realer Fund aus einem echten Lauf: Groq (häufig der Fallback für HEAVY-Rollen ohne
 # ANTHROPIC_API_KEY, siehe config.py) lehnte einen rein lesenden Konsolidierungs-Aufruf
@@ -403,12 +404,29 @@ class BaseAgent(ABC):
                     and not task.tools_read_only
                     and not toolbox.clarification_requests
                     and no_file_written_retry_used
+                    and not text_has_extractable_file_blocks(response.text)
                 ):
                     # Hard Delivery Gate, zweite Stufe: der obige Korrektur-Hinweis wurde bereits
                     # EINMAL gegeben (no_file_written_retry_used) und der Agent liefert trotzdem
                     # keine einzige Datei - execute() unten wertet das NIEMALS als success=True,
                     # damit der Orchestrator sofort eskaliert statt den DoD-Fehler erst Minuten
                     # später über einen leeren `git status` zu bemerken.
+                    #
+                    # Bugfix (bei der KI-Team-Gesamtanalyse gefunden): `not text_has_extractable_
+                    # file_blocks(response.text)` ergänzt - enthält der Antworttext trotz allem
+                    # einen Codeblock, den core/workspace.py.parse_and_save_files() (Text-
+                    # Fallback) erkennen und speichern WÜRDE, ist der Tokenverbrauch NICHT
+                    # "verpufft": der Orchestrator rettet die Datei gleich im Anschluss über
+                    # genau diesen Fallback-Pfad (agents/orchestrator/__init__.py,
+                    # `AUTO_SAVE_WORKSPACE`, greift nur für `res.success and res.content`). Ohne
+                    # diese Ausnahme erstickte das Gate den Text-Fallback-Mechanismus faktisch,
+                    # indem es den Agenten schon VOR dessen Aufruf als gescheitert markierte -
+                    # real reproduziert: tests/test_text_fallback_report_visibility.py (exakt die
+                    # Fixture, die Text-Fallback ursprünglich absichern sollte, schlug dadurch
+                    # selbst fehl). Der Korrektur-Hinweis oben bleibt unverändert bestehen - ein
+                    # nativer write_file-Aufruf ist robuster als Regex-Extraktion aus Freitext
+                    # (siehe parse_and_save_files()-Docstring), nur die ENDGÜLTIGE
+                    # Fehlschlag-Markierung wird softened, wenn eine Rettung noch möglich ist.
                     hard_delivery_gate_failed = True
                 break
 

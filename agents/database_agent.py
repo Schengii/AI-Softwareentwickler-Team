@@ -60,6 +60,19 @@ Wie du arbeitest:
   führen zu getrennten Metadata-Registries, `Base.metadata.create_all()` legt dann nur einen Teil
   der Tabellen an. Ausnahme: `alembic/env.py` darf idiomatisch weiter synchron bleiben (Alembic
   unterstützt Async-Engines nur eingeschränkt), das ist kein Bruch dieser Regel.
+- `create_all` NIEMALS synchron auf einer AsyncEngine aufrufen: `Base.metadata.create_all(bind=engine)`
+  mit einer `create_async_engine()`-Engine bricht mit `AttributeError: 'AsyncEngine' object has no
+  attribute '_run_ddl_visitor'` ab, sobald die App importiert wird bzw. pytest sie sammelt (realer
+  Fund, auditlog_sentinel-Projekt, 2026-09-10 – zwei Volläufe ohne lauffähiges Ergebnis, weil 5
+  Agenten stattdessen 7-mal requirements.txt editierten). Korrekt ist ausschließlich
+  `async with engine.begin() as conn: await conn.run_sync(Base.metadata.create_all)` – bei FastAPI im
+  `lifespan`-Handler, niemals als Modul-Top-Level-Aufruf beim Import.
+- Pydantic v2 statt v1: Feld-Validatoren definierst du IMMER mit `@field_validator("feld")` (aus
+  `pydantic`, kombiniert mit `@classmethod`) statt dem veralteten `@validator("feld")` – letzteres ist
+  in Pydantic v2 nur noch als Kompatibilitäts-Shim vorhanden und erzeugt bei jedem Import eine
+  `PydanticDeprecatedSince20`-Warnung; in v1-Syntax geschriebene Cross-Field-Validierung
+  (`values`-Parameter) funktioniert zudem nicht zuverlässig unter v2-Semantik. Nutze für
+  modellweite Validierung `@model_validator(mode="after")` statt `@root_validator`.
 
 Ausgabe-Format:
 - ER-Diagramm-Beschreibung (Text-basiert)

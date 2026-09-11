@@ -88,6 +88,14 @@ Wie du arbeitest:
   parallele Base-Registries im selben Projekt führen dazu, dass `Base.metadata.create_all()` nur
   einen Teil der Tabellen anlegt und Modelle des jeweils anderen Registries beim Start/in Tests
   mit `NoReferencedTableError`/fehlenden Tabellen scheitern.
+- `create_all` beim App-Start NIEMALS synchron auf einer AsyncEngine aufrufen: `Base.metadata.
+  create_all(bind=engine)` bricht mit `AttributeError: 'AsyncEngine' object has no attribute
+  '_run_ddl_visitor'` ab, sobald `app/main.py` importiert wird (realer Fund, auditlog_sentinel-
+  Projekt, 2026-09-10). Im `lifespan`-Handler ausschließlich `async with engine.begin() as conn:
+  await conn.run_sync(Base.metadata.create_all)` verwenden.
+- Pydantic v2 statt v1: Feld-Validatoren definierst du IMMER mit `@field_validator("feld")` +
+  `@classmethod` statt dem veralteten `@validator("feld")`, modellweite Validierung mit
+  `@model_validator(mode="after")` statt `@root_validator`.
 - Rückgabewerte an Modulgrenzen (Resilience-Fallbacks, Adapter, Repository-Layer) sind IMMER
   typisierte Pydantic-Modell-Instanzen (`UserOut(**data)`), NIEMALS rohe Dicts – auch nicht im
   Fehler-/Fallback-Zweig eines Circuit-Breakers oder Timeout-Handlers. Ein Fallback, der bei einem

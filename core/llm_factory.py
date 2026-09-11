@@ -249,6 +249,21 @@ _BILLING_EXHAUSTION_MARKERS = (
     "payment required",
 )
 BILLING_EXHAUSTION_COOLDOWN_SECONDS = 6 * 3600.0
+
+# ki_team_verbesserungsanalyse.md, Stufe-0-#1: `_provider_available()` prüfte bislang für Claude
+# NUR `bool(ANTHROPIC_API_KEY)` - ob der Key tatsächlich gültig ist, erfuhr das Team erst live
+# beim ersten echten Aufruf. OpenRouter/DeepSeek erkannten einen 401 bereits am `status_code` und
+# riefen `mark_model_exhausted()` auf, ABER `_exhaustion_cooldown_seconds()` kannte kein
+# Auth-Marker-Muster - ein ungültiger Key fiel mangels erkanntem Marker auf den
+# `default_cooldown_seconds`-Standard (60s, core/token_guard.py) zurück und wurde dadurch JEDE
+# Minute erneut vergeblich angefragt. Anders als ein Rate-Limit oder ein leeres Guthaben repariert
+# sich ein falscher/widerrufener Key nie von selbst innerhalb eines Laufs - Cooldown daher absichtlich
+# sehr lang (praktisch: für den Rest des Prozesses nicht mehr versuchen), nicht nur ein paar Stunden.
+_AUTH_ERROR_MARKERS = (
+    "401", "unauthorized", "authentication_error", "invalid_api_key", "invalid x-api-key",
+    "incorrect api key", "invalid api key",
+)
+AUTH_FAILURE_COOLDOWN_SECONDS = 24 * 3600.0
 _DAILY_TEXT_MARKERS = ("tokens per day", "requests per day")
 _RETRY_AFTER_RE = re.compile(r"(?:try again|retry) in\s+(?P<spec>(?:\d+(?:\.\d+)?(?:ms|h|m|s))+)", re.IGNORECASE)
 _DURATION_PART_RE = re.compile(r"(\d+(?:\.\d+)?)(ms|h|m|s)")
@@ -266,12 +281,25 @@ def _retry_after_seconds(err_str: str) -> float | None:
     return sum(float(value) * _DURATION_FACTORS[unit] for value, unit in _DURATION_PART_RE.findall(match.group("spec")))
 
 
-def _exhaustion_cooldown_seconds(err_str: str) -> float | None:
-    """Cooldown für einen Kontingent-/Guthaben-Fehler - None = Standard-Cooldown des Aufrufers.
+def is_authentication_error(exc: Exception | str) -> bool:
+    """True, wenn eine Fehlermeldung nach einem ungültigen/abgelehnten API-Key aussieht (401 o.ä.)
+    statt nach einem vorübergehenden Rate-Limit oder erschöpftem Guthaben. Öffentlich (kein
+    Unterstrich-Präfix), da core/model_preflight.py denselben Marker-Abgleich für den
+    Preflight-Bericht braucht - eine zweite, abweichende Implementierung dort wäre eine
+    schleichende Quelle für Inkonsistenz."""
+    text = str(exc).lower()
+    return any(marker in text for marker in _AUTH_ERROR_MARKERS)
 
-    Reihenfolge: fehlendes Guthaben (BILLING_EXHAUSTION_COOLDOWN_SECONDS) > Tageskontingent
-    (exakte Provider-Angabe, sonst DAILY_QUOTA_COOLDOWN_SECONDS) > sonstige Provider-Wartezeit."""
+
+def _exhaustion_cooldown_seconds(err_str: str) -> float | None:
+    """Cooldown für einen Kontingent-/Guthaben-/Auth-Fehler - None = Standard-Cooldown des Aufrufers.
+
+    Reihenfolge: ungültiger API-Key (AUTH_FAILURE_COOLDOWN_SECONDS, repariert sich nie von selbst)
+    > fehlendes Guthaben (BILLING_EXHAUSTION_COOLDOWN_SECONDS) > Tageskontingent (exakte
+    Provider-Angabe, sonst DAILY_QUOTA_COOLDOWN_SECONDS) > sonstige Provider-Wartezeit."""
     text = (err_str or "").lower()
+    if any(marker in text for marker in _AUTH_ERROR_MARKERS):
+        return AUTH_FAILURE_COOLDOWN_SECONDS
     if any(marker in text for marker in _BILLING_EXHAUSTION_MARKERS):
         return BILLING_EXHAUSTION_COOLDOWN_SECONDS
     retry_after = _retry_after_seconds(err_str)
@@ -1320,6 +1348,17 @@ class GroqClient:
             if not _allow_self_fallback:
                 raise RuntimeError("Groq innerhalb einer Fallback-Kette nicht verfügbar (kein Key).")
             return await _cross_provider_failover_with_usage("groq", prompt, system_prompt)
+        # ki_team_verbesserungsanalyse.md, Stufe-0-#1: dieselbe Lücke wie bei Claude - ein bereits
+        # erkannter Groq-Key-/Kontingent-Fehler (siehe except-Zweig unten) landet jetzt in
+        # token_guard, GENAU wie OpenRouter/DeepSeek es schon lange tun (siehe deren Pre-Checks
+        # oben), statt bei jedem frisch instanziierten GroqClient erneut live zu scheitern.
+        if token_guard.is_model_exhausted(f"groq:{self.model_name}"):
+            if not _allow_self_fallback:
+                raise _pinned_provider_failure(
+                    "Groq", self.model_name,
+                    RuntimeError(token_guard.get_exhausted_reason(f"groq:{self.model_name}") or "bekannt nicht verfügbar"),
+                )
+            return await _cross_provider_failover_with_usage("groq", prompt, system_prompt)
 
         messages = []
         if system_prompt:
@@ -1354,13 +1393,19 @@ class GroqClient:
             )
         except Exception as e:
             is_rate_limit = _is_rate_limit_error(e)
+            is_auth_error = is_authentication_error(e)
             if is_rate_limit:
                 token_guard.mark_model_exhausted(
                     f"groq:{self.model_name}", f"Groq Rate Limit: {_short_error(e, 200)}",
                     cooldown_seconds=_exhaustion_cooldown_seconds(str(e)),
                 )
+            elif is_auth_error:
+                token_guard.mark_model_exhausted(
+                    f"groq:{self.model_name}", f"Groq Auth-Fehler (ungültiger/abgelehnter API-Key): {_short_error(e, 160)}",
+                    cooldown_seconds=AUTH_FAILURE_COOLDOWN_SECONDS,
+                )
             if not _allow_self_fallback:
-                if is_rate_limit:
+                if is_rate_limit or is_auth_error:
                     raise _pinned_provider_failure("Groq", self.model_name, e) from e
                 raise
             return await _cross_provider_failover_with_usage("groq", prompt, system_prompt)
@@ -1376,6 +1421,13 @@ class GroqClient:
         if not _groq_client:
             if not _allow_self_fallback:
                 raise RuntimeError("Groq innerhalb einer Fallback-Kette nicht verfügbar (kein Key).")
+            return await _cross_provider_failover_with_tools("groq", messages, system_prompt, tools)
+        if token_guard.is_model_exhausted(f"groq:{self.model_name}"):
+            if not _allow_self_fallback:
+                raise _pinned_provider_failure(
+                    "Groq", self.model_name,
+                    RuntimeError(token_guard.get_exhausted_reason(f"groq:{self.model_name}") or "bekannt nicht verfügbar"),
+                )
             return await _cross_provider_failover_with_tools("groq", messages, system_prompt, tools)
 
         try:
@@ -1413,13 +1465,19 @@ class GroqClient:
             )
         except Exception as e:
             is_rate_limit = _is_rate_limit_error(e)
+            is_auth_error = is_authentication_error(e)
             if is_rate_limit:
                 token_guard.mark_model_exhausted(
                     f"groq:{self.model_name}", f"Groq Rate Limit: {_short_error(e, 200)}",
                     cooldown_seconds=_exhaustion_cooldown_seconds(str(e)),
                 )
+            elif is_auth_error:
+                token_guard.mark_model_exhausted(
+                    f"groq:{self.model_name}", f"Groq Auth-Fehler (ungültiger/abgelehnter API-Key): {_short_error(e, 160)}",
+                    cooldown_seconds=AUTH_FAILURE_COOLDOWN_SECONDS,
+                )
             if not _allow_self_fallback:
-                if is_rate_limit:
+                if is_rate_limit or is_auth_error:
                     raise _pinned_provider_failure("Groq", self.model_name, e) from e
                 raise
             return await _cross_provider_failover_with_tools("groq", messages, system_prompt, tools)
@@ -1478,6 +1536,20 @@ class ClaudeClient:
             if not _allow_self_fallback:
                 raise RuntimeError("Claude innerhalb einer Fallback-Kette nicht verfügbar (kein ANTHROPIC_API_KEY).")
             return await self._free_heavy_fallback_client().generate_with_usage(prompt, system_prompt)
+        # ki_team_verbesserungsanalyse.md, Stufe-0-#1: `self._client` existiert bereits bei jedem
+        # NUR unplausiblen (falschen/widerrufenen) Key - das erfuhr das Team bisher erst beim
+        # ersten echten Aufruf, JEDES MAL neu (jeder frisch instanziierte ClaudeClient prüft nur
+        # `bool(ANTHROPIC_API_KEY)`, siehe __init__). Ein bereits im laufenden Prozess erkannter
+        # Auth-Fehler (siehe except-Zweig unten, `is_authentication_error()`) landet jetzt in
+        # `token_guard` - GENAU wie OpenRouter/DeepSeek es schon lange tun - und wird hier VOR dem
+        # nächsten kostspieligen, garantiert erneut scheiternden Live-Aufruf abgefangen.
+        if token_guard.is_model_exhausted(self.model_name):
+            if not _allow_self_fallback:
+                raise _pinned_provider_failure(
+                    "Claude", self.model_name,
+                    RuntimeError(token_guard.get_exhausted_reason(self.model_name) or "bekannt nicht verfügbar"),
+                )
+            return await self._free_heavy_fallback_client().generate_with_usage(prompt, system_prompt)
 
         messages = [{"role": "user", "content": prompt}]
         kwargs: dict = {
@@ -1521,10 +1593,16 @@ class ClaudeClient:
             )
         except Exception as e:
             is_rate_limit = _is_rate_limit_error(e)
+            is_auth_error = is_authentication_error(e)
             if is_rate_limit:
                 token_guard.mark_model_exhausted(self.model_name, "Claude Rate Limit")
+            elif is_auth_error:
+                token_guard.mark_model_exhausted(
+                    self.model_name, f"Claude Auth-Fehler (ungültiger/abgelehnter API-Key): {_short_error(e, 160)}",
+                    cooldown_seconds=AUTH_FAILURE_COOLDOWN_SECONDS,
+                )
             if not _allow_self_fallback:
-                if is_rate_limit:
+                if is_rate_limit or is_auth_error:
                     raise _pinned_provider_failure("Claude", self.model_name, e) from e
                 raise
             return await self._free_heavy_fallback_client().generate_with_usage(prompt, system_prompt)
@@ -1540,6 +1618,13 @@ class ClaudeClient:
         if not self._client:
             if not _allow_self_fallback:
                 raise RuntimeError("Claude innerhalb einer Fallback-Kette nicht verfügbar (kein ANTHROPIC_API_KEY).")
+            return await self._free_heavy_fallback_client().generate_with_tools(messages, system_prompt, tools)
+        if token_guard.is_model_exhausted(self.model_name):
+            if not _allow_self_fallback:
+                raise _pinned_provider_failure(
+                    "Claude", self.model_name,
+                    RuntimeError(token_guard.get_exhausted_reason(self.model_name) or "bekannt nicht verfügbar"),
+                )
             return await self._free_heavy_fallback_client().generate_with_tools(messages, system_prompt, tools)
 
         anthropic_messages = self._build_anthropic_messages(messages)
@@ -1596,10 +1681,16 @@ class ClaudeClient:
             )
         except Exception as e:
             is_rate_limit = _is_rate_limit_error(e)
+            is_auth_error = is_authentication_error(e)
             if is_rate_limit:
                 token_guard.mark_model_exhausted(self.model_name, "Claude Rate Limit")
+            elif is_auth_error:
+                token_guard.mark_model_exhausted(
+                    self.model_name, f"Claude Auth-Fehler (ungültiger/abgelehnter API-Key): {_short_error(e, 160)}",
+                    cooldown_seconds=AUTH_FAILURE_COOLDOWN_SECONDS,
+                )
             if not _allow_self_fallback:
-                if is_rate_limit:
+                if is_rate_limit or is_auth_error:
                     raise _pinned_provider_failure("Claude", self.model_name, e) from e
                 raise
             return await self._free_heavy_fallback_client().generate_with_tools(messages, system_prompt, tools)

@@ -12,6 +12,15 @@ from datetime import datetime
 
 from config import MEMORY_DIR
 
+# ki_team_verbesserungsanalyse.md, Teil 5.5: `memory/history_default.json` wuchs auf 13,2 MB an,
+# weil hier bisher KEINE Obergrenze existierte - jede einzelne Nutzer-/Assistenten-Nachricht
+# jeder je geführten Sitzung wurde für immer angehängt, und JEDE add_*_message()-Aufruf schrieb
+# die komplette (immer länger werdende) Liste neu auf die Platte. Dieselbe MAX_*_KEPT-Rotation
+# wie memory/run_history.py (MAX_RUNS_KEPT=200) - `get_context_string()` liest ohnehin nur die
+# letzten paar Nachrichten für den Prompt-Kontext, ältere Nachrichten hatten also schon vorher
+# keinen funktionalen Nutzen mehr, nur ungenutztes Gewicht auf der Platte.
+MAX_MESSAGES_KEPT = 200
+
 
 @dataclass
 class ChatMessage:
@@ -36,11 +45,13 @@ class ConversationHistory:
     def add_user_message(self, content: str) -> None:
         """Fügt eine Nutzer-Nachricht hinzu."""
         self._messages.append(ChatMessage(role="user", content=content))
+        self._messages = self._messages[-MAX_MESSAGES_KEPT:]
         self._save_to_disk()
 
     def add_assistant_message(self, content: str) -> None:
         """Fügt eine Assistenten-Nachricht hinzu."""
         self._messages.append(ChatMessage(role="assistant", content=content))
+        self._messages = self._messages[-MAX_MESSAGES_KEPT:]
         self._save_to_disk()
 
     def get_messages(self, max_messages: int = 20) -> list[ChatMessage]:
@@ -106,5 +117,12 @@ class ConversationHistory:
                 )
                 for m in data
             ]
+            # Kompaktiert eine bereits vor MAX_MESSAGES_KEPT gewachsene Datei EINMALIG beim
+            # nächsten Laden, statt erst auf die nächste neue Nachricht zu warten - eine bereits
+            # 13-MB-große Datei würde sonst noch beliebig lange geladen (und jedes Mal neu
+            # geparst) werden, bevor die Obergrenze in add_*_message() überhaupt greift.
+            if len(self._messages) > MAX_MESSAGES_KEPT:
+                self._messages = self._messages[-MAX_MESSAGES_KEPT:]
+                self._save_to_disk()
         except Exception:
             self._messages = []

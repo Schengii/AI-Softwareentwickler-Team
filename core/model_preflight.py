@@ -47,6 +47,17 @@ class TierStatus:
             and not is_same_model(self.effective_model, self.requested_model)
         )
 
+    @property
+    def auth_error(self) -> bool:
+        """True, wenn die Stufe NICHT erreichbar ist UND die Fehlermeldung nach einem
+        ungültigen/abgelehnten API-Key aussieht statt nach fehlendem Key oder Rate-Limit
+        (ki_team_verbesserungsanalyse.md, Stufe-0-#1: 'ist der Key gesetzt' und 'funktioniert der
+        Key' waren bisher dieselbe Frage - der Preflight-Report zeigte beides als identisches
+        generisches '❌ nicht erreichbar', obwohl nur EIN gültiger, echter Live-Ping das
+        unterscheiden kann)."""
+        from core.llm_factory import is_authentication_error
+        return bool(not self.reachable and self.error and is_authentication_error(self.error))
+
 
 async def check_tier(tier: str, model_name: str, timeout_seconds: float = 30.0) -> TierStatus:
     """
@@ -105,7 +116,7 @@ def format_preflight_report(ergebnisse: list[TierStatus]) -> str:
     ]
     for r in ergebnisse:
         if not r.reachable:
-            status = f"❌ nicht erreichbar ({r.error[:40]})"
+            status = f"🔑 ungültiger API-Key ({r.error[:40]})" if r.auth_error else f"❌ nicht erreichbar ({r.error[:40]})"
             tatsaechlich = "–"
         elif r.downgraded:
             status = "⚠️  abgewertet"
@@ -129,6 +140,13 @@ def format_preflight_report(ergebnisse: list[TierStatus]) -> str:
         zeilen.append(
             f"❌ {len(unerreichbar)} Stufe(n) gar nicht erreichbar: "
             + ", ".join(r.tier for r in unerreichbar)
+        )
+    mit_ungueltigem_key = [r for r in unerreichbar if r.auth_error]
+    if mit_ungueltigem_key:
+        zeilen.append(
+            f"🔑 {len(mit_ungueltigem_key)} Stufe(n) lehnen den konfigurierten API-Key ab "
+            "(falsch oder widerrufen, nicht nur fehlend) - Key in .env prüfen/erneuern: "
+            + ", ".join(r.tier for r in mit_ungueltigem_key)
         )
     if abgewertet:
         zeilen.append(

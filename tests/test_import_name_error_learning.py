@@ -1,7 +1,8 @@
 """
 tests/test_import_name_error_learning.py – Testet die gezielte Fix-Dispatch- und
 Selbstlern-Logik für `ImportError: cannot import name 'X' from 'Y'` in
-agents/orchestrator/verification.py.
+agents/orchestrator/failure_diagnosis.py (re-exportiert über agents/orchestrator/verification.py,
+siehe dessen Modul-Docstring - ki_team_verbesserungsanalyse.md, Teil 5.1).
 
 Realer Fund (`workspace/opspilot`): `app/api/auth.py` importierte `create_access_token` aus
 `app/core/security.py`, obwohl die Funktion dort nie definiert war. Der Traceback zeigt bei
@@ -68,7 +69,7 @@ class TestRecordVerificationLearning(unittest.TestCase):
 
     def test_persists_a_concrete_rule_for_the_backend_agent(self):
         kb = AgentKnowledgeBase(file_path=self.kb_file)
-        with patch("agents.orchestrator.verification.agent_knowledge_base", kb):
+        with patch("agents.orchestrator.failure_diagnosis.agent_knowledge_base", kb):
             _record_verification_learning(
                 "ImportError: cannot import name 'create_access_token' from 'app.core.security'"
             )
@@ -79,7 +80,7 @@ class TestRecordVerificationLearning(unittest.TestCase):
 
     def test_does_nothing_for_unrelated_message(self):
         kb = AgentKnowledgeBase(file_path=self.kb_file)
-        with patch("agents.orchestrator.verification.agent_knowledge_base", kb):
+        with patch("agents.orchestrator.failure_diagnosis.agent_knowledge_base", kb):
             _record_verification_learning("AssertionError: 3 != 4")
         self.assertEqual(kb.get_learnings("backend"), [])
 

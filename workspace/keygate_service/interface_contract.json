@@ -1,0 +1,10 @@
+{
+  "base_path": "/api/v1",
+  "endpoints": [
+    {"method": "POST", "path": "/api/v1/keys", "auth": "admin", "request": "ApiKeyCreateRequest", "response": "ApiKeyCreateResponse", "note": "full_key nur einmalig in Response"},
+    {"method": "GET", "path": "/api/v1/keys", "auth": "admin", "response": "list[ApiKeyPublic]"},
+    {"method": "GET", "path": "/api/v1/keys/{key_prefix}", "auth": "admin", "response": "ApiKeyPublic"},
+    {"method": "DELETE", "path": "/api/v1/keys/{key_prefix}", "auth": "admin", "response": "204"},
+    {"method": "POST", "path": "/api/v1/verify", "auth": "header:X-API-Key", "response": "VerifyResponse", "note": "Hot Path, <10ms Ziel"}
+  ]
+}

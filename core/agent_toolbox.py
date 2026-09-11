@@ -17,6 +17,7 @@ Alle Datei-Operationen sind strikt auf project_dir beschränkt (kein Directory
 Traversal), und run_command ist auf eine Sicherheits-Whitelist begrenzt.
 """
 
+import ast
 import fnmatch
 import os
 import shlex
@@ -27,6 +28,7 @@ from typing import Any
 from core.code_sandbox import CodeSandbox
 from core.dependency_manifest import add_requirement
 from core.docker_sandbox import DockerSandbox
+from core.failure_triage import is_local_module, is_test_file, module_to_file, read_module_interface
 from core.write_guard import check_contract_preserved, check_write_scope, content_digest, file_versions
 
 # Befehle, die Projektcode ausführen und deshalb bei aktiver Docker-Sandbox im Container laufen.
@@ -419,6 +421,52 @@ class AgentToolbox:
             "Zeichen ('\\\\n', '\\\\\"') statt als echte Escape-Sequenzen im Inhalt gelandet sind."
         )
 
+    def _check_test_import_phantoms(self, path: str, content: str) -> str | None:
+        """Gibt eine Warnung zurück (kein Schreibschutz), wenn eine gerade geschriebene Testdatei
+        ein Symbol aus einem lokalen Projektmodul importiert, das dort laut echtem Code gar nicht
+        exportiert wird - realer Fund (vaultguard-Projekt): der tester-Agent erfand
+        `from app.core.encryption import encrypt`, obwohl das Modul nur `EncryptionService.encrypt()`
+        als Methode anbot; pytest brach beim Einsammeln mit ImportError ab. Nutzt dieselbe AST-
+        Modul-Oberflächen-Analyse wie der Fix-Loop (core/failure_triage.py), aber PROAKTIV vor dem
+        Speichern statt erst nach einem roten Testlauf. Bewusst nur eine Warnung im Ergebnis-Dict
+        (kein "error"): False Positives (z. B. bedingte Re-Exports über `__init__.py`, dynamisch
+        gesetzte Attribute) dürfen den Tester nicht am Speichern hindern, nur darauf hinweisen."""
+        if not path.lower().endswith(".py") or not is_test_file(path):
+            return None
+        try:
+            tree = ast.parse(content or "")
+        except (SyntaxError, ValueError):
+            return None  # eigenständige Syntaxprüfung übernimmt bereits _reject_if_invalid_python
+        problems: list[str] = []
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.ImportFrom) and node.module and node.level == 0):
+                continue
+            module = node.module
+            if not is_local_module(module, self.project_dir):
+                continue
+            provider = module_to_file(module, self.project_dir, set())
+            if provider is None:
+                continue
+            interface = read_module_interface(self.project_dir / provider)
+            if interface is None:
+                continue
+            for alias in node.names:
+                name = alias.name
+                if name == "*" or name in interface.exports:
+                    continue
+                if name in interface.methods:
+                    problems.append(
+                        f"'{name}' ist in '{provider}' keine Modulfunktion, sondern eine Methode "
+                        f"von '{interface.methods[name]}' - importiere die Klasse und rufe die Methode "
+                        "auf einer Instanz auf."
+                    )
+                else:
+                    known = ", ".join(sorted(n for n in interface.exports if not n.startswith("_"))[:8])
+                    problems.append(f"'{name}' existiert nicht in '{provider}' (vorhanden: {known or 'nichts Öffentliches'})")
+        if not problems:
+            return None
+        return "⚠️ Mögliches Phantomsymbol – prüfe mit read_file, ob der Import zur echten Schnittstelle passt: " + "; ".join(problems)
+
     @staticmethod
     def _reject_if_corrupted_manifest(path: str, content: str) -> str | None:
         """Gibt eine Fehlermeldung zurück, wenn `path` ein Dependency-Manifest (requirements.txt,
@@ -508,8 +556,10 @@ class AgentToolbox:
         target.write_text(new_content, encoding="utf-8")
         self._remember_write(target, clean_rel, new_content)
         result = {"path": clean_rel, "bytes_written": len(new_content.encode("utf-8")), "status": "ok"}
-        if sanitize_note:
-            result["warning"] = sanitize_note
+        phantom_note = self._check_test_import_phantoms(clean_rel, new_content)
+        warning = " ".join(w for w in (sanitize_note, phantom_note) if w)
+        if warning:
+            result["warning"] = warning
         return result
 
     async def _tool_add_dependency(self, package: str, manifest: str = "requirements.txt") -> dict:
@@ -583,8 +633,10 @@ class AgentToolbox:
         target.write_text(updated, encoding="utf-8")
         self._remember_write(target, clean_rel, updated)
         result = {"path": clean_rel, "status": "ok"}
-        if sanitize_note:
-            result["warning"] = sanitize_note
+        phantom_note = self._check_test_import_phantoms(clean_rel, updated)
+        warning = " ".join(w for w in (sanitize_note, phantom_note) if w)
+        if warning:
+            result["warning"] = warning
         return result
 
     async def _tool_patch_file(self, path: str, patch: str) -> dict:

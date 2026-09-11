@@ -1,0 +1,11 @@
+[
+  {
+    "timestamp": "2026-09-10T18:45:56+00:00",
+    "task_summary": "FastAPI API-Key-Service mit Token-Bucket-Rate-Limiting erstellt",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 5,
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 🧪 Keine Testdateien (test_*.py), kein npm-Test-Skript und kein Rust/Go-Projekt gefunden – Verifikation übersprungen. → tester beauftragt, eine echte Testsuite nachzuliefern.\n- ⚠️ Keine Testdateien (test_*.py), kein npm-Test-Skript und kein Rust/Go-Projekt gefunden – Verifikation übersprungen. Generierter Code wurde NICHT automatisch verifiziert.\n- 🐳 ⏭️ Docker-Daemon lokal nicht erreichbar (z.B. Docker Desktop nicht "
+  }
+]

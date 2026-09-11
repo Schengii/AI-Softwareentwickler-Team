@@ -215,7 +215,7 @@ class TestCodeInTextWithoutFileWriteRetry(unittest.TestCase):
         self.assertEqual(result.files_written, ["app.py"])
         self.assertEqual(fake_llm.call_count, 3)
         retry_messages_text = " ".join(m.text for m in fake_llm.seen_messages[1])
-        self.assertIn("KEINE Datei", retry_messages_text)
+        self.assertIn("keine einzige Datei", retry_messages_text)
 
     def test_plain_text_summary_without_code_fence_is_not_retried(self):
         fake_llm = _ScriptedLLM([_final_response("Ich habe app.py erstellt und getestet.")])
@@ -261,7 +261,11 @@ class TestCodeInTextWithoutFileWriteRetry(unittest.TestCase):
         self.assertTrue(result.success, result.error)
         self.assertEqual(fake_llm.call_count, 1)
 
-    def test_only_one_retry_even_if_agent_still_writes_no_file(self):
+    def test_only_one_retry_then_hard_delivery_gate_fails_the_step(self):
+        """Hard Delivery Gate (KI-Team-Härtung, echter Fund keygate_service-Lauf): ignoriert der
+        Agent den EINEN Korrektur-Retry und liefert weiterhin keine Datei, gilt der Schritt NICHT
+        mehr als success=True (sonst verpufft der Tokenverbrauch unbemerkt) - nur EIN Retry wird
+        gewährt, kein zweiter."""
         fake_llm = _ScriptedLLM([
             _final_response("Erster Versuch:\n```python\nprint('a')\n```"),
             _final_response("Zweiter Versuch, ignoriert den Hinweis:\n```python\nprint('b')\n```"),
@@ -273,7 +277,8 @@ class TestCodeInTextWithoutFileWriteRetry(unittest.TestCase):
 
         result = asyncio.run(agent.execute(task))
 
-        self.assertTrue(result.success, result.error)
+        self.assertFalse(result.success)
+        self.assertIn("Hard Delivery Gate", result.error)
         self.assertEqual(fake_llm.call_count, 2)  # nur EIN Retry, kein zweiter trotz erneut fehlender Datei
         self.assertEqual(result.files_written, [])
 
@@ -288,6 +293,47 @@ class TestCodeInTextWithoutFileWriteRetry(unittest.TestCase):
 
         self.assertTrue(result.success, result.error)
         self.assertEqual(fake_llm.call_count, 1)  # max_tool_iterations=1 -> keine Iteration für einen Retry übrig
+
+    def test_read_only_task_never_triggers_the_hard_delivery_gate(self):
+        """Ein Nur-Lese-Auftrag (task.tools_read_only=True, z.B. Governance-Fix-Schleife) darf mit
+        0 geschriebenen Dateien NIE als Ghost-Code gewertet werden, selbst wenn die Antwort einen
+        Code-Fence enthält (z. B. ein zitierter Ausschnitt in einem Befund-Bericht) - das ist dort
+        der gewollte Normalfall, nicht abweichendes Verhalten."""
+        fake_llm = _ScriptedLLM([_final_response("Befund:\n```python\nprint('kaputt')\n```")])
+        agent = BackendAgent()
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="backend", description="Prüfe den Stand",
+                          project_dir=self.temp_dir, tools_read_only=True, max_tool_iterations=5)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(fake_llm.call_count, 1)  # kein Retry, kein Hard-Fail trotz 0 Dateien
+
+    def test_pending_clarification_request_never_triggers_the_hard_delivery_gate(self):
+        """Eine echte Rückfrage mitten in der Aufgabe (ask_human_for_clarification) ist ein
+        legitimer Abschluss ohne Datei, KEIN Ghost-Code - toolbox.clarification_requests schließt
+        den Gate deshalb explizit aus, selbst wenn die Antwort zufällig einen Code-Fence enthält."""
+        clarify_call = LLMResponse(
+            text="", model_name="fake-model", prompt_tokens=10, completion_tokens=5, total_tokens=15,
+            tool_calls=[ToolCall(id="c1", name="ask_human_for_clarification", arguments={
+                "question": "JWT oder Session-Cookie?", "context": "Auftrag nennt beides.",
+            })],
+        )
+        fake_llm = _ScriptedLLM([
+            clarify_call,
+            _final_response("Beispielhafter Ansatz:\n```python\nprint('todo')\n```\nRückfrage siehe oben."),
+        ])
+        agent = BackendAgent()
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="backend", description="Baue Login-Endpunkt",
+                          project_dir=self.temp_dir, max_tool_iterations=5)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success, result.error)
+        self.assertTrue(result.needs_human_input)
+        self.assertEqual(fake_llm.call_count, 2)  # kein zusätzlicher Retry trotz Code-Fence
 
 
 class TestArchitectAdrCallRetry(unittest.TestCase):

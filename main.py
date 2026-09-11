@@ -77,10 +77,18 @@ def main():
         import asyncio
 
         from core.model_preflight import format_preflight_report, run_model_preflight
+        from core.provider_budget import format_budget_report
+        from core.token_guard import token_guard
 
         print("🔎 Prüfe die tatsächliche Verfügbarkeit aller Modell-Stufen ...\n")
         ergebnisse = asyncio.run(run_model_preflight())
         print(format_preflight_report(ergebnisse))
+        # Provider-Budget-Awareness (ki_team_verbesserungsanalyse.md, Teil 4.1/6-Stufe0-#3):
+        # Die Preflight-Pings selbst zählen bereits als Calls in token_guard - eine erste,
+        # grobe Einordnung, wie viel vom bekannten Tageskontingent bereits verbraucht ist.
+        budget_report = format_budget_report(token_guard)
+        if budget_report:
+            print(budget_report)
         return
 
     if "--list-evals" in sys.argv:

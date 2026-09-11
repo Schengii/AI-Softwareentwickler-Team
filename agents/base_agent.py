@@ -22,7 +22,7 @@ from core.agent_toolbox import AgentToolbox
 from core.llm_factory import AgentMessage, GeminiClient, LLMFactory, LLMResponse
 from core.message_bus import AgentResult, AgentTask
 from core.model_capability import min_tier_for_agent, pop_capability_floor, push_capability_floor
-from core.provider_exhaustion import classify_failure, is_infrastructure_failure
+from core.provider_exhaustion import FAILURE_CLASS_AGENT_ERROR, classify_failure, is_infrastructure_failure
 
 # Realer Fund aus einem echten Lauf: Groq (häufig der Fallback für HEAVY-Rollen ohne
 # ANTHROPIC_API_KEY, siehe config.py) lehnte einen rein lesenden Konsolidierungs-Aufruf
@@ -117,11 +117,12 @@ class BaseAgent(ABC):
             #
             # Jetzt: Basis-Prompt + Werkzeug-Anweisungen (beide über viele Läufe hinweg
             # bytegleich) bilden das stabile Präfix, die Learnings hängen hinten an.
+            hard_delivery_gate_failed = False
             if use_tools:
                 toolbox = AgentToolbox(project_dir=task.project_dir, agent_id=self.agent_id, read_only=task.tools_read_only)
                 stable_prompt = self._augment_with_tool_instructions(self.system_prompt, read_only=task.tools_read_only)
                 effective_system_prompt = agent_knowledge_base.get_augmented_prompt(self.agent_id, stable_prompt)
-                response, prompt_tokens, completion_tokens = await self._run_agentic_loop(
+                response, prompt_tokens, completion_tokens, hard_delivery_gate_failed = await self._run_agentic_loop(
                     task=task, toolbox=toolbox, system_prompt=effective_system_prompt,
                 )
             else:
@@ -135,6 +136,35 @@ class BaseAgent(ABC):
                 prompt_tokens, completion_tokens = response.prompt_tokens, response.completion_tokens
 
             duration = time.monotonic() - start_time
+            # Hard Delivery Gate (KI-Team-Härtung, echter Fund keygate_service-Lauf): ein
+            # Code-schreibender Agent, der trotz des expliziten Korrektur-Retries in
+            # _run_agentic_loop() KEINE einzige Datei speichert, gilt NIEMALS als success=True -
+            # sonst verpufft der komplette Tokenverbrauch unbemerkt und der Orchestrator hält den
+            # Schritt für "Fertig!". success=False lässt den Step wie jeden anderen echten
+            # Agentenfehler in die reguläre Eskalation/den Fix-Loop laufen (siehe
+            # agents/orchestrator/verification.py), statt separat behandelt werden zu müssen.
+            if hard_delivery_gate_failed:
+                return AgentResult(
+                    task_id=task.task_id,
+                    agent_id=self.agent_id,
+                    agent_name=self.name,
+                    success=False,
+                    content=response.text,
+                    error=(
+                        "Hard Delivery Gate: Agent hat trotz Korrektur-Hinweis keine einzige Datei "
+                        "über write_file/edit_file gespeichert - der Tokenverbrauch ist verpufft."
+                    ),
+                    duration_seconds=duration,
+                    model_used=response.model_name,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=prompt_tokens + completion_tokens,
+                    files_written=[],
+                    tool_calls_count=toolbox.call_count if toolbox else 0,
+                    failure_class=FAILURE_CLASS_AGENT_ERROR,
+                    needs_human_input=bool(toolbox and toolbox.clarification_requests),
+                    clarification_questions=list(toolbox.clarification_requests) if toolbox else [],
+                )
             return AgentResult(
                 task_id=task.task_id,
                 agent_id=self.agent_id,
@@ -186,7 +216,7 @@ class BaseAgent(ABC):
         task: AgentTask,
         toolbox: AgentToolbox,
         system_prompt: str,
-    ) -> tuple[LLMResponse, int, int]:
+    ) -> tuple[LLMResponse, int, int, bool]:
         """
         Der echte Werkzeug-Loop: Modell antwortet entweder mit finalem Text ODER
         mit angeforderten Werkzeug-Aufrufen. Werkzeug-Aufrufe werden ausgeführt,
@@ -235,6 +265,7 @@ class BaseAgent(ABC):
         disallowed_tool_call_retry_used = False
         no_file_written_retry_used = False
         no_adr_call_retry_used = False
+        hard_delivery_gate_failed = False
 
         for iteration in range(1, max_iterations + 1):
             if iteration == max_iterations and max_iterations > 1:
@@ -301,28 +332,35 @@ class BaseAgent(ABC):
                     and not no_file_written_retry_used
                     and self.agent_id in CODE_WRITING_AGENT_IDS
                     and not toolbox.files_written
+                    and not task.tools_read_only
+                    and not toolbox.clarification_requests
                     and "```" in response.text
                 ):
-                    # Realer Fund aus einem echten End-to-End-Testlauf: mehrere Code-schreibende
-                    # Agenten lieferten fertigen Code AUSSCHLIESSLICH im Antworttext statt über
-                    # write_file/edit_file (trotz expliziter Anweisung in
-                    # _augment_with_tool_instructions unten) – zusammen ~48.000 Tokens verpufft,
-                    # ohne dass etwas Nutzbares im Projekt ankam (siehe CODE_WRITING_AGENT_IDS).
-                    # Der Regex-Text-Fallback (core/workspace.py.parse_and_save_files(), siehe
-                    # agents/orchestrator.py) fängt das NICHT zuverlässig auf, wenn der Code ohne
-                    # erkennbaren Dateipfad-Marker im Fließtext steht. EIN gezielter
-                    # Korrektur-Hinweis statt die Antwort unkorrigiert zu akzeptieren – Code
-                    # gefunden (Fence-Marker "```"), aber toolbox.files_written ist über die
-                    # GESAMTE bisherige Aufgabe leer.
+                    # "Hard Delivery Gate" (KI-Team-Härtung, echter Fund keygate_service-Lauf:
+                    # backend/database/tester verbrauchten 400k+ Tokens, meldeten success=True,
+                    # aber toolbox.files_written blieb über die GESAMTE Aufgabe leer – das Projekt
+                    # schloss ohne main.py/Tests ab). Bewusst weiterhin NUR das Fence-Signal
+                    # ("```" im Abschlusstext, echter Beleg für "Code existiert, wurde aber nicht
+                    # gespeichert") statt zusätzlich jeden reinen Werkzeugaufruf ohne Schreibung zu
+                    # verdächtigen: ein erster Versuch, JEDEN `toolbox.call_count > 0` ohne Datei
+                    # als Ghost-Code zu werten, schlug in genau dieser Testsuite zweimal fehl
+                    # (`ask_human_for_clarification` als legitimer Zwischenstopp, ein einzelner
+                    # `list_files`-Aufruf vor einer reinen Text-Zusammenfassung) – beides echte,
+                    # gewollte Abschlüsse ohne Datei. `not task.tools_read_only` schließt zusätzlich
+                    # legitime Nur-Lese-Aufträge aus (z. B. Governance-Fix-Schleife), `not
+                    # toolbox.clarification_requests` legitime Rückfragen mitten in der Aufgabe.
+                    # EIN gezielter Korrektur-Hinweis statt die Antwort unkorrigiert zu
+                    # akzeptieren; bleibt es dabei, eskaliert der Post-Loop-Gate unten in
+                    # execute() zu success=False, statt den Fehlschlag als "Fertig!" zu verkaufen.
                     no_file_written_retry_used = True
                     turns.append(AgentMessage(role="assistant", text=response.text, tool_calls=[]))
                     turns.append(AgentMessage(
                         role="user",
                         text=(
-                            "Deine Antwort enthält Code, aber du hast noch KEINE Datei über "
-                            "write_file/edit_file gespeichert. Rufe JETZT für jede Datei, die du "
-                            "gerade beschrieben hast, das passende Werkzeug auf – erst danach "
-                            "eine kurze Abschlusszusammenfassung ohne erneuten Code."
+                            "FEHLER: Du bist ein Code-schreibender Agent, hast aber keine einzige "
+                            "Datei über write_file/edit_file gespeichert. Dein Code verpufft! "
+                            "Speichere den Code jetzt zwingend mit write_file/edit_file – erst "
+                            "danach eine kurze Abschlusszusammenfassung."
                         ),
                     ))
                     continue
@@ -359,6 +397,19 @@ class BaseAgent(ABC):
                         ),
                     ))
                     continue
+                if (
+                    self.agent_id in CODE_WRITING_AGENT_IDS
+                    and not toolbox.files_written
+                    and not task.tools_read_only
+                    and not toolbox.clarification_requests
+                    and no_file_written_retry_used
+                ):
+                    # Hard Delivery Gate, zweite Stufe: der obige Korrektur-Hinweis wurde bereits
+                    # EINMAL gegeben (no_file_written_retry_used) und der Agent liefert trotzdem
+                    # keine einzige Datei - execute() unten wertet das NIEMALS als success=True,
+                    # damit der Orchestrator sofort eskaliert statt den DoD-Fehler erst Minuten
+                    # später über einen leeren `git status` zu bemerken.
+                    hard_delivery_gate_failed = True
                 break
 
             turns.append(AgentMessage(role="assistant", text=response.text, tool_calls=response.tool_calls))
@@ -372,7 +423,7 @@ class BaseAgent(ABC):
                 ))
 
         assert response is not None
-        return response, total_prompt_tokens, total_completion_tokens
+        return response, total_prompt_tokens, total_completion_tokens, hard_delivery_gate_failed
 
     def _augment_with_tool_instructions(self, system_prompt: str, read_only: bool = False) -> str:
         # Realer Fund aus einem echten Lauf: der architect-Agent wird vom Hauptagenten bei

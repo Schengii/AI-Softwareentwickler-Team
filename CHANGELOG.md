@@ -7,6 +7,58 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Ungültige API-Keys, aufgeblähte Verlaufs-Historie, monolithische Verifikations-Datei
+
+Aus `ki_team_verbesserungsanalyse.md` (Stufe-0-#1 sowie Teil 5.1/5.5, 10.09.2026) – drei
+verbliebene, unabhängig verifizierte Lücken nach einer erneuten Bestandsaufnahme (die dabei
+auch zeigte, dass mehrere andere dort als "offen" gelistete Punkte, z.B. das harte
+Capability-Floor-Gate, das Provider-Budget-Gate vor echten Läufen via `core/capacity_gate.py`
+und `AGENT_MODEL_ENV_KEYS`, bereits umgesetzt waren):
+
+- **Provider-Key-Validität statt nur -Existenz** (`core/llm_factory.py`): `_provider_available()`
+  prüfte für Claude/Groq bisher nur `bool(API_KEY)`, nie ob der Key tatsächlich funktioniert –
+  ein ungültiger/widerrufener Key scheiterte dadurch bei JEDEM neuen Agenten erneut live gegen
+  die echte API, statt sich die erste Ablehnung zu merken (anders als OpenRouter/DeepSeek, die
+  einen 401 bereits erkannten). Neu: `is_authentication_error()` erkennt Auth-Fehler getrennt von
+  Rate-Limits, markiert das Modell mit einem 24h-Cooldown (`AUTH_FAILURE_COOLDOWN_SECONDS`) in
+  `token_guard` und ein Pre-Check in `ClaudeClient`/`GroqClient` überspringt danach den
+  aussichtslosen Live-Versuch. `core/model_preflight.py` zeigt einen ungültigen Key jetzt
+  separat (`🔑 ungültiger API-Key`) statt generisch `❌ nicht erreichbar`.
+- **`memory/history_default.json` wuchs auf 13,2 MB an** (`memory/conversation_history.py`):
+  `ConversationHistory` kannte – anders als `memory/run_history.py.MAX_RUNS_KEPT` – KEINE
+  Obergrenze; jede Nachricht jeder je geführten Sitzung wurde für immer angehängt und bei jedem
+  `add_*_message()` komplett neu auf Platte geschrieben. Neu: `MAX_MESSAGES_KEPT = 200`, sowohl
+  beim Speichern als auch einmalig beim Laden einer bereits überlangen Datei (sofort persistiert,
+  nicht erst bei der nächsten Nachricht) – die reale Datei schrumpfte dadurch auf 741 KB.
+- **`agents/orchestrator/verification.py` (193 KB, größte Einzeldatei) aufgeteilt**: die rein
+  zustandslosen Diagnose-/Owner-Routing-Funktionen (kein Zugriff auf Orchestrator-Zustand) leben
+  jetzt in `agents/orchestrator/failure_diagnosis.py` (450 Zeilen); `verification.py` re-exportiert
+  sie unverändert, bestehende Importe (u.a. mehrere Tests) mussten bis auf einen
+  `unittest.mock.patch`-Zielpfad (`agent_knowledge_base` folgt dem Code in sein neues Modul, siehe
+  `tests/test_import_name_error_learning.py`) nicht angepasst werden. 2853 → 2448 Zeilen.
+
+---
+
+## 🟢 Provider-Budget-Awareness
+
+Aus `ki_team_verbesserungsanalyse.md` (Teil 2/P2, 10.09.2026): Läufe scheiterten wiederholt
+daran, dass das Team blind gegen bereits erschöpfte Free-Tier-Kontingente anlief (z.B.
+`gemini-3.8-flash`: 20 Calls/Tag), bevor die tatsächlich funktionierende Fallback-Stufe
+(`gemini-3.1-flash-lite`) erreicht wurde – ohne dass vorher irgendwo sichtbar war, wie knapp
+das bekannte Tageskontingent bereits ist.
+
+- `core/provider_budget.py` (neu): `KNOWN_FREE_TIER_DAILY_LIMITS` mit den aus echten Läufen
+  bekannten Kontingenten, vergleicht sie mit den in `core/token_guard.py` bereits gezählten
+  Calls des laufenden Prozesses und markiert Modelle ab 80% Auslastung als kritisch.
+- `python main.py --check-models` zeigt nach dem Modell-Preflight jetzt zusätzlich einen
+  Budget-Bericht (`format_budget_report`), wenn mindestens eines der bekannten Free-Tier-
+  Modelle bereits benutzt wurde.
+- Bewusst kein Persistenz-Layer über Prozessgrenzen hinweg – die Zahlen sind eine grobe,
+  proaktive Heuristik für den laufenden Prozess, keine exakte, providerseitig garantierte
+  Buchführung; die reale 429-Antwort bleibt die verbindliche Quelle der Wahrheit.
+
+---
+
 ## 🔴 Contract First, strukturelle Fehler-Triage und Modell-Mindeststufe
 
 Vier systemische Fehlerbilder aus den vaultguard-/logipulse-Läufen: Interface-Drift zwischen

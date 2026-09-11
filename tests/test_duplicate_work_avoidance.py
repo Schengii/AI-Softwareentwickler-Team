@@ -55,7 +55,13 @@ class TestExistingFilesInjectedIntoPrompt(unittest.TestCase):
         fake_llm = _CapturingFakeLLM()
         agent._llm = fake_llm
 
-        task = AgentTask(task_id="t1", agent_id="backend", description="Schreibe Tests für den Health-Check", project_dir=self.temp_dir)
+        # tools_read_only=True: dieser Test prüft ausschließlich die Prompt-Injektion des
+        # Dateibaums, keine tatsächliche Datei-Lieferung - der Fake-LLM oben antwortet immer
+        # sofort mit reinem Text ohne write_file-Aufruf. Ohne das würde das Hard Delivery Gate
+        # (agents/base_agent.py, seit der pulseflow_gateway-Härtung unabhängig von einem
+        # Code-Fence im Text) das als Ghost-Code werten.
+        task = AgentTask(task_id="t1", agent_id="backend", description="Schreibe Tests für den Health-Check",
+                          project_dir=self.temp_dir, tools_read_only=True)
         result = asyncio.run(agent.execute(task))
 
         self.assertTrue(result.success)

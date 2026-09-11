@@ -317,6 +317,40 @@ def find_structural_scope_questions(questions: list[str]) -> list[str]:
     return [q for q in questions if q.strip() and _STRUCTURAL_SCOPE_RE.search(q)]
 
 
+# Realer Fund (pulseflow_gateway-Retrospektive, 20260911_095217): ein Governance-Befund zu
+# "fehlendem Einstiegspunkt/fehlender Kern-Implementierung" zitierte in Backticks NUR bereits
+# vorhandene BELEG-Dateien (README.md, requirements.txt) statt der fehlenden Zieldatei selbst -
+# die reguläre Backtick-Suche unten routete den Fix dadurch an die tatsächlichen Owner DIESER
+# Beleg-Dateien (readme, data_engineer), die das strukturelle Problem gar nicht lösen können.
+# Das erzeugte einen 5-fachen Ping-Pong zwischen Reviewer und Compliance (400k Tokens
+# verschwendet), bevor der Lauf schließlich am Budget scheiterte. Ein Befund über einen
+# fehlenden Einstiegspunkt/fehlende API-Routen/fehlende Server-Datei geht deshalb IMMER
+# deterministisch an backend (bzw. frontend bei einem erkennbaren UI-Befund) - unabhängig
+# davon, welche Datei im Fund-Text zufällig zitiert wird.
+_MISSING_ENTRYPOINT_RE = re.compile(
+    r"(fehlend\w*|fehlt\w*|kein\w*|missing|\bno\b)[^.]{0,30}?"
+    r"(einstiegspunkt|entry.?point|api.?route\w*|server.?datei\w*|hauptdatei|"
+    r"kern.?implementierung|core.?implementation|anwendungscode|application\s+code)"
+    r"|(main\.py|app\.py|run\.py)\s+(fehlt|existiert\s+nicht|wurde\s+nie\s+angelegt|is\s+missing)"
+    r"|kein(e)?\s+(einzige\s+)?zeile\s+(anwendungs)?code",
+    re.IGNORECASE,
+)
+_UI_HINT_RE = re.compile(r"frontend|\bui\b|oberfl[äa]che|react|vue|index\.html", re.IGNORECASE)
+
+
+def _deterministic_entrypoint_owner(text: str) -> str | None:
+    """
+    Erzwingt backend (bzw. frontend bei einem UI-Befund) als Owner für Governance-Befunde über
+    fehlenden Anwendungscode/Einstiegspunkt - siehe Modul-Kommentar oberhalb dieser Funktion für
+    den realen Fund, der diese Vorrangregel motiviert. Gibt None zurück, wenn der Fund-Text
+    keinem der bekannten Entrypoint-Muster entspricht - dann greift die reguläre, backtick-
+    basierte Zuordnung in route_findings_to_owners() unverändert.
+    """
+    if not _MISSING_ENTRYPOINT_RE.search(text):
+        return None
+    return "frontend" if _UI_HINT_RE.search(text) else "backend"
+
+
 def route_findings_to_owners(
     findings: list[tuple[str, str]], file_owners: dict[str, str],
 ) -> tuple[dict[str, list[str]], list[str]]:
@@ -331,13 +365,17 @@ def route_findings_to_owners(
     - unrouted: Fund-Texte OHNE eindeutig zuordenbaren Datei-Owner - kein stiller Verlust,
       werden vom Aufrufer (agents/orchestrator.py._run_governance_fix_loop) als "braucht
       manuelle Prüfung" protokolliert statt verworfen.
+
+    Ein Befund über einen fehlenden Einstiegspunkt/fehlende Kern-Implementierung wird VOR der
+    Backtick-Suche deterministisch an backend/frontend geroutet (siehe
+    `_deterministic_entrypoint_owner`) - niemals an readme oder einen anderen Doku-/Daten-Agenten.
     """
     agents_to_fix: dict[str, list[str]] = {}
     unrouted: list[str] = []
 
     for source_role, text in findings:
-        owner = None
-        for candidate in _BACKTICK_PATH_RE.findall(text):
+        owner = _deterministic_entrypoint_owner(text)
+        for candidate in [] if owner else _BACKTICK_PATH_RE.findall(text):
             candidate = candidate.strip().replace("\\", "/")
             if not _PATH_LIKE_RE.match(candidate):
                 continue

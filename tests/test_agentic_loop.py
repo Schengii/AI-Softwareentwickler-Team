@@ -155,7 +155,13 @@ class TestAgenticToolLoop(unittest.TestCase):
 
         agent = BackendAgent()
         agent._llm = primary
-        task = AgentTask(task_id="t4", agent_id="backend", description="Pin-Test", project_dir=self.temp_dir)
+        # tools_read_only=True: dieser Test prüft ausschließlich das Provider-Pinning über
+        # mehrere Iterationen, keine Datei-Lieferung - ohne das würde das Hard Delivery Gate
+        # (agents/base_agent.py, seit der pulseflow_gateway-Härtung unabhängig von einem
+        # Code-Fence im Text) den Test-Stub fälschlich als Ghost-Code werten, weil er absichtlich
+        # nie write_file aufruft.
+        task = AgentTask(task_id="t4", agent_id="backend", description="Pin-Test",
+                          project_dir=self.temp_dir, tools_read_only=True)
 
         with patch("agents.base_agent.LLMFactory.create_for_model", return_value=_PinnedGroqStub()):
             result = asyncio.run(agent.execute(task))

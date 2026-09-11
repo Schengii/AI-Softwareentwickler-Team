@@ -164,6 +164,35 @@ class TestRouteFindingsToOwners(unittest.TestCase):
         self.assertEqual(len(agents_to_fix["backend"]), 2)
         self.assertEqual(unrouted, [])
 
+    def test_missing_entrypoint_finding_routes_to_backend_not_readme(self):
+        """Realer Fund (pulseflow_gateway, 20260911_095217): der Befund zitierte in Backticks nur
+        `README.md` und `requirements.txt` (Beleg-Dateien, bereits von readme/data_engineer
+        geschrieben) - der eigentlich fehlende Einstiegspunkt (main.py) existierte nie und konnte
+        deshalb nie in file_owners auftauchen. Das darf NICHT dazu führen, dass readme/
+        data_engineer mit dem Fix beauftragt werden."""
+        file_owners = {"README.md": "readme", "requirements.txt": "data_engineer"}
+        findings = [(
+            "compliance",
+            "Kritisch: Es fehlt ein Einstiegspunkt für die API - `README.md` beschreibt "
+            "Endpunkte, die im Code nirgends implementiert sind, siehe `requirements.txt`.",
+        )]
+
+        agents_to_fix, unrouted = route_findings_to_owners(findings, file_owners)
+
+        self.assertIn("backend", agents_to_fix)
+        self.assertNotIn("readme", agents_to_fix)
+        self.assertNotIn("data_engineer", agents_to_fix)
+        self.assertEqual(unrouted, [])
+
+    def test_missing_entrypoint_finding_with_ui_hint_routes_to_frontend(self):
+        file_owners = {"README.md": "readme"}
+        findings = [("code_reviewer", "Kein Frontend-Einstiegspunkt vorhanden, `index.html` fehlt komplett.")]
+
+        agents_to_fix, _unrouted = route_findings_to_owners(findings, file_owners)
+
+        self.assertIn("frontend", agents_to_fix)
+        self.assertNotIn("readme", agents_to_fix)
+
 
 class TestFindPermissionBlockedQuestions(unittest.TestCase):
     """

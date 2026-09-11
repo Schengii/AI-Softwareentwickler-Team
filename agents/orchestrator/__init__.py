@@ -1142,6 +1142,7 @@ class Orchestrator(
                 tests_ran=verification_ok or "Testlauf" in (verification_summary or ""),
                 tests_passed=verification_ok,
                 verification_skipped=bool(budget_aborted or manually_cancelled),
+                user_request=user_request,
             )
             write_definition_of_done(project_dir, self.last_definition_of_done)
             if self._run_logger is not None:
@@ -1180,6 +1181,7 @@ class Orchestrator(
                 retro_content=retro_result.content if retro_result else "",
                 verification_ok=verification_ok,
                 verification_summary=verification_summary,
+                definition_of_done=self.last_definition_of_done,
             )
 
         stats_table = self._build_metrics_summary(

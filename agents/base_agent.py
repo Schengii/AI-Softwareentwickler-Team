@@ -334,24 +334,24 @@ class BaseAgent(ABC):
                     and not toolbox.files_written
                     and not task.tools_read_only
                     and not toolbox.clarification_requests
-                    and "```" in response.text
                 ):
                     # "Hard Delivery Gate" (KI-Team-Härtung, echter Fund keygate_service-Lauf:
                     # backend/database/tester verbrauchten 400k+ Tokens, meldeten success=True,
                     # aber toolbox.files_written blieb über die GESAMTE Aufgabe leer – das Projekt
-                    # schloss ohne main.py/Tests ab). Bewusst weiterhin NUR das Fence-Signal
-                    # ("```" im Abschlusstext, echter Beleg für "Code existiert, wurde aber nicht
-                    # gespeichert") statt zusätzlich jeden reinen Werkzeugaufruf ohne Schreibung zu
-                    # verdächtigen: ein erster Versuch, JEDEN `toolbox.call_count > 0` ohne Datei
-                    # als Ghost-Code zu werten, schlug in genau dieser Testsuite zweimal fehl
-                    # (`ask_human_for_clarification` als legitimer Zwischenstopp, ein einzelner
-                    # `list_files`-Aufruf vor einer reinen Text-Zusammenfassung) – beides echte,
-                    # gewollte Abschlüsse ohne Datei. `not task.tools_read_only` schließt zusätzlich
-                    # legitime Nur-Lese-Aufträge aus (z. B. Governance-Fix-Schleife), `not
-                    # toolbox.clarification_requests` legitime Rückfragen mitten in der Aufgabe.
-                    # EIN gezielter Korrektur-Hinweis statt die Antwort unkorrigiert zu
-                    # akzeptieren; bleibt es dabei, eskaliert der Post-Loop-Gate unten in
-                    # execute() zu success=False, statt den Fehlschlag als "Fertig!" zu verkaufen.
+                    # schloss ohne main.py/Tests ab). Ursprünglich griff dieses Gate NUR, wenn
+                    # "```" (ein Code-Fence) im Abschlusstext stand - real beobachtet
+                    # (pulseflow_gateway, 20260911_095217) schloss ein backend-Agent aber auch
+                    # mit reinem Planungs-Fließtext OHNE Fence oder nach einem einzelnen
+                    # list_files-Aufruf mit files_written: [] und success: true ab. Das
+                    # Fence-Erfordernis wurde deshalb entfernt: JEDER Abschluss eines
+                    # Code-schreibenden Agenten ohne eine einzige gespeicherte Datei wird jetzt
+                    # verwarnt, unabhängig vom Antworttext. `not task.tools_read_only` schließt
+                    # weiterhin legitime Nur-Lese-Aufträge aus (z. B. Governance-Fix-Schleife),
+                    # `not toolbox.clarification_requests` legitime Rückfragen mitten in der
+                    # Aufgabe (`ask_human_for_clarification`). EIN gezielter Korrektur-Hinweis
+                    # statt die Antwort unkorrigiert zu akzeptieren; bleibt es dabei, eskaliert
+                    # der Post-Loop-Gate unten in execute() zu success=False, statt den
+                    # Fehlschlag als "Fertig!" zu verkaufen.
                     no_file_written_retry_used = True
                     turns.append(AgentMessage(role="assistant", text=response.text, tool_calls=[]))
                     turns.append(AgentMessage(

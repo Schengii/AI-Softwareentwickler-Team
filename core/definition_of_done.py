@@ -98,6 +98,59 @@ class DefinitionOfDone:
 _TEST_SCAN_IGNORED_DIRS = frozenset({".git", ".venv", "venv", ".ai_team_venv", "node_modules", "__pycache__", "dist", "build"})
 _TEST_FILE_SUFFIXES = (".test.ts", ".test.tsx", ".test.js", ".test.jsx", ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx")
 
+# Realer Fund (pulseflow_gateway, 20260911_095217): verification_ok wurde true, obwohl im
+# gesamten Workspace keine einzige Anwendungsdatei (main.py, Routen, Modelle) existierte - nur
+# ADRs, README und drei Alibi-Smoke-Tests, die lediglich `__init__.py`/`requirements.txt` auf
+# Existenz prüften. Ein Backend-/API-Projekt ohne echten Einstiegspunkt ist NIE fertig, egal wie
+# grün die Testsuite aussieht.
+_ENTRYPOINT_CANDIDATES = (
+    "main.py", "app.py", "run.py", "server.py", "wsgi.py", "asgi.py",
+    "app/main.py", "app/app.py", "src/main.py", "backend/main.py", "backend/app.py",
+    "backend/app/main.py",
+)
+_BACKEND_HINT_KEYWORDS = (
+    "api", "backend", "server", "endpoint", "rest", "gateway", "service",
+    "fastapi", "flask", "django", "uvicorn", "webhook", "microservice",
+)
+_BACKEND_HINT_DEP_MARKERS = ("fastapi", "flask", "django", "uvicorn", "starlette", "aiohttp")
+_BACKEND_HINT_JS_MARKERS = ("express", "fastify", "koa", "nestjs", "@nestjs/core")
+
+
+def _find_entrypoint_file(project_dir: Path) -> str | None:
+    """Gibt den relativen Pfad des ersten gefundenen Einstiegspunkts zurück - sonst None."""
+    for rel in _ENTRYPOINT_CANDIDATES:
+        if (project_dir / rel).is_file():
+            return rel
+    return None
+
+
+def _requires_backend_entrypoint(project_dir: Path, user_request: str = "") -> bool:
+    """
+    Erkennt, ob dieses Projekt einen laufenden Server-Einstiegspunkt braucht - entweder weil
+    der Auftrag selbst danach klingt (API, Backend, Gateway, ...) oder weil bereits ein
+    Web-Framework als Abhängigkeit deklariert wurde.
+    """
+    if any(kw in user_request.lower() for kw in _BACKEND_HINT_KEYWORDS):
+        return True
+    for name in ("requirements.txt", "pyproject.toml"):
+        kandidat = project_dir / name
+        if kandidat.is_file():
+            try:
+                inhalt = kandidat.read_text(encoding="utf-8", errors="ignore").lower()
+            except OSError:
+                continue
+            if any(marker in inhalt for marker in _BACKEND_HINT_DEP_MARKERS):
+                return True
+    pkg_json = project_dir / "package.json"
+    if pkg_json.is_file():
+        try:
+            inhalt = pkg_json.read_text(encoding="utf-8", errors="ignore").lower()
+        except OSError:
+            inhalt = ""
+        if any(marker in inhalt for marker in _BACKEND_HINT_JS_MARKERS):
+            return True
+    return False
+
 
 def _has_test_files(project_dir: Path, max_files: int = 5000) -> bool:
     """True, wenn im Projekt mindestens eine Testdatei liegt (Python oder JS/TS)."""
@@ -127,6 +180,7 @@ def build_definition_of_done(
     coverage_percent: float | None = None,
     min_coverage: float = 0.0,
     verification_skipped: bool = False,
+    user_request: str = "",
 ) -> DefinitionOfDone:
     """
     Setzt die Einzelsignale eines Laufs zu einer Gesamtaussage zusammen.
@@ -215,6 +269,23 @@ def build_definition_of_done(
             applicable=coverage_percent is not None,
             detail=f"{coverage_percent:.1f}%" if coverage_percent is not None else "nicht gemessen",
         ))
+
+    # Realer Fund pulseflow_gateway: grüne Tests + README + ADRs, aber NULL Anwendungscode.
+    # Ein Backend-/API-Projekt ohne main.py/app.py/... ist NIE fertig - unabhängig davon, ob
+    # irgendwelche Smoke-Tests grün liefen.
+    braucht_entrypoint = _requires_backend_entrypoint(pfad, user_request)
+    gefundener_entrypoint = _find_entrypoint_file(pfad)
+    kriterien.append(Criterion(
+        key="missing_entrypoint",
+        label="Ein echter Anwendungs-Einstiegspunkt existiert",
+        passed=gefundener_entrypoint is not None,
+        applicable=braucht_entrypoint,
+        detail=(
+            f"gefunden: {gefundener_entrypoint}" if gefundener_entrypoint
+            else "kein main.py/app.py/run.py/... gefunden - nur Doku/Tests ohne Anwendungscode" if braucht_entrypoint
+            else ""
+        ),
+    ))
 
     # README als Mindestmaß an Übergabefähigkeit - ein Projekt, das niemand benutzen kann, ist
     # nicht fertig, aber ein fehlendes README blockiert die Auslieferung nicht.

@@ -174,13 +174,40 @@ MODEL_FALLBACKS = {
     # DeepSeek einsortiert (beide sind bezahlte Gateways, keine Gratis-Kontingente wie
     # Gemini/Groq - Reihenfolge hier daher nicht kritisch, nur ein weiterer unabhängiger
     # Kontingent-Pool, der zuvor komplett ungenutzt blieb).
+    #
+    # Team-Optimierung (pulseflow_gateway-Retrospektive, 20260911_095217): `claude-sonnet-5`
+    # stand für die BEIDEN Flash-Stufen (gemini-3.8-flash, gemini-3.6-flash) als ERSTER
+    # Fallback - dadurch liefen bei jeder Gemini-Störung praktisch alle Agenten über Claude und
+    # erschöpften binnen eines einzigen Laufs das monatliche Anthropic-Kontingent ("API usage
+    # limits reached"). Claude bleibt für gemini-pro-latest (HEAVY-Rolle, seltener genutzt)
+    # weiterhin die erste Ausweichstufe, wird für die beiden Flash-Stufen aber HINTER die
+    # bezahlten Gateway-Provider (DeepSeek, OpenRouter) UND Groq zurückgestuft - diese haben
+    # eigene, von Anthropic unabhängige Kontingente/Guthaben. Claude bleibt als letzte Stufe
+    # erhalten, damit eine Kette bei komplett erschöpften Drittanbietern nicht ins Leere läuft.
     "gemini-pro-latest":    ["claude-opus-5", "claude-sonnet-5", "deepseek:deepseek-chat", "openrouter:openrouter/auto", "gemini-3.8-flash", "gemini-3.6-flash"],
-    "gemini-3.8-flash":     ["claude-sonnet-5", "deepseek:deepseek-chat", "openrouter:openrouter/auto", "gemini-3.6-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
-    "gemini-3.6-flash":     ["claude-sonnet-5", "deepseek:deepseek-chat", "openrouter:openrouter/auto", "gemini-3.8-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
-    "gemini-3.1-flash-lite": ["claude-haiku-4-5-20251001", "deepseek:deepseek-chat", "openrouter:openrouter/auto", "gemini-3.8-flash", "gemini-3.6-flash", "groq:openai/gpt-oss-120b"],
+    "gemini-3.8-flash":     ["deepseek:deepseek-chat", "openrouter:openrouter/auto", "groq:openai/gpt-oss-120b", "gemini-3.6-flash", "gemini-3.1-flash-lite", "claude-sonnet-5"],
+    "gemini-3.6-flash":     ["deepseek:deepseek-chat", "openrouter:openrouter/auto", "groq:openai/gpt-oss-120b", "gemini-3.8-flash", "gemini-3.1-flash-lite", "claude-sonnet-5"],
+    "gemini-3.1-flash-lite": ["deepseek:deepseek-chat", "openrouter:openrouter/auto", "groq:openai/gpt-oss-120b", "gemini-3.8-flash", "gemini-3.6-flash", "claude-haiku-4-5-20251001"],
     # Ältere/abweichende Konfigurationswerte (falls per .env manuell gesetzt) ebenfalls abdecken.
-    "gemini-3.5-flash":     ["claude-sonnet-5", "deepseek:deepseek-chat", "openrouter:openrouter/auto", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "groq:openai/gpt-oss-120b"],
+    "gemini-3.5-flash":     ["deepseek:deepseek-chat", "openrouter:openrouter/auto", "groq:openai/gpt-oss-120b", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "claude-sonnet-5"],
 }
+
+# Modul-globaler Schalter (KEIN token_guard-Eintrag, da der pro exaktem Modellnamen gilt):
+# sobald EIN Claude-Aufruf ein erschöpftes Nutzungslimit meldet ("API usage limits reached",
+# "credit balance too low"), gilt das für ALLE Claude-Modellvarianten in diesem Prozess
+# (Opus/Sonnet/Haiku teilen sich dasselbe Anthropic-Konto/Monatslimit) - anders als ein
+# Rate-Limit ist ein Monatskontingent nicht dadurch umgehbar, ein anderes Claude-Modell zu
+# probieren. Realer Fund (pulseflow_gateway, 20260911_095217): ohne diesen Schalter
+# zerschellte jeder weitere Agent im selben Lauf erneut an genau demselben harten Fehler,
+# bevor `_free_heavy_fallback_client()` überhaupt zum Zug kam.
+_claude_billing_exhausted_reason: str | None = None
+
+
+def mark_claude_billing_exhausted(reason: str) -> None:
+    """Markiert Claude (alle Modellvarianten) für den Rest dieses Prozesses als erschöpft."""
+    global _claude_billing_exhausted_reason
+    _claude_billing_exhausted_reason = reason
+
 
 def _provider_available(model_name: str) -> bool:
     """
@@ -200,6 +227,8 @@ def _provider_available(model_name: str) -> bool:
     """
     name = model_name.lower()
     if "claude" in name:
+        if _claude_billing_exhausted_reason is not None:
+            return False
         return bool(ANTHROPIC_API_KEY)
     if name.startswith("groq:") or "gpt-oss" in name or "qwen" in name:
         return bool(GROQ_API_KEY)
@@ -247,6 +276,12 @@ DAILY_QUOTA_COOLDOWN_SECONDS = 4 * 3600.0
 _BILLING_EXHAUSTION_MARKERS = (
     "insufficient balance", "requires more credits", "insufficient credits", "insufficient_quota",
     "payment required",
+    # Realer Fund (pulseflow_gateway, 20260911_095217): Anthropic meldet ein erschöpftes
+    # Monats-/Nutzungslimit als "API usage limits reached" bzw. "credit balance too low" -
+    # bislang kannten die Marker oben nur Guthaben-Formulierungen anderer Provider. Ohne
+    # eigenen Marker fiel das auf den 60-s-Standard-Cooldown zurück und jeder Folgeagent
+    # zerschellte binnen der nächsten Minute erneut am selben harten Kontingent-Fehler.
+    "api usage limits", "usage limit", "credit balance too low",
 )
 BILLING_EXHAUSTION_COOLDOWN_SECONDS = 6 * 3600.0
 
@@ -289,6 +324,21 @@ def is_authentication_error(exc: Exception | str) -> bool:
     schleichende Quelle für Inkonsistenz."""
     text = str(exc).lower()
     return any(marker in text for marker in _AUTH_ERROR_MARKERS)
+
+
+def is_billing_exhaustion_error(exc: Exception | str) -> bool:
+    """True bei einer Fehlermeldung wie Anthropics "API usage limits reached" / "credit balance
+    too low" oder vergleichbaren Provider-Formulierungen für ein erschöpftes Kontingent/Guthaben
+    (siehe _BILLING_EXHAUSTION_MARKERS) - anders als ein vorübergehendes Rate-Limit (429, meist
+    Minuten) oder ein Auth-Fehler (falscher Key) erholt sich das nie innerhalb desselben Laufs.
+
+    Realer Fund (pulseflow_gateway, 20260911_095217): ClaudeClient erkannte NUR Rate-Limit- und
+    Auth-Fehler und rief für ein erschöpftes Monatslimit (400 "API usage limits reached")
+    weder mark_model_exhausted() noch einen Cooldown auf - jeder Folgeagent im selben Prozess
+    zerschellte dadurch am selben harten Fehler erneut, statt sofort auf einen anderen Provider
+    umzuschwenken."""
+    text = str(exc).lower()
+    return any(marker in text for marker in _BILLING_EXHAUSTION_MARKERS)
 
 
 def _exhaustion_cooldown_seconds(err_str: str) -> float | None:
@@ -1594,6 +1644,7 @@ class ClaudeClient:
         except Exception as e:
             is_rate_limit = _is_rate_limit_error(e)
             is_auth_error = is_authentication_error(e)
+            is_billing_exhausted = is_billing_exhaustion_error(e)
             if is_rate_limit:
                 token_guard.mark_model_exhausted(self.model_name, "Claude Rate Limit")
             elif is_auth_error:
@@ -1601,8 +1652,18 @@ class ClaudeClient:
                     self.model_name, f"Claude Auth-Fehler (ungültiger/abgelehnter API-Key): {_short_error(e, 160)}",
                     cooldown_seconds=AUTH_FAILURE_COOLDOWN_SECONDS,
                 )
+            elif is_billing_exhausted:
+                # Realer Fund pulseflow_gateway: 400 "API usage limits reached" ist weder ein
+                # Rate-Limit noch ein Auth-Fehler - ohne diesen Zweig blieb der Fehler unmarkiert
+                # und jeder Folgeagent zerschellte am selben Kontingent-Fehler erneut.
+                reason = f"Claude Nutzungslimit erschöpft: {_short_error(e, 160)}"
+                mark_claude_billing_exhausted(reason)
+                token_guard.mark_model_exhausted(
+                    self.model_name, reason,
+                    cooldown_seconds=_exhaustion_cooldown_seconds(str(e)) or BILLING_EXHAUSTION_COOLDOWN_SECONDS,
+                )
             if not _allow_self_fallback:
-                if is_rate_limit or is_auth_error:
+                if is_rate_limit or is_auth_error or is_billing_exhausted:
                     raise _pinned_provider_failure("Claude", self.model_name, e) from e
                 raise
             return await self._free_heavy_fallback_client().generate_with_usage(prompt, system_prompt)
@@ -1682,6 +1743,7 @@ class ClaudeClient:
         except Exception as e:
             is_rate_limit = _is_rate_limit_error(e)
             is_auth_error = is_authentication_error(e)
+            is_billing_exhausted = is_billing_exhaustion_error(e)
             if is_rate_limit:
                 token_guard.mark_model_exhausted(self.model_name, "Claude Rate Limit")
             elif is_auth_error:
@@ -1689,8 +1751,18 @@ class ClaudeClient:
                     self.model_name, f"Claude Auth-Fehler (ungültiger/abgelehnter API-Key): {_short_error(e, 160)}",
                     cooldown_seconds=AUTH_FAILURE_COOLDOWN_SECONDS,
                 )
+            elif is_billing_exhausted:
+                # Realer Fund pulseflow_gateway: 400 "API usage limits reached" ist weder ein
+                # Rate-Limit noch ein Auth-Fehler - ohne diesen Zweig blieb der Fehler unmarkiert
+                # und jeder Folgeagent zerschellte am selben Kontingent-Fehler erneut.
+                reason = f"Claude Nutzungslimit erschöpft: {_short_error(e, 160)}"
+                mark_claude_billing_exhausted(reason)
+                token_guard.mark_model_exhausted(
+                    self.model_name, reason,
+                    cooldown_seconds=_exhaustion_cooldown_seconds(str(e)) or BILLING_EXHAUSTION_COOLDOWN_SECONDS,
+                )
             if not _allow_self_fallback:
-                if is_rate_limit or is_auth_error:
+                if is_rate_limit or is_auth_error or is_billing_exhausted:
                     raise _pinned_provider_failure("Claude", self.model_name, e) from e
                 raise
             return await self._free_heavy_fallback_client().generate_with_tools(messages, system_prompt, tools)

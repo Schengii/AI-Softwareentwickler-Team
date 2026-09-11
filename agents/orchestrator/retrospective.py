@@ -67,26 +67,51 @@ class RetrospectiveMixin:
         retro_content: str,
         verification_ok: bool = True,
         verification_summary: str = "",
+        definition_of_done=None,
     ) -> AgentResult | None:
         trainer = self._agents.get("agent_trainer")
-        if not trainer:
-            return None
 
         has_errors = any(not r.success for r in results)
         high_usage = any(r.total_tokens > 4000 for r in results)
 
-        # Team-Optimierung (Retrospektive 2026-09-05, Punkt 4): AgentResult.success beschreibt
-        # nur, ob ein Agent seinen EIGENEN Tool-Aufruf ohne Absturz beendet hat - ein Agent, der
-        # anstandslos, aber fachlich falschen Code liefert (genau die Fälle, die
-        # recurring_failure_ticket_opened/unresolved_governance_critical_ticket_opened auslösen,
-        # siehe agents/orchestrator/verification.py), zählt hier NICHT als Fehler. Real
-        # beobachtet (workspace/zeiterfassung_app, 2026-09-04): drei Läufe mit identischem
-        # DTZ001-/Testfehler, aber KEIN einziger davon hätte has_errors=True ausgelöst, weil
-        # jeder beteiligte Agent seinen Tool-Aufruf technisch erfolgreich beendete - der
-        # Selbstlern-Kanal (memory/agent_learnings.json) bekam dadurch nie die Chance, aus einem
-        # der eigentlich lehrreichsten Signale (ein Fehler, den das Team trotz Eskalation NICHT
-        # selbst beheben konnte) etwas zu lernen.
-        if not has_errors and not high_usage and verification_ok:
+        # Realer Fund (pulseflow_gateway, 20260911_095217): der Lauf schloss mit
+        # verification_ok=true ab, obwohl KEIN einziger Agent auch nur eine Datei geschrieben
+        # hatte - core/definition_of_done.py blockiert das inzwischen über die Kriterien
+        # "files_written"/"missing_entrypoint" (harte, gegen das Dateisystem geprüfte Fakten,
+        # anders als eine Heuristik über die hier übergebene `results`-Liste, die z.B. bei
+        # Review-Only-Agenten oder einem nur TEILWEISEN Ergebnis-Ausschnitt legitim leere
+        # files_written trägt, ohne dass das einen Schein-Erfolg bedeutet). Ohne diesen Zweig
+        # hätte has_errors=False (kein Agent meldete selbst einen Fehler), high_usage evtl.
+        # False, verification_ok=True die Bedingung unten den Trainer-Aufruf komplett
+        # übersprungen und der Lauf wäre NIE als Negativ-Erkenntnis gespeichert worden. Genau
+        # DIESE beiden DoD-Kriterien blockierend zu sehen ist der Extremfall eines Schein-
+        # Erfolgs und erzwingt deshalb IMMER eine Analyse, unabhängig von has_errors/high_usage/
+        # verification_ok.
+        false_success = definition_of_done is not None and any(
+            c.key in ("files_written", "missing_entrypoint") for c in definition_of_done.blocking_criteria
+        )
+
+        if not has_errors and not high_usage and verification_ok and not false_success:
+            return None
+
+        # Deterministische Buchführung (KEIN LLM-Aufruf, kann daher nie an einem erschöpften
+        # Provider oder einem trainer_result.success=False scheitern): ein Schein-Erfolg ist DAS
+        # lehrreichste, teuerste Signal, das dieses Team produzieren kann - es landet deshalb
+        # IMMER in memory/team_lessons.jsonl, auch wenn der LLM-Trainer weiter unten selbst
+        # ausfällt oder kein gültiges JSON liefert.
+        if false_success:
+            blocker_detail = ", ".join(c.key for c in definition_of_done.blocking_criteria)
+            record_lesson(
+                project_slug=getattr(self, "last_project_slug", "project"),
+                category="false_success_no_source_files",
+                detail=(
+                    f"Lauf schloss mit verification_ok={verification_ok} ab, obwohl keine "
+                    f"Quelldatei geschrieben wurde (Blocker: {blocker_detail}). Auftrag: "
+                    f"{user_request[:300]}"
+                ),
+            )
+
+        if not trainer:
             return None
 
         context = (
@@ -102,6 +127,14 @@ class RetrospectiveMixin:
                 "\nECHTE VERIFIKATION SCHLUG FEHL (Tests/Governance/Lint blieben rot, obwohl "
                 "kein Agent selbst einen Fehler meldete - das ist das eigentlich lehrreichste "
                 f"Signal hier):\n{verification_summary.strip()[:2000]}\n"
+            )
+        if false_success:
+            context += (
+                "\nKRITISCHER SCHEIN-ERFOLG: Der Lauf galt als grün/verifiziert, obwohl KEINE "
+                "einzige Quelldatei geschrieben wurde (Definition of Done, Blocker: "
+                f"{blocker_detail}). Analysiere, welcher Code-schreibende Agent (backend/"
+                "frontend/database/devops) seine Aufgabe ohne write_file/edit_file abgeschlossen "
+                "hat, und formuliere eine Regel, die genau das für diesen Agenten zukünftig verbietet.\n"
             )
 
         task = AgentTask(

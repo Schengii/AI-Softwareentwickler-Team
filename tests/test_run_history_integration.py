@@ -61,7 +61,12 @@ class TestRunHistoryReachesOrchestrator(unittest.TestCase):
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")
         def _inner(mock_synthesize, mock_decompose):
-            task = AgentTask(task_id="t1", agent_id="backend", description="Etwas bauen")
+            # tools_read_only=True: dieser Test prüft ausschließlich die Lauf-Historie-
+            # Integration, keine tatsächliche Datei-Lieferung - _FakeLLM oben antwortet immer
+            # sofort mit reinem Text ohne write_file-Aufruf. Ohne das würde das Hard Delivery
+            # Gate (agents/base_agent.py, seit der pulseflow_gateway-Härtung unabhängig von
+            # einem Code-Fence im Text) backend als Ghost-Code werten und success=False melden.
+            task = AgentTask(task_id="t1", agent_id="backend", description="Etwas bauen", tools_read_only=True)
             mock_decompose.return_value = ("Kurze Aufgabe", "run_history_test_proj", [task])
             mock_synthesize.return_value = ("### Fertig", 5)
             return asyncio.run(self.orchestrator.process("Baue etwas"))

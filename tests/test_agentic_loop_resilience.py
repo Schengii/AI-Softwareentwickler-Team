@@ -217,8 +217,15 @@ class TestCodeInTextWithoutFileWriteRetry(unittest.TestCase):
         retry_messages_text = " ".join(m.text for m in fake_llm.seen_messages[1])
         self.assertIn("keine einzige Datei", retry_messages_text)
 
-    def test_plain_text_summary_without_code_fence_is_not_retried(self):
-        fake_llm = _ScriptedLLM([_final_response("Ich habe app.py erstellt und getestet.")])
+    def test_plain_text_summary_without_code_fence_is_retried_then_fails(self):
+        """Realer Fund (pulseflow_gateway, 20260911_095217): eine reine Textbehauptung ("Ich habe
+        app.py erstellt") OHNE Code-Fence und OHNE tatsächlichen write_file-Aufruf schloss bisher
+        unbeanstandet mit success=True ab, obwohl files_written leer blieb - das Fence-Erfordernis
+        wurde deshalb aus dem Hard Delivery Gate entfernt (siehe agents/base_agent.py)."""
+        fake_llm = _ScriptedLLM([
+            _final_response("Ich habe app.py erstellt und getestet."),
+            _final_response("Ich habe app.py erstellt und getestet."),
+        ])
         agent = BackendAgent()
         agent._llm = fake_llm
         task = AgentTask(task_id="t1", agent_id="backend", description="Baue app.py",
@@ -226,8 +233,9 @@ class TestCodeInTextWithoutFileWriteRetry(unittest.TestCase):
 
         result = asyncio.run(agent.execute(task))
 
-        self.assertTrue(result.success, result.error)
-        self.assertEqual(fake_llm.call_count, 1)  # kein Code-Fence -> kein Retry-Grund
+        self.assertFalse(result.success)
+        self.assertIn("Hard Delivery Gate", result.error)
+        self.assertEqual(fake_llm.call_count, 2)  # EIN Korrektur-Retry, dann Abbruch
 
     def test_no_retry_when_a_file_was_already_written_earlier_in_the_task(self):
         write_call = LLMResponse(
@@ -280,6 +288,25 @@ class TestCodeInTextWithoutFileWriteRetry(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("Hard Delivery Gate", result.error)
         self.assertEqual(fake_llm.call_count, 2)  # nur EIN Retry, kein zweiter trotz erneut fehlender Datei
+        self.assertEqual(result.files_written, [])
+
+    def test_plain_text_without_code_fence_also_triggers_the_hard_delivery_gate(self):
+        """Realer Fund (pulseflow_gateway, 20260911_095217): ein backend-Agent schloss mit reinem
+        Planungs-Fließtext OHNE Code-Fence ab und meldete trotz files_written=[] success=True. Das
+        Gate darf sich NICHT mehr auf das Vorhandensein eines ``` -Markers verlassen."""
+        fake_llm = _ScriptedLLM([
+            _final_response("Ich würde als Nächstes app/main.py mit der FastAPI-Instanz anlegen."),
+            _final_response("Ich habe den Plan nochmal durchdacht, aber noch nichts geschrieben."),
+        ])
+        agent = BackendAgent()
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="backend", description="Baue app.py",
+                          project_dir=self.temp_dir, max_tool_iterations=5)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertFalse(result.success)
+        self.assertIn("Hard Delivery Gate", result.error)
         self.assertEqual(result.files_written, [])
 
     def test_no_retry_when_no_iterations_remain(self):
@@ -410,10 +437,14 @@ class TestArchitectAdrCallRetry(unittest.TestCase):
         self.assertEqual(result.files_written, ["docs/architecture.md"])
         self.assertEqual(fake_llm.call_count, 2)  # bereits geschrieben -> kein Retry trotz ADR-Marker
 
-    def test_no_retry_for_non_architect_agent_with_adr_marker(self):
-        # backend ist NICHT von dieser Heuristik betroffen (nur von der Code-Fence-Heuristik,
-        # die hier mangels "```" ebenfalls nicht greift).
-        fake_llm = _ScriptedLLM([_final_response("## 6. Technologie-Entscheidungen (ADRs)\n\nOK.")])
+    def test_non_architect_agent_with_adr_marker_still_hits_hard_delivery_gate(self):
+        # backend ist NICHT von der ADR-Heuristik betroffen (nur architect), fällt aber als
+        # Code-schreibender Agent ohne jede geschriebene Datei unter das allgemeine Hard
+        # Delivery Gate (agents/base_agent.py) - unabhängig vom ADR-Marker im Text.
+        fake_llm = _ScriptedLLM([
+            _final_response("## 6. Technologie-Entscheidungen (ADRs)\n\nOK."),
+            _final_response("## 6. Technologie-Entscheidungen (ADRs)\n\nOK."),
+        ])
         agent = BackendAgent()
         agent._llm = fake_llm
         task = AgentTask(task_id="t1", agent_id="backend", description="Baue etwas",
@@ -421,8 +452,9 @@ class TestArchitectAdrCallRetry(unittest.TestCase):
 
         result = asyncio.run(agent.execute(task))
 
-        self.assertTrue(result.success, result.error)
-        self.assertEqual(fake_llm.call_count, 1)
+        self.assertFalse(result.success)
+        self.assertIn("Hard Delivery Gate", result.error)
+        self.assertEqual(fake_llm.call_count, 2)
 
     def test_only_one_adr_retry_even_if_still_not_called(self):
         fake_llm = _ScriptedLLM([

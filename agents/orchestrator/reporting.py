@@ -190,6 +190,69 @@ class ReportingMixin:
 
         return "\n".join(blocks)
 
+    def _build_provider_exhaustion_report(self) -> str:
+        """
+        Transparente Diagnose-Tabelle für einen Lauf, den der Fast Circuit Breaker
+        (agents/orchestrator/department.py, PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT) sofort
+        abgebrochen hat - leer, wenn dieser Lauf nicht betroffen war.
+
+        Team-Optimierung (chronos_queue-Retrospektive, 20260911): bisher stand im Report nur
+        ein generischer Live-Hinweis ("mehrere Agenten scheiterten an Kontingent-Erschöpfung"),
+        ohne dass für den Nutzer erkennbar war, WELCHER Provider aus WELCHEM Grund ausgefallen
+        ist und WAS konkret zu tun ist (z.B. "Gemini: Tageslimit erreicht | DeepSeek: Kein
+        Guthaben (0$) | Claude: Monatslimit gesperrt"). Nutzt core/token_guard.py's bereits
+        bestehende `get_exhausted_details()` (Grund + voraussichtlicher Verfügbarkeits-
+        Zeitpunkt je Modell) statt eine zweite, abweichende Diagnose aufzubauen.
+        """
+        if not getattr(self, "_provider_exhausted_this_run", False):
+            return ""
+        from core.llm_factory import _provider_of
+        from core.token_guard import token_guard
+
+        details = token_guard.get_exhausted_details()
+        lines = [
+            "### 🛑 Sofortabbruch: Provider-Kontingent-Erschöpfung",
+            "Mehrere Agenten in Folge (bzw. eine kritische Rolle wie `architect`/`backend`) "
+            "scheiterten daran, dass kein konfigurierter Provider mehr Kapazität/Guthaben hatte - "
+            "der Lauf wurde sofort beendet, statt weiter sinnlos Tokens für garantiert "
+            "scheiternde Aufrufe zu verbrauchen.",
+        ]
+        if details:
+            by_provider: dict[str, dict] = {}
+            for d in details:
+                provider = _provider_of(d["model_name"])
+                existing = by_provider.get(provider)
+                if existing is None or d["remaining_seconds"] > existing["remaining_seconds"]:
+                    by_provider[provider] = d
+            lines += [
+                "",
+                "| Provider | Grund | Voraussichtlich wieder verfügbar |",
+                "|---|---|---|",
+            ]
+            for provider, d in sorted(by_provider.items()):
+                lines.append(f"| **{provider}** | {str(d['reason'])[:150]} | {d['available_at']} Uhr |")
+        else:
+            lines.append(
+                "\n*(Keine Detailinformationen je Provider mehr verfügbar - der Cooldown war "
+                "vermutlich bereits abgelaufen, bevor dieser Bericht erstellt wurde.)*"
+            )
+        lines += [
+            "",
+            "**Handlungsempfehlungen:**",
+            "- Einen zusätzlichen API-Key desselben Providers in `.env` ergänzen (z.B. einen "
+            "2. Gemini-Key/Projekt), um das Tageskontingent zu erhöhen.",
+            "- Bei „Insufficient Balance“ / „requires more credits“ (DeepSeek/OpenRouter): "
+            "Guthaben aufladen - der Cooldown oben ist rein defensiv, kein Kontingent erholt "
+            "sich davon von selbst.",
+            "- Alternativ die oben genannte Uhrzeit abwarten, oder `CAPACITY_GATE_MODE`/"
+            "`HEAVY_ROLE_MIN_TIER` in `.env` anpassen, um vorübergehend mit schwächeren "
+            "Modellen weiterzuarbeiten.",
+            "- Dieses Projekt ist dadurch möglicherweise unvollständig (siehe `PROJECT_STATE.md` "
+            "- Status `aborted_due_to_quota`) - vor dem nächsten Lauf bereinigen oder bewusst "
+            "fortsetzen.",
+        ]
+        return "\n".join(lines)
+
     def _build_metrics_summary(
         self,
         results: list[AgentResult],

@@ -263,6 +263,7 @@ def generate_project_state_md(
     cancelled: bool = False,
     files_written: list[str] | None = None,
     next_steps: list[str] | None = None,
+    provider_exhausted: bool = False,
 ) -> str:
     """Generiert einen kompakten, token-effizienten PROJECT_STATE.md-Bericht für das Projekt."""
     p_path = Path(project_dir)
@@ -274,12 +275,21 @@ def generate_project_state_md(
     # Status inkl. einer bestandenen Testsuite (verification_ok=True) - ein kritischer,
     # nachweislich ungelöster Befund macht ein Projekt nicht "einsatzbereit", nur weil die
     # Tests grün sind (siehe Modul-Kommentar zu _BLOCKER_TICKET_PREFIXES oben).
+    # Team-Optimierung (chronos_queue-Retrospektive, 20260911): ein Lauf, der wegen einer
+    # Kontingent-/Guthaben-Erschöpfung ALLER Provider abgebrochen wurde (Fast Circuit Breaker,
+    # agents/orchestrator/department.py), sah bisher wie jeder andere "🚫 Lauf-Budget erreicht"-
+    # Abbruch aus - der Unterschied ist entscheidend: kein Mensch muss hier eine Aufgabe
+    # verkleinern, sondern schlicht Kontingent/Guthaben nachlegen, bevor ein Folgelauf überhaupt
+    # Sinn ergibt. Verwaiste Teil-Artefakte (z.B. nur Frontend, kein Backend) müssen VOR dem
+    # nächsten Lauf explizit bereinigt oder bewusst fortgesetzt werden.
     if blocker_ticket:
         status_label = "🔴 Kritischer Befund ungelöst – NICHT einsatzbereit (Backlog-Ticket offen)"
     elif verification_ok:
         status_label = "✅ Vollständig verifiziert & einsatzbereit"
     elif cancelled:
         status_label = "⏹️ Lauf manuell pausiert"
+    elif budget_aborted and provider_exhausted:
+        status_label = "🛑 Abgebrochen wegen Provider-Kontingent-Erschöpfung – UNVOLLSTÄNDIG (vor nächstem Lauf bereinigen/fortsetzen!)"
     elif budget_aborted:
         status_label = "🚫 Lauf-Budget erreicht (Teilstand gesichert)"
     else:
@@ -322,6 +332,21 @@ def generate_project_state_md(
         f"- **Tests bestanden:** {'Ja ✅' if verification_ok else 'Ausstehend / Fehlgeschlagen ⚠️'}",
     ]
 
+    if budget_aborted and provider_exhausted:
+        lines += [
+            "",
+            "## 🛑 Lauf wegen Provider-Kontingent-Erschöpfung abgebrochen",
+            "- **Dieses Projekt ist UNVOLLSTÄNDIG.** Mehrere Agenten in Folge (bzw. eine kritische "
+            "Rolle wie `architect`/`backend`) scheiterten daran, dass KEIN konfigurierter "
+            "KI-Provider mehr Kapazität/Guthaben hatte - der Lauf wurde deshalb sofort beendet, "
+            "statt weiter sinnlos Tokens für garantiert scheiternde Aufrufe zu verbrauchen.",
+            "- Die oben gelisteten Dateien sind daher möglicherweise nur ein Teilstand (z.B. "
+            "Frontend ohne Backend) - vor dem nächsten Lauf entweder gezielt bereinigen "
+            "(unvollständige/verwaiste Artefakte entfernen) oder den Lauf bewusst fortsetzen.",
+            "- Details, welcher Provider warum ausgefallen ist, stehen im CLI-Abschlussbericht "
+            "des abgebrochenen Laufs (agents/orchestrator/reporting.py).",
+        ]
+
     if blocker_ticket:
         lines += [
             "",
@@ -344,6 +369,10 @@ def generate_project_state_md(
     if next_steps:
         for i, step in enumerate(next_steps, start=1):
             lines.append(f"{i}. {step}")
+    elif budget_aborted and provider_exhausted:
+        lines.append("1. Provider-Kontingent/Guthaben auffüllen (siehe CLI-Abschlussbericht des abgebrochenen Laufs für Details je Provider).")
+        lines.append("2. Unvollständige Teil-Artefakte dieses Laufs bereinigen ODER den Lauf gezielt fortsetzen.")
+        lines.append("3. Erst danach einen neuen Lauf starten - `python main.py` prüft die Kapazität vorab erneut (core/capacity_gate.py).")
     elif blocker_ticket:
         lines.append(f"1. Offenen kritischen Befund aus Ticket `{blocker_ticket.id}` beheben (siehe oben).")
         lines.append("2. Danach `/run-tests` bzw. einen neuen Lauf anstoßen, um das Ticket zu schließen.")
@@ -370,8 +399,16 @@ def save_project_checkpoint(
     verification_summary: str = "",
     clarification_questions: list[str] | None = None,
     lint_signature: list[str] | None = None,
+    provider_exhausted: bool = False,
 ) -> None:
-    """Speichert sowohl .ai_team_status.json als auch die lesbare PROJECT_STATE.md im Projektordner."""
+    """Speichert sowohl .ai_team_status.json als auch die lesbare PROJECT_STATE.md im Projektordner.
+
+    `provider_exhausted=True` (zusammen mit `budget_aborted=True`) markiert einen Lauf, den der
+    Fast Circuit Breaker (agents/orchestrator/department.py, PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT)
+    abgebrochen hat, weil KEIN konfigurierter Provider mehr Kapazität/Guthaben hatte - im
+    Unterschied zu einem generischen Lauf-Budget-Abbruch (MAX_RUN_TOKENS) ist das Projekt dann
+    typischerweise unvollständig (verwaiste Teil-Artefakte) und muss vor dem nächsten Lauf
+    bewusst bereinigt oder fortgesetzt werden (siehe status="aborted_due_to_quota" unten)."""
     # 1. Update .ai_team_status.json
     record_run(
         project_dir=project_dir,
@@ -383,6 +420,7 @@ def save_project_checkpoint(
         verification_summary=verification_summary,
         clarification_questions=clarification_questions,
         lint_signature=lint_signature,
+        provider_exhausted=provider_exhausted,
     )
 
     # 2. Update PROJECT_STATE.md
@@ -394,6 +432,7 @@ def save_project_checkpoint(
         cancelled=cancelled,
         files_written=files_written,
         next_steps=next_steps,
+        provider_exhausted=provider_exhausted,
     )
 
     try:
@@ -412,6 +451,7 @@ def record_run(
     verification_summary: str = "",
     clarification_questions: list[str] | None = None,
     lint_signature: list[str] | None = None,
+    provider_exhausted: bool = False,
 ) -> None:
     """Fügt diesen Lauf vorne in die Historie ein (neueste zuerst), gedeckelt auf
     MAX_HISTORY_ENTRIES."""
@@ -424,6 +464,13 @@ def record_run(
         "cancelled": cancelled,
         "files_written_count": files_written_count,
     }
+    # Team-Optimierung (chronos_queue-Retrospektive, 20260911): expliziter Status-String
+    # zusätzlich zu den bestehenden Bool-Feldern - macht per einfachem `grep`/JSON-Filter sofort
+    # auffindbar, welche Läufe wegen einer Provider-Kontingent-Erschöpfung (statt eines
+    # generischen Budget-Limits) unvollständig abgebrochen wurden, ohne dass ein Aufrufer erst
+    # `budget_aborted UND provider_exhausted` kombinieren muss.
+    if budget_aborted and provider_exhausted:
+        entry["status"] = "aborted_due_to_quota"
     if lint_signature:
         # Sortiert (nicht Erfassungsreihenfolge) - has_repeated_lint_finding() vergleicht
         # zwei Läufe als Mengen-Gleichheit, die Reihenfolge, in der ruff Funde ausgibt, ist

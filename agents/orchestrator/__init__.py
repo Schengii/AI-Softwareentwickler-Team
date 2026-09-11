@@ -927,27 +927,27 @@ class Orchestrator(
         # Bei bereits während der Fachbereichs-Phasen ODER der Governance-Fix-Schleife
         # überschrittenem Lauf-Budget ODER manuellem Abbruch wird die (potenziell token-/
         # zeitintensive) Fix-Schleife komplett übersprungen.
-        if budget_aborted or manually_cancelled:
-            reason = self._budget_or_cancel_reason(
-                budget_aborted, manually_cancelled,
-                "während der Fachbereichs-Phasen oder der Governance-Fix-Schleife",
-                start_tokens=run_start_tokens,
-            )
-            verification_summary = (
-                "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n"
-                f"- 🚫 Übersprungen: {reason}."
-            )
-            verification_ok = False
-            log_decision(project_dir, "budget_or_cancel_aborted", reason)
-        elif getattr(self, "_provider_breaker_tripped", False):
-            # Circuit Breaker (agents/orchestrator/dispatch.py). Realer Fund
-            # (workspace/event_ticket_api, 09.09.2026): 19 von 21 Agenten scheiterten an
-            # erschöpften Kontingenten und schrieben keine einzige Datei - der Lauf startete
+        if getattr(self, "_provider_breaker_tripped", False):
+            # Circuit Breaker (agents/orchestrator/dispatch.py UND, seit der chronos_queue-
+            # Härtung, der schnellere sequenzielle Breaker in agents/orchestrator/department.py).
+            # Realer Fund (workspace/event_ticket_api, 09.09.2026): 19 von 21 Agenten scheiterten
+            # an erschöpften Kontingenten und schrieben keine einzige Datei - der Lauf startete
             # trotzdem die Verifikation, dispatchte daraufhin einen Fix-Auftrag für "keine
             # Tests gefunden" und eröffnete ein Ticket. Beides beschrieb ein Problem, das es
             # nicht gab: Es fehlten keine Tests, es fehlte schlicht das Kontingent. Die
             # Verifikation wird deshalb übersprungen, statt aus dem Nichts einen Befund zu
             # erzeugen.
+            #
+            # WICHTIG: Dieser Zweig muss VOR der generischen budget_aborted-Prüfung unten stehen
+            # (Bugfix, chronos_queue-Nacharbeit 20260911) - der neue Fast Circuit Breaker in
+            # agents/orchestrator/department.py setzt beim Auslösen bewusst ZUSÄTZLICH
+            # budget_aborted=True (um die Governance-Fix-/Klärungs-Schleifen ebenfalls zu
+            # überspringen, siehe dortiger Kommentar). Stünde die budget_aborted-Prüfung ZUERST,
+            # würde sie IMMER zuerst greifen und diese viel genauere, provider-spezifische
+            # Meldung wäre für genau den Fall, für den sie geschrieben wurde, unerreichbarer
+            # toter Code - der Nutzer sähe stattdessen die irreführende generische "Lauf-Budget
+            # erreicht"-Meldung, obwohl real kein Token-Budget, sondern ein API-Kontingent
+            # erschöpft war.
             reason = (
                 "Der Lauf wurde abgebrochen, weil der überwiegende Teil der Agenten-Aufrufe an "
                 "erschöpften API-Kontingenten bzw. fehlenden API-Schlüsseln scheiterte - nicht "
@@ -962,6 +962,18 @@ class Orchestrator(
             budget_aborted = True  # nutzt die bestehenden Abbruch-Pfade (kein "✅ Fertig!")
             log_decision(project_dir, "provider_exhaustion_breaker_tripped", reason)
             notify(f"🛑 [red]{reason}[/red]")
+        elif budget_aborted or manually_cancelled:
+            reason = self._budget_or_cancel_reason(
+                budget_aborted, manually_cancelled,
+                "während der Fachbereichs-Phasen oder der Governance-Fix-Schleife",
+                start_tokens=run_start_tokens,
+            )
+            verification_summary = (
+                "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n"
+                f"- 🚫 Übersprungen: {reason}."
+            )
+            verification_ok = False
+            log_decision(project_dir, "budget_or_cancel_aborted", reason)
         else:
             results, verification_summary, budget_aborted, manually_cancelled, verification_ok = await self._run_verification_loop(
                 project_dir=project_dir,
@@ -1166,6 +1178,26 @@ class Orchestrator(
                 f"{task_summary[:150]}: {self._budget_exceeded_label(run_start_tokens)} erreicht "
                 f"({self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf verbraucht).",
             )
+            if getattr(self, "_provider_exhausted_this_run", False):
+                # Team-Optimierung (chronos_queue-Retrospektive, 20260911): ein Sofortabbruch
+                # durch den Fast Circuit Breaker ist ein INFRASTRUKTUR-Blocker (kein Provider
+                # hatte noch Kapazität), kein Qualitätsmangel eines Agenten - core/optimization_
+                # advisor.py/core/team_retro.py sollen das künftig als solchen erkennen, statt
+                # betroffene Agenten fälschlich als "schlecht performend" einzustufen (siehe
+                # core/provider_exhaustion.py für dieselbe Trennung auf Einzelergebnis-Ebene).
+                record_lesson(
+                    project_slug=self.last_project_slug,
+                    category="infrastructure_blocker",
+                    detail=(
+                        "Lauf durch Fast Circuit Breaker sofort abgebrochen (PROVIDER_EXHAUSTION_"
+                        "CONSECUTIVE_LIMIT, config.py): mehrere Agenten in Folge bzw. eine "
+                        "kritische Rolle scheiterten an provider_exhausted, weil KEIN "
+                        "konfigurierter Provider mehr Kapazität/Guthaben hatte. Kein Agenten- "
+                        "oder Code-Defekt - vor dem nächsten Lauf Kontingent/Guthaben prüfen "
+                        "(core/capacity_gate.py verhindert einen erneuten Fehlstart bereits vor "
+                        "dem Loslegen)."
+                    ),
+                )
         elif manually_cancelled:
             notify("⏹️ [bold red]Lauf manuell abgebrochen:[/bold red] Retrospektive & Selbstoptimierung werden übersprungen.")
         else:
@@ -1279,9 +1311,12 @@ class Orchestrator(
                 "empfohlenen Modell."
             )
 
+        provider_exhaustion_section = self._build_provider_exhaustion_report()
+
         final_output = (
             f"{final_solution}\n\n"
             f"---\n\n"
+            + (f"{provider_exhaustion_section}\n\n---\n\n" if provider_exhaustion_section else "")
             + (f"{real_files_section}\n\n---\n\n" if real_files_section else "")
             + (f"{clarification_section}\n\n---\n\n" if clarification_section else "")
             + (f"{collision_section}\n\n---\n\n" if collision_section else "")
@@ -1330,6 +1365,7 @@ class Orchestrator(
                 verification_summary=verification_summary,
                 clarification_questions=self.last_clarification_questions,
                 lint_signature=getattr(self, "last_lint_signature", []),
+                provider_exhausted=bool(getattr(self, "_provider_exhausted_this_run", False)),
             )
         except Exception as e:
             notify(f"⚠️ [dim yellow]Projekt-Historie / State-Checkpoint (save_project_checkpoint) konnte nicht aktualisiert werden: {e}[/dim yellow]")

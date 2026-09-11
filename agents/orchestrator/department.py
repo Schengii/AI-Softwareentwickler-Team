@@ -11,8 +11,14 @@ from collections.abc import Callable
 
 from agents.department_lead_agent import DEPARTMENT_DEFINITIONS, DepartmentLeadAgent
 from agents.orchestrator.constants import PHASE_ORDER
-from config import ENABLE_DEPARTMENT_LEAD_EXECUTION, ENABLE_TASK_COMPLEXITY_SCALING
+from config import (
+    CRITICAL_AGENT_IDS,
+    ENABLE_DEPARTMENT_LEAD_EXECUTION,
+    ENABLE_TASK_COMPLEXITY_SCALING,
+    PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT,
+)
 from core.message_bus import AgentResult, AgentTask
+from core.provider_exhaustion import FAILURE_CLASS_PROVIDER_EXHAUSTED
 from core.task_manager import is_micro_task
 
 
@@ -64,6 +70,28 @@ class DepartmentMixin:
         # LLM-Aufruf.
         task_is_micro = ENABLE_TASK_COMPLEXITY_SCALING and is_micro_task(agent_tasks)
 
+        # Schneller Circuit Breaker (PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT, config.py): zählt
+        # provider_exhausted-Fehlschläge IN FOLGE über die gesamte Fachbereichs-Hierarchie hinweg
+        # (nicht nur innerhalb einer einzelnen Phase/Welle) - siehe Konstanten-Docstring für den
+        # realen Fund, der das motiviert hat.
+        consecutive_provider_exhausted = 0
+
+        def _register_result_for_breaker(res: AgentResult) -> bool:
+            """Aktualisiert den Zähler und meldet True, sobald der Lauf SOFORT abgebrochen
+            werden muss: entweder N Fehlschläge in Folge, oder bereits EIN Fehlschlag einer
+            kritischen Rolle (CRITICAL_AGENT_IDS) - ohne sie entsteht ohnehin kein tragfähiges
+            Fundament, ein Warten auf einen zweiten Fehlschlag verschwenkt nur weitere Tokens."""
+            nonlocal consecutive_provider_exhausted
+            if res.failure_class != FAILURE_CLASS_PROVIDER_EXHAUSTED:
+                consecutive_provider_exhausted = 0
+                return False
+            consecutive_provider_exhausted += 1
+            if res.agent_id in CRITICAL_AGENT_IDS:
+                return True
+            return consecutive_provider_exhausted >= PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT
+
+        provider_exhausted_abort = False
+
         for dept_id, phase_label, icon, run_mode in PHASE_ORDER:
             # _generation_budget_exceeded statt _run_budget_exceeded: reserviert einen Anteil
             # von MAX_RUN_TOKENS (VERIFICATION_TOKEN_RESERVE_RATIO, config.py) exklusiv für die
@@ -111,6 +139,9 @@ class DepartmentMixin:
             if ENABLE_DEPARTMENT_LEAD_EXECUTION and not skip_lead_layer:
                 delegation = await self._run_department_delegation(lead, task_summary, member_tasks, project_dir)
                 all_results.append(delegation)
+                if _register_result_for_breaker(delegation):
+                    provider_exhausted_abort = True
+                    break
                 if delegation.success and delegation.content:
                     notify(f"  📤 [cyan]{lead.name} delegiert:[/cyan] {self._first_line(delegation.content)}")
                     for task in member_tasks:
@@ -160,6 +191,10 @@ class DepartmentMixin:
                     if collision_sink is not None:
                         for path, agents in collisions.items():
                             collision_sink.append({"phase": phase_label, "path": path, "agents": agents})
+                for res in member_results:
+                    if _register_result_for_breaker(res):
+                        provider_exhausted_abort = True
+                        break
             else:
                 member_results = []
                 for task in member_tasks:
@@ -170,6 +205,10 @@ class DepartmentMixin:
                     dur = time.monotonic() - start_t
                     member_results.append(res)
                     notify(self._status_notify_line("✅ [green]Fertig[/green]", "❌ [red]Fehler[/red]", agent_name, dur, res.success, res.error))
+
+                    if _register_result_for_breaker(res):
+                        provider_exhausted_abort = True
+                        break
 
                     # Realer Fund: die Budget-Prüfung lief bisher NUR einmal am Anfang jeder
                     # Fachbereichs-Phase (siehe Schleifenkopf oben) - bei mehreren SEQUENZIELL
@@ -201,20 +240,44 @@ class DepartmentMixin:
             running_context = (running_context + self._format_results_for_review(member_results)[:2000])[-3000:]
 
             # ── Echte Konsolidierung durch den Teamleiter ──
-            # "and not budget_aborted": wurde das Budget gerade eben MITTEN in der sequenziellen
-            # Mitglieder-Schleife oben überschritten, spart der zusätzliche Konsolidierungs-
-            # Aufruf hier den letzten möglichen Tokenverbrauch dieser Phase ein - konsistent
-            # mit dem äußeren Phasenkopf, der ab der NÄCHSTEN Iteration ohnehin komplett
-            # überspringt.
-            if ENABLE_DEPARTMENT_LEAD_EXECUTION and not skip_lead_layer and not budget_aborted:
+            # "and not budget_aborted and not provider_exhausted_abort": wurde das Budget gerade
+            # eben MITTEN in der sequenziellen Mitglieder-Schleife oben überschritten ODER hat der
+            # Fast-Circuit-Breaker (PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT) gerade ausgelöst, spart
+            # der zusätzliche Konsolidierungs-Aufruf hier den letzten möglichen Tokenverbrauch
+            # dieser Phase ein - konsistent mit dem äußeren Phasenkopf, der ab der NÄCHSTEN
+            # Iteration ohnehin komplett überspringt.
+            if ENABLE_DEPARTMENT_LEAD_EXECUTION and not skip_lead_layer and not budget_aborted and not provider_exhausted_abort:
                 consolidation = await self._run_department_consolidation(lead, member_results, project_dir)
                 all_results.append(consolidation)
-                if consolidation.success and consolidation.content:
+                if _register_result_for_breaker(consolidation):
+                    provider_exhausted_abort = True
+                elif consolidation.success and consolidation.content:
                     notify(f"  📥 [bold green]{lead.name} konsolidiert:[/bold green] {self._first_line(consolidation.content)}")
                 else:
                     notify(f"  ⚠️ [yellow]{lead.name} konnte den Bereich nicht konsolidieren ({consolidation.error}).[/yellow]")
             else:
                 notify(f"  📥 [dim]{phase_label} abgeschlossen ({len(member_results)} Ergebnisse).[/dim]")
+
+            if provider_exhausted_abort:
+                # Fast Circuit Breaker: KEINE weiteren Fachbereichs-Phasen mehr aufrufen, wenn das
+                # Fundament (kritische Rolle ODER mehrere Aufrufe in Folge) mangels Provider-
+                # Kapazität nicht erzeugt werden konnte. `budget_aborted=True` nutzt dieselben,
+                # bereits vorhandenen Graceful-Degradation-Pfade des Aufrufers (Governance-Fix-
+                # Schleife und Verifikation werden übersprungen, die bisherigen Ergebnisse aber
+                # trotzdem ausgeliefert) - `self._provider_exhausted_this_run`/
+                # `self._provider_breaker_tripped` (core/provider_exhaustion.py-Flags, siehe
+                # agents/orchestrator/__init__.py) machen zusätzlich sichtbar, DASS speziell eine
+                # Kontingent-Erschöpfung und kein generisches Budgetlimit die Ursache war.
+                self._provider_exhausted_this_run = True
+                self._provider_breaker_tripped = True
+                budget_aborted = True
+                notify(
+                    "🛑 [bold red]Sofortabbruch:[/bold red] mehrere Agenten in Folge (bzw. eine "
+                    "kritische Rolle) scheiterten an einer API-Kontingent-Erschöpfung - kein "
+                    "Provider hat noch Kapazität. Keine weiteren Fachbereiche werden mehr "
+                    "aufgerufen, um nicht weiter sinnlos Tokens zu verbrauchen."
+                )
+                break
 
         return all_results, file_owners, budget_aborted, manually_cancelled
 

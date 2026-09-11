@@ -139,3 +139,72 @@ class TestOrchestratorIntegration:
 def test_schwelle_ist_konfigurierbar(schwelle, erwartet):
     welle = [_kontingent()] * 6 + [_ok()] * 4
     assert should_trip_breaker(welle, schwelle) is erwartet
+
+
+class TestVerificationSummaryPrioritaet:
+    """
+    Regressionsschutz (Bugfix, chronos_queue-Nacharbeit 20260911): Der neue Fast Circuit
+    Breaker in agents/orchestrator/department.py setzt beim Auslösen bewusst ZUSÄTZLICH
+    budget_aborted=True (um Governance-Fix-/Klärungs-Schleifen ebenfalls zu überspringen).
+    agents/orchestrator/__init__.py prüfte `budget_aborted or manually_cancelled` bisher VOR
+    `_provider_breaker_tripped` - die viel genauere, provider-spezifische Verifikations-
+    Meldung war dadurch für genau den Fall, für den sie geschrieben wurde, unerreichbar; der
+    Nutzer sah stattdessen die irreführende generische "Lauf-Budget erreicht"-Meldung, obwohl
+    real kein Token-Budget, sondern ein API-Kontingent erschöpft war.
+    """
+
+    def test_provider_meldung_hat_vorrang_vor_generischer_budget_meldung(self):
+        import asyncio
+        import shutil
+        import tempfile
+        import unittest.mock as mock
+
+        from agents.orchestrator import Orchestrator
+        from core.llm_factory import LLMResponse
+        from core.message_bus import AgentTask
+        from core.workspace import WorkspaceManager
+
+        class _FakeLLM:
+            model_name = "fake-model"
+
+            async def generate_with_tools(self, messages, system_prompt, tools, _allow_self_fallback=True):
+                return LLMResponse(text="Fertig.", model_name=self.model_name,
+                                    prompt_tokens=1, completion_tokens=1, total_tokens=2, tool_calls=[])
+
+            async def generate_with_usage(self, prompt, system_prompt=None):
+                return LLMResponse(text="Fertig.", model_name=self.model_name,
+                                    prompt_tokens=1, completion_tokens=1, total_tokens=2)
+
+        temp_workspace = tempfile.mkdtemp()
+        try:
+            orchestrator = Orchestrator()
+            orchestrator._workspace = WorkspaceManager(temp_workspace)
+            for agent in list(orchestrator._agents.values()) + list(orchestrator._dept_leads.values()):
+                agent._llm = _FakeLLM()
+
+            async def _fake_hierarchy(self, **kwargs):
+                # Simuliert exakt das, was der Fast Circuit Breaker in department.py beim
+                # Auslösen tut: BEIDE Flags setzen, budget_aborted=True zurückgeben.
+                self._provider_exhausted_this_run = True
+                self._provider_breaker_tripped = True
+                return [], {}, True, False
+
+            with mock.patch("core.task_manager.TaskManager.decompose") as mock_decompose, \
+                 mock.patch.object(Orchestrator, "_run_department_hierarchy", _fake_hierarchy), \
+                 mock.patch("core.result_aggregator.ResultAggregator.synthesize") as mock_synth, \
+                 mock.patch("agents.orchestrator.record_lesson"):
+                # record_lesson gemockt: dieser Test triggert absichtlich den "infrastructure_
+                # blocker"-Lesson-Eintrag (agents/orchestrator/__init__.py) - ohne Mock würde ein
+                # echter Eintrag in memory/team_lessons.jsonl landen (dieselbe reale Datei, die
+                # auch echte Läufe schreiben), statt in einem isolierten Test-Fixture zu bleiben.
+                mock_decompose.return_value = (
+                    "Kurze Aufgabe", "test_proj_breaker_prio",
+                    [AgentTask(task_id="t1", agent_id="backend", description="Etwas bauen")],
+                )
+                mock_synth.return_value = ("### Fertig", 1)
+                asyncio.run(orchestrator.process("Baue etwas"))
+
+            assert "erschöpften API-Kontingenten" in orchestrator.last_verification_summary
+            assert "Lauf-Budget" not in orchestrator.last_verification_summary
+        finally:
+            shutil.rmtree(temp_workspace, ignore_errors=True)

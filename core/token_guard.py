@@ -7,10 +7,25 @@ core/token_guard.py – Token Guard & Intelligentes Quota-Lifecycle-Management
 - Zeitgesteuertes, automatisches Reaktivieren der Primärmodelle, sobald das Quota-Reset-Intervall abgelaufen ist (z. B. nach 60s für RPM/TPM oder nächstem Zyklus)
 """
 
+import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
+
+# Team-Optimierung (chronos_queue-Retrospektive, 20260911): `_exhausted_models` lebte bisher
+# NUR im RAM eines einzelnen Prozesses. Ein Provider mit 0,00 $ Guthaben (DeepSeek "Insufficient
+# Balance", OpenRouter "requires more credits") oder einem harten Tageskontingent wurde dadurch
+# bei JEDEM neuen `python main.py`-Aufruf erneut als "verfügbar" behandelt - core/capacity_gate.py
+# gab fälschlich grünes Licht, und der erste Agent, der diesen Provider zog, zerschellte erneut am
+# selben, seit Stunden bekannten Fehler. Harte Sperren (Guthaben/Tageslimit/Auth, siehe
+# _PERSIST_MIN_COOLDOWN_SECONDS) werden daher zusätzlich in dieser Datei gespiegelt und beim
+# Prozessstart wieder eingelesen. Kurze Rate-Limit-Cooldowns (Sekunden bis wenige Minuten)
+# bleiben bewusst RAM-only - die sind nach einem Prozess-Neustart ohnehin meist schon abgelaufen
+# und würden nur unnötige Datei-I/O auf jeden einzelnen 429 erzeugen.
+_DEFAULT_PERSIST_PATH = Path(__file__).resolve().parent.parent / "memory" / "provider_cooldowns.json"
+_PERSIST_MIN_COOLDOWN_SECONDS = 3600.0
 
 
 @dataclass
@@ -44,12 +59,72 @@ class TokenGuard:
         high_usage_threshold_per_call: int = 6000,
         default_cooldown_seconds: float = 60.0,
         warning_callback: Callable[[str], None] | None = None,
+        persist_path: Path | None = None,
     ):
         self.high_usage_threshold_per_call = high_usage_threshold_per_call
         self.default_cooldown_seconds = default_cooldown_seconds
         self.warning_callback = warning_callback
+        # Standardmäßig KEINE Persistenz: TokenGuard() wird auch von der Testsuite (tests/test_*.py)
+        # als "frischer, isolierter Guard" verwendet - ein implizit gelesenes/geschriebenes
+        # memory/provider_cooldowns.json würde dort Tests durch Zustand aus echten Läufen
+        # verunreinigen. Nur die globale Prozess-Instanz `token_guard` unten aktiviert Persistenz
+        # explizit über `persist_path`.
+        self.persist_path = persist_path
         self._stats: dict[str, ModelUsageStats] = {}
         self._exhausted_models: dict[str, ExhaustedModelInfo] = {}
+        self._load_persisted()
+
+    def _load_persisted(self) -> None:
+        """Liest beim Start harte, noch nicht abgelaufene Sperren aus `self.persist_path` ein
+        (Wanduhr-Zeitstempel, siehe `_save_persisted`) und rechnet sie in eine RAM-Sperre mit
+        der verbleibenden Restlaufzeit um - `is_model_exhausted()` bleibt dadurch unverändert
+        auf `time.monotonic()`-Arithmetik verlassbar."""
+        if self.persist_path is None or not self.persist_path.exists():
+            return
+        try:
+            raw = json.loads(self.persist_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        now = time.time()
+        stale = False
+        for model_name, entry in raw.items():
+            available_at = entry.get("available_at_epoch")
+            if not isinstance(available_at, (int, float)):
+                continue
+            remaining = available_at - now
+            if remaining <= 0:
+                stale = True
+                continue
+            self._exhausted_models[model_name] = ExhaustedModelInfo(
+                model_name=model_name,
+                exhausted_at=time.monotonic(),
+                cooldown_seconds=remaining,
+                reason=entry.get("reason") or "Quota erreicht (aus vorherigem Lauf, persistent)",
+            )
+        if stale:
+            self._save_persisted()  # bereits abgelaufene Einträge aus der Datei entfernen
+
+    def _save_persisted(self) -> None:
+        """Spiegelt alle aktuell RAM-erschöpften Modelle mit einem Cooldown ab
+        `_PERSIST_MIN_COOLDOWN_SECONDS` (Guthaben/Tageslimit/Auth) als Wanduhr-Zeitstempel nach
+        `self.persist_path` - kurze Rate-Limit-Cooldowns bleiben bewusst außen vor."""
+        if self.persist_path is None:
+            return
+        now_monotonic = time.monotonic()
+        hard = {
+            name: {
+                "reason": info.reason,
+                "available_at_epoch": time.time() + max(info.cooldown_seconds - (now_monotonic - info.exhausted_at), 0.0),
+                "cooldown_seconds": info.cooldown_seconds,
+            }
+            for name, info in self._exhausted_models.items()
+            if info.cooldown_seconds >= _PERSIST_MIN_COOLDOWN_SECONDS
+        }
+        try:
+            self.persist_path.parent.mkdir(parents=True, exist_ok=True)
+            self.persist_path.write_text(json.dumps(hard, indent=2, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
 
     def record_usage(
         self,
@@ -80,6 +155,7 @@ class TokenGuard:
         # Wenn ein Modell erfolgreich antwortet, ist es definitiv wieder aktiv
         if model_name in self._exhausted_models:
             del self._exhausted_models[model_name]
+            self._save_persisted()
 
         warnings = []
 
@@ -108,6 +184,7 @@ class TokenGuard:
             cooldown_seconds=cooldown,
             reason=reason
         )
+        self._save_persisted()
         msg = f"🚨 Quota-Limit für '{model_name}' erreicht ({reason}). Schalte automatisch auf Fallback-Modell um (Cooldown: {cooldown:.0f}s)!"
         if self.warning_callback:
             self.warning_callback(msg)
@@ -127,6 +204,7 @@ class TokenGuard:
         # Cooldown abgelaufen? -> Modell wieder freigeben!
         if elapsed >= info.cooldown_seconds:
             del self._exhausted_models[model_name]
+            self._save_persisted()
             msg = f"🔄 Quota-Reset: '{model_name}' wurde nach {elapsed:.0f}s Cooldown automatisch wieder reaktiviert!"
             if self.warning_callback:
                 self.warning_callback(msg)
@@ -209,5 +287,5 @@ class TokenGuard:
         }
 
 
-# Globale Instanz
-token_guard = TokenGuard()
+# Globale Instanz - aktiviert die Datei-Persistenz für harte Sperren (siehe _DEFAULT_PERSIST_PATH).
+token_guard = TokenGuard(persist_path=_DEFAULT_PERSIST_PATH)

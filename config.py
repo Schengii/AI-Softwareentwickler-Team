@@ -532,6 +532,20 @@ DEPLOY_TIMEOUT_SECONDS: float = float(os.getenv("DEPLOY_TIMEOUT_SECONDS", "300")
 # sauber beendet wird. 0 schaltet den Breaker ab (altes Verhalten).
 PROVIDER_EXHAUSTION_ABORT_RATIO: float = float(os.getenv("PROVIDER_EXHAUSTION_ABORT_RATIO", "0.6"))
 
+# Team-Optimierung (chronos_queue-Retrospektive, 20260911): PROVIDER_EXHAUSTION_ABORT_RATIO oben
+# greift nur INNERHALB einer einzelnen parallelen Welle (asyncio.gather, siehe
+# agents/orchestrator/dispatch.py) und stoppt danach nur noch die spätere Verifikation - die
+# restlichen Fachbereichs-PHASEN liefen bislang unverändert weiter. Realer Fund: obwohl bereits
+# beim 2. und 3. Agenten (architect, backend) feststand, dass KEIN Provider mehr Kapazität hatte,
+# lief der Orchestrator noch 25 Minuten lang blind weiter und rief 8 weitere Agenten nacheinander
+# auf, die alle in Timeouts/Quota-Fehlern liefen. Dieser Schwellwert gilt SEQUENZIELL über die
+# gesamte Fachbereichs-Hierarchie hinweg (agents/orchestrator/department.py.
+# _run_department_hierarchy) und bricht den KOMPLETTEN Lauf sofort ab (keine weiteren Phasen
+# mehr), sobald so viele Agenten IN FOLGE mit failure_class="provider_exhausted" scheitern - oder
+# sobald eine einzelne kritische Rolle (CRITICAL_AGENT_IDS, z.B. architect/backend) so scheitert,
+# da ohne sie kein tragfähiges Fundament entstehen kann.
+PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT: int = int(os.getenv("PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT", "2"))
+
 # ──────────────────────────────────────────
 # Fachbereichs-Teamleiter: echte Delegation & Konsolidierung per LLM-Call
 # ──────────────────────────────────────────

@@ -7,6 +7,47 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 chronos_queue-Retrospektive: persistente Cooldowns, Fast Circuit Breaker, Groq-Prompt-Kompression
+
+Aus einer Retrospektive zum `chronos_queue`-Lauf (20260911) sowie einer erneuten,
+gezielten Analyse des Frameworks danach:
+
+- **Cooldowns überlebten keinen Prozess-Neustart** (`core/token_guard.py`): `_exhausted_models`
+  lebte nur im RAM – ein Provider mit 0,00 $ Guthaben oder erschöpftem Tageskontingent galt bei
+  JEDEM neuen `python main.py` wieder als "verfügbar". Neu: harte Sperren (Guthaben/Tageslimit/
+  Auth, `cooldown_seconds >= 3600`) werden zusätzlich nach `memory/provider_cooldowns.json`
+  gespiegelt und beim Start wieder eingelesen; kurze Rate-Limit-Cooldowns bleiben bewusst
+  RAM-only. Die globale `token_guard`-Instanz aktiviert das, `TokenGuard()` (u.a. in Tests)
+  bleibt standardmäßig unpersistiert.
+- **Tages-/Guthaben-Cooldowns zu kurz bemessen** (`core/llm_factory.py`): `DAILY_QUOTA_COOLDOWN_
+  SECONDS` 4h → 12h, `BILLING_EXHAUSTION_COOLDOWN_SECONDS` 6h → 24h – ein reales Tageslimit
+  resettet typischerweise erst am nächsten Kalendertag, ein 0-$-Guthaben nie von selbst.
+- **Groq-Free-Tier-TPM-Limit bei großen Prompts** (`core/llm_factory.py`): ein über die Läufe
+  gewachsener System-Prompt + Toolkatalog + Werkzeug-Loop-History (real 30k-50k Tokens) ließ
+  Groq sofort mit 429 abbrechen, bevor core/rate_limiter.py (das nur die Anzahl der Aufrufe
+  begrenzt) überhaupt greifen konnte. Neu: `_compress_prompt_for_groq()`/
+  `_compress_messages_for_groq()` kürzen auf `GROQ_PROMPT_TOKEN_BUDGET` (Default 6000 Tokens),
+  behalten Anfang und Ende vollständig, tool_calls/tool_call_id bleiben strukturell unangetastet.
+- **Fachbereichs-Phasen liefen nach Kontingent-Erschöpfung blind weiter** (`agents/orchestrator/
+  department.py`, `config.PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT`): der bestehende Breaker
+  (`PROVIDER_EXHAUSTION_ABORT_RATIO`) griff nur innerhalb einer einzelnen parallelen Welle. Neu:
+  ein sequenzieller Fast Circuit Breaker über die GESAMTE Fachbereichs-Hierarchie hinweg bricht
+  den Lauf sofort ab, sobald mehrere Agenten in Folge (oder eine einzelne kritische Rolle,
+  `CRITICAL_AGENT_IDS`) an `provider_exhausted` scheitern – inkl. einer transparenten
+  Diagnose-Tabelle je Provider im Abschlussbericht (`agents/orchestrator/reporting.py`) und
+  einem eigenen `PROJECT_STATE.md`-Status (`core/project_status.py`).
+- **Bugfix (Nacharbeit, direkt im Rahmen dieser Analyse gefunden):** Der neue Fast Circuit
+  Breaker setzt beim Auslösen bewusst zusätzlich `budget_aborted=True` (um Governance-Fix-/
+  Klärungs-Schleifen ebenfalls zu überspringen). `agents/orchestrator/__init__.py` prüfte die
+  generische `budget_aborted`-Bedingung bisher VOR der provider-spezifischen – die eigens dafür
+  geschriebene, genauere Verifikations-Meldung war dadurch für genau den Fall, für den sie
+  gebaut wurde, unerreichbar; Nutzer sahen stattdessen die irreführende generische "Lauf-Budget
+  erreicht"-Meldung, obwohl real kein Token-Budget, sondern ein API-Kontingent erschöpft war.
+  Reihenfolge getauscht, Regressionstest ergänzt (`tests/test_provider_breaker.py::
+  TestVerificationSummaryPrioritaet`).
+
+---
+
 ## 🟢 Ungültige API-Keys, aufgeblähte Verlaufs-Historie, monolithische Verifikations-Datei
 
 Aus `ki_team_verbesserungsanalyse.md` (Stufe-0-#1 sowie Teil 5.1/5.5, 10.09.2026) – drei

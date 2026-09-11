@@ -5,10 +5,11 @@ mit präziser Token-Messung und automatischer Failover-Kette.
 
 import asyncio
 import json
+import os
 import re
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import httpx
@@ -264,8 +265,14 @@ MAX_EXHAUSTION_WAIT_SECONDS = 20.0
 # (unnötig kompliziert für denselben Zweck: EINEN Lauf zuverlässig nicht mehr auf diesem Modell
 # hängen zu lassen, ohne den Prozess bei einem schneller zurückgesetzten Kontingent unnötig lang
 # zu blockieren).
+# Team-Optimierung (chronos_queue-Retrospektive, 20260911): auf 12h angehoben (vorher 4h) - der
+# Cooldown wird seit dieser Härtung zusätzlich nach memory/provider_cooldowns.json persistiert
+# (siehe core/token_guard.py) und core/capacity_gate.py prüft ihn VOR dem Start eines neuen Laufs.
+# Ein zu kurzer Cooldown ließ das Gate ein Tageskontingent schon nach wenigen Stunden wieder als
+# "verfügbar" gelten, obwohl das reale Tageslimit typischerweise erst am nächsten Kalendertag
+# zurückgesetzt wird.
 _DAILY_QUOTA_MARKER = "PerDay"
-DAILY_QUOTA_COOLDOWN_SECONDS = 4 * 3600.0
+DAILY_QUOTA_COOLDOWN_SECONDS = 12 * 3600.0
 
 
 # Realer Fund (Smoke-Lauf 2026-09-10, logs/runs/20260910_105833_smoke_jwt_router.jsonl): nur
@@ -283,7 +290,13 @@ _BILLING_EXHAUSTION_MARKERS = (
     # zerschellte binnen der nächsten Minute erneut am selben harten Kontingent-Fehler.
     "api usage limits", "usage limit", "credit balance too low",
 )
-BILLING_EXHAUSTION_COOLDOWN_SECONDS = 6 * 3600.0
+# Team-Optimierung (chronos_queue-Retrospektive, 20260911): auf 24h angehoben (vorher 6h) - ein
+# 0,00-$-Guthaben (DeepSeek "Insufficient Balance", OpenRouter "requires more credits") erholt
+# sich NIE von selbst, nur ein manuelles Aufladen hilft. Der lange Cooldown verhindert lediglich,
+# dass core/capacity_gate.py denselben toten Key stündlich neu als "verfügbar" einstuft, seit
+# dieser Härtung persistiert über memory/provider_cooldowns.json auch über Prozess-Neustarts
+# hinweg (siehe core/token_guard.py).
+BILLING_EXHAUSTION_COOLDOWN_SECONDS = 24 * 3600.0
 
 # ki_team_verbesserungsanalyse.md, Stufe-0-#1: `_provider_available()` prüfte bislang für Claude
 # NUR `bool(ANTHROPIC_API_KEY)` - ob der Key tatsächlich gültig ist, erfuhr das Team erst live
@@ -1385,6 +1398,82 @@ class GeminiClient:
         return res.text
 
 
+# ── Prompt-Kompression für Groq-Fallbacks (chronos_queue-Retrospektive, 20260911) ──────────
+#
+# Realer Fund: Groq hat im Free-Tier ein strenges TPM-Limit (Tokens Pro Minute). Fällt Gemini
+# komplett aus (Tageskontingent erschöpft) und der Orchestrator schickt einen über die Läufe
+# gewachsenen System-Prompt + vollständigen Toolkatalog + agentische Werkzeug-Loop-History
+# (real beobachtet: 30.000-50.000 Tokens auf einmal) an Groq, wirft Groq SOFORT einen
+# 429-Rate-Limit-Fehler, bevor überhaupt eine Antwort zustande kommt - core/rate_limiter.py
+# hilft hier nicht, das begrenzt nur die ANZAHL der Aufrufe pro Minute, nicht die GRÖSSE eines
+# einzelnen Aufrufs. Ein grober Zeichen-Schätzer (1 Token ≈ 4 Zeichen) reicht für diese reine
+# Sicherheitsmarge, ein exaktes Tokenizing wäre unnötiger Aufwand für einen Fallback-Pfad.
+GROQ_PROMPT_TOKEN_BUDGET = int(os.getenv("GROQ_PROMPT_TOKEN_BUDGET", "6000"))
+_CHARS_PER_TOKEN_ESTIMATE = 4
+
+
+def _compress_text_for_groq(text: str, budget_chars: int) -> str:
+    """Kürzt EINEN Text auf `budget_chars` Zeichen - behält Anfang (meist die eigentliche
+    Aufgabenstellung/das erste Tool-Ergebnis) UND Ende (meist die abschließende Anweisung bzw.
+    das geforderte Ausgabeformat) vollständig, entfernt nur die Mitte. Eine reine Kopf-Kürzung
+    würde oft gerade die entscheidende letzte Anweisung ("Antworte NUR mit...") abschneiden."""
+    if budget_chars <= 0:
+        return ""
+    if len(text) <= budget_chars:
+        return text
+    marker = "\n…[wegen Groq-TPM-Limit gekürzt]…\n"
+    head = int(budget_chars * 0.65)
+    tail = budget_chars - head - len(marker)
+    if tail <= 0:
+        return text[:budget_chars]
+    return text[:head] + marker + text[-tail:]
+
+
+def _compress_prompt_for_groq(prompt: str, system_prompt: str | None) -> tuple[str, str | None]:
+    """Komprimiert `prompt`/`system_prompt` GEMEINSAM auf GROQ_PROMPT_TOKEN_BUDGET, bevor sie an
+    Groq gesendet werden (GroqClient.generate_with_usage) - reduziert, WIE OFT Groqs TPM-Limit
+    überhaupt erst erreicht wird, ergänzt core/rate_limiter.py (das nur REAGIERT, nachdem eine
+    Minute bereits zu viele AUFRUFE gesehen hat, nicht die GRÖSSE eines einzelnen Aufrufs)."""
+    budget_chars = GROQ_PROMPT_TOKEN_BUDGET * _CHARS_PER_TOKEN_ESTIMATE
+    if len(prompt) + len(system_prompt or "") <= budget_chars:
+        return prompt, system_prompt
+    system_budget = budget_chars // 3 if system_prompt else 0
+    compressed_system = _compress_text_for_groq(system_prompt, system_budget) if system_prompt else None
+    prompt_budget = max(budget_chars - len(compressed_system or ""), budget_chars // 3)
+    compressed_prompt = _compress_text_for_groq(prompt, prompt_budget)
+    return compressed_prompt, compressed_system
+
+
+def _compress_messages_for_groq(
+    messages: list["AgentMessage"], system_prompt: str | None,
+) -> tuple[list["AgentMessage"], str | None]:
+    """Komprimiert die agentische Werkzeug-Loop-History für einen Groq-Aufruf
+    (GroqClient.generate_with_tools) auf GROQ_PROMPT_TOKEN_BUDGET - kürzt nur den `text` jedes
+    Turns (tool_calls/tool_call_id bleiben strukturell unangetastet, sonst würde das
+    OpenAI-kompatible Tool-Protokoll inkonsistent, wenn zu einem gekürzten tool_call das
+    zugehörige Ergebnis fehlt). Neuere Turns sind für die aktuelle Entscheidung wichtiger als
+    ältere, werden hier aber der Einfachheit halber gleich behandelt (gleichmäßiges Pro-Turn-
+    Budget) - ausreichend, um innerhalb des Groq-Burst-Limits zu bleiben, ohne die Reihenfolge/
+    Struktur der History aufwendig neu zu gewichten."""
+    budget_chars = GROQ_PROMPT_TOKEN_BUDGET * _CHARS_PER_TOKEN_ESTIMATE
+    total_len = len(system_prompt or "") + sum(len(m.text or "") for m in messages)
+    if total_len <= budget_chars:
+        return messages, system_prompt
+
+    compressed_system = _compress_text_for_groq(system_prompt, budget_chars // 3) if system_prompt else None
+    remaining = max(budget_chars - len(compressed_system or ""), 0)
+    if remaining <= 0 or not messages:
+        return messages, compressed_system
+
+    per_message_budget = max(remaining // max(len(messages), 1), 200)
+    compressed: list[AgentMessage] = []
+    for msg in messages:
+        if msg.text and len(msg.text) > per_message_budget:
+            msg = replace(msg, text=_compress_text_for_groq(msg.text, per_message_budget))
+        compressed.append(msg)
+    return compressed, compressed_system
+
+
 class GroqClient:
     """High-Speed Groq Inferenz Client (Llama 3, Qwen, GPT-OSS)."""
 
@@ -1409,6 +1498,12 @@ class GroqClient:
                     RuntimeError(token_guard.get_exhausted_reason(f"groq:{self.model_name}") or "bekannt nicht verfügbar"),
                 )
             return await _cross_provider_failover_with_usage("groq", prompt, system_prompt)
+
+        # Prompt-Kompression VOR dem Senden (siehe Modul-Kommentar über _compress_text_for_groq
+        # oben) - reduziert, wie oft Groqs striktes Free-Tier-TPM-Limit überhaupt erst erreicht
+        # wird, wenn ein über die Läufe gewachsener Prompt (z.B. Gemini-Ausfall + große
+        # History) sonst in einem Rutsch gesendet würde.
+        prompt, system_prompt = _compress_prompt_for_groq(prompt, system_prompt)
 
         messages = []
         if system_prompt:
@@ -1479,6 +1574,10 @@ class GroqClient:
                     RuntimeError(token_guard.get_exhausted_reason(f"groq:{self.model_name}") or "bekannt nicht verfügbar"),
                 )
             return await _cross_provider_failover_with_tools("groq", messages, system_prompt, tools)
+
+        # Prompt-Kompression VOR dem Senden - siehe _compress_messages_for_groq-Docstring oben.
+        # Kürzt nur den Text ALTER Turns, tool_calls/tool_call_id bleiben strukturell erhalten.
+        messages, system_prompt = _compress_messages_for_groq(messages, system_prompt)
 
         try:
             response = await asyncio.to_thread(

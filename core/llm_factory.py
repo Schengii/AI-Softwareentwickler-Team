@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import re
+import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -1637,6 +1638,41 @@ class GroqClient:
         return res.text
 
 
+_shared_anthropic_client: Any = None
+_shared_anthropic_client_lock = threading.Lock()
+
+
+def _get_shared_anthropic_client() -> Any:
+    """
+    EIN einziger, geteilter `anthropic.AsyncAnthropic()`-Client für ALLE `ClaudeClient`-
+    Instanzen im Prozess statt einem frisch konstruierten pro Instanz.
+
+    Realer Fund (KI-Team-Gesamtanalyse, per cProfile verifiziert): `Orchestrator()` konstruiert
+    einen `ClaudeClient` für JEDEN Agenten, der auf ein Claude-Tier-Modell konfiguriert ist
+    (bis zu ~15 Stück). Jede `anthropic.AsyncAnthropic()`-Instanz baut intern einen eigenen
+    `httpx.Client` mit einem KOMPLETT FRISCHEN SSL-Kontext -
+    `_ssl._SSLContext.load_verify_locations()` liest dabei jedes Mal das gesamte CA-Bundle neu
+    von der Platte. Auf diesem System gemessen: ~0,7s PRO Instanz, macht 15 × ~0,7s ≈ 10,5s
+    allein für redundantes SSL-Setup bei JEDER EINZELNEN `Orchestrator()`-Konstruktion
+    (Gesamt-Konstruktionszeit ohne diesen Fix: ~11-13s). Der Client selbst ist bezüglich des
+    Modellnamens zustandslos (der wird erst PRO AUFRUF an `messages.create()` übergeben) - ein
+    einziger geteilter Client ist deshalb unproblematisch und spart diese ~10s bei jeder
+    Konstruktion ein. Das ist kein rein kosmetischer Mikro-Fix: `interface/web_dashboard.py`
+    erzeugt für JEDEN Dashboard-Job eine frische `Orchestrator()`-Instanz (siehe deren
+    `_execute_job()`-Docstring) - jeder Job wartete dadurch bisher ~10s länger, bevor überhaupt
+    der erste echte LLM-Aufruf startete, und dieselbe Verzögerung ließ mehrere zeitkritische
+    Dashboard-Tests (Cancel/Concurrency, feste 5s-Timeouts) reproduzierbar fehlschlagen, obwohl
+    der jeweils getestete Mechanismus selbst korrekt arbeitete.
+    """
+    global _shared_anthropic_client
+    if _shared_anthropic_client is None:
+        with _shared_anthropic_client_lock:
+            if _shared_anthropic_client is None:
+                import anthropic
+                _shared_anthropic_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    return _shared_anthropic_client
+
+
 class ClaudeClient:
     """Wrapper für die Anthropic Claude API mit Token-Tracking & Fallback."""
 
@@ -1645,8 +1681,7 @@ class ClaudeClient:
         self._client = None
         if ANTHROPIC_API_KEY:
             try:
-                import anthropic
-                self._client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+                self._client = _get_shared_anthropic_client()
             except ImportError:
                 self._client = None
 

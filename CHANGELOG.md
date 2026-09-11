@@ -7,6 +7,46 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 `Orchestrator()`-Konstruktion 15x langsamer als nötig: geteilter Anthropic-Client
+
+Bei der Untersuchung von 6 reproduzierbar fehlschlagenden Dashboard-Tests
+(`tests/test_dashboard_cancel.py`, `tests/test_dashboard_concurrency.py`,
+`tests/test_dashboard_token_progress.py` – alle mit festen 5s-Timeouts für Cancel-/
+Concurrency-Verhalten) per cProfile-Analyse gefunden, nicht durch einen Report:
+
+- **`core/llm_factory.py.ClaudeClient.__init__()` konstruierte für JEDEN Claude-Tier-Agenten
+  eine eigene `anthropic.AsyncAnthropic()`-Instanz** – `Orchestrator()` legt bis zu ~15 solcher
+  Instanzen an (eine pro so konfiguriertem Agenten). Jede Instanz baut intern einen eigenen
+  `httpx.Client` mit einem KOMPLETT FRISCHEN SSL-Kontext; `_ssl._SSLContext.
+  load_verify_locations()` liest dabei jedes Mal das gesamte CA-Bundle neu von der Platte –
+  gemessen ~0,7s PRO Aufruf, 15× macht ~10,5s allein für redundantes SSL-Setup. Eine einzelne
+  `Orchestrator()`-Konstruktion dauerte dadurch **~11-13 Sekunden**, jede weitere im selben
+  Prozess genauso (kein Caching).
+- **Realer Produktivitäts-Impact, nicht nur ein Test-Artefakt:** `interface/web_dashboard.py`
+  erzeugt für JEDEN Dashboard-Job eine frische `Orchestrator()`-Instanz (bewusstes Design für
+  Job-Isolation) – jeder Job wartete dadurch bisher ~10s länger, bevor überhaupt der erste
+  echte LLM-Aufruf startete. Dieselbe Verzögerung ließ die genannten zeitkritischen Dashboard-
+  Tests reproduzierbar fehlschlagen, obwohl der jeweils getestete Cancel-/Concurrency-
+  Mechanismus selbst korrekt arbeitete.
+- **Fix:** `core/llm_factory._get_shared_anthropic_client()` – EIN einziger, geteilter
+  `anthropic.AsyncAnthropic()`-Client für den gesamten Prozess (der Client ist bezüglich des
+  Modellnamens zustandslos, der wird erst pro Aufruf an `messages.create()` übergeben).
+  Gemessen: erste `Orchestrator()`-Konstruktion danach ~2,2s (einmaliger Shared-Client-Aufbau),
+  jede weitere ~0,003s statt ~11s.
+- **Nebenfund, ebenfalls behoben (`tests/test_dashboard_cancel.py`):**
+  `test_cancel_already_done_job_returns_404` verwarf den Rückgabewert eines
+  `_wait_for_status(..., ("done", "cancelled", "error"))`-Aufrufs, statt ihn zu prüfen – lief
+  der Job wegen der oben genannten Verzögerung NICHT rechtzeitig zu Ende, schlug der Test mit
+  dem irreführenden `AssertionError: 200 != 404` fehl statt mit einer ehrlichen Meldung, dass
+  der Job schlicht nicht fertig wurde. Fehlende Vorbedingungs-Prüfung ergänzt.
+
+Verifikation: 158 gezielte Tests (Dashboard-Suite, `test_claude_billing_exhaustion.py`,
+`test_cross_provider_quota_failover.py`, `test_model_preflight.py`, `test_core.py` sowie alle
+weiteren `ANTHROPIC_API_KEY`-berührenden Testdateien) grün, `ruff check` für das gesamte
+Projekt fehlerfrei.
+
+---
+
 ## 🟢 chronos_queue-Retrospektive: persistente Cooldowns, Fast Circuit Breaker, Groq-Prompt-Kompression
 
 Aus einer Retrospektive zum `chronos_queue`-Lauf (20260911) sowie einer erneuten,

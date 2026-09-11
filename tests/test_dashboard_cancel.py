@@ -146,10 +146,22 @@ class TestDashboardCancel(unittest.TestCase):
         self._wait_for_status(job_id, ("running",))
         # Sofort abbrechen, damit der Job schnell fertig wird, statt die volle Fake-Laufzeit abzuwarten.
         self._post_json(f"/api/cancel/{job_id}")
-        self._wait_for_status(job_id, ("done", "cancelled", "error"))
+        final = self._wait_for_status(job_id, ("done", "cancelled", "error"))
+        # Bugfix (bei der KI-Team-Gesamtanalyse gefunden): dieser Rückgabewert wurde bisher
+        # verworfen - lief der Job unter Last (z.B. wenig freier RAM/CPU-Kontention, real
+        # reproduziert) NICHT innerhalb der 5s-Frist tatsächlich zu Ende, war er beim zweiten
+        # cancel()-Aufruf unten weiterhin "running" und cancel() gab dafür KORREKT 200 zurück
+        # (kein Server-Bug) - der Test schlug dann mit dem irreführenden "200 != 404" fehl,
+        # statt mit einer ehrlichen Meldung, dass der Job schlicht nicht rechtzeitig fertig
+        # wurde. Diese Vorbedingung wird jetzt explizit geprüft, BEVOR der eigentliche Fall
+        # (Cancel auf einen bereits abgeschlossenen Job) getestet wird.
+        self.assertIn(
+            final["status"], ("done", "cancelled", "error"),
+            msg=f"Job wurde nicht innerhalb des Timeouts abgeschlossen: {final}",
+        )
 
         status, data = self._post_json(f"/api/cancel/{job_id}")
-        self.assertEqual(status, 404)
+        self.assertEqual(status, 404, msg=data)
 
 
 if __name__ == "__main__":

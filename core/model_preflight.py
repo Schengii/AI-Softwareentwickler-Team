@@ -195,3 +195,118 @@ def format_preflight_report(ergebnisse: list[TierStatus]) -> str:
     if not abgewertet and not unerreichbar:
         zeilen.append("✅ Alle Stufen antworten mit dem konfigurierten Modell.")
     return "\n".join(zeilen)
+
+
+# ── Lauf-Empfehlung (Sicherheitsmaßnahme, KI-Team-Gesamtanalyse) ───────────────────────────
+# Der reine Preflight-Bericht oben listet nur auf, WAS gerade erreichbar ist - er beantwortet
+# nicht die eigentliche Frage, die sich ein Nutzer VOR dem Tippen einer neuen Projektaufgabe
+# stellt: "Lohnt sich das gerade überhaupt, oder verbrenne ich nur Zeit/Tokens an einem Team,
+# das ohnehin auf schwächste Fallback-Modelle abrutscht oder komplett steht?" Realer Fund
+# (CertPulse, 12.09.2026, fehleranalyse_ki_team.md): ein Lauf mit 319.244 verbrauchten Tokens
+# lieferte am Ende NICHTS ab - wäre die eingeschränkte Verfügbarkeit VOR dem Start sichtbar
+# gewesen, hätte der Nutzer den Lauf gar nicht erst gestartet oder zumindest gewusst, worauf
+# er sich einlässt.
+#
+# Nur die drei Komplexitätsstufen + der Orchestrator zählen für die Ampel - DeepSeek/
+# OpenRouter (siehe check_independent_failover_providers) sind optionale Cross-Provider-
+# Ausweichrouten, kein Kernbestandteil der Stufen-Zuordnung; ihr Ausfall allein macht das
+# Team nicht arbeitsunfähig.
+CORE_TIERS: tuple[str, ...] = ("LITE", "STANDARD", "HEAVY", "ORCHESTRATOR")
+
+
+@dataclass
+class RunReadiness:
+    """Ampel-Einschätzung: lohnt sich JETZT ein neuer Projektlauf?"""
+    level: str  # "green" | "yellow" | "red"
+    headline: str
+    reasons: list[str] = field(default_factory=list)
+
+    @property
+    def should_confirm(self) -> bool:
+        """True, wenn der Nutzer vor dem Start eine explizite Bestätigung sehen sollte
+        (rot: nichts erreichbar) statt sich nur informell zu informieren (gelb: geht, aber
+        eingeschränkt)."""
+        return self.level == "red"
+
+
+def assess_run_readiness(ergebnisse: list[TierStatus]) -> RunReadiness:
+    """
+    Verdichtet die Preflight-Ergebnisse zu einer einfachen Drei-Stufen-Empfehlung:
+
+    - 🔴 rot: KEINE der Kernstufen (LITE/STANDARD/HEAVY/ORCHESTRATOR) antwortet überhaupt -
+      das Team ist faktisch arbeitsunfähig, ein Start würde nur an der ersten Agenten-
+      Anfrage scheitern.
+    - 🟡 gelb: mindestens eine Kernstufe antwortet, aber nicht alle, oder mindestens eine
+      antwortet mit einem anderen als dem konfigurierten Modell (stille Abwertung) - ein
+      Lauf ist möglich, aber mit reduzierter Qualität oder auf schwächeren Fallback-Modellen
+      zu rechnen.
+    - 🟢 grün: alle Kernstufen antworten mit dem jeweils konfigurierten Modell - nichts
+      spricht gegen einen Start.
+
+    Bewusst NUR eine Empfehlung, kein hartes Verbot: `core/token_guard.py` und der Fast
+    Circuit Breaker (`agents/orchestrator/department.py`) bleiben die eigentliche
+    Absicherung WÄHREND eines Laufs; dies hier ist ausschließlich die Vorab-Information, die
+    dem Nutzer VOR dem Tippen einer Aufgabe fehlte.
+    """
+    core = [r for r in ergebnisse if r.tier in CORE_TIERS]
+    if not core:
+        # Sollte praktisch nie vorkommen (run_model_preflight() liefert immer die vier
+        # Kernstufen) - defensiv trotzdem kein Absturz, nur eine ehrliche "unbekannt"-Lage.
+        return RunReadiness(level="yellow", headline="⚪ Keine Kernstufen geprüft - Einschätzung nicht möglich.")
+
+    unreachable = [r for r in core if not r.reachable]
+    downgraded = [r for r in core if r.downgraded]
+    auth_errors = [r for r in core if r.auth_error]
+    reachable = [r for r in core if r.reachable]
+
+    if not reachable:
+        return RunReadiness(
+            level="red",
+            headline=(
+                "🔴 KEINE der Kernstufen (LITE/STANDARD/HEAVY/ORCHESTRATOR) ist gerade erreichbar - "
+                "aktuell lohnt sich KEIN neuer Projektlauf."
+            ),
+            reasons=[
+                f"❌ {r.tier}: {r.error}" + (" (ungültiger/abgelehnter API-Key)" if r.auth_error else "")
+                for r in unreachable
+            ],
+        )
+
+    reasons: list[str] = []
+    if unreachable:
+        reasons.append(
+            f"❌ {len(unreachable)} von {len(core)} Kernstufen nicht erreichbar: "
+            + ", ".join(r.tier for r in unreachable)
+        )
+    if downgraded:
+        reasons.append(
+            f"⚠️  {len(downgraded)} Kernstufe(n) antworten mit einem ANDEREN Modell als konfiguriert: "
+            + ", ".join(f"{r.tier}→{r.effective_model}" for r in downgraded)
+        )
+    if auth_errors:
+        reasons.append(
+            f"🔑 {len(auth_errors)} Kernstufe(n) lehnen den konfigurierten API-Key ab: "
+            + ", ".join(r.tier for r in auth_errors)
+        )
+
+    if unreachable or downgraded:
+        return RunReadiness(
+            level="yellow",
+            headline=(
+                "🟡 Team eingeschränkt arbeitsfähig - ein Lauf ist möglich, aber mit reduzierter "
+                "Qualität oder auf schwächeren Fallback-Modellen zu rechnen."
+            ),
+            reasons=reasons,
+        )
+
+    return RunReadiness(
+        level="green",
+        headline="🟢 Alle Kernstufen erreichbar und wie konfiguriert - ein Projektlauf lohnt sich jetzt.",
+    )
+
+
+def format_run_readiness(readiness: RunReadiness) -> str:
+    """Kompakter Text-Block für Konsole/Dashboard, passend zur Ampel aus assess_run_readiness()."""
+    zeilen = [readiness.headline]
+    zeilen.extend(f"  {r}" for r in readiness.reasons)
+    return "\n".join(zeilen)

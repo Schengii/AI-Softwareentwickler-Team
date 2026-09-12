@@ -7,6 +7,44 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Automatischer Modell-Preflight beim Sitzungsstart + Lauf-Ampel
+
+Nutzerwunsch: Bevor das KI-Team überhaupt mit einer Projektaufgabe beginnt, sollen kurz alle
+konfigurierten KI-Modelle angepingt und dem Nutzer angezeigt werden, welche wirklich
+erreichbar sind – und ob sich ein Projektlauf gerade lohnt, oder ob z.B. alle Modelle
+ausgelastet sind und man aktuell besser gar nicht erst startet.
+
+- **Vorher:** `core/model_preflight.py` (Ping gegen LITE/STANDARD/HEAVY/ORCHESTRATOR +
+  optional DeepSeek/OpenRouter) existierte bereits, war aber nur über den manuellen
+  `python main.py --check-models`-Flag abrufbar – trotz eigenem Moduldocstring
+  ("der Preflight läuft einmal beim Start"). Ein Nutzer, der die interaktive CLI startete,
+  sah nie proaktiv, ob das Team gerade überhaupt arbeitsfähig ist – siehe CertPulse-Lauf
+  (12.09.2026, `fehleranalyse_ki_team.md`), der 319.244 Tokens verbrauchte, ohne dass die
+  eingeschränkte Verfügbarkeit vorher sichtbar gewesen wäre.
+- **Neu (`core/model_preflight.py`):** `assess_run_readiness()` verdichtet die Preflight-
+  Ergebnisse zu einer Drei-Stufen-Ampel: 🟢 grün (alle Kernstufen erreichbar, wie
+  konfiguriert), 🟡 gelb (mindestens eine Kernstufe nicht erreichbar oder abgewertet – Lauf
+  möglich, aber eingeschränkt) oder 🔴 rot (keine einzige Kernstufe erreichbar – ein Lauf
+  würde sofort scheitern). Nur LITE/STANDARD/HEAVY/ORCHESTRATOR zählen für die Ampel;
+  DeepSeek/OpenRouter sind optionale Cross-Provider-Ausweichrouten, ihr Ausfall allein zieht
+  die Ampel nicht runter.
+- **Neu (`interface/cli.py`):** `CLIInterface._run_startup_model_preflight()` läuft jetzt
+  automatisch EINMAL pro Sitzung, direkt vor der ersten Eingabemöglichkeit
+  (`_main_loop()`), zeigt Preflight-Bericht + Ampel + Provider-Budget in einem farblich
+  passenden Panel und fragt bei 🔴 explizit nach, ob der Nutzer trotzdem fortfahren will.
+  Bewusst NUR EINMAL pro Sitzung (nicht vor jeder einzelnen Aufgabe) – jeder Ping ist ein
+  echter, budgetzählender API-Call, ein Wiederholen vor jeder Chat-Nachricht würde genau das
+  knappe Tageskontingent verbrauchen, vor dessen Erschöpfung gewarnt werden soll. Neuer
+  Befehl `/modelle` erlaubt einen manuellen Re-Check mitten in der Sitzung (z.B. nach einer
+  Quota-Reset-Wartezeit), abschaltbar über `ENABLE_STARTUP_MODEL_PREFLIGHT=false`.
+  `python main.py --check-models` zeigt dieselbe Ampel jetzt ebenfalls.
+
+Verifikation: `tests/test_model_preflight.py` (neue `TestRunReadiness`-Klasse) und neues
+`tests/test_cli_model_preflight.py` (30 Tests) grün, volle Testsuite weiterhin grün,
+`ruff check` fehlerfrei.
+
+---
+
 ## 🟢 Hard Delivery Gate übersah Ghost-Code über die komplette letzte Iteration
 
 Aus einer vollständigen Fehleranalyse des CertPulse-Laufs vom 12.09.2026

@@ -14,8 +14,10 @@ import pytest
 from core.llm_factory import LLMResponse
 from core.model_preflight import (
     TierStatus,
+    assess_run_readiness,
     check_tier,
     format_preflight_report,
+    format_run_readiness,
     run_model_preflight,
 )
 
@@ -181,6 +183,90 @@ class TestPraefixFehlalarm:
             TierStatus("HEAVY", "groq:openai/gpt-oss-120b", "groq:openai/gpt-oss-120b", reachable=True),
         ]
         assert "ALLE Stufen laufen auf demselben Modell" in format_preflight_report(ergebnisse)
+
+
+class TestRunReadiness:
+    """
+    Testet die Ampel-Empfehlung (Sicherheitsmaßnahme, KI-Team-Gesamtanalyse): vor jeder neuen
+    Projektaufgabe soll sichtbar sein, ob sich ein Lauf gerade überhaupt lohnt - nicht nur,
+    welches Modell konkret antwortet.
+    """
+
+    def _tier(self, tier: str, requested: str = "m", effective: str | None = None,
+              reachable: bool = True, error: str = "", auth_error_marker: bool = False) -> TierStatus:
+        status = TierStatus(
+            tier=tier, requested_model=requested,
+            effective_model=effective if effective is not None else (requested if reachable else ""),
+            reachable=reachable, error=error,
+        )
+        return status
+
+    def test_alle_kernstufen_erreichbar_und_unveraendert_ist_gruen(self):
+        ergebnisse = [
+            self._tier("LITE"), self._tier("STANDARD"), self._tier("HEAVY"), self._tier("ORCHESTRATOR"),
+        ]
+        readiness = assess_run_readiness(ergebnisse)
+        assert readiness.level == "green"
+        assert readiness.should_confirm is False
+        assert "lohnt sich jetzt" in readiness.headline
+
+    def test_keine_kernstufe_erreichbar_ist_rot(self):
+        ergebnisse = [
+            self._tier("LITE", reachable=False, error="429 quota"),
+            self._tier("STANDARD", reachable=False, error="429 quota"),
+            self._tier("HEAVY", reachable=False, error="401 invalid key"),
+            self._tier("ORCHESTRATOR", reachable=False, error="timeout"),
+        ]
+        readiness = assess_run_readiness(ergebnisse)
+        assert readiness.level == "red"
+        assert readiness.should_confirm is True
+        assert "KEIN neuer Projektlauf" in readiness.headline
+        assert len(readiness.reasons) == 4
+
+    def test_teilweise_erreichbar_ist_gelb(self):
+        ergebnisse = [
+            self._tier("LITE"),
+            self._tier("STANDARD", reachable=False, error="429 quota"),
+            self._tier("HEAVY"),
+            self._tier("ORCHESTRATOR"),
+        ]
+        readiness = assess_run_readiness(ergebnisse)
+        assert readiness.level == "yellow"
+        assert readiness.should_confirm is False
+        assert any("STANDARD" in r for r in readiness.reasons)
+
+    def test_abwertung_ohne_ausfall_ist_ebenfalls_gelb(self):
+        ergebnisse = [
+            self._tier("LITE"),
+            self._tier("STANDARD"),
+            self._tier("HEAVY", requested="claude-sonnet-5", effective="groq:openai/gpt-oss-120b"),
+            self._tier("ORCHESTRATOR"),
+        ]
+        readiness = assess_run_readiness(ergebnisse)
+        assert readiness.level == "yellow"
+        assert any("HEAVY" in r and "groq" in r for r in readiness.reasons)
+
+    def test_unabhaengige_failover_provider_zaehlen_nicht_fuer_die_ampel(self):
+        """DeepSeek/OpenRouter sind optionale Ausweichrouten, kein Kernbestandteil - ihr
+        Ausfall allein darf die sonst grüne Ampel nicht auf gelb/rot ziehen."""
+        ergebnisse = [
+            self._tier("LITE"), self._tier("STANDARD"), self._tier("HEAVY"), self._tier("ORCHESTRATOR"),
+            self._tier("DEEPSEEK", reachable=False, error="Insufficient Balance"),
+        ]
+        readiness = assess_run_readiness(ergebnisse)
+        assert readiness.level == "green"
+
+    def test_format_gibt_headline_und_gruende_aus(self):
+        ergebnisse = [
+            self._tier("LITE"),
+            self._tier("STANDARD", reachable=False, error="429 quota"),
+            self._tier("HEAVY"),
+            self._tier("ORCHESTRATOR"),
+        ]
+        readiness = assess_run_readiness(ergebnisse)
+        text = format_run_readiness(readiness)
+        assert readiness.headline in text
+        assert "STANDARD" in text
 
 
 class TestRunLoggerPraefix:

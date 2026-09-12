@@ -671,6 +671,24 @@ ENABLE_PLAN_CONFIRMATION: bool = os.getenv("ENABLE_PLAN_CONFIRMATION", "true").l
 PLAN_CONFIRMATION_MIN_TASKS: int = int(os.getenv("PLAN_CONFIRMATION_MIN_TASKS", "3"))
 
 # ──────────────────────────────────────────
+# Start-Preflight in der interaktiven CLI (KI-Team-Gesamtanalyse, Sicherheitsmaßnahme)
+# ──────────────────────────────────────────
+# core/model_preflight.py (bisher nur über `python main.py --check-models` manuell abrufbar)
+# pingt jetzt automatisch EINMAL beim Start jeder interaktiven CLI-Sitzung (interface/cli.py
+# CLIInterface.run()) alle Komplexitätsstufen an, BEVOR der Nutzer die erste Aufgabe tippen
+# kann - inkl. einer Ampel-Empfehlung (core/model_preflight.assess_run_readiness()), ob sich
+# ein Projektlauf gerade lohnt. Bewusst EINMAL pro Sitzung, nicht vor jeder einzelnen Aufgabe:
+# jeder Preflight-Ping ist ein echter, budgetzählender API-Call gegen bis zu 6 Modellstufen -
+# das vor JEDER Chat-Nachricht zu wiederholen würde genau das knappe Tageskontingent
+# verbrauchen, vor dessen Erschöpfung gewarnt werden soll. Ein manueller Re-Check mitten in
+# der Sitzung bleibt über `/modelle` möglich (z.B. nach einer Quota-Reset-Wartezeit).
+# Default AN, da die Warnung genau den Fall abdeckt, der beim CertPulse-Lauf (12.09.2026) einen
+# von vornherein aussichtslosen, 319k-Token-Lauf verursachte - abschaltbar für Automatisierung/
+# Tests, die keinen wartenden Nutzer vor dem Bildschirm haben.
+ENABLE_STARTUP_MODEL_PREFLIGHT: bool = os.getenv("ENABLE_STARTUP_MODEL_PREFLIGHT", "true").lower() in ("true", "1", "yes")
+STARTUP_MODEL_PREFLIGHT_TIMEOUT_SECONDS: float = float(os.getenv("STARTUP_MODEL_PREFLIGHT_TIMEOUT_SECONDS", "20"))
+
+# ──────────────────────────────────────────
 # PR-Workflow: Feature-Branch + Pull Request statt Direct-Push auf einen Hauptbranch
 # ──────────────────────────────────────────
 # Bisher committete/pushte agents/github_agent.py IMMER direkt auf den gerade ausgecheckten

@@ -76,13 +76,22 @@ def main():
         # config.py drei verschiedene vorsieht.
         import asyncio
 
-        from core.model_preflight import format_preflight_report, run_model_preflight
+        from core.model_preflight import (
+            assess_run_readiness,
+            format_preflight_report,
+            format_run_readiness,
+            run_model_preflight,
+        )
         from core.provider_budget import format_budget_report
         from core.token_guard import token_guard
 
         print("🔎 Prüfe die tatsächliche Verfügbarkeit aller Modell-Stufen ...\n")
         ergebnisse = asyncio.run(run_model_preflight())
         print(format_preflight_report(ergebnisse))
+        # Sicherheitsmaßnahme (KI-Team-Gesamtanalyse): dieselbe Ampel-Empfehlung, die die
+        # interaktive CLI jetzt automatisch beim Sitzungsstart zeigt (interface/cli.py
+        # CLIInterface._run_startup_model_preflight) - lohnt sich ein Projektlauf gerade?
+        print("\n" + format_run_readiness(assess_run_readiness(ergebnisse)))
         # Provider-Budget-Awareness (ki_team_verbesserungsanalyse.md, Teil 4.1/6-Stufe0-#3):
         # Die Preflight-Pings selbst zählen bereits als Calls in token_guard - eine erste,
         # grobe Einordnung, wie viel vom bekannten Tageskontingent bereits verbraucht ist.

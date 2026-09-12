@@ -36,7 +36,9 @@ from config import (
     BRANCH_PROTECTION_REQUIRED_REVIEWS,
     ENABLE_PLAN_CONFIRMATION,
     ENABLE_PR_WORKFLOW,
+    ENABLE_STARTUP_MODEL_PREFLIGHT,
     GIT_PROTECTED_BRANCHES,
+    STARTUP_MODEL_PREFLIGHT_TIMEOUT_SECONDS,
     validate_config,
 )
 from core import framework_release
@@ -122,6 +124,7 @@ HELP_TEXT = """
 | `/projekte` | Listet alle bestehenden Projekte im Workspace auf |
 | `/load <pfad/name>` | Lädt ein bestehendes Projekt (Workspace oder externer Pfad) zur Weiterentwicklung |
 | `/tokens` | Zeigt den aktuellen Tokenverbrauch und verbleibende Kontingente an |
+| `/modelle` | Prüft erneut, welche KI-Modelle gerade wirklich erreichbar sind, inkl. Ampel-Einschätzung, ob sich ein Lauf gerade lohnt (läuft automatisch schon einmal beim Sitzungsstart) |
 | `/rag <begriff>` | Führt eine semantische Code-Recherche im geladenen Projekt durch |
 | `/team` | Zeigt alle 6 Fachbereiche, Teamleiter und 33 Spezialisten an |
 | `/workspace [projekt]` | Listet alle generierten Dateien im Projektordner auf |
@@ -181,6 +184,9 @@ class CLIInterface:
         # Fingerabdruck der beim Start geladenen Framework-Quelldateien (siehe
         # _confirm_framework_code_current) - realer Fund auditlog_sentinel 2026-09-10.
         self._code_fingerprint_at_start = source_fingerprint()
+        # Läuft genau EINMAL pro Sitzung, siehe _run_startup_model_preflight() - nicht vor
+        # jeder einzelnen Aufgabe (jeder Ping ist ein echter, budgetzählender API-Call).
+        self._startup_preflight_done = False
 
     def _confirm_framework_code_current(self) -> bool:
         """Warnt, wenn sich der Framework-Code seit dem Start dieser Sitzung geändert hat.
@@ -205,6 +211,63 @@ class CLIInterface:
             return True
         console.print("[dim]Aufgabe nicht gestartet – bitte die CLI neu starten.[/dim]")
         return False
+
+    async def _run_startup_model_preflight(self, *, interactive_confirm: bool = True) -> None:
+        """
+        Sicherheitsmaßnahme (KI-Team-Gesamtanalyse): pingt EINMAL pro Sitzung alle
+        Komplexitätsstufen (LITE/STANDARD/HEAVY/ORCHESTRATOR + ggf. DeepSeek/OpenRouter, siehe
+        core/model_preflight.py) an, BEVOR der Nutzer die erste Aufgabe tippen kann, und zeigt
+        eine Ampel-Einschätzung, ob sich ein Projektlauf gerade lohnt.
+
+        Realer Fund (CertPulse-Lauf, 12.09.2026, fehleranalyse_ki_team.md): ein Lauf verbrauchte
+        319.244 Tokens und lieferte am Ende NICHTS ab, weil die verfügbare Modell-/Budget-Lage
+        vorher nirgends sichtbar war. `core/model_preflight.py` existierte für genau diese Frage
+        bereits, war aber nur über den manuellen `python main.py --check-models`-Flag abrufbar -
+        diese Methode macht den Preflight endlich zur eigentlich beabsichtigten Startroutine
+        (siehe dortiger Moduldocstring: "der Preflight läuft einmal beim Start").
+
+        Rein informativ bei 🟢/🟡 - nur bei 🔴 (kein einziges Kernmodell erreichbar) fragt sie
+        explizit nach, ob der Nutzer die Sitzung trotzdem fortsetzen will, statt das stillschweigend
+        zu unterschlagen. Ein "Nein" beendet die CLI nicht (es gibt an dieser Stelle noch keine
+        laufende Aufgabe, die abzubrechen wäre) - es ist die bewusste, protokollierte
+        Kenntnisnahme, bevor der Nutzer trotzdem eine Aufgabe tippt.
+        """
+        from core.model_preflight import (
+            assess_run_readiness,
+            format_preflight_report,
+            format_run_readiness,
+            run_model_preflight,
+        )
+        from core.provider_budget import format_budget_report
+        from core.token_guard import token_guard
+
+        console.print("\n🔎 [dim]Prüfe kurz die Verfügbarkeit aller KI-Modelle...[/dim]")
+        try:
+            ergebnisse = await run_model_preflight(timeout_seconds=STARTUP_MODEL_PREFLIGHT_TIMEOUT_SECONDS)
+        except Exception as e:
+            # Der Preflight darf einen Start NIE blockieren (siehe Moduldocstring) - schlägt
+            # er selbst unerwartet fehl (z.B. Netzwerkfehler außerhalb der pro-Stufe-Behandlung),
+            # startet die Sitzung trotzdem ganz normal.
+            console.print(f"[dim]⚠️ Modell-Preflight übersprungen: {e}[/dim]")
+            return
+
+        readiness = assess_run_readiness(ergebnisse)
+        border = {"green": "green", "yellow": "yellow", "red": "red"}.get(readiness.level, "cyan")
+        report_text = format_preflight_report(ergebnisse) + "\n\n" + format_run_readiness(readiness)
+        budget_report = format_budget_report(token_guard)
+        if budget_report:
+            report_text += "\n" + budget_report
+        console.print(Panel(report_text, title="🩺 Modell-Preflight", border_style=border))
+
+        if interactive_confirm and readiness.should_confirm:
+            Confirm.ask(
+                "Trotzdem fortfahren und es bei Bedarf versuchen? (Aufgaben scheitern derzeit "
+                "wahrscheinlich sofort)",
+                default=True,
+            )
+            # Die Antwort selbst ist nur eine bewusste Kenntnisnahme - unabhängig vom Ergebnis
+            # bleibt die Sitzung nutzbar, das eigentliche Sicherheitsnetz während eines Laufs
+            # sind weiterhin core/token_guard.py und der Fast Circuit Breaker.
 
     def run(self) -> None:
         """Startet das interaktive CLI."""
@@ -291,6 +354,9 @@ class CLIInterface:
 
     async def _main_loop(self) -> None:
         """Hauptschleife: Eingabe → Verarbeitung → Ausgabe."""
+        if ENABLE_STARTUP_MODEL_PREFLIGHT and not self._startup_preflight_done:
+            self._startup_preflight_done = True
+            await self._run_startup_model_preflight()
         while True:
             try:
                 user_input = self._read_user_input()
@@ -1852,6 +1918,14 @@ class CLIInterface:
             from core.quota_estimator import QuotaEstimator
             table_md = QuotaEstimator.format_markdown_table()
             console.print(Panel(Markdown(table_md), title="🪙 Live Token & Quota Tracker", border_style="gold1"))
+
+        elif cmd in ("/modelle", "/models", "/check-models", "/preflight"):
+            # Manueller Re-Check derselben Prüfung, die beim Sitzungsstart automatisch läuft
+            # (siehe _run_startup_model_preflight) - z.B. sinnvoll nach einer Quota-Reset-
+            # Wartezeit oder wenn ein neuer API-Key eingetragen wurde, ohne die CLI neu zu
+            # starten. interactive_confirm=False: hier keine Ja/Nein-Rückfrage, der Nutzer hat
+            # den Befehl bewusst selbst ausgelöst und liest den Bericht ohnehin gleich mit.
+            await self._run_startup_model_preflight(interactive_confirm=False)
 
         elif cmd in ("/projekte", "/projects", "/list"):
             self._list_all_projects()

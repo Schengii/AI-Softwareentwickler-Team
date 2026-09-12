@@ -56,6 +56,27 @@ class TestStartupModelPreflight(unittest.TestCase):
 
         mock_confirm.assert_called_once()
 
+    def test_bekannter_cooldown_zeigt_ruecksetzzeit_im_panel(self):
+        """Nutzerwunsch: neben der Ampel soll sichtbar sein, WANN die Modelle voraussichtlich
+        zurückgesetzt werden. token_guard.get_exhausted_details() liefert das bereits aus den
+        Preflight-Pings selbst (core/llm_factory.py markiert bei 429/Quota automatisch)."""
+        exhausted_detail = {
+            "model_name": "m", "reason": "429 RESOURCE_EXHAUSTED",
+            "remaining_seconds": 90.0, "available_at": "12:00:00",
+        }
+        with patch("core.model_preflight.run_model_preflight", new=AsyncMock(return_value=_rote_ergebnisse())), \
+             patch("core.token_guard.token_guard.get_exhausted_details", return_value=[exhausted_detail]), \
+             patch("interface.cli.console.print") as mock_print, \
+             patch("interface.cli.Confirm.ask", return_value=True):
+            asyncio.run(self.cli._run_startup_model_preflight())
+
+        panel_bodies = [
+            str(c.args[0].renderable) for c in mock_print.call_args_list
+            if c.args and getattr(c.args[0], "renderable", None)
+        ]
+        gedruckt = "\n".join(panel_bodies)
+        self.assertIn("12:00:00 Uhr", gedruckt)
+
     def test_manueller_recheck_fragt_trotz_roter_lage_nicht_nach(self):
         """interactive_confirm=False (siehe /modelle-Befehl): der Nutzer hat den Check selbst
         ausgelöst und liest den Bericht ohnehin - keine zusätzliche Ja/Nein-Rückfrage nötig."""

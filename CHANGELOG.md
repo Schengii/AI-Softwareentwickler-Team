@@ -7,6 +7,30 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Preflight zeigt jetzt auch, WANN nicht erreichbare Modelle zurückgesetzt werden
+
+Direkte Nutzer-Nachfrage zum vorherigen Preflight-Feature: die Ampel allein sagte nur "gerade
+nicht erreichbar", aber nicht, ob und wann sich das von selbst löst.
+
+- **Neu (`core/model_preflight.py`):** `format_recovery_outlook()` liest für jede aktuell
+  nicht erreichbare Kernstufe den bereits von `core/token_guard.py` bekannten Cooldown aus
+  (jeder Preflight-Ping läuft über dieselbe Aufrufkette wie ein echter Agenten-Call – schlägt
+  er an einem Rate-Limit/Tageskontingent fehl, hinterlässt `core/llm_factory.py` dabei schon
+  automatisch einen `TokenGuard.mark_model_exhausted()`-Eintrag mit exaktem Cooldown, kein
+  neues Tracking nötig) und übersetzt ihn in eine Wanduhr-Zeit je Stufe plus eine
+  Gesamt-Prognose "Team voraussichtlich wieder VOLLSTÄNDIG einsatzbereit ab HH:MM:SS Uhr".
+  Ein Auth-Fehler (falscher/abgelehnter API-Key) setzt sich nie von selbst zurück – dafür
+  wird explizit KEINE Uhrzeit versprochen, sondern auf eine nötige manuelle Prüfung
+  verwiesen, statt eine falsche Erwartung zu wecken.
+- Eingebunden sowohl in den automatischen Sitzungsstart-Preflight (`interface/cli.py`) als
+  auch in `python main.py --check-models`.
+
+Verifikation: neue `TestRecoveryOutlook`-Klasse in `tests/test_model_preflight.py` plus
+CLI-Verdrahtungstest in `tests/test_cli_model_preflight.py`, volle Testsuite weiterhin grün,
+`ruff check` fehlerfrei.
+
+---
+
 ## 🟢 Automatischer Modell-Preflight beim Sitzungsstart + Lauf-Ampel
 
 Nutzerwunsch: Bevor das KI-Team überhaupt mit einer Projektaufgabe beginnt, sollen kurz alle

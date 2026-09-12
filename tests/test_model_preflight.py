@@ -17,6 +17,7 @@ from core.model_preflight import (
     assess_run_readiness,
     check_tier,
     format_preflight_report,
+    format_recovery_outlook,
     format_run_readiness,
     run_model_preflight,
 )
@@ -267,6 +268,90 @@ class TestRunReadiness:
         text = format_run_readiness(readiness)
         assert readiness.headline in text
         assert "STANDARD" in text
+
+
+class _FakeGuard:
+    """Minimaler Stand-in für core.token_guard.TokenGuard - nur get_exhausted_details() wird
+    von format_recovery_outlook() gebraucht."""
+    def __init__(self, details: list[dict]):
+        self._details = details
+
+    def get_exhausted_details(self) -> list[dict]:
+        return self._details
+
+
+class TestRecoveryOutlook:
+    """
+    Nutzerwunsch: neben der reinen Ampel soll sichtbar sein, WANN genau die aktuell nicht
+    erreichbaren Modelle voraussichtlich wieder verfügbar sind - und ab wann das Team wieder
+    VOLLSTÄNDIG einsatzbereit ist.
+    """
+
+    def test_leer_wenn_alle_kernstufen_erreichbar(self):
+        ergebnisse = [
+            TierStatus("LITE", "a", "a", reachable=True),
+            TierStatus("STANDARD", "b", "b", reachable=True),
+        ]
+        assert format_recovery_outlook(ergebnisse, guard=_FakeGuard([])) == ""
+
+    def test_bekannter_cooldown_zeigt_uhrzeit_und_gesamt_prognose(self):
+        ergebnisse = [
+            TierStatus("STANDARD", "gemini-3.8-flash", reachable=False, error="429 quota"),
+        ]
+        guard = _FakeGuard([{
+            "model_name": "gemini-3.8-flash",
+            "reason": "429 RESOURCE_EXHAUSTED",
+            "remaining_seconds": 120.0,
+            "available_at": "14:32:10",
+        }])
+        text = format_recovery_outlook(ergebnisse, guard=guard)
+        assert "STANDARD" in text
+        assert "gemini-3.8-flash" in text
+        assert "14:32:10 Uhr" in text
+        assert "VOLLSTÄNDIG einsatzbereit ab 14:32:10 Uhr" in text
+
+    def test_unbekannter_cooldown_verweigert_gesamt_prognose(self):
+        """Ein Auth-Fehler (falscher Key) setzt sich NIE von selbst zurück - dafür darf keine
+        Uhrzeit versprochen werden, die es nicht gibt."""
+        ergebnisse = [
+            TierStatus("HEAVY", "claude-sonnet-5", reachable=False, error="401 Unauthorized"),
+        ]
+        text = format_recovery_outlook(ergebnisse, guard=_FakeGuard([]))
+        assert "HEAVY" in text
+        assert "kein automatischer Reset-Zeitpunkt bekannt" in text
+        assert "✅" not in text  # keine positive Gesamt-Prognose
+
+    def test_gemischt_bekannt_und_unbekannt_verweigert_ebenfalls_gesamt_prognose(self):
+        ergebnisse = [
+            TierStatus("STANDARD", "gemini-3.8-flash", reachable=False, error="429 quota"),
+            TierStatus("HEAVY", "claude-sonnet-5", reachable=False, error="401 Unauthorized"),
+        ]
+        guard = _FakeGuard([{
+            "model_name": "gemini-3.8-flash", "reason": "429", "remaining_seconds": 60.0,
+            "available_at": "10:00:00",
+        }])
+        text = format_recovery_outlook(ergebnisse, guard=guard)
+        assert "10:00:00 Uhr" in text  # einzelne bekannte Stufe wird trotzdem gezeigt
+        assert "✅" not in text  # aber keine positive Gesamt-Prognose
+
+    def test_praefixierte_modellnamen_werden_gefunden(self):
+        """core/llm_factory.py hinterlegt manche Provider mit Präfix (z.B. 'groq:...') -
+        die Zuordnung muss auch dann noch klappen."""
+        ergebnisse = [TierStatus("STANDARD", "openai/gpt-oss-120b", reachable=False, error="429")]
+        guard = _FakeGuard([{
+            "model_name": "groq:openai/gpt-oss-120b", "reason": "429", "remaining_seconds": 30.0,
+            "available_at": "09:00:00",
+        }])
+        text = format_recovery_outlook(ergebnisse, guard=guard)
+        assert "09:00:00 Uhr" in text
+
+    def test_reine_stufenlisten_ohne_unerreichbare_kernstufe_bleiben_leer(self):
+        """DeepSeek/OpenRouter (kein CORE_TIER) zählen nicht mit, selbst wenn unerreichbar."""
+        ergebnisse = [
+            TierStatus("LITE", "a", "a", reachable=True),
+            TierStatus("DEEPSEEK", "deepseek-chat", reachable=False, error="Insufficient Balance"),
+        ]
+        assert format_recovery_outlook(ergebnisse, guard=_FakeGuard([])) == ""
 
 
 class TestRunLoggerPraefix:

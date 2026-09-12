@@ -310,3 +310,92 @@ def format_run_readiness(readiness: RunReadiness) -> str:
     zeilen = [readiness.headline]
     zeilen.extend(f"  {r}" for r in readiness.reasons)
     return "\n".join(zeilen)
+
+
+def _format_duration(seconds: float) -> str:
+    """Für Menschen lesbare Kurzform ('~45min', '~2h 15min') statt roher Sekundenzahlen -
+    Cooldowns reichen von wenigen Sekunden (Rate-Limit) bis zu 24h (Tageskontingent)."""
+    seconds = max(0.0, seconds)
+    if seconds < 60:
+        return f"~{seconds:.0f}s"
+    minutes = seconds / 60
+    if minutes < 60:
+        return f"~{minutes:.0f}min"
+    hours = int(minutes // 60)
+    rest_minutes = int(minutes % 60)
+    return f"~{hours}h {rest_minutes}min" if rest_minutes else f"~{hours}h"
+
+
+def format_recovery_outlook(ergebnisse: list[TierStatus], guard=None) -> str:
+    """
+    Nutzerwunsch (KI-Team-Gesamtanalyse): Beantwortet die naheliegende Anschlussfrage an die
+    Ampel aus assess_run_readiness() - WANN genau werden die gerade nicht erreichbaren
+    Kernstufen voraussichtlich zurückgesetzt, und ab wann ist das Team wieder VOLLSTÄNDIG
+    einsatzbereit?
+
+    Jeder Preflight-Ping läuft über dieselbe Aufrufkette wie ein echter Agenten-Call (siehe
+    check_tier()) - schlägt er an einem Rate-Limit/Tageskontingent fehl, hinterlässt
+    core/llm_factory.py dabei bereits automatisch einen Eintrag in
+    core.token_guard.TokenGuard.mark_model_exhausted() MIT genauem Cooldown. Diese Funktion
+    liest exakt diese frisch gesetzten Cooldowns wieder aus und übersetzt sie in Wanduhr-
+    Zeiten - kein eigenes Tracking, nur eine andere Sicht auf dieselbe, bereits vorhandene
+    Quelle der Wahrheit (dieselbe, die auch `/tokens` in interface/cli.py nutzt).
+
+    `guard` ist optional (Default: die globale Prozess-Instanz core.token_guard.token_guard),
+    parametrisierbar nur für Tests. Leerer String, wenn keine Kernstufe unerreichbar ist.
+    """
+    if guard is None:
+        from core.token_guard import token_guard
+        guard = token_guard
+
+    core_unreachable = [r for r in ergebnisse if r.tier in CORE_TIERS and not r.reachable]
+    if not core_unreachable:
+        return ""
+
+    details_by_model = {d["model_name"]: d for d in guard.get_exhausted_details()}
+
+    zeilen = ["", "⏳ Rücksetz-Zeitpunkte der aktuell nicht erreichbaren Kernstufen", "─" * 88]
+    bekannte_treffer: list[dict] = []
+    unbekannt: list[str] = []
+    for r in core_unreachable:
+        # Provider-Wrapper hinterlegen manche Modelle im Erschöpfungs-Tracking mit Präfix
+        # (siehe core/llm_factory.py DeepSeek-/OpenRouter-/Groq-Clients) - für die vier
+        # Kernstufen ist der unpräfixierte Name der Normalfall, die Präfix-Varianten sind eine
+        # defensive Zusatzprüfung.
+        treffer = (
+            details_by_model.get(r.requested_model)
+            or details_by_model.get(f"groq:{r.requested_model}")
+            or details_by_model.get(f"deepseek:{r.requested_model}")
+            or details_by_model.get(f"openrouter:{r.requested_model}")
+        )
+        if treffer:
+            bekannte_treffer.append(treffer)
+            zeilen.append(
+                f"🕐 {r.tier} ({r.requested_model}) wieder verfügbar ab {treffer['available_at']} Uhr "
+                f"(in {_format_duration(treffer['remaining_seconds'])}, Grund: {treffer['reason']})"
+            )
+        else:
+            unbekannt.append(r.tier)
+            zeilen.append(
+                f"❔ {r.tier} ({r.requested_model}): kein automatischer Reset-Zeitpunkt bekannt "
+                f"(Fehler: {r.error[:80]}) - dort hilft nur eine manuelle Prüfung, kein Abwarten."
+            )
+
+    zeilen.append("")
+    if unbekannt:
+        zeilen.append(
+            f"⚠️  Für {len(unbekannt)} Stufe(n) ({', '.join(unbekannt)}) ist kein automatischer "
+            "Reset-Zeitpunkt bekannt - eine verlässliche Prognose, wann das Team wieder "
+            "vollständig einsatzbereit ist, ist deshalb aktuell nicht möglich."
+        )
+    elif bekannte_treffer:
+        # Die spätest fällige der bekannten Rücksetzzeiten bestimmt, wann ALLE unerreichbaren
+        # Stufen wieder da sind - deren bereits von core/token_guard.py berechnetes
+        # `available_at` wird direkt übernommen statt hier ein zweites Mal (mit eigenem,
+        # potenziell leicht abweichendem `datetime.now()`) neu zu berechnen.
+        spaetester = max(bekannte_treffer, key=lambda t: t["remaining_seconds"])
+        zeilen.append(
+            f"✅ Team voraussichtlich wieder VOLLSTÄNDIG einsatzbereit ab {spaetester['available_at']} "
+            f"Uhr (in {_format_duration(spaetester['remaining_seconds'])})."
+        )
+    return "\n".join(zeilen)

@@ -79,6 +79,7 @@ def main():
         from core.model_preflight import (
             assess_run_readiness,
             format_preflight_report,
+            format_recovery_outlook,
             format_run_readiness,
             run_model_preflight,
         )
@@ -92,6 +93,11 @@ def main():
         # interaktive CLI jetzt automatisch beim Sitzungsstart zeigt (interface/cli.py
         # CLIInterface._run_startup_model_preflight) - lohnt sich ein Projektlauf gerade?
         print("\n" + format_run_readiness(assess_run_readiness(ergebnisse)))
+        # Beantwortet zusätzlich, WANN genau nicht erreichbare Kernstufen voraussichtlich
+        # zurückgesetzt werden und ab wann das Team wieder vollständig einsatzbereit ist.
+        recovery_outlook = format_recovery_outlook(ergebnisse, guard=token_guard)
+        if recovery_outlook:
+            print(recovery_outlook)
         # Provider-Budget-Awareness (ki_team_verbesserungsanalyse.md, Teil 4.1/6-Stufe0-#3):
         # Die Preflight-Pings selbst zählen bereits als Calls in token_guard - eine erste,
         # grobe Einordnung, wie viel vom bekannten Tageskontingent bereits verbraucht ist.

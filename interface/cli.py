@@ -235,6 +235,7 @@ class CLIInterface:
         from core.model_preflight import (
             assess_run_readiness,
             format_preflight_report,
+            format_recovery_outlook,
             format_run_readiness,
             run_model_preflight,
         )
@@ -254,6 +255,12 @@ class CLIInterface:
         readiness = assess_run_readiness(ergebnisse)
         border = {"green": "green", "yellow": "yellow", "red": "red"}.get(readiness.level, "cyan")
         report_text = format_preflight_report(ergebnisse) + "\n\n" + format_run_readiness(readiness)
+        # Beantwortet die naheliegende Anschlussfrage an die Ampel: WANN genau sind die gerade
+        # nicht erreichbaren Kernstufen voraussichtlich wieder da (core/token_guard.py kennt
+        # den genauen Cooldown bereits aus den Preflight-Pings selbst, siehe dortiger Docstring).
+        recovery_outlook = format_recovery_outlook(ergebnisse, guard=token_guard)
+        if recovery_outlook:
+            report_text += "\n" + recovery_outlook
         budget_report = format_budget_report(token_guard)
         if budget_report:
             report_text += "\n" + budget_report

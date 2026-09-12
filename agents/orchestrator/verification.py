@@ -1915,6 +1915,37 @@ class VerificationMixin:
             summary_lines.append(f"- 🛠️ Versuch {attempt}: {len(report.failures)} echte Testfehler → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt.")
 
             if attempt == MAX_VERIFICATION_ITERATIONS:
+                # Fehleranalyse ki_team_fehleranalyse_zusammenfassung.md: die Schleife oben ruft
+                # _run_tests_logged() NUR am ANFANG jedes Versuchs auf (Zeile "erstlauf") - im
+                # LETZTEN erlaubten Versuch verbraucht der `range()` danach keinen weiteren
+                # Schleifendurchlauf mehr, der Fix des letzten Versuchs wurde also NIE gegen die
+                # echte Testsuite geprüft, bevor unten das Ticket eröffnet und der Lauf als
+                # fehlgeschlagen gewertet wurde - selbst wenn der Fix tatsächlich griff. Eine
+                # einzelne zusätzliche Abschlussprüfung schließt genau diese Lücke, bevor endgültig
+                # aufgegeben wird.
+                if any(r.files_written for r in fix_results):
+                    notify("  🔍 [yellow]Abschlussprüfung nach letztem Fixversuch:[/yellow] prüft, ob der Fix tatsächlich griff...")
+                    post_fix_report = await self._run_tests_logged(verifier, "abschluss")
+                    if post_fix_report.passed:
+                        report = post_fix_report
+                        self.last_verification_ok = True
+                        verification_ok = True
+                        notify(f"  🎉 [bold green]Abschlussprüfung nach Fix erfolgreich: Testsuite ist vollständig grün![/bold green] ({report.duration_seconds:.1f}s).")
+                        summary_lines.append("- 🎉 Abschlussprüfung nach letztem Fix erfolgreich: Testsuite ist grün.")
+                        if had_prior_test_ticket and test_ticket_id:
+                            try:
+                                upsert_ticket(
+                                    ticket_id=test_ticket_id,
+                                    title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                                    source="orchestrator", status="done", project_slug=self.last_project_slug,
+                                    detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
+                                )
+                                notify("  🎫 [dim]Ticket für vorherigen Testfehlschlag als gelöst geschlossen.[/dim]")
+                            except Exception as e:
+                                notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
+                        break
+                    report = post_fix_report
+
                 notify("  ⚠️ [yellow]Maximale Verifikations-Iterationen erreicht – letzter Stand wird übernommen.[/yellow]")
                 summary_lines.append(f"- ⚠️ Nach {MAX_VERIFICATION_ITERATIONS} Versuchen nicht vollständig grün – letzter Stand wurde übernommen.")
                 # Realer Fund (Team-Retrospektive, omnichat-Projekt): bisher wurde ein nach

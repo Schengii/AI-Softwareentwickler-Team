@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AegisMesh Gateway Dashboard</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --text-color: #f8fafc;
+            --accent-color: #38bdf8;
+            --border-color: #334155;
+            --danger-color: #ef4444;
+            --success-color: #22c55e;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            padding: 24px;
+        }
+        .skip-link {
+            position: absolute;
+            top: -40px;
+            left: 0;
+            background: #000;
+            color: #fff;
+            padding: 8px 16px;
+            z-index: 100;
+            text-decoration: none;
+        }
+        .skip-link:focus { top: 0; }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 16px;
+            margin-bottom: 24px;
+        }
+        h1 { font-size: 1.75rem; color: var(--accent-color); }
+        nav ul {
+            display: flex;
+            list-style: none;
+            gap: 16px;
+        }
+        nav a {
+            color: var(--text-color);
+            text-decoration: none;
+            font-weight: 500;
+            padding: 6px 12px;
+            border-radius: 4px;
+            transition: background-color 0.2s;
+        }
+        nav a:hover, nav a:focus {
+            background-color: var(--card-bg);
+            color: var(--accent-color);
+        }
+        main { display: flex; flex-direction: column; gap: 24px; }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+        }
+        .status-card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .status-card h3 { font-size: 1rem; color: #94a3b8; margin-bottom: 8px; }
+        .metric-value { font-size: 2rem; font-weight: bold; color: var(--accent-color); }
+        .logs-section {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .logs-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+            font-size: 0.9rem;
+        }
+        .logs-table th, .logs-table td {
+            text-align: left;
+            padding: 10px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .logs-table th { color: #94a3b8; }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .badge-allowed { background: rgba(34, 197, 94, 0.2); color: var(--success-color); }
+        .badge-blocked { background: rgba(239, 68, 68, 0.2); color: var(--danger-color); }
+    </style>
+</head>
+<body>
+
+    <a href="#main-content" class="skip-link">Zum Hauptinhalt springen</a>
+
+    <header>
+        <h1>AegisMesh Gateway Dashboard</h1>
+        <nav aria-label="Hauptnavigation">
+            <ul>
+                <li><a href="#dashboard">Dashboard</a></li>
+                <li><a href="#logs">Logs</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main id="main-content">
+        <section id="dashboard" aria-labelledby="metrics-title">
+            <h2 id="metrics-title" style="margin-bottom: 16px;">Echtzeit-Metriken</h2>
+            <div class="grid">
+                <div class="status-card" role="status" aria-live="polite" aria-atomic="true">
+                    <h3>Blockierungsrate</h3>
+                    <p class="metric-value" id="block-rate">0.0%</p>
+                </div>
+                <div class="status-card" role="status" aria-live="polite" aria-atomic="true">
+                    <h3>Erlaubte Anfragen</h3>
+                    <p class="metric-value" id="allowed-count">1,248</p>
+                </div>
+                <div class="status-card" role="status" aria-live="polite" aria-atomic="true">
+                    <h3>Blockierte Angriffe</h3>
+                    <p class="metric-value" id="blocked-count" style="color: var(--danger-color);">0</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="logs" class="logs-section" aria-labelledby="logs-title">
+            <h2 id="logs-title">Gateway Audit-Logs</h2>
+            <table class="logs-table" aria-label="Letzte Gateway-Aktivitäten">
+                <thead>
+                    <tr>
+                        <th scope="col">Zeitstempel</th>
+                        <th scope="col">Client ID</th>
+                        <th scope="col">Endpunkt</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Risk Score</th>
+                    </tr>
+                </thead>
+                <tbody id="logs-body">
+                    <tr>
+                        <td>Vor 10 Sek.</td>
+                        <td>client-trusted-42</td>
+                        <td>/api/v1/analyze</td>
+                        <td><span class="badge badge-allowed">ALLOWED</span></td>
+                        <td>0.02</td>
+                    </tr>
+                    <tr>
+                        <td>Vor 35 Sek.</td>
+                        <td>client-trusted-11</td>
+                        <td>/api/v1/analyze</td>
+                        <td><span class="badge badge-allowed">ALLOWED</span></td>
+                        <td>0.05</td>
+                    </tr>
+                    <tr>
+                        <td>Vor 1 Min.</td>
+                        <td>unknown-ip-98</td>
+                        <td>/api/v1/analyze</td>
+                        <td><span class="badge badge-blocked">BLOCKED</span></td>
+                        <td>0.89</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+    </main>
+
+    <script>
+        // Automatisches sanftes Update für dynamische Werte ohne externe Abhängigkeiten
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('AegisMesh Gateway Dashboard erfolgreich initialisiert.');
+        });
+    </script>
+</body>
+</html>

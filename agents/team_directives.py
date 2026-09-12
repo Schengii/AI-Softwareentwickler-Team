@@ -73,6 +73,17 @@ TESTER_CONTRACT_DIRECTIVE = f"""
   behebst du vor allem anderen.
 """
 
+FRONTEND_CONTRACT_DIRECTIVE = """
+## 📜 Contract First – Web-Assets sofort physisch speichern
+- Speichere JEDES Web-Asset (HTML, CSS, JS) SOFORT als erste Aktion per `write_file("static/<datei>", ...)`
+  – gib niemals riesige Codeblöcke im Antworttext aus, um das 8.192-Token-Ausgabelimit von Gemini
+  Flash nicht zu überschreiten. Realer Fund (OmniQueue-Lauf, siehe TESTER_CONTRACT_DIRECTIVE): eine
+  komplette Datei, nur im Fließtext statt per Werkzeug gespeichert, wertete das Hard Delivery Gate
+  als kompletten Fehlschlag – die eigentlich fertige Arbeit fehlte danach ganz im Projekt.
+- Erst NACH dem `write_file`-Aufruf erklärst du wichtige Entscheidungen kurz in Prosa, nie als
+  Ersatz für die physische Datei.
+"""
+
 FIX_LOOP_DIRECTIVE = f"""
 ## 🧭 Fix-Loop-Disziplin: Ursache vor Symptom
 Klassifiziere einen Testfehler, BEVOR du etwas änderst:

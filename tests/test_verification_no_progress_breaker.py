@@ -31,6 +31,10 @@ DIFFERENT_FAILING_REPORT = VerificationReport(
     ran=True, passed=False, exit_code=1, stdout="", stderr="", duration_seconds=0.1,
     failures=[TestFailure(test_id="tests/test_app.py::test_y", message="AssertionError: other", files=["backend/app.py"])],
 )
+YET_ANOTHER_FAILING_REPORT = VerificationReport(
+    ran=True, passed=False, exit_code=1, stdout="", stderr="", duration_seconds=0.1,
+    failures=[TestFailure(test_id="tests/test_app.py::test_z", message="AssertionError: yet another", files=["backend/app.py"])],
+)
 PASSING_REPORT = VerificationReport(
     ran=True, passed=True, exit_code=0, stdout="", stderr="", duration_seconds=0.1, failures=[],
 )
@@ -160,13 +164,16 @@ class TestVerificationNoProgressBreaker(unittest.TestCase):
         mock_upsert_ticket.assert_not_called()
 
     def test_different_failures_after_fix_do_not_trigger_breaker(self):
+        # MAX_VERIFICATION_ITERATIONS ist standardmäßig 3 (config.py) - drei jeweils
+        # UNTERSCHIEDLICHE Fehlschläge, damit keiner der drei regulär erlaubten Versuche vom
+        # Zirkuit-Breaker abgebrochen wird.
         result, logs, mock_verifier, mock_upsert_ticket = self._run(
-            [FAILING_REPORT, DIFFERENT_FAILING_REPORT],
+            [FAILING_REPORT, DIFFERENT_FAILING_REPORT, YET_ANOTHER_FAILING_REPORT],
         )
 
-        # Unterschiedliche Fehlermeldungen nach dem Fixversuch = echter Fortschritt - beide
+        # Unterschiedliche Fehlermeldungen nach jedem Fixversuch = echter Fortschritt - alle drei
         # regulär erlaubten Versuche laufen, KEIN früher Abbruch durch den Zirkuit-Breaker.
-        self.assertEqual(mock_verifier.run_tests.call_count, 2)
+        self.assertEqual(mock_verifier.run_tests.call_count, 3)
         self.assertFalse(any("Kein Fortschritt" in line for line in logs))
         self.assertTrue(any("Maximale Verifikations-Iterationen erreicht" in line for line in logs))
 

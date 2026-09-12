@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="de" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OmniQueue | Robustes Event- & Webhook-Gateway</title>
+  <meta name="description" content="OmniQueue bietet verteiltes Event-Dispatching mit Circuit-Breaker, Anomalie-Erkennung und DSGVO-konformer Datenhaltung.">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Zum Hauptinhalt springen</a>
+
+  <header class="app-header" role="banner">
+    <div class="header-container">
+      <div class="logo-area">
+        <h1 id="app-title">OmniQueue Monitoring</h1>
+        <span class="badge badge-pulse" id="system-health-badge" aria-live="polite">Online</span>
+      </div>
+      <div class="header-controls">
+        <label for="tenant-select" class="sr-only">Mandant auswählen</label>
+        <select id="tenant-select">
+          <option value="all">Alle Mandanten</option>
+          <option value="tenant_default" selected>Standard-Mandant</option>
+        </select>
+        <button id="refresh-btn" class="btn btn-secondary" aria-label="Daten jetzt aktualisieren">Aktualisieren</button>
+        <button id="theme-toggle-btn" class="btn btn-icon" aria-label="Design-Modus umschalten">☀️</button>
+      </div>
+    </div>
+  </header>
+
+  <section id="alert-container" class="alert-container" aria-live="assertive" role="alert"></section>
+
+  <main id="main-content" role="main">
+    <section class="metrics-grid" aria-label="System-Kennzahlen">
+      <article class="card">
+        <h2 class="metric-title">Durchsatz</h2>
+        <div class="metric-value" id="metric-throughput" aria-live="polite">0 <span class="metric-unit">msg/s</span></div>
+      </article>
+      <article class="card">
+        <h2 class="metric-title">Latenz (p95)</h2>
+        <div class="metric-value" id="metric-latency" aria-live="polite">0 <span class="metric-unit">ms</span></div>
+      </article>
+      <article class="card">
+        <h2 class="metric-title">Anomalie-Score</h2>
+        <div class="metric-value" id="metric-anomaly-score" aria-live="polite">0.00</div>
+      </article>
+    </section>
+
+    <section class="card" aria-labelledby="dlq-title">
+      <h2 id="dlq-title">Dead-Letter-Queue</h2>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th scope="col">Event ID</th>
+            <th scope="col">Aktion</th>
+          </tr>
+        </thead>
+        <tbody id="dlq-table-body">
+          <!-- Dynamisch via JS gefüllt -->
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

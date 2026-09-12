@@ -20,7 +20,7 @@ from pathlib import Path
 from config import WORKSPACE_DIR
 from core.code_sandbox import CodeSandbox
 
-# Dieselben drei Muster wie WorkspaceManager.parse_and_save_files() (siehe deren Docstring) -
+# Dieselben Muster wie WorkspaceManager.parse_and_save_files() (siehe deren Docstring) -
 # hierher ausgelagert, damit _find_file_blocks()/text_has_extractable_file_blocks() unten UND
 # parse_and_save_files() dieselbe, einmal geprüfte Erkennung teilen, statt sie zu duplizieren.
 _PATTERN_FENCE_COLON = re.compile(
@@ -34,6 +34,17 @@ _PATTERN_HEADER_FENCE = re.compile(
 _PATTERN_EXPLICIT_FILE = re.compile(
     r'(?:###|\*\*|#)?\s*(?:Datei|File):\s*[`\'"]?([a-zA-Z0-9_\-\./\\]+)[`\'"]?\s*\r?\n\s*```(?:[a-zA-Z0-9_\-]+)?\r?\n(.*?)```',
     re.IGNORECASE | re.DOTALL
+)
+# Realer Fund im OmniQueue-Lauf: der tester-Agent lieferte eine vollständige Testsuite als
+# reinen Fließtext-Codeblock im branchenüblichen Standardformat (erste Zeile im Fence ein
+# Kommentar mit dem Dateipfad, z.B. "# tests/test_api.py"), das keines der drei obigen Muster
+# abdeckte - weder Fence-Doppelpunkt-Syntax noch eine Überschrift/​"Datei:"-Zeile davor. Das
+# Hard Delivery Gate schlug daraufhin zu, obwohl der vollständige, rettbare Code vorlag
+# (46.643 Tokens verpufften). Dieses Muster erkennt genau diese erste-Zeile-Kommentar-Konvention:
+# ein Fence, dessen allererste Zeile NUR aus "# pfad/zu/datei.ext" besteht.
+_PATTERN_FIRST_LINE_COMMENT = re.compile(
+    r'```(?:[a-zA-Z0-9_\-]+)?\r?\n(?=#\s*([a-zA-Z0-9_\-]+(?:[./\\][a-zA-Z0-9_\-]+)*\.[a-zA-Z0-9]+)\s*\r?\n)(.*?)```',
+    re.DOTALL
 )
 
 
@@ -72,19 +83,35 @@ def _is_negative_example_block(text_content: str, match_start: int) -> bool:
     return bool(_NEGATIVE_EXAMPLE_HEADING_RE.search(preceding_lines[-1]))
 
 
+def _strip_path_comment_line(rel_path: str, content: str) -> str:
+    """Inhalt ohne die führende `# pfad/zur/datei.py`-Zeile (_PATTERN_FIRST_LINE_COMMENT) - nur
+    für die Stub-Prüfung. Der Pfad-Kommentar selbst ist KEIN echter Inhalt: ohne dieses
+    Abstreifen hielte `_looks_like_stub_content()` einen reinen Platzhalter-Block
+    ("# app/main.py" + "...") fälschlich für speicherwürdigen Code."""
+    first_line, separator, rest = content.partition("\n")
+    if separator and first_line.strip().lstrip("#").strip() == rel_path:
+        return rest
+    return content
+
+
 def _find_file_blocks(text_content: str) -> dict[str, str]:
-    """Rohe Rel-Pfad -> Inhalt-Treffer aller drei Text-Fallback-Muster, OHNE jede I/O oder
+    """Rohe Rel-Pfad -> Inhalt-Treffer aller Text-Fallback-Muster, OHNE jede I/O oder
     Validierung (Syntax-/Manifest-Check passiert erst in parse_and_save_files() beim
     tatsächlichen Speichern) - reine, günstige Text-Erkennung für beide Aufrufer unten.
     Reviewer-Negativbeispiele (siehe _is_negative_example_block) und reine Stub-Blöcke
     (siehe _looks_like_stub_content) werden dabei bewusst nie als Datei-Treffer gewertet."""
     matches_found: dict[str, str] = {}
-    for pattern in (_PATTERN_FENCE_COLON, _PATTERN_HEADER_FENCE, _PATTERN_EXPLICIT_FILE):
+    for pattern in (
+        _PATTERN_FENCE_COLON, _PATTERN_HEADER_FENCE, _PATTERN_EXPLICIT_FILE,
+        _PATTERN_FIRST_LINE_COMMENT,
+    ):
         for match in pattern.finditer(text_content):
-            content = match.group(2)
-            if _is_negative_example_block(text_content, match.start()) or _looks_like_stub_content(content):
+            rel_path, content = match.group(1).strip(), match.group(2)
+            if _is_negative_example_block(text_content, match.start()):
                 continue
-            matches_found[match.group(1).strip()] = content
+            if _looks_like_stub_content(_strip_path_comment_line(rel_path, content)):
+                continue
+            matches_found[rel_path] = content
     return matches_found
 
 
@@ -254,6 +281,8 @@ class WorkspaceManager:
         2. ### `src/main.py` \n ```python
         3. #### `app.py` \n ```python
         4. ### 📄 `requirements.txt` \n ```text
+        5. Datei: src/main.py \n ```python
+        6. ```python \n # tests/test_api.py  (Pfad als alleinige erste Fence-Zeile)
         """
         project_dir = self.get_project_dir(project_name)
         saved_files: list[WorkspaceFile] = []

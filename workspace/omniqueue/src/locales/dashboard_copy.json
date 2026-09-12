@@ -1,0 +1,72 @@
+{
+  "en": {
+    "dashboard": {
+      "title": "OmniQueue Monitoring",
+      "metrics": {
+        "throughput": "Throughput",
+        "latency": "Latency",
+        "anomaly_score": "Anomaly Score",
+        "prio_level": "Priority P{level}"
+      },
+      "circuit_breaker": {
+        "status": "Status",
+        "states": {
+          "closed": "Normal Operation",
+          "open": "Paused",
+          "half_open": "Testing Phase"
+        },
+        "tooltips": {
+          "closed": "System is operating normally.",
+          "open": "Target system overloaded. Dispatching paused for protection.",
+          "half_open": "Sending test requests to verify system stability."
+        }
+      },
+      "alerts": {
+        "anomaly_detected": "Increased error rate detected (>15%). Auto-throttling active.",
+        "queue_overflow": "Queue capacity critical. Please adjust dispatch rate."
+      }
+    },
+    "errors": {
+      "400": { "title": "Bad Request", "message": "Event data is malformed. Please check the format." },
+      "401": { "title": "Authentication Failed", "message": "Invalid or missing API key." },
+      "403": { "title": "Access Denied", "message": "You do not have permission for this action." },
+      "429": { "title": "Too Many Requests", "message": "Rate limit reached. Please wait a moment." },
+      "503": { "title": "Service Unavailable", "message": "Gateway is currently overloaded. Please try again later." }
+    }
+  },
+  "de": {
+    "dashboard": {
+      "title": "OmniQueue Monitoring",
+      "metrics": {
+        "throughput": "Durchsatz",
+        "latency": "Latenz",
+        "anomaly_score": "Anomalie-Score",
+        "prio_level": "Priorität P{level}"
+      },
+      "circuit_breaker": {
+        "status": "Status",
+        "states": {
+          "closed": "Normalbetrieb",
+          "open": "Pausiert",
+          "half_open": "Testphase"
+        },
+        "tooltips": {
+          "closed": "System arbeitet regulär.",
+          "open": "Zielsystem überlastet. Dispatching ist zum Schutz pausiert.",
+          "half_open": "Test-Requests werden gesendet, um Systemstabilität zu prüfen."
+        }
+      },
+      "alerts": {
+        "anomaly_detected": "Erhöhte Fehlerrate erkannt (>15%). Auto-Throttling aktiv.",
+        "queue_overflow": "Queue-Kapazität kritisch. Bitte Dispatch-Rate anpassen."
+      }
+    },
+    "errors": {
+      "400": { "title": "Ungültige Anfrage", "message": "Die Event-Daten sind fehlerhaft. Bitte prüfe das Format." },
+      "401": { "title": "Authentifizierung fehlgeschlagen", "message": "Ungültiger oder fehlender API-Key." },
+      "403": { "title": "Zugriff verweigert", "message": "Du hast keine Berechtigung für diese Aktion." },
+      "429": { "title": "Zu viele Anfragen", "message": "Rate-Limit erreicht. Bitte warte einen Moment." },
+      "503": { "title": "Service nicht verfügbar", "message": "Das Gateway ist derzeit überlastet. Versuche es später erneut." }
+    }
+  }
+}

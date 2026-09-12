@@ -1,0 +1,23 @@
+  version: "3.8"
+  services:
+    omniqueue-api:
+      build:
+        context: .
+        dockerfile: Dockerfile
+      container_name: omniqueue_gateway
+      restart: unless-stopped
+      ports:
+        - "${PORT:-8000}:8000"
+      environment:
+        - DATABASE_URL=${DATABASE_URL:-sqlite+aiosqlite:////app/data/omniqueue.db}
+        - SECRET_KEY=${SECRET_KEY:-change_this_secret_in_production_key_32bytes}
+        - OMNIQUEUE_PEPPER=${OMNIQUEUE_PEPPER:-pepper_secret_dev_environment_32bytes}
+        - ENVIRONMENT=${ENVIRONMENT:-production}
+        - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      volumes:
+        - omniqueue_data:/app/data
+        - omniqueue_logs:/app/logs
+  volumes:
+    omniqueue_data:
+    omniqueue_logs:
+  

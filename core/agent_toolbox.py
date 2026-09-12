@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from core.code_sandbox import CodeSandbox
-from core.dependency_manifest import add_requirement
+from core.dependency_manifest import add_requirement, merge_preserving_requirements
 from core.docker_sandbox import DockerSandbox
 from core.failure_triage import is_local_module, is_test_file, module_to_file, read_module_interface
 from core.write_guard import check_contract_preserved, check_write_scope, content_digest, file_versions
@@ -529,6 +529,28 @@ class AgentToolbox:
             "read_file und setze deine Änderung auf dem aktuellen Stand um, sonst überschreibst du fremde Arbeit."
         )
 
+    def _preserve_foreign_dependencies(
+        self, target: Path, clean_rel: str, current: str, new_content: str,
+    ) -> tuple[str, str | None]:
+        """Union-Merge für requirements*.txt: Pakete, die ein anderer Agent bereits eingetragen
+        hat und die im neuen Inhalt fehlen, werden automatisch beibehalten statt still gelöscht.
+
+        Realer Fund (OmniQueue-Lauf 12.09.2026, Befund 3): `backend` und `database` schrieben
+        beide `requirements.txt`; der zweite Schreibvorgang kannte `starlette` nicht und löschte
+        es. Die bestehende Kollisionserkennung (agents/orchestrator.py) meldet so etwas zwar,
+        aber erst NACH dem Datenverlust - dieser Merge verhindert ihn deterministisch und ohne
+        eine zusätzliche LLM-Iteration.
+        """
+        if not (target.name.lower().startswith("requirements") and target.suffix.lower() == ".txt"):
+            return new_content, None
+        merged, preserved = merge_preserving_requirements(current, new_content)
+        if not preserved:
+            return new_content, None
+        return merged, (
+            f"{len(preserved)} bereits vorhandene Abhängigkeit(en) in '{clean_rel}' automatisch "
+            f"beibehalten, die dein Inhalt nicht enthielt: {', '.join(preserved)}."
+        )
+
     async def _tool_write_file(self, path: str, content: str) -> dict:
         rejection = self._reject_if_invalid_python(path, content)
         if rejection:
@@ -544,6 +566,7 @@ class AgentToolbox:
         rejection = check_write_scope(self.agent_id, clean_rel)
         if rejection:
             return {"error": rejection}
+        merge_note = None
         if target.is_file():
             current = target.read_text(encoding="utf-8", errors="ignore")
             if current != new_content:
@@ -552,12 +575,15 @@ class AgentToolbox:
                 )
                 if rejection:
                     return {"error": rejection}
+                new_content, merge_note = self._preserve_foreign_dependencies(
+                    target, clean_rel, current, new_content,
+                )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(new_content, encoding="utf-8")
         self._remember_write(target, clean_rel, new_content)
         result = {"path": clean_rel, "bytes_written": len(new_content.encode("utf-8")), "status": "ok"}
         phantom_note = self._check_test_import_phantoms(clean_rel, new_content)
-        warning = " ".join(w for w in (sanitize_note, phantom_note) if w)
+        warning = " ".join(w for w in (sanitize_note, merge_note, phantom_note) if w)
         if warning:
             result["warning"] = warning
         return result

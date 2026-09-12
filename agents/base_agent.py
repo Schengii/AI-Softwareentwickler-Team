@@ -58,7 +58,7 @@ def _is_disallowed_tool_call_error(exc: Exception) -> bool:
 CODE_WRITING_AGENT_IDS = {
     "backend", "frontend", "database", "api_integration", "data_engineer",
     "mobile", "ml", "devops", "tester", "resilience_guard", "refactoring",
-    "readme", "documentation", "security",
+    "readme", "documentation", "security", "performance",
 }
 
 # Realer Fund aus einem echten End-to-End-Testlauf: architect wurde korrekt eingeplant und

@@ -55,6 +55,11 @@ BACKEND_CONTRACT_DIRECTIVE = f"""
 
 TESTER_CONTRACT_DIRECTIVE = f"""
 ## 📜 Contract First – Tests gegen die echte Schnittstelle
+- Speichere JEDE Testdatei SOFORT per `write_file("tests/test_<name>.py", ...)`/`edit_file` –
+  NIEMALS nur als Codeblock im Antworttext. Realer Fund (OmniQueue-Lauf): eine vollständige
+  Testsuite (8.167 Completion-Tokens) wurde nur im Fließtext ausgegeben statt gespeichert – das
+  Hard Delivery Gate wertete das als kompletten Fehlschlag, 46.643 Tokens verpufften wirkungslos,
+  und die eigentlich geplanten Tests fehlten am Ende ganz im Projekt.
 - Vor jedem Import aus Produktivcode liest du `{INTERFACE_CONTRACT_FILE}` UND die Zieldatei selbst
   (read_file/search_code). Du importierst NUR Symbole, die dort auf Modulebene existieren.
 - Nimm nie an, dass eine Methode als freie Funktion existiert: Definiert das Modul

@@ -80,6 +80,37 @@ def primary_python_manifest(project_dir: Path) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def merge_preserving_requirements(current: str, new: str) -> tuple[str, list[str]]:
+    """Union-Merge zweier requirements-Inhalte: `new` gewinnt, aber Pakete, die NUR in `current`
+    stehen, bleiben mit ihrer Originalzeile erhalten.
+
+    Realer Fund (OmniQueue-Lauf 12.09.2026, Befund 3): `backend` und `database` fühlten sich
+    beide für `requirements.txt` zuständig. `database` schrieb das Manifest komplett neu und
+    kannte `starlette` nicht - das von `backend` eingetragene Paket verschwand still und musste
+    erst in der Verifikationsphase mühsam deterministisch nachgetragen werden. Ein reiner
+    Warnhinweis (Kollisionserkennung in agents/orchestrator.py) kam dafür zu spät: der
+    Datenverlust war zu diesem Zeitpunkt bereits auf der Festplatte.
+
+    Returns:
+        (zusammengeführter Inhalt, Liste der geretteten Originalzeilen).
+    """
+    current_lines = current.splitlines()
+    new_names = {name for line in new.splitlines() if (name := requirement_name(line))}
+    seen: set[str] = set()
+    preserved: list[str] = []
+    for line in current_lines:
+        name = requirement_name(line)
+        if name is None or name in new_names or name in seen:
+            continue
+        seen.add(name)
+        preserved.append(line.strip())
+    if not preserved:
+        return new, []
+    separator = "" if not new or new.endswith("\n") else "\n"
+    merged = f"{new}{separator}" + "\n".join(preserved) + "\n"
+    return merged, preserved
+
+
 def add_requirement(manifest: Path, spec: str) -> bool:
     """Trägt `spec` in `manifest` ein. True = hinzugefügt, False = Paket war schon gelistet.
 

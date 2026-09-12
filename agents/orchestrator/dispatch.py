@@ -8,7 +8,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 
-from config import PROVIDER_EXHAUSTION_ABORT_RATIO
+from config import MAX_CONCURRENT_AGENTS, PROVIDER_EXHAUSTION_ABORT_RATIO
 from core.message_bus import AgentResult, AgentTask
 from core.provider_exhaustion import (
     all_failed_on_provider_exhaustion,
@@ -73,8 +73,17 @@ class DispatchMixin:
         agent_tasks: list[AgentTask],
         notify: Callable[[str], None] | None = None,
     ) -> list[AgentResult]:
+        # Thundering-Herd-Schutz (siehe config.MAX_CONCURRENT_AGENTS-Docstring): begrenzt, wie
+        # viele Agenten-Aufrufe INNERHALB dieser Welle wirklich gleichzeitig laufen, statt alle
+        # Mitglieder eines Fachbereichs auf einmal gegen dieselben TPM-/RPM-Provider-Limits
+        # laufen zu lassen. Ein neues Semaphore pro Aufruf ist bewusst so gewählt - es gibt
+        # keine geteilte Zählung ÜBER mehrere `_run_agents_parallel()`-Wellen hinweg, da diese
+        # im Orchestrator ohnehin sequenziell (nicht parallel zueinander) laufen.
+        semaphore = asyncio.Semaphore(max(1, MAX_CONCURRENT_AGENTS))
+
         async def _wrapped(task: AgentTask) -> AgentResult:
-            res = await self._run_single_agent(task)
+            async with semaphore:
+                res = await self._run_single_agent(task)
             if notify:
                 notify(self._status_notify_line("✅ [green]Abgeschlossen[/green]", "❌ [red]Fehler[/red]", res.agent_name, res.duration_seconds, res.success, res.error))
             return res

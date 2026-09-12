@@ -537,6 +537,39 @@ def _is_request_too_large_error(exc: Exception) -> bool:
     return any(marker in text for marker in _REQUEST_TOO_LARGE_MARKERS)
 
 
+# Realer Fund (logs/runs/20260912_082145_sentinelgrid.jsonl): Groq entfernte
+# `llama-3.3-70b-versatile`/`llama-3.1-8b-instant` ersatzlos vom Endpoint - jeder Versuch
+# scheiterte mit HTTP 404 "does not exist or you do not have access to it" und riss die
+# gesamte Innerhalb-Groq-Ausweichkette ab, statt einfach das nächste Modell zu probieren.
+# Ein 404 ist KEIN vorübergehendes Rate-Limit, sondern ein dauerhaft ungültiger Modellname -
+# entsprechend langer Cooldown (siehe cooldown_seconds unten), damit kein weiterer Agent im
+# selben Lauf denselben toten Modellnamen erneut anfragt.
+_MODEL_NOT_FOUND_MARKERS = ("404", "does not exist", "model_not_found", "model_decommissioned")
+_MODEL_NOT_FOUND_COOLDOWN_SECONDS = 86400.0
+
+
+def _is_model_not_found_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in _MODEL_NOT_FOUND_MARKERS)
+
+
+# Realer Fund (logs/runs/20260912_082145_sentinelgrid.jsonl, Rolle api_integration): Groq
+# lieferte "Error code: 400 - Failed to parse tool call arguments as JSON (failed_generation:
+# ...)", wenn das Modell abgeschnittenes/ungültiges JSON für einen Tool-Call erzeugte. Das ist
+# ein modellbedingter Generierungsfehler, keine Kontingent-Erschöpfung - trotzdem blockierte
+# `_pinned_provider_failure` (bewusst für ECHTE Kontingent-Fehler gedacht) hier jeden Wechsel
+# und der Agent hing fest. Ein wiederholt ungültiges Tool-Call-JSON rechtfertigt einen
+# Failover zum nächsten Provider/Modell, selbst innerhalb einer gepinnten Aufgabe - anders als
+# bei Kontingent-Fehlern gefährdet das nicht die Konversationshistorie, weil ohnehin keine
+# gültige Antwort zustande kam, die weiterverwendet werden könnte.
+_TOOL_CALL_JSON_ERROR_MARKERS = ("failed to parse tool call arguments", "tool_use_failed")
+
+
+def _is_tool_call_json_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in _TOOL_CALL_JSON_ERROR_MARKERS)
+
+
 def _next_groq_fallback_model(current_model: str, already_tried: frozenset[str]) -> str | None:
     """
     Nächstes noch nicht versuchtes, nicht als erschöpft bekanntes Modell aus
@@ -1574,8 +1607,17 @@ class GroqClient:
         except Exception as e:
             is_rate_limit = _is_rate_limit_error(e)
             is_too_large = _is_request_too_large_error(e)
+            is_not_found = _is_model_not_found_error(e)
             is_auth_error = is_authentication_error(e)
-            if is_rate_limit or is_too_large:
+            if is_not_found:
+                # Dauerhaft ungültiger Modellname (siehe _is_model_not_found_error-Docstring) -
+                # langer Cooldown statt des kurzen Rate-Limit-Cooldowns, damit kein weiterer
+                # Agent im selben Lauf denselben toten Modellnamen erneut anfragt.
+                token_guard.mark_model_exhausted(
+                    f"groq:{self.model_name}", f"Groq Modell nicht gefunden (404): {_short_error(e, 200)}",
+                    cooldown_seconds=_MODEL_NOT_FOUND_COOLDOWN_SECONDS,
+                )
+            elif is_rate_limit or is_too_large:
                 token_guard.mark_model_exhausted(
                     f"groq:{self.model_name}", f"Groq Rate Limit/TPM: {_short_error(e, 200)}",
                     cooldown_seconds=_exhaustion_cooldown_seconds(str(e)),
@@ -1589,8 +1631,10 @@ class GroqClient:
             # über _is_request_too_large_error): ein TPM-/Größen-Fehler ist providerspezifisch
             # (nur DIESES Groq-Modell hat ein zu enges Limit) - ein großzügigeres Groq-Modell
             # erneut zu versuchen kostet keinen zusätzlichen Provider-Hop und rettet den Aufruf
-            # oft ganz ohne Cross-Provider-Fallback.
-            if is_too_large:
+            # oft ganz ohne Cross-Provider-Fallback. Ein 404 (Modell existiert nicht mehr) wird
+            # genauso behandelt - einfach das nächste konfigurierte Modell probieren, statt die
+            # ganze Kette abzubrechen.
+            if is_too_large or is_not_found:
                 next_model = _next_groq_fallback_model(self.model_name, _tried_groq_models)
                 if next_model:
                     return await GroqClient(model_name=next_model).generate_with_usage(
@@ -1598,7 +1642,9 @@ class GroqClient:
                         _tried_groq_models=_tried_groq_models | {self.model_name},
                     )
             if not _allow_self_fallback:
-                if is_rate_limit or is_auth_error or is_too_large:
+                if _is_tool_call_json_error(e):
+                    return await _cross_provider_failover_with_usage("groq", prompt, system_prompt)
+                if is_rate_limit or is_auth_error or is_too_large or is_not_found:
                     raise _pinned_provider_failure("Groq", self.model_name, e) from e
                 raise
             return await _cross_provider_failover_with_usage("groq", prompt, system_prompt)
@@ -1663,8 +1709,14 @@ class GroqClient:
         except Exception as e:
             is_rate_limit = _is_rate_limit_error(e)
             is_too_large = _is_request_too_large_error(e)
+            is_not_found = _is_model_not_found_error(e)
             is_auth_error = is_authentication_error(e)
-            if is_rate_limit or is_too_large:
+            if is_not_found:
+                token_guard.mark_model_exhausted(
+                    f"groq:{self.model_name}", f"Groq Modell nicht gefunden (404): {_short_error(e, 200)}",
+                    cooldown_seconds=_MODEL_NOT_FOUND_COOLDOWN_SECONDS,
+                )
+            elif is_rate_limit or is_too_large:
                 token_guard.mark_model_exhausted(
                     f"groq:{self.model_name}", f"Groq Rate Limit/TPM: {_short_error(e, 200)}",
                     cooldown_seconds=_exhaustion_cooldown_seconds(str(e)),
@@ -1675,7 +1727,8 @@ class GroqClient:
                     cooldown_seconds=AUTH_FAILURE_COOLDOWN_SECONDS,
                 )
             # Innerhalb-Groq-Ausweichkette - siehe generate_with_usage() oben für den Docstring.
-            if is_too_large:
+            # Ein 404 (Modell existiert nicht mehr) wird genauso behandelt wie ein TPM-Fehler.
+            if is_too_large or is_not_found:
                 next_model = _next_groq_fallback_model(self.model_name, _tried_groq_models)
                 if next_model:
                     return await GroqClient(model_name=next_model).generate_with_tools(
@@ -1683,7 +1736,12 @@ class GroqClient:
                         _tried_groq_models=_tried_groq_models | {self.model_name},
                     )
             if not _allow_self_fallback:
-                if is_rate_limit or is_auth_error or is_too_large:
+                # Siehe _is_tool_call_json_error-Docstring: ungültiges Tool-Call-JSON ist ein
+                # modellbedingter Generierungsfehler, keine Kontingent-Erschöpfung - hier auch
+                # innerhalb einer gepinnten Aufgabe failovern statt in einen Deadlock zu laufen.
+                if _is_tool_call_json_error(e):
+                    return await _cross_provider_failover_with_tools("groq", messages, system_prompt, tools)
+                if is_rate_limit or is_auth_error or is_too_large or is_not_found:
                     raise _pinned_provider_failure("Groq", self.model_name, e) from e
                 raise
             return await _cross_provider_failover_with_tools("groq", messages, system_prompt, tools)

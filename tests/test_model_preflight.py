@@ -114,7 +114,12 @@ class TestReport:
 class TestGesamtlauf:
     @pytest.mark.asyncio
     async def test_prueft_alle_vier_stufen(self):
-        with patch("core.llm_factory.LLMFactory.create_for_model", return_value=_FakeClient("x")):
+        # DeepSeek/OpenRouter werden nur angepingt, wenn ein Key konfiguriert ist (siehe
+        # check_independent_failover_providers) - hier bewusst ohne Key, damit dieser Test
+        # unabhängig von der lokalen .env exakt die vier Kern-Stufen prüft.
+        with patch("core.llm_factory.LLMFactory.create_for_model", return_value=_FakeClient("x")), \
+             patch("core.model_preflight.config.DEEPSEEK_API_KEY", ""), \
+             patch("core.model_preflight.config.OPENROUTER_API_KEY", ""):
             ergebnisse = await run_model_preflight()
         assert [r.tier for r in ergebnisse] == ["LITE", "STANDARD", "HEAVY", "ORCHESTRATOR"]
 

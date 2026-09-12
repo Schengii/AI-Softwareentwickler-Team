@@ -103,6 +103,39 @@ async def run_model_preflight(timeout_seconds: float = 30.0) -> list[TierStatus]
     ergebnisse: list[TierStatus] = []
     for tier, model_name in stufen:
         ergebnisse.append(await check_tier(tier, model_name, timeout_seconds))
+    ergebnisse.extend(await check_independent_failover_providers(timeout_seconds))
+    return ergebnisse
+
+
+# Realer Fund (logs/runs/20260912_082145_sentinelgrid.jsonl): DeepSeek ("Insufficient Balance")
+# und OpenRouter ("requires more credits") werden NIE als LITE/STANDARD/HEAVY-Primärstufe
+# angefragt, sondern nur lazy als Cross-Provider-Ausweichkette (core.llm_factory.
+# _INDEPENDENT_FAILOVER_MODELS), NACHDEM Groq/Gemini bereits gescheitert sind. Ein leeres
+# Guthaben wurde deshalb erst mitten im Lauf entdeckt - JEDER Agent, der in diese Kette lief,
+# verschwendete einen vollen Hop auf einen Account, der schon zu Laufbeginn erkennbar leer war.
+# Diese beiden Provider werden deshalb zusätzlich beim Preflight direkt angepingt (nur wenn ein
+# Key konfiguriert ist), damit ein bekannt leeres Guthaben SOFORT über token_guard.
+# mark_model_exhausted() markiert ist, bevor der erste Agent überhaupt startet.
+async def check_independent_failover_providers(timeout_seconds: float = 30.0) -> list[TierStatus]:
+    """Pingt DeepSeek/OpenRouter direkt an (nur mit konfiguriertem Key) - siehe Modul-Kommentar
+    über run_model_preflight(). Der eigentliche Aufruf über LLMFactory ruft bei einem
+    Guthaben-Fehler bereits token_guard.mark_model_exhausted() auf (core/llm_factory.py,
+    DeepSeekClient/OpenRouterClient), sodass hier keine zusätzliche Markierung nötig ist - der
+    Preflight sorgt lediglich dafür, dass diese Markierung VOR dem ersten Agenten steht statt
+    erst nach dessen vergeblichem Hop.
+
+    Die Keys werden bewusst live aus `config` gelesen (nicht als Modul-Konstante gecacht), damit
+    ein zur Laufzeit gesetzter/entfernter Key ohne Prozess-Neustart wirkt."""
+    kandidaten = (
+        (config.DEEPSEEK_API_KEY, "deepseek:deepseek-chat"),
+        (config.OPENROUTER_API_KEY, "openrouter:openrouter/auto"),
+    )
+    ergebnisse: list[TierStatus] = []
+    for api_key, model_name in kandidaten:
+        if not api_key:
+            continue
+        tier = model_name.split(":", 1)[0].upper()
+        ergebnisse.append(await check_tier(tier, model_name, timeout_seconds))
     return ergebnisse
 
 

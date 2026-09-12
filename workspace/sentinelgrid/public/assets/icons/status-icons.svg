@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+  <!-- Healthy / Operational (16px / 24px ViewBox) -->
+  <symbol id="icon-status-healthy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="9" stroke="#10B981" fill="#10B981" fill-opacity="0.15" />
+    <path d="M9 12l2 2 4-4" stroke="#10B981" />
+  </symbol>
+
+  <!-- Degraded / Warning -->
+  <symbol id="icon-status-warning" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" stroke="#F59E0B" fill="#F59E0B" fill-opacity="0.15" />
+    <line x1="12" y1="9" x2="12" y2="13" stroke="#F59E0B" />
+    <line x1="12" y1="17" x2="12.01" y2="17" stroke="#F59E0B" />
+  </symbol>
+
+  <!-- Critical / Outage -->
+  <symbol id="icon-status-critical" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="9" stroke="#EF4444" fill="#EF4444" fill-opacity="0.15" />
+    <line x1="15" y1="9" x2="9" y2="15" stroke="#EF4444" />
+    <line x1="9" y1="9" x2="15" y2="15" stroke="#EF4444" />
+  </symbol>
+
+  <!-- Circuit Breaker / Self-Healing Triggered -->
+  <symbol id="icon-circuit-breaker" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke="#3B82F6" fill="#3B82F6" fill-opacity="0.2" />
+  </symbol>
+
+  <!-- Synthetic Pulse / Ping Monitor -->
+  <symbol id="icon-synthetic-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" stroke="#3B82F6" />
+  </symbol>
+</svg>

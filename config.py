@@ -85,9 +85,15 @@ GROQ_HEAVY_MODEL: str = os.getenv("GROQ_HEAVY_MODEL", "groq:openai/gpt-oss-120b"
 # Fehler. Scheitert `GROQ_HEAVY_MODEL` an einem TPM-/Größen-Fehler (413 oder 429 "tokens per
 # minute"), probiert GroqClient VOR einem Provider-Wechsel zunächst diese Modelle - alle
 # weiterhin echte, kostenlose Groq-Kontingente, kein zusätzlicher API-Key nötig.
+#
+# BEKANNTER FUND (logs/runs/20260912_082145_sentinelgrid.jsonl): `llama-3.3-70b-versatile`
+# und `llama-3.1-8b-instant` existieren auf dem aktuellen Groq-Endpoint nicht mehr
+# (Error 404 "does not exist or you do not have access to it") und rissen die gesamte
+# Fallback-Kette ab, statt ein TPM-Limit abzufangen. Ersetzt durch aktuell verfügbare,
+# weiterhin kostenlose Groq-Modelle.
 GROQ_FALLBACK_MODELS: tuple[str, ...] = tuple(
     m.strip() for m in os.getenv(
-        "GROQ_FALLBACK_MODELS", "llama-3.3-70b-versatile,llama-3.1-8b-instant",
+        "GROQ_FALLBACK_MODELS", "qwen/qwen3.8-27b,openai/gpt-oss-20b,qwen/qwen3.6-27b",
     ).split(",") if m.strip()
 )
 
@@ -95,7 +101,12 @@ GROQ_FALLBACK_MODELS: tuple[str, ...] = tuple(
 # (asyncio.gather bei 3+-Mitglieder-Fachbereichen) Gemini gleichzeitig anstürmen und dessen
 # Minutenlimit dadurch ERST auslösen. Bewusst konservativ unter typischen kostenlosen
 # Gemini-RPM-Limits gehalten (Reserve für gleichzeitige Nutzung außerhalb dieses Frameworks).
-GEMINI_MAX_CALLS_PER_MINUTE: int = int(os.getenv("GEMINI_MAX_CALLS_PER_MINUTE", "12"))
+#
+# BEKANNTER FUND (logs/runs/20260912_082145_sentinelgrid.jsonl): Googles tatsächliches
+# Free-Tier-Limit für Gemini Flash liegt bei 5 Requests/Minute, nicht 12 - der bisherige
+# Standardwert löste massenhaft 429 RESOURCE_EXHAUSTED aus. Auf 4 gesenkt, um dem
+# Sliding-Window-Limiter Reserve unter dem tatsächlichen Limit zu lassen.
+GEMINI_MAX_CALLS_PER_MINUTE: int = int(os.getenv("GEMINI_MAX_CALLS_PER_MINUTE", "4"))
 
 # Primäre Zuordnung pro Komplexitätsstufe: Standard/Lite laufen primär über Gemini
 # (schnell & günstig), Heavy primär über Claude (stärkeres Trade-off-Reasoning).
@@ -560,6 +571,18 @@ PROVIDER_EXHAUSTION_ABORT_RATIO: float = float(os.getenv("PROVIDER_EXHAUSTION_AB
 # sobald eine einzelne kritische Rolle (CRITICAL_AGENT_IDS, z.B. architect/backend) so scheitert,
 # da ohne sie kein tragfähiges Fundament entstehen kann.
 PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT: int = int(os.getenv("PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT", "2"))
+
+# Realer Fund (logs/runs/20260912_082145_sentinelgrid.jsonl): `_run_agents_parallel()`
+# (agents/orchestrator/dispatch.py) startete alle Mitglieder eines Fachbereichs (bis zu 6
+# Agenten) vollkommen ungebremst per `asyncio.gather` - ein klassischer Thundering-Herd-Effekt.
+# Die Agenten sprengten gemeinsam sowohl Groqs TPM- als auch Geminis RPM-Free-Tier-Limit
+# innerhalb derselben Sekunde, sodass 9 von 15 Aufrufen mit `provider_exhausted: true`
+# abbrachen, obwohl die Provider insgesamt genug Kontingent für den Lauf gehabt hätten - nur
+# nicht gleichzeitig. Ein Semaphore begrenzt, wie viele Agenten-Aufrufe INNERHALB einer Welle
+# wirklich gleichzeitig laufen (weitere warten, statt sofort auf ein bereits ausgeschöpftes
+# Minutenlimit zu treffen). 2 ist bewusst konservativ für kostenlose Provider-Kontingente;
+# bei bezahlten/großzügigeren Kontingenten kann der Wert erhöht werden.
+MAX_CONCURRENT_AGENTS: int = int(os.getenv("MAX_CONCURRENT_AGENTS", "2"))
 
 # ──────────────────────────────────────────
 # Fachbereichs-Teamleiter: echte Delegation & Konsolidierung per LLM-Call

@@ -6,8 +6,8 @@ Realer Fund (logs/runs/20260911_211719_chronos_queue.jsonl): Groqs Free-Tier fü
 Werkzeugkatalog überschritt dieses Limit bereits bei einem einzelnen Aufruf und scheiterte mit
 HTTP 413 "Request too large" - ohne Ausweichkette lief der Fehler direkt in einen
 Provider-Wechsel bzw. (bei bereits gepinntem Provider) in einen kompletten Fehlschlag, obwohl
-`llama-3.3-70b-versatile` auf demselben, bereits konfigurierten Groq-Key ein 4-8x
-großzügigeres TPM-Limit hat und den Aufruf ohne jeden Provider-Wechsel gerettet hätte.
+`qwen/qwen3.8-27b` auf demselben, bereits konfigurierten Groq-Key ein großzügigeres
+TPM-Limit hat und den Aufruf ohne jeden Provider-Wechsel gerettet hätte.
 """
 
 import asyncio
@@ -27,7 +27,7 @@ REQUEST_TOO_LARGE_ERROR = Exception(
 
 class TestGroqTpmFallback(unittest.TestCase):
     def tearDown(self):
-        for model in ("groq:openai/gpt-oss-120b", "groq:llama-3.3-70b-versatile", "groq:llama-3.1-8b-instant"):
+        for model in ("groq:openai/gpt-oss-120b", "groq:qwen/qwen3.8-27b", "groq:openai/gpt-oss-20b", "groq:qwen/qwen3.6-27b"):
             token_guard._exhausted_models.pop(model, None)
 
     @patch("core.llm_factory._groq_client")
@@ -42,7 +42,7 @@ class TestGroqTpmFallback(unittest.TestCase):
             if kwargs["model"] == "openai/gpt-oss-120b":
                 raise REQUEST_TOO_LARGE_ERROR
             response = MagicMock()
-            response.choices[0].message.content = "Gerettet von llama-3.3-70b-versatile"
+            response.choices[0].message.content = "Gerettet von qwen/qwen3.8-27b"
             response.usage.prompt_tokens = 10
             response.usage.completion_tokens = 5
             return response
@@ -52,8 +52,8 @@ class TestGroqTpmFallback(unittest.TestCase):
 
         result = asyncio.run(client.generate_with_usage("hi", None))
 
-        self.assertEqual(call_models, ["openai/gpt-oss-120b", "llama-3.3-70b-versatile"])
-        self.assertEqual(result.model_name, "groq:llama-3.3-70b-versatile")
+        self.assertEqual(call_models, ["openai/gpt-oss-120b", "qwen/qwen3.8-27b"])
+        self.assertEqual(result.model_name, "groq:qwen/qwen3.8-27b")
         self.assertIn("Gerettet", result.text)
 
     @patch("core.llm_factory._groq_client")
@@ -74,7 +74,7 @@ class TestGroqTpmFallback(unittest.TestCase):
         client = GroqClient(model_name="openai/gpt-oss-120b")
 
         result = asyncio.run(client.generate_with_tools([], None, [], _allow_self_fallback=False))
-        self.assertEqual(result.model_name, "groq:llama-3.3-70b-versatile")
+        self.assertEqual(result.model_name, "groq:qwen/qwen3.8-27b")
 
 
 if __name__ == "__main__":

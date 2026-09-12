@@ -9,7 +9,9 @@ src/main.py ergänzen noch requirements.txt bereinigen. Diese Tests sichern die 
 agents/orchestrator/verification._route_failure_owners() ab.
 """
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from agents.orchestrator.verification import _diagnose_runtime_failure, _route_failure_owners
 
@@ -117,6 +119,58 @@ class TestExistingRoutingRulesStillApply(unittest.TestCase):
     def test_integrity_error_goes_to_database(self):
         message = "sqlalchemy.exc.IntegrityError: (sqlite3.IntegrityError) NOT NULL constraint failed: users.email"
         self.assertEqual(_route(message, ["tests/test_auth.py"]), {"database"})
+
+
+class TestInstanceAttributeErrorRouting(unittest.TestCase):
+    """ki_team_fehleranalyse_zusammenfassung.md, Befund 2 (chronos_ledger-Lauf 20260912_181917):
+    `detector.record_metric(...)` (Aufruf in tests/test_ledger.py) schlug mit `AttributeError:
+    'AnomalyDetector' object has no attribute 'record_metric'` fehl - der Traceback zeigte nur
+    die Testdatei, der eigentliche Autor der Klasse (hier: ml) wurde nie mitbeauftragt."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name).resolve()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write(self, rel: str, content: str) -> None:
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    def test_class_owner_is_added_alongside_tester(self):
+        self._write(
+            "app/services/anomaly_detector.py",
+            "class AnomalyDetector:\n    def check_anomaly(self, metric):\n        return False, 0.0\n",
+        )
+        owners = {"app/services/anomaly_detector.py": "ml", "tests/test_ledger.py": "tester"}
+        message = (
+            "tests/test_ledger.py:237: in test_anomaly_detector_baseline_and_outlier_detection\n"
+            "    detector.record_metric(IngestionMetric(...))\n"
+            "E   AttributeError: 'AnomalyDetector' object has no attribute 'record_metric'"
+        )
+        result = _route_failure_owners(
+            message, ["tests/test_ledger.py"], owners, {"ml", "tester"}, True, project_dir=str(self.root),
+        )
+        self.assertEqual(result, {"tester", "ml"})
+
+    def test_dict_attribute_error_is_not_treated_as_class_lookup(self):
+        # Bleibt vom bereits existierenden dict-spezifischen Routing (-> backend) unberührt.
+        owners = {"tests/test_auth.py": "tester"}
+        message = "AttributeError: 'dict' object has no attribute 'email'"
+        result = _route_failure_owners(
+            message, ["tests/test_auth.py"], owners, {"backend", "tester"}, True, project_dir=str(self.root),
+        )
+        self.assertEqual(result, {"backend"})
+
+    def test_unknown_class_falls_back_to_traceback_owner(self):
+        owners = {"tests/test_ledger.py": "tester"}
+        message = "AttributeError: 'AnomalyDetector' object has no attribute 'record_metric'"
+        result = _route_failure_owners(
+            message, ["tests/test_ledger.py"], owners, {"tester"}, True, project_dir=str(self.root),
+        )
+        self.assertEqual(result, {"tester"})
 
 
 class TestRoutingDiagnoses(unittest.TestCase):

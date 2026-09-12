@@ -48,6 +48,13 @@ class TestDiagnoseRuntimeFailure(unittest.TestCase):
         self.assertIn("email", diag)
         self.assertIn("Pydantic", diag)
 
+    def test_recognizes_instance_attribute_error(self):
+        message = "AttributeError: 'AnomalyDetector' object has no attribute 'record_metric'"
+        diag = _diagnose_runtime_failure(message)
+        self.assertIsNotNone(diag)
+        self.assertIn("record_metric", diag)
+        self.assertIn("AnomalyDetector", diag)
+
     def test_recognizes_duplicate_router_prefix_404(self):
         message = "AssertionError: 404 != 200 for GET /api/v1/api/v1/users"
         diag = _diagnose_runtime_failure(message)

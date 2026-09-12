@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="de" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="ChronosLedger - Revisionssicheres Audit- & Incident-Logging-Gateway">
+  <title>ChronosLedger | Audit & Integrity Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* A11y-Basis: Fokus-Indikatoren */
+    :focus-visible { outline: 3px solid #ffcc00; outline-offset: 2px; }
+    .skip-link { position: absolute; top: -40px; left: 0; background: #000; color: #fff; padding: 8px; z-index: 1000; }
+    .skip-link:focus { top: 0; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Zum Hauptinhalt springen</a>
+  
+  <header class="app-header">
+    <div class="header-brand">
+      <div class="brand-logo" aria-hidden="true">⏱️⛊</div>
+      <div>
+        <h1 class="brand-title">ChronosLedger</h1>
+      </div>
+    </div>
+
+    <div class="header-controls">
+      <label for="tenant-input" class="visually-hidden">Tenant-ID</label>
+      <input type="text" id="tenant-input" placeholder="Tenant-ID" value="tenant-default">
+      
+      <label for="api-key-input" class="visually-hidden">API-Key</label>
+      <input type="password" id="api-key-input" placeholder="X-API-Key" value="secret-chronos-key">
+      
+      <button id="btn-theme-toggle" aria-label="Dark/Light Mode umschalten">☀️</button>
+    </div>
+  </header>
+
+  <!-- ARIA-Live Region für kritische Alarme -->
+  <div id="security-alerts" role="alert" aria-live="assertive" class="visually-hidden"></div>
+
+  <main id="main-content" class="dashboard-grid">
+    <!-- ... Restliche Komponenten ... -->
+  </main>
+</body>
+</html>

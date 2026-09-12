@@ -37,6 +37,7 @@ from agents.orchestrator.failure_diagnosis import (
     _issue_signature,
     _no_progress,
     _prior_run_context,
+    _record_instance_attribute_learning,
     _record_verification_learning,
     _route_failure_owners,
 )
@@ -1860,6 +1861,7 @@ class VerificationMixin:
                     triage is None or triage.kind == KIND_MISSING_SYMBOL
                 ):
                     _record_verification_learning(failure.message)
+                _record_instance_attribute_learning(failure.message)
                 owners = _route_failure_owners(
                     failure.message, failure.files, file_owners, self._agents, tester_participated,
                     project_dir=project_dir,
@@ -1892,6 +1894,7 @@ class VerificationMixin:
                     ),
                     context="",
                     project_dir=project_dir,
+                    max_tool_iterations=8,
                 ))
 
             notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix:[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())} (nicht blind alle Dev-Agenten)...")

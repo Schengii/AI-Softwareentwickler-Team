@@ -1,8 +1,9 @@
 {
   "project_slug": "chronos_queue",
-  "timestamp": "2026-09-11T14:17:57+00:00",
+  "timestamp": "2026-09-11T21:18:29+00:00",
   "is_done": false,
   "blocking": [
+    "files_written",
     "tests_exist",
     "tests_pass",
     "missing_entrypoint"
@@ -11,9 +12,9 @@
     {
       "key": "files_written",
       "label": "Es wurde tatsächlich Code erzeugt",
-      "passed": true,
+      "passed": false,
       "required": true,
-      "detail": "3 Datei(en) geschrieben",
+      "detail": "0 Datei(en) geschrieben",
       "applicable": true
     },
     {

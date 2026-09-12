@@ -1,5 +1,15 @@
 [
   {
+    "timestamp": "2026-09-11T21:18:29+00:00",
+    "task_summary": "Framework-Provider-Exhaustion-Handling implementiert",
+    "verification_ok": false,
+    "budget_aborted": true,
+    "cancelled": false,
+    "files_written_count": 0,
+    "status": "aborted_due_to_quota",
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 🛑 Übersprungen: Der Lauf wurde abgebrochen, weil der überwiegende Teil der Agenten-Aufrufe an erschöpften API-Kontingenten bzw. fehlenden API-Schlüsseln scheiterte - nicht an einem inhaltlichen Problem. Ein erneuter Versuch mit wieder verfügbarem Kontingent (oder nach Hinterlegen des fehlenden Schlüssels) sollte genügen."
+  },
+  {
     "timestamp": "2026-09-11T14:17:57+00:00",
     "task_summary": "Asynchronen Job‑Scheduler mit Dashboard implementiert",
     "verification_ok": false,

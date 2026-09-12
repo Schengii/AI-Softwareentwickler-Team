@@ -820,6 +820,7 @@ class Orchestrator(
             notify=notify,
             cancel_requested=cancel_requested,
             collision_sink=file_collisions,
+            enable_phase_checkpoint=True,
         )
 
         # Fallback-Dateispeicherung: Falls ein Agent trotz Werkzeug-Zugriff Code nur im

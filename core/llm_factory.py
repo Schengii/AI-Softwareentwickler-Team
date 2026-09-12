@@ -24,6 +24,7 @@ from config import (
     GEMINI_MAX_CALLS_PER_MINUTE,
     GEMINI_STANDARD_MODEL,
     GROQ_API_KEY,
+    GROQ_FALLBACK_MODELS,
     GROQ_HEAVY_MODEL,
     HUGGINGFACE_API_KEY,
     MAX_OUTPUT_TOKENS,
@@ -518,6 +519,38 @@ _RATE_LIMIT_ERROR_MARKERS = ("429", "rate_limit", "resource_exhausted", "quota")
 def _is_rate_limit_error(exc: Exception) -> bool:
     text = str(exc).lower()
     return any(marker in text for marker in _RATE_LIMIT_ERROR_MARKERS)
+
+
+# Realer Fund (logs/runs/20260911_211719_chronos_queue.jsonl): Groqs Free-Tier für
+# `openai/gpt-oss-120b` erlaubt nur 8.000 Tokens PRO MINUTE (TPM) - deutlich enger als das
+# generische Rate-Limit oben. Ein großer System-Prompt + Werkzeugkatalog überschreitet dieses
+# Limit bereits bei einem einzelnen Aufruf (beobachtet: "Requested 8685" gegen "Limit 8000") und
+# scheitert mit HTTP 413 "Request too large" - kein 429, aber strukturell dasselbe Problem
+# (Kontingent-Deckel PRO ZEITFENSTER). Andere Modelle desselben Providers
+# (config.GROQ_FALLBACK_MODELS) haben ein 4-8x großzügigeres TPM-Limit und lösen den Fehler
+# schlicht durch einen anderen Modellnamen, ganz ohne Provider-Wechsel.
+_REQUEST_TOO_LARGE_MARKERS = ("413", "request too large", "tokens per minute", "reduce your message size")
+
+
+def _is_request_too_large_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in _REQUEST_TOO_LARGE_MARKERS)
+
+
+def _next_groq_fallback_model(current_model: str, already_tried: frozenset[str]) -> str | None:
+    """
+    Nächstes noch nicht versuchtes, nicht als erschöpft bekanntes Modell aus
+    config.GROQ_FALLBACK_MODELS - oder None, wenn die Kette erschöpft ist. `already_tried`
+    verhindert, dass GroqClient dasselbe Modell zweimal probiert (z.B. wenn ein Aufrufer
+    bereits mit einem der Ausweichmodelle als `model_name` gestartet ist).
+    """
+    exhausted = already_tried | {current_model}
+    for candidate in GROQ_FALLBACK_MODELS:
+        if candidate in exhausted:
+            continue
+        if not token_guard.is_model_exhausted(f"groq:{candidate}"):
+            return candidate
+    return None
 
 
 def _pinned_provider_failure(provider_label: str, model_name: str, exc: Exception) -> Exception:
@@ -1483,6 +1516,7 @@ class GroqClient:
 
     async def generate_with_usage(
         self, prompt: str, system_prompt: str | None = None, _allow_self_fallback: bool = True,
+        _tried_groq_models: frozenset[str] = frozenset(),
     ) -> LLMResponse:
         if not _groq_client:
             if not _allow_self_fallback:
@@ -1539,10 +1573,11 @@ class GroqClient:
             )
         except Exception as e:
             is_rate_limit = _is_rate_limit_error(e)
+            is_too_large = _is_request_too_large_error(e)
             is_auth_error = is_authentication_error(e)
-            if is_rate_limit:
+            if is_rate_limit or is_too_large:
                 token_guard.mark_model_exhausted(
-                    f"groq:{self.model_name}", f"Groq Rate Limit: {_short_error(e, 200)}",
+                    f"groq:{self.model_name}", f"Groq Rate Limit/TPM: {_short_error(e, 200)}",
                     cooldown_seconds=_exhaustion_cooldown_seconds(str(e)),
                 )
             elif is_auth_error:
@@ -1550,8 +1585,20 @@ class GroqClient:
                     f"groq:{self.model_name}", f"Groq Auth-Fehler (ungültiger/abgelehnter API-Key): {_short_error(e, 160)}",
                     cooldown_seconds=AUTH_FAILURE_COOLDOWN_SECONDS,
                 )
+            # Innerhalb-Groq-Ausweichkette (config.GROQ_FALLBACK_MODELS, siehe Modul-Kommentar
+            # über _is_request_too_large_error): ein TPM-/Größen-Fehler ist providerspezifisch
+            # (nur DIESES Groq-Modell hat ein zu enges Limit) - ein großzügigeres Groq-Modell
+            # erneut zu versuchen kostet keinen zusätzlichen Provider-Hop und rettet den Aufruf
+            # oft ganz ohne Cross-Provider-Fallback.
+            if is_too_large:
+                next_model = _next_groq_fallback_model(self.model_name, _tried_groq_models)
+                if next_model:
+                    return await GroqClient(model_name=next_model).generate_with_usage(
+                        prompt, system_prompt, _allow_self_fallback=_allow_self_fallback,
+                        _tried_groq_models=_tried_groq_models | {self.model_name},
+                    )
             if not _allow_self_fallback:
-                if is_rate_limit or is_auth_error:
+                if is_rate_limit or is_auth_error or is_too_large:
                     raise _pinned_provider_failure("Groq", self.model_name, e) from e
                 raise
             return await _cross_provider_failover_with_usage("groq", prompt, system_prompt)
@@ -1562,7 +1609,7 @@ class GroqClient:
 
     async def generate_with_tools(
         self, messages: list["AgentMessage"], system_prompt: str | None, tools: list[dict],
-        _allow_self_fallback: bool = True,
+        _allow_self_fallback: bool = True, _tried_groq_models: frozenset[str] = frozenset(),
     ) -> LLMResponse:
         if not _groq_client:
             if not _allow_self_fallback:
@@ -1615,10 +1662,11 @@ class GroqClient:
             )
         except Exception as e:
             is_rate_limit = _is_rate_limit_error(e)
+            is_too_large = _is_request_too_large_error(e)
             is_auth_error = is_authentication_error(e)
-            if is_rate_limit:
+            if is_rate_limit or is_too_large:
                 token_guard.mark_model_exhausted(
-                    f"groq:{self.model_name}", f"Groq Rate Limit: {_short_error(e, 200)}",
+                    f"groq:{self.model_name}", f"Groq Rate Limit/TPM: {_short_error(e, 200)}",
                     cooldown_seconds=_exhaustion_cooldown_seconds(str(e)),
                 )
             elif is_auth_error:
@@ -1626,8 +1674,16 @@ class GroqClient:
                     f"groq:{self.model_name}", f"Groq Auth-Fehler (ungültiger/abgelehnter API-Key): {_short_error(e, 160)}",
                     cooldown_seconds=AUTH_FAILURE_COOLDOWN_SECONDS,
                 )
+            # Innerhalb-Groq-Ausweichkette - siehe generate_with_usage() oben für den Docstring.
+            if is_too_large:
+                next_model = _next_groq_fallback_model(self.model_name, _tried_groq_models)
+                if next_model:
+                    return await GroqClient(model_name=next_model).generate_with_tools(
+                        messages, system_prompt, tools, _allow_self_fallback=_allow_self_fallback,
+                        _tried_groq_models=_tried_groq_models | {self.model_name},
+                    )
             if not _allow_self_fallback:
-                if is_rate_limit or is_auth_error:
+                if is_rate_limit or is_auth_error or is_too_large:
                     raise _pinned_provider_failure("Groq", self.model_name, e) from e
                 raise
             return await _cross_provider_failover_with_tools("groq", messages, system_prompt, tools)

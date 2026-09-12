@@ -52,6 +52,53 @@ _NICHE_AGENT_TRIGGERS: dict[str, tuple[str, ...]] = {
 }
 
 
+# ──────────────────────────────────────────────────────────
+# Meta-Prompt-Schutzfilter
+# ──────────────────────────────────────────────────────────
+# Realer Fund (Nutzeranfrage, KI-Team-Härtungsrunde 2026-09-11): Nutzer fügen gelegentlich
+# versehentlich einen Framework-Verbesserungs-Auftrag ("Du bist Lead-Entwickler für das
+# Framework ...") statt eines echten Software-Projektauftrags in die CLI ein - eine
+# Verwechslung, die naheliegt, weil beide Auftragsarten über dieselbe Eingabeaufforderung
+# laufen. Ohne Filter versucht das Team, aus reinen Framework-Instruktionen (die auf CODE
+# in `core/`/`agents/` abzielen, nicht auf ein neues Projekt in `workspace/`) krampfhaft ein
+# Softwareprojekt zu bauen - vollständig sinnlos verbrauchte Agenten-Läufe. Die Erkennung
+# prüft bewusst nur den ANFANG der Eingabe (nicht irgendwo mittendrin, sonst würden auch
+# legitime Projektaufträge über "KI-Team"/"Framework-Verbesserung" fälschlich blockiert) und
+# bleibt eine reine Textmustererkennung ohne LLM-Aufruf - ein Meta-Prompt darf nicht erst
+# Tokens kosten, um als solcher erkannt zu werden.
+_META_PROMPT_PREFIX_MARKERS: tuple[str, ...] = (
+    "du bist lead-entwickler für das framework",
+    "du bist lead-architekt für das framework",
+    "du bist der lead-entwickler für das framework",
+    "analysiere die arbeit von meinem ki-team",
+    "analysiere die arbeit meines ki-teams",
+    "schreibe mir einen prompt für claude",
+    "implementiere folgende optimierungen am framework",
+    "implementiere folgende optimierungen ausschließlich im framework-code",
+)
+
+
+def is_framework_meta_prompt(user_request: str) -> bool:
+    """
+    True, wenn `user_request` mit einer typischen Framework-Meta-Anweisung BEGINNT statt
+    einen echten Software-Projektauftrag zu beschreiben (siehe Modul-Kommentar oben).
+
+    Bewusst ein reiner Präfix-Check auf die ersten ~200 Zeichen (kleingeschrieben, Whitespace
+    normalisiert) - ein Meta-Auftrag benennt sich fast immer gleich im ersten Satz selbst
+    ("Du bist Lead-Entwickler für das Framework ..."), ein Treffer irgendwo mitten im Text
+    wäre dagegen zu unspezifisch und würde legitime Projektaufträge blockieren, die das
+    Framework nur beiläufig erwähnen.
+    """
+    normalized = " ".join((user_request or "").strip().lower().split())[:200]
+    return any(normalized.startswith(marker) for marker in _META_PROMPT_PREFIX_MARKERS)
+
+
+META_PROMPT_WARNING = (
+    "⚠️ Hinweis: Diese Eingabe ist ein Meta-Auftrag zur Verbesserung des Frameworks und kein "
+    "Software-Projekt. Bitte führe solche Prompts direkt im Claude-Code-Terminal aus."
+)
+
+
 def _relevant_agent_ids(user_request: str, enable_filter: bool = True) -> set[str]:
     """
     IDs der Nischen-Rollen, die für DIESE Anfrage NICHT angeboten werden sollen.

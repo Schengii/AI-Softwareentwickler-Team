@@ -17,6 +17,7 @@ from config import (
     ENABLE_TASK_COMPLEXITY_SCALING,
     PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT,
 )
+from core.checkpoint import clear_checkpoint, load_checkpoint, save_phase_checkpoint
 from core.message_bus import AgentResult, AgentTask
 from core.provider_exhaustion import FAILURE_CLASS_PROVIDER_EXHAUSTED
 from core.task_manager import is_micro_task
@@ -35,6 +36,7 @@ class DepartmentMixin:
         run_start_tokens: int | None = None,
         cancel_requested: Callable[[], bool] | None = None,
         collision_sink: list[dict] | None = None,
+        enable_phase_checkpoint: bool = False,
     ) -> tuple[list[AgentResult], dict[str, str], bool, bool]:
         """
         Führt alle 5 Fachbereichs-Phasen aus. Jede Phase lässt (sofern
@@ -56,6 +58,17 @@ class DepartmentMixin:
         (_build_file_collision_section). None (Standard) = nur die Live-Warnung, keine
         Sammlung – bestehende Aufrufer/Tests ohne Interesse an diesem Detail bleiben
         unverändert.
+
+        enable_phase_checkpoint: Schaltet das Speichern/Laden von .ai_team_checkpoint.json
+        (core/checkpoint.py) für `project_dir` frei. Standard False, NUR agents/orchestrator/
+        __init__.py.process() (der echte Produktionspfad mit einem dedizierten
+        Projektordner) setzt es explizit auf True. Grund: mehrere bestehende Tests rufen
+        diese Methode direkt mit project_dir="." (dem Test-Arbeitsverzeichnis) mehrfach
+        hintereinander mit UNABHÄNGIGEN Fach-Aufgaben auf - ein hier standardmäßig aktiver
+        Checkpoint würde dort einen ECHTEN `.ai_team_checkpoint.json` ins Repo-Root schreiben
+        und Phasen des jeweils NÄCHSTEN, komplett unabhängigen Testaufrufs fälschlich als
+        "bereits erledigt" überspringen (real beobachtet: 3 fehlschlagende Tests, 0 statt der
+        erwarteten Ergebnisse).
         """
         all_results: list[AgentResult] = []
         file_owners: dict[str, str] = {}
@@ -63,6 +76,23 @@ class DepartmentMixin:
         running_context = ""  # Kompakter Kontext aus vorherigen Phasen (z.B. Planungsergebnisse)
         budget_aborted = False
         manually_cancelled = False
+
+        # ── Checkpoint-Resume (core/checkpoint.py) ──────────────────────────────────────────
+        # Ein früherer Lauf für DASSELBE project_dir kann wegen Provider-Kontingent-Erschöpfung
+        # (Fast Circuit Breaker unten) abgebrochen worden sein, bevor alle Fachbereichs-Phasen
+        # durchliefen. Bereits erfolgreich abgeschlossene Phasen werden dann übersprungen und
+        # ihr running_context als Kontext für die noch offenen Phasen übernommen, statt bei 0
+        # neu zu beginnen - die dabei bereits geschriebenen Dateien liegen ohnehin schon im
+        # Projektordner, nur die Delegations-/Konsolidierungsarbeit würde sonst doppelt anfallen.
+        checkpoint = load_checkpoint(project_dir) if enable_phase_checkpoint else None
+        completed_phase_ids: set[str] = set(checkpoint["completed_phases"]) if checkpoint else set()
+        if checkpoint:
+            running_context = str(checkpoint.get("running_context") or "")
+            if completed_phase_ids:
+                notify(
+                    f"📌 [dim]Checkpoint gefunden: {len(completed_phase_ids)} Fachbereichs-Phase(n) "
+                    f"aus einem vorherigen Lauf bereits abgeschlossen, werden übersprungen.[/dim]"
+                )
         # Realer Fund: eine triviale Ein-Endpunkt-Aufgabe verbrauchte 66.000 Tokens, weil
         # jeder Fachbereich mit nur EINEM Mitglied trotzdem die volle Teamleiter-Delegation+
         # Konsolidierung durchlief (siehe ENABLE_TASK_COMPLEXITY_SCALING in config.py für
@@ -116,6 +146,10 @@ class DepartmentMixin:
                     f"Fachbereiche ab '{phase_label}' und liefere die bisherigen Ergebnisse aus."
                 )
                 break
+
+            if dept_id in completed_phase_ids:
+                notify(f"  ⏭️ [dim]{phase_label} bereits per Checkpoint abgeschlossen – übersprungen.[/dim]")
+                continue
 
             member_ids = DEPARTMENT_DEFINITIONS[dept_id]["members"]
             member_tasks = [task_map[aid] for aid in member_ids if aid in task_map]
@@ -258,6 +292,8 @@ class DepartmentMixin:
             else:
                 notify(f"  📥 [dim]{phase_label} abgeschlossen ({len(member_results)} Ergebnisse).[/dim]")
 
+            remaining_phase_ids = [d for d, _, _, _ in PHASE_ORDER if d not in completed_phase_ids and d != dept_id]
+
             if provider_exhausted_abort:
                 # Fast Circuit Breaker: KEINE weiteren Fachbereichs-Phasen mehr aufrufen, wenn das
                 # Fundament (kritische Rolle ODER mehrere Aufrufe in Folge) mangels Provider-
@@ -277,7 +313,37 @@ class DepartmentMixin:
                     "Provider hat noch Kapazität. Keine weiteren Fachbereiche werden mehr "
                     "aufgerufen, um nicht weiter sinnlos Tokens zu verbrauchen."
                 )
+                # Checkpoint sichert die bereits ABGESCHLOSSENEN Phasen (die aktuelle, gerade
+                # abgebrochene Phase zählt NICHT dazu) - ein erneuter process()-Aufruf für
+                # dasselbe project_dir kann sie dadurch überspringen (siehe Checkpoint-Resume
+                # oben).
+                if enable_phase_checkpoint:
+                    save_phase_checkpoint(
+                        project_dir,
+                        completed_phases=sorted(completed_phase_ids),
+                        successful_agents=[r.agent_id for r in all_results if r.success],
+                        running_context=running_context,
+                        remaining_phases=[dept_id, *remaining_phase_ids],
+                        aborted=True,
+                        abort_reason="provider_exhausted",
+                    )
                 break
+
+            completed_phase_ids.add(dept_id)
+            if enable_phase_checkpoint:
+                save_phase_checkpoint(
+                    project_dir,
+                    completed_phases=sorted(completed_phase_ids),
+                    successful_agents=[r.agent_id for r in all_results if r.success],
+                    running_context=running_context,
+                    remaining_phases=remaining_phase_ids,
+                )
+
+        if enable_phase_checkpoint and not provider_exhausted_abort and not budget_aborted and not manually_cancelled:
+            # Alle Fachbereichs-Phasen (die nicht bereits per Checkpoint übersprungen wurden)
+            # sind durchgelaufen - ein veralteter Checkpoint für einen späteren, unabhängigen
+            # Folgeauftrag im selben Projektordner darf jetzt nicht mehr wiederverwendet werden.
+            clear_checkpoint(project_dir)
 
         return all_results, file_owners, budget_aborted, manually_cancelled
 

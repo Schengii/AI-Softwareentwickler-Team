@@ -45,7 +45,7 @@ from core.code_sandbox import CodeSandbox
 from core.framework_revision import source_fingerprint
 from core.message_bus import AgentTask
 from core.notifier import notify_external
-from core.task_manager import AVAILABLE_AGENTS
+from core.task_manager import AVAILABLE_AGENTS, META_PROMPT_WARNING, is_framework_meta_prompt
 
 console = Console()
 
@@ -309,6 +309,13 @@ class CLIInterface:
                 continue
 
             if not self._confirm_framework_code_current():
+                continue
+
+            # Meta-Prompt-Schutzfilter (core/task_manager.py): blockiert versehentlich
+            # eingefügte Framework-Verbesserungs-Aufträge, statt sie krampfhaft als
+            # Software-Projekt im workspace/ zu interpretieren (siehe dortiger Docstring).
+            if is_framework_meta_prompt(user_input):
+                console.print(f"\n{META_PROMPT_WARNING}\n", style="yellow")
                 continue
 
             # Aufgabe an das Team übergeben. _process_task() fängt ein ERSTES Strg+C

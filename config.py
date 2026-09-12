@@ -76,6 +76,21 @@ CLAUDE_HEAVY_MODEL: str = os.getenv("CLAUDE_HEAVY_MODEL", "claude-opus-5")
 # Kostenlose Ausweich-Stufe für HEAVY-Aufgaben, falls kein ANTHROPIC_API_KEY vorhanden ist.
 GROQ_HEAVY_MODEL: str = os.getenv("GROQ_HEAVY_MODEL", "groq:openai/gpt-oss-120b")
 
+# Innerhalb-Groq-Ausweichkette (core/llm_factory.py GroqClient): `openai/gpt-oss-120b` hat auf
+# Groqs kostenlosem Free-Tier nur ein hartes 8.000-Tokens-pro-Minute-Limit (TPM) - ein einzelner
+# großer System-Prompt + Werkzeugkatalog reicht bereits aus, um Error 413 "Request too large"
+# auszulösen (real beobachtet: 8.685 angeforderte gegen 8.000 erlaubte Tokens, logs/runs/
+# 20260911_211719_chronos_queue.jsonl). `llama-3.3-70b-versatile`/`llama-3.1-8b-instant` erlauben
+# auf demselben Free-Tier 30.000-60.000 TPM und sind damit deutlich robuster gegen genau diesen
+# Fehler. Scheitert `GROQ_HEAVY_MODEL` an einem TPM-/Größen-Fehler (413 oder 429 "tokens per
+# minute"), probiert GroqClient VOR einem Provider-Wechsel zunächst diese Modelle - alle
+# weiterhin echte, kostenlose Groq-Kontingente, kein zusätzlicher API-Key nötig.
+GROQ_FALLBACK_MODELS: tuple[str, ...] = tuple(
+    m.strip() for m in os.getenv(
+        "GROQ_FALLBACK_MODELS", "llama-3.3-70b-versatile,llama-3.1-8b-instant",
+    ).split(",") if m.strip()
+)
+
 # Proaktive Rate-Begrenzung (core/rate_limiter.py): verhindert, dass viele parallele Agenten
 # (asyncio.gather bei 3+-Mitglieder-Fachbereichen) Gemini gleichzeitig anstürmen und dessen
 # Minutenlimit dadurch ERST auslösen. Bewusst konservativ unter typischen kostenlosen

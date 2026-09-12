@@ -1,0 +1,32 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/core/circuit_breaker.py": {
+      "CircuitBreaker": "class",
+      "CircuitState": "class"
+    },
+    "app/core/security.py": {
+      "verify_signature": "function",
+      "sign_payload": "function"
+    },
+    "app/services/outbox_service.py": {
+      "OutboxService": "class"
+    },
+    "app/db/session.py": {
+      "get_db": "function",
+      "engine": "instance",
+      "Base": "instance"
+    },
+    "app/db/models.py": {
+      "OutboxEvent": "class",
+      "DLQEvent": "class"
+    },
+    "app/schemas/events.py": {
+      "EventPayload": "class",
+      "EventResponse": "class"
+    }
+  }
+}

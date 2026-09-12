@@ -37,14 +37,54 @@ _PATTERN_EXPLICIT_FILE = re.compile(
 )
 
 
+# Realer Fund in HookSentinel: der security-Agent brachte in seiner Review-Ausgabe ein
+# Markdown-Negativbeispiel ("# ❌ VORHER: Ungefilterte Eingaben ..." gefolgt von einem
+# Codeblock mit "..."-Rumpf), das die Text-Fallback-Erkennung fälschlicherweise als zu
+# speichernde Projektdatei einstufte und `app/api/endpoints.py` mit dem 4-Zeilen-Snippet
+# überschrieb. Diese Marker + Stub-Erkennung verhindern das, indem sie genau solche
+# "So NICHT"-Blöcke von der Übernahme in _find_file_blocks() ausschließen.
+_NEGATIVE_EXAMPLE_HEADING_RE = re.compile(
+    r'❌\s*VORHER|Vorher\s*:|Negativbeispiel', re.IGNORECASE
+)
+
+
+def _looks_like_stub_content(content: str) -> bool:
+    """True, wenn der Blockinhalt nur aus Platzhaltern/Ellipsen (z.B. '...', 'pass') besteht,
+    statt aus echtem, speicherwürdigem Code."""
+    stripped_lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+    if not stripped_lines:
+        return True
+    real_lines = [
+        ln for ln in stripped_lines
+        if ln not in ("...", "# ...", "pass", "…") and not re.fullmatch(r'\.{3,}', ln)
+    ]
+    return not real_lines
+
+
+def _is_negative_example_block(text_content: str, match_start: int) -> bool:
+    """True, wenn der Codeblock unmittelbar unter einer Überschrift wie '❌ VORHER',
+    'Vorher:' oder 'Negativbeispiel' steht - also ein Reviewer-"So NICHT"-Beispiel statt einer
+    tatsächlichen Projektdatei ist."""
+    preceding_window = text_content[max(0, match_start - 200):match_start]
+    preceding_lines = [ln for ln in preceding_window.splitlines() if ln.strip()]
+    if not preceding_lines:
+        return False
+    return bool(_NEGATIVE_EXAMPLE_HEADING_RE.search(preceding_lines[-1]))
+
+
 def _find_file_blocks(text_content: str) -> dict[str, str]:
     """Rohe Rel-Pfad -> Inhalt-Treffer aller drei Text-Fallback-Muster, OHNE jede I/O oder
     Validierung (Syntax-/Manifest-Check passiert erst in parse_and_save_files() beim
-    tatsächlichen Speichern) - reine, günstige Text-Erkennung für beide Aufrufer unten."""
+    tatsächlichen Speichern) - reine, günstige Text-Erkennung für beide Aufrufer unten.
+    Reviewer-Negativbeispiele (siehe _is_negative_example_block) und reine Stub-Blöcke
+    (siehe _looks_like_stub_content) werden dabei bewusst nie als Datei-Treffer gewertet."""
     matches_found: dict[str, str] = {}
     for pattern in (_PATTERN_FENCE_COLON, _PATTERN_HEADER_FENCE, _PATTERN_EXPLICIT_FILE):
         for match in pattern.finditer(text_content):
-            matches_found[match.group(1).strip()] = match.group(2)
+            content = match.group(2)
+            if _is_negative_example_block(text_content, match.start()) or _looks_like_stub_content(content):
+                continue
+            matches_found[match.group(1).strip()] = content
     return matches_found
 
 

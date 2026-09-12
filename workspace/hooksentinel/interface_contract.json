@@ -1,0 +1,34 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/db/session.py": {
+      "get_db_session": "function",
+      "init_db": "function",
+      "Base": "class"
+    },
+    "app/services/security.py": {
+      "verify_hmac_signature": "function"
+    },
+    "app/services/idempotency.py": {
+      "check_and_set_idempotency": "function"
+    },
+    "app/services/relay_worker.py": {
+      "RelayWorker": "class",
+      "relay_worker": "instance"
+    },
+    "app/core/circuit_breaker.py": {
+      "CircuitBreaker": "class"
+    },
+    "app/services/dlq_service.py": {
+      "get_dlq_events": "function",
+      "replay_event": "function",
+      "delete_dlq_event": "function"
+    },
+    "app/exports.py": {
+      "exports": "instance"
+    }
+  }
+}

@@ -58,7 +58,7 @@ def _is_disallowed_tool_call_error(exc: Exception) -> bool:
 CODE_WRITING_AGENT_IDS = {
     "backend", "frontend", "database", "api_integration", "data_engineer",
     "mobile", "ml", "devops", "tester", "resilience_guard", "refactoring",
-    "readme", "documentation",
+    "readme", "documentation", "security",
 }
 
 # Realer Fund aus einem echten End-to-End-Testlauf: architect wurde korrekt eingeplant und
@@ -267,8 +267,29 @@ class BaseAgent(ABC):
         no_file_written_retry_used = False
         no_adr_call_retry_used = False
         hard_delivery_gate_failed = False
+        # Realer Fund (KI-Team-Gesamtanalyse, hooksentinel-Lauf 12.09.2026, Schwachstelle 2 -
+        # "Contradictory Prompt"-Bug): bisher wurde JEDEM Agenten auf der letzten erlaubten
+        # Iteration hart verboten, überhaupt noch ein Werkzeug aufzurufen ("Rufe KEIN weiteres
+        # Werkzeug mehr auf") - ein Code-schreibender Agent, der bis dahin noch keine Datei
+        # gespeichert hatte, schrieb daraufhin brav gehorsam seinen fertigen Code als Text in
+        # die Antwort statt über write_file, und wurde direkt im Anschluss vom Hard Delivery
+        # Gate unten als fehlgeschlagen markiert - der Agent wurde also für genau das
+        # bestraft, was ihm das Framework selbst befohlen hatte (im HookSentinel-Lauf real der
+        # Ausfall des Frontend-Entwicklers, 43.401 verpuffte Tokens). `hard_limit` ersetzt
+        # `max_iterations` als tatsächliche Abbruchgrenze der Schleife: bleibt ein
+        # Code-schreibender Agent bis zur letzten Iteration ohne gespeicherte Datei, wird ihm
+        # dort STATT des Werkzeug-Verbots eine zwingende Aufforderung geschickt, JETZT
+        # write_file aufzurufen, und `hard_limit` einmalig um eine echte Rettungs-Iteration
+        # erhöht, damit ein tatsächlich zurückgegebener Werkzeug-Aufruf nicht wie bisher
+        # verworfen, sondern normal ausgeführt wird. Genau EINE solche Verlängerung pro
+        # Aufgabe (`write_rescue_grant_used`), damit die Schleife garantiert terminiert.
+        hard_limit = max_iterations
+        write_rescue_grant_used = False
 
-        for iteration in range(1, max_iterations + 1):
+        iteration = 0
+        while iteration < hard_limit:
+            iteration += 1
+            rescue_applicable = False
             if (
                 iteration == max_iterations - 1
                 and max_iterations > 2
@@ -298,23 +319,53 @@ class BaseAgent(ABC):
                         "mehr aus."
                     ),
                 ))
-            if iteration == max_iterations and max_iterations > 1:
-                # Realer Fund: auf der letzten erlaubten Iteration durfte das Modell bisher
-                # weiterhin frei zwischen Werkzeug-Aufruf und Text wählen – entschied es sich
-                # (real beobachtet bei zwei Fachbereichs-Teamleiter-Aufrufen in einem Lauf)
-                # nochmal für ein Werkzeug, wurde dieser Aufruf VERWORFEN (die Schleife bricht
-                # unten ab, bevor er ausgeführt wird) und der Nutzer sah nur die generische
-                # "Maximale Werkzeug-Iterationen erreicht"-Notiz statt einer echten
-                # Zusammenfassung. Eine explizite letzte Aufforderung erhöht die Chance auf
-                # eine echte finale Antwort, statt die Iteration zu verschwenden.
-                turns.append(AgentMessage(
-                    role="user",
-                    text=(
-                        "Dies ist deine LETZTE Gelegenheit zu antworten. Rufe KEIN weiteres "
-                        "Werkzeug mehr auf – liefere jetzt deine finale Textantwort basierend "
-                        "auf allem, was du bisher gesehen hast."
-                    ),
-                ))
+            if iteration == hard_limit and max_iterations > 1:
+                # "Contradictory Prompt"-Bugfix (KI-Team-Gesamtanalyse, hooksentinel-Lauf
+                # 12.09.2026): ein Code-schreibender Agent, der bis zur letzten Iteration keine
+                # einzige Datei gespeichert hat, darf hier NICHT mehr pauschal jedes Werkzeug
+                # verboten bekommen - sonst gehorcht er dem Verbot, schreibt seinen Code als
+                # Text in die Antwort, und wird direkt danach vom Hard Delivery Gate unten als
+                # fehlgeschlagen markiert (bestraft für einen vom Framework selbst erzwungenen
+                # Zustand). Stattdessen wird er zwingend zu genau diesem Werkzeug-Aufruf
+                # aufgefordert; `write_rescue_grant_used` gewährt dafür EINMALIG eine echte
+                # zusätzliche Iteration (siehe `hard_limit`-Erhöhung unten, nach dem LLM-Call),
+                # statt einen tatsächlich zurückgegebenen write_file-Aufruf wie bisher zu
+                # verwerfen.
+                rescue_applicable = (
+                    not write_rescue_grant_used
+                    and self.agent_id in CODE_WRITING_AGENT_IDS
+                    and not toolbox.files_written
+                    and not task.tools_read_only
+                    and not toolbox.clarification_requests
+                )
+                if rescue_applicable:
+                    turns.append(AgentMessage(
+                        role="user",
+                        text=(
+                            "Dies ist deine LETZTE Gelegenheit zu antworten - du hast aber bisher "
+                            "noch KEINE Datei über write_file/edit_file gespeichert. Rufe JETZT "
+                            "zwingend write_file (oder edit_file) für deine wichtigste Zieldatei "
+                            "auf - dein Code im reinen Antworttext wird NICHT als Lieferung "
+                            "gewertet. Danach darfst du noch kurz zusammenfassen."
+                        ),
+                    ))
+                else:
+                    # Realer Fund: auf der letzten erlaubten Iteration durfte das Modell bisher
+                    # weiterhin frei zwischen Werkzeug-Aufruf und Text wählen – entschied es sich
+                    # (real beobachtet bei zwei Fachbereichs-Teamleiter-Aufrufen in einem Lauf)
+                    # nochmal für ein Werkzeug, wurde dieser Aufruf VERWORFEN (die Schleife bricht
+                    # unten ab, bevor er ausgeführt wird) und der Nutzer sah nur die generische
+                    # "Maximale Werkzeug-Iterationen erreicht"-Notiz statt einer echten
+                    # Zusammenfassung. Eine explizite letzte Aufforderung erhöht die Chance auf
+                    # eine echte finale Antwort, statt die Iteration zu verschwenden.
+                    turns.append(AgentMessage(
+                        role="user",
+                        text=(
+                            "Dies ist deine LETZTE Gelegenheit zu antworten. Rufe KEIN weiteres "
+                            "Werkzeug mehr auf – liefere jetzt deine finale Textantwort basierend "
+                            "auf allem, was du bisher gesehen hast."
+                        ),
+                    ))
 
             allow_fallback = active_llm is self._llm
             try:
@@ -327,7 +378,7 @@ class BaseAgent(ABC):
                 # (siehe assert unten). Echte Rate-Limit-/Auth-Fehler haben bereits eigene,
                 # spezifischere Behandlung in core/llm_factory.py und werden hier bewusst NICHT
                 # gefangen (_is_disallowed_tool_call_error grenzt gezielt ein).
-                if iteration < max_iterations and not disallowed_tool_call_retry_used and _is_disallowed_tool_call_error(e):
+                if iteration < hard_limit and not disallowed_tool_call_retry_used and _is_disallowed_tool_call_error(e):
                     disallowed_tool_call_retry_used = True
                     turns.append(AgentMessage(
                         role="user",
@@ -347,18 +398,27 @@ class BaseAgent(ABC):
             if allow_fallback and response.model_name != self._llm.model_name:
                 active_llm = LLMFactory.create_for_model(response.model_name)
 
-            if not response.tool_calls or iteration == max_iterations:
+            if rescue_applicable and response.tool_calls and not write_rescue_grant_used:
+                # Der Agent ist der Rettungs-Aufforderung gefolgt und hat tatsächlich ein
+                # Werkzeug (hoffentlich write_file/edit_file) aufgerufen, statt wie zuvor in
+                # reinen Text auszuweichen. `hard_limit` wird GENAU EINMAL pro Aufgabe erhöht,
+                # damit dieser Aufruf unten reell ausgeführt (nicht verworfen) wird und der
+                # Agent im Anschluss noch eine echte finale Textantwort liefern kann.
+                write_rescue_grant_used = True
+                hard_limit += 1
+
+            if not response.tool_calls or iteration == hard_limit:
                 if not response.text and response.tool_calls:
                     # Modell hat im letzten erlaubten Schritt nur Werkzeuge angefordert,
                     # aber keinen Abschlusstext geliefert -> ehrliche Notiz statt leerer Antwort.
                     files_note = ", ".join(sorted(toolbox.files_written)) or "keine"
                     response.text = (
-                        f"⚠️ Maximale Werkzeug-Iterationen ({max_iterations}) erreicht, bevor eine finale "
+                        f"⚠️ Maximale Werkzeug-Iterationen ({hard_limit}) erreicht, bevor eine finale "
                         f"Zusammenfassung generiert wurde. Bisher geschriebene/geänderte Dateien: {files_note}."
                     )
                 elif (
                     not response.tool_calls
-                    and iteration < max_iterations
+                    and iteration < hard_limit
                     and not no_file_written_retry_used
                     and self.agent_id in CODE_WRITING_AGENT_IDS
                     and not toolbox.files_written
@@ -396,7 +456,7 @@ class BaseAgent(ABC):
                     continue
                 elif (
                     not response.tool_calls
-                    and iteration < max_iterations
+                    and iteration < hard_limit
                     and not no_adr_call_retry_used
                     and self.agent_id == "architect"
                     and not toolbox.files_written
@@ -434,7 +494,7 @@ class BaseAgent(ABC):
                     and not toolbox.clarification_requests
                     and (
                         no_file_written_retry_used
-                        or (iteration == max_iterations and max_iterations > 1 and not response.tool_calls)
+                        or (iteration == hard_limit and max_iterations > 1 and not response.tool_calls)
                     )
                     and not text_has_extractable_file_blocks(response.text)
                 ):
@@ -617,6 +677,23 @@ deiner finalen Antwort ehrlich zusammen, was bereits erledigt ist und was durch 
 
         if task.context:
             prompt_parts.insert(0, f"**PROJEKT-KONTEXT:**\n{task.context}\n")
+            # Realer Fund (KI-Team-Gesamtanalyse, hooksentinel/certpulse-Läufe 12.09.2026):
+            # ADRs und Schnittstellen-Verträge stecken bereits vollständig im obigen
+            # PROJEKT-KONTEXT (siehe agents/orchestrator/department.py), trotzdem verbrachten
+            # backend/frontend/database ihre ersten 1-2 Werkzeug-Iterationen fast immer damit,
+            # dieselben Dateien nochmal per read_file zu laden - das kostet pro Agent
+            # 20.000-30.000 Tokens, ohne neue Information zu liefern, und drängt das echte
+            # write_file in Richtung der knapp bemessenen letzten Iterationen. Nur für
+            # Code-schreibende Rollen, da nur deren Aufträge typischerweise ADRs/Contracts im
+            # Kontext enthalten.
+            if self.agent_id in CODE_WRITING_AGENT_IDS:
+                prompt_parts.append(
+                    "**KONTEXT-HINWEIS:** Alle ADRs, Schnittstellen-Verträge (`interface_contract.json`) "
+                    "und Architekturentscheidungen liegen dir bereits VOLLSTÄNDIG oben im PROJEKT-KONTEXT vor. "
+                    "Rufe dafür KEIN read_file mehr auf - das verschwendet Werkzeug-Iterationen und Tokens ohne "
+                    "neue Information. Beginne stattdessen bereits in Iteration 1 oder 2 mit write_file für deine "
+                    "Zieldatei(en)."
+                )
 
         return "\n\n".join(prompt_parts)
 

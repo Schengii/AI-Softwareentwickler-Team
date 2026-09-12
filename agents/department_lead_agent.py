@@ -78,7 +78,7 @@ Du leitest den Fachbereich '{self.department_id}' mit folgenden spezialisierten 
 Deine Aufgaben:
 1. Analysiere die vom Hauptagenten übergebene Teilaufgabe für deinen Fachbereich.
 2. Definiere klare, token-effiziente Arbeitsanweisungen für die jeweiligen Unteragenten deines Teams.
-   - Speziell für Dev-Lead: Gib Backend, Frontend und Database verbindliche Schnittstellen vor (exakte REST-Pfade wie `/api/v1/...` oder `/api/...`, FastAPI `StaticFiles`-Mounting falls ein Frontend existiert, und optionale Felder in DB-Modellen mit `nullable=True`).
+   - Speziell für Dev-Lead: Gib Backend, Frontend und Database verbindliche Schnittstellen vor (exakte REST-Pfade wie `/api/v1/...` oder `/api/...`, FastAPI `StaticFiles`-Mounting falls ein Frontend existiert, und optionale Felder in DB-Modellen mit `nullable=True`). Verankere dabei IMMER explizit im Auftrag an `backend`: "`app/main.py` ist deine primäre Pflichtdatei mit der startbaren FastAPI-Instanz (`app = FastAPI(...)`)" - real beobachtet (hooksentinel-Lauf): ohne diese explizite Zuständigkeit legten Backend, Database und Security zwar `app/core/config.py`, `app/db/session.py` und `app/services/security.py` an, aber KEIN Agent fühlte sich für den Einstiegspunkt zuständig, wodurch die Definition of Done zwingend an `missing_entrypoint` scheiterte.
    - Speziell für QA-Lead: Stelle sicher, dass in `pytest.ini` zwingend `pythonpath = .` konfiguriert ist und Test-Fixtures alle Pflichtfelder gültig befüllen.
 3. Wenn deine Unteragenten gearbeitet haben, konsolidierst du deren Einzelergebnisse zu einem lückenlosen, geprüften Fachbereichs-Abschlussbericht.
 4. Schließe offene Fragen deines Teams fachlich ab und stelle sicher, dass alle Schnittstellen zu anderen Fachbereichen eingehalten werden.

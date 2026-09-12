@@ -1,0 +1,36 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/exports.py": {
+      "get_settings": "function",
+      "get_db_session": "function",
+      "PriorityQueueService": "class",
+      "queue_service": "instance",
+      "CircuitBreakerService": "class",
+      "circuit_breaker": "instance",
+      "AnomalyDetector": "class",
+      "anomaly_detector": "instance",
+      "verify_api_key": "function",
+      "mask_sensitive_data": "function"
+    },
+    "app/services/queue.py": {
+      "PriorityQueueService": "class",
+      "queue_service": "instance"
+    },
+    "app/services/circuit_breaker.py": {
+      "CircuitBreakerService": "class",
+      "circuit_breaker": "instance"
+    },
+    "app/services/anomaly.py": {
+      "AnomalyDetector": "class",
+      "anomaly_detector": "instance"
+    },
+    "app/core/security.py": {
+      "verify_api_key": "function",
+      "mask_sensitive_data": "function"
+    }
+  }
+}

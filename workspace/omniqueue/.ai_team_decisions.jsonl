@@ -1,0 +1,2 @@
+{"timestamp": "2026-09-12T17:38:22.501444+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 1: 3 kritische(r) Befund(e) → code_reviewer"}
+{"timestamp": "2026-09-12T17:39:17.973963+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 2: 1 kritische(r) Befund(e) → database"}

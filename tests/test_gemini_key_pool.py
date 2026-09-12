@@ -105,6 +105,25 @@ class TestGeminiKeyFailover(unittest.TestCase):
         self.assertEqual(res.text, "Success with key 2")
         self.assertEqual(used_keys, ["key_1", "key_2"])
 
+    @patch("core.llm_factory.GEMINI_API_KEYS", ["single_key"])
+    def test_model_specific_quota_exhaustion_preserves_other_models_on_same_key(self):
+        # Initialer Key verfügbar
+        _, key = _get_gemini_client(model="gemini-3.8-flash")
+        self.assertEqual(key, "single_key")
+
+        # Markiere single_key NUR für gemini-3.8-flash als erschöpft (Tageslimit 20 Requests)
+        has_next = _mark_gemini_key_exhausted("single_key", cooldown_seconds=3600.0, model="gemini-3.8-flash")
+        self.assertFalse(has_next)  # Keine weiteren Keys für dieses Modell
+
+        # Für gemini-3.6-flash ist derselbe Key weiterhin voll verfügbar!
+        _, key_36 = _get_gemini_client(model="gemini-3.6-flash")
+        self.assertEqual(key_36, "single_key")
+
+        # Für gemini-3.1-flash-lite ist er ebenfalls verfügbar!
+        _, key_lite = _get_gemini_client(model="gemini-3.1-flash-lite")
+        self.assertEqual(key_lite, "single_key")
+
 
 if __name__ == "__main__":
     unittest.main()
+

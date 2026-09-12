@@ -106,16 +106,29 @@ class DepartmentMixin:
         # realen Fund, der das motiviert hat.
         consecutive_provider_exhausted = 0
 
-        def _register_result_for_breaker(res: AgentResult) -> bool:
+        def _register_result_for_breaker(res: AgentResult, *, is_lead: bool = False) -> bool:
             """Aktualisiert den Zähler und meldet True, sobald der Lauf SOFORT abgebrochen
             werden muss: entweder N Fehlschläge in Folge, oder bereits EIN Fehlschlag einer
             kritischen Rolle (CRITICAL_AGENT_IDS) - ohne sie entsteht ohnehin kein tragfähiges
-            Fundament, ein Warten auf einen zweiten Fehlschlag verschwenkt nur weitere Tokens."""
+            Fundament, ein Warten auf einen zweiten Fehlschlag verschwenkt nur weitere Tokens.
+
+            is_lead=True (Delegation/Konsolidierung eines Department-Leads, siehe Aufrufer unten):
+            zählt weiterhin zum Multi-Fehlschlag-Muster (PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT)
+            mit, darf aber NIE für sich allein den Sofortabbruch auslösen - KRITISCHER FUND
+            (CertPulse, 2026-09-12): ein an Groqs 8.000-TPM-Limit gescheiterter dev_lead-
+            Delegationsaufruf löste bisher denselben Sofortabbruch aus wie der Ausfall einer
+            echten technischen Rolle, obwohl kein einziger Entwickler-Agent (backend/frontend/
+            database/api_integration) je aufgerufen wurde. Ein Abteilungsleiter ist
+            organisatorisch nützlich, aber sein Ausfall ist kein Show-Stopper für die
+            eigentliche Fachteam-Arbeit - siehe skip_lead_layer weiter unten für die stattdessen
+            greifende Graceful Degradation."""
             nonlocal consecutive_provider_exhausted
             if res.failure_class != FAILURE_CLASS_PROVIDER_EXHAUSTED:
                 consecutive_provider_exhausted = 0
                 return False
             consecutive_provider_exhausted += 1
+            if is_lead:
+                return consecutive_provider_exhausted >= PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT
             if res.agent_id in CRITICAL_AGENT_IDS:
                 return True
             return consecutive_provider_exhausted >= PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT
@@ -173,7 +186,10 @@ class DepartmentMixin:
             if ENABLE_DEPARTMENT_LEAD_EXECUTION and not skip_lead_layer:
                 delegation = await self._run_department_delegation(lead, task_summary, member_tasks, project_dir)
                 all_results.append(delegation)
-                if _register_result_for_breaker(delegation):
+                # is_lead=True: ein Fehlschlag DIESES rein koordinierenden Aufrufs darf nie allein
+                # den Sofortabbruch auslösen (siehe _register_result_for_breaker-Docstring) - er
+                # zählt nur zum allgemeinen Multi-Fehlschlag-Muster mit.
+                if _register_result_for_breaker(delegation, is_lead=True):
                     provider_exhausted_abort = True
                     break
                 if delegation.success and delegation.content:
@@ -181,7 +197,19 @@ class DepartmentMixin:
                     for task in member_tasks:
                         task.context += f"\n\n## Arbeitsauftrag von {lead.name}:\n{delegation.content[:1200]}"
                 else:
-                    notify(f"  ⚠️ [yellow]{lead.name} konnte nicht delegieren ({delegation.error}) – Fachteam startet ohne Zusatzanweisung.[/yellow]")
+                    # Graceful Degradation statt Abbruch: der Lead konnte nicht delegieren (z.B.
+                    # provider_exhausted/CapabilityFloorError, siehe CertPulse-Fund oben) - das
+                    # Fachteam bekommt die Hauptaufgabe direkt (task_summary/ADRs stecken bereits
+                    # im running_context, siehe oben) statt auf eine Zusatzanweisung zu warten, die
+                    # nicht kommt. skip_lead_layer=True überspringt konsequent auch die spätere
+                    # Konsolidierung dieser Phase (dieselbe Fehlerursache würde dort ohnehin erneut
+                    # auftreten).
+                    skip_lead_layer = True
+                    notify(
+                        f"  ⚠️ [yellow]{lead.name} konnte nicht delegieren ({delegation.error}) – "
+                        "Fachteam startet direkt mit der Hauptaufgabe, Lead-Ebene für diese Phase "
+                        "übersprungen.[/yellow]"
+                    )
             elif skip_lead_layer:
                 notify(f"  ℹ️ [dim]Kleine Aufgabe, einziges Mitglied – Delegation/Konsolidierung durch {lead.name} übersprungen.[/dim]")
 
@@ -283,7 +311,7 @@ class DepartmentMixin:
             if ENABLE_DEPARTMENT_LEAD_EXECUTION and not skip_lead_layer and not budget_aborted and not provider_exhausted_abort:
                 consolidation = await self._run_department_consolidation(lead, member_results, project_dir)
                 all_results.append(consolidation)
-                if _register_result_for_breaker(consolidation):
+                if _register_result_for_breaker(consolidation, is_lead=True):
                     provider_exhausted_abort = True
                 elif consolidation.success and consolidation.content:
                     notify(f"  📥 [bold green]{lead.name} konsolidiert:[/bold green] {self._first_line(consolidation.content)}")

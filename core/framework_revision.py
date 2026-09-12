@@ -61,15 +61,26 @@ def _iter_source_files(root: Path) -> Iterator[Path]:
 
 
 def source_fingerprint(root: Path = FRAMEWORK_ROOT) -> str:
-    """Hash über Pfad, Änderungszeit und Größe aller Framework-Quelldateien (kein Dateiinhalt –
-    läuft in wenigen Millisekunden und kann deshalb vor jeder Aufgabe geprüft werden)."""
+    """Hash über Pfad und Dateiinhalt aller Framework-Quelldateien.
+
+    Bugfix (KI-Team-Gesamtanalyse): verließ sich ursprünglich NUR auf Pfad, `st_mtime_ns` und
+    `st_size` (schneller, aber ohne echten Dateiinhalt). Auf manchen Dateisystemen/virtuellen
+    Laufwerken ist die mtime-Auflösung gröber als die Zeit zwischen zwei schnell
+    aufeinanderfolgenden Schreibvorgängen - änderte sich dabei zusätzlich die Dateigröße nicht
+    (z.B. `x = 1` -> `x = 2`), blieb der Fingerabdruck identisch und genau die Stale-Code-
+    Situation, die dieses Modul erkennen soll (siehe Moduldocstring, realer Fund
+    auditlog_sentinel), wäre selbst unentdeckt geblieben. ~127 kleine Python-Dateien lassen sich
+    trotzdem in wenigen Millisekunden vollständig einlesen und hashen - der Performance-Vorteil
+    des reinen Stat-Vergleichs war die Korrektheit nicht wert."""
     digest = hashlib.sha256()
     for path in sorted(_iter_source_files(root)):
         try:
-            stat = path.stat()
+            content = path.read_bytes()
         except OSError:
             continue
-        digest.update(f"{path.relative_to(root).as_posix()}:{stat.st_mtime_ns}:{stat.st_size}\n".encode())
+        digest.update(f"{path.relative_to(root).as_posix()}:{len(content)}\n".encode())
+        digest.update(content)
+        digest.update(b"\n")
     return digest.hexdigest()[:16]
 
 

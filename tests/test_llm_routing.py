@@ -145,7 +145,7 @@ class TestLLMRouting(unittest.TestCase):
         # unterschiedlich, ohne DeepSeek würde dieser Test lokal (mit echtem Schlüssel) und in
         # der CI (ohne Schlüssel) unterschiedliches Verhalten zeigen.
         token_guard.mark_model_exhausted("gemini-3.6-flash", "Test", cooldown_seconds=3.0)
-        token_guard.mark_model_exhausted(GEMINI_STANDARD_MODEL, "Test", cooldown_seconds=3.0)
+        token_guard.mark_model_exhausted("gemini-3.8-flash", "Test", cooldown_seconds=3.0)
         token_guard.mark_model_exhausted("claude-sonnet-5", "Test", cooldown_seconds=3.0)
         token_guard.mark_model_exhausted("deepseek:deepseek-chat", "Test", cooldown_seconds=3.0)
         token_guard.mark_model_exhausted("openrouter:openrouter/auto", "Test", cooldown_seconds=3.0)

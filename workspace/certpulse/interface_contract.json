@@ -1,0 +1,45 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/core/db.py": {
+      "Base": "class",
+      "get_db": "function",
+      "init_db": "function",
+      "engine": "instance",
+      "async_session_maker": "instance"
+    },
+    "app/core/resilience.py": {
+      "CircuitBreaker": "class",
+      "send_webhook_with_resilience": "function"
+    },
+    "app/services/ssl_checker.py": {
+      "SSLCheckerService": "class",
+      "ssl_checker_service": "instance"
+    },
+    "app/services/scorecard.py": {
+      "ScorecardService": "class",
+      "scorecard_service": "instance"
+    },
+    "app/services/badge.py": {
+      "BadgeGeneratorService": "class",
+      "badge_generator_service": "instance"
+    },
+    "app/services/notifier.py": {
+      "NotificationService": "class",
+      "notification_service": "instance"
+    },
+    "app/exports.py": {
+      "get_settings": "function",
+      "init_db": "function",
+      "get_db": "function",
+      "ssl_checker_service": "instance",
+      "scorecard_service": "instance",
+      "badge_generator_service": "instance",
+      "notification_service": "instance",
+      "send_webhook_with_resilience": "function"
+    }
+  }
+}

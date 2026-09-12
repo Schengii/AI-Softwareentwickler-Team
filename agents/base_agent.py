@@ -269,6 +269,35 @@ class BaseAgent(ABC):
         hard_delivery_gate_failed = False
 
         for iteration in range(1, max_iterations + 1):
+            if (
+                iteration == max_iterations - 1
+                and max_iterations > 2
+                and self.agent_id in CODE_WRITING_AGENT_IDS
+                and not toolbox.files_written
+                and not task.tools_read_only
+                and not toolbox.clarification_requests
+            ):
+                # "Write First"-Vorwarnung (KI-Team-Gesamtanalyse, Befund 1 im CertPulse-Lauf
+                # vom 12.09.2026: ein Code-schreibender Agent verbrachte Iteration 1-4 komplett
+                # mit read_file auf bereits im Prompt zusammengefassten ADRs/Interface-Contracts
+                # und erreichte danach nur noch die erzwungene reine Textiteration, OHNE dass
+                # jemals ein write_file/edit_file-Aufruf stattfand. Die einzige bisherige
+                # Korrektur-Chance (der "keine Datei geschrieben"-Retry weiter unten) greift NUR,
+                # wenn der Agent von sich aus VORZEITIG mit reinem Text abschließt - bleibt er bis
+                # zur letzten Iteration im Tool-Loop, kommt diese Warnung nie zum Zug. Eine
+                # zusätzliche, frühere Warnung EINE Iteration vor der erzwungenen Text-Antwort
+                # gibt dem Agenten noch eine reale Chance, write_file aufzurufen, BEVOR ihm das
+                # Werkzeug in der letzten Iteration verboten wird.
+                turns.append(AgentMessage(
+                    role="user",
+                    text=(
+                        "WARNUNG: Du hast bisher noch KEINE Datei über write_file/edit_file "
+                        "gespeichert. Nur noch EINE Werkzeug-Iteration steht dir zur Verfügung, "
+                        "bevor du zwingend nur noch Text liefern darfst. Rufe JETZT write_file "
+                        "für deine wichtigste Zieldatei auf - reines Lesen reicht ab hier nicht "
+                        "mehr aus."
+                    ),
+                ))
             if iteration == max_iterations and max_iterations > 1:
                 # Realer Fund: auf der letzten erlaubten Iteration durfte das Modell bisher
                 # weiterhin frei zwischen Werkzeug-Aufruf und Text wählen – entschied es sich
@@ -403,7 +432,10 @@ class BaseAgent(ABC):
                     and not toolbox.files_written
                     and not task.tools_read_only
                     and not toolbox.clarification_requests
-                    and no_file_written_retry_used
+                    and (
+                        no_file_written_retry_used
+                        or (iteration == max_iterations and max_iterations > 1 and not response.tool_calls)
+                    )
                     and not text_has_extractable_file_blocks(response.text)
                 ):
                     # Hard Delivery Gate, zweite Stufe: der obige Korrektur-Hinweis wurde bereits
@@ -411,6 +443,28 @@ class BaseAgent(ABC):
                     # keine einzige Datei - execute() unten wertet das NIEMALS als success=True,
                     # damit der Orchestrator sofort eskaliert statt den DoD-Fehler erst Minuten
                     # später über einen leeren `git status` zu bemerken.
+                    #
+                    # Bugfix (KI-Team-Gesamtanalyse, fehleranalyse_ki_team.md Befund 2, CertPulse-
+                    # Lauf 12.09.2026): `no_file_written_retry_used` allein reichte NICHT, um diese
+                    # Stufe auszulösen, wenn der Agent Iterationen 1..max_iterations-1 durchgängig
+                    # MIT Tool-Aufrufen (z.B. nur read_file) verbrachte und erst in der letzten,
+                    # erzwungenen Text-Iteration (oben: "LETZTE Gelegenheit") ohne jede geschriebene
+                    # Datei abschloss - der "keine Datei geschrieben"-Korrektur-Retry weiter oben
+                    # verlangt zwingend `iteration < max_iterations` und kam dadurch NIE zum Zug,
+                    # `no_file_written_retry_used` blieb `False`, und dieses Gate feuerte ebenfalls
+                    # nicht: der Agent meldete `success=True, files_written=[]`, obwohl 300k+ Tokens
+                    # verpufften. Die zusätzliche Bedingung `iteration == max_iterations and
+                    # max_iterations > 1 and not response.tool_calls` deckt genau diesen Fall ab,
+                    # OHNE zwei bewusst weiterhin erwünschte Fälle zu treffen: (a)
+                    # `max_iterations == 1` (siehe test_no_retry_when_no_iterations_remain: bei
+                    # nur EINER erlaubten Iteration gab es nie eine reale Korrekturchance) und
+                    # (b) der Agent ruft in der letzten Iteration weiterhin AKTIV ein Werkzeug auf
+                    # (`response.tool_calls` nicht leer) - dann greift bereits der obige
+                    # "Maximale Werkzeug-Iterationen erreicht"-Fallback-Text, und das ist ein
+                    # ehrlicher Abbruch mangels Zeit, kein "premature final answer" (real
+                    # reproduziert: test_max_iterations_reached_yields_honest_fallback_message
+                    # brach ohne diese Einschränkung fälschlich mit Hard-Fail ab, obwohl der Agent
+                    # bis zur letzten Sekunde fleißig weiterarbeiten wollte).
                     #
                     # Bugfix (bei der KI-Team-Gesamtanalyse gefunden): `not text_has_extractable_
                     # file_blocks(response.text)` ergänzt - enthält der Antworttext trotz allem

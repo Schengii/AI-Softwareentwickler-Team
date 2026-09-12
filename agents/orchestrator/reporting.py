@@ -190,6 +190,43 @@ class ReportingMixin:
 
         return "\n".join(blocks)
 
+    @staticmethod
+    def _build_incomplete_project_banner(definition_of_done) -> str:
+        """
+        Prominenter roter Warnbanner, wenn die Definition of Done (core/definition_of_done.py -
+        die einzige unbestechliche Quelle, unabhängig von der LLM-Synthese) mindestens ein
+        verpflichtendes Kriterium als offen meldet.
+
+        KRITISCHER FUND (CertPulse, 2026-09-12): Der Fast Circuit Breaker brach einen Lauf ab,
+        bevor auch nur ein Entwickler-Agent lief - im Workspace lagen physisch nur 3 ADR-
+        Dokumente. Der Abschlussbericht (LLM-Synthese) beschrieb trotzdem scheinbar fertige
+        Endpoints, Docker-Befehle und eine UI - komplett erfunden. Dieser Banner steht IMMER
+        VOR der LLM-Synthese im Bericht (siehe process()), unabhängig davon, was diese behauptet,
+        und benennt die exakten Blocker aus der Definition of Done statt einer Prosa-Vermutung.
+        Leer, wenn `definition_of_done` fehlt oder bereits fertig ist (is_done=True).
+        """
+        if definition_of_done is None or definition_of_done.is_done:
+            return ""
+
+        blocking = definition_of_done.blocking_criteria
+        no_source_written = any(c.key == "files_written" for c in blocking)
+        headline = (
+            "## ⚠️ PROJEKT UNVOLLSTÄNDIG: Es wurden keine Quellcode-Dateien erstellt."
+            if no_source_written
+            else "## ⚠️ PROJEKT UNVOLLSTÄNDIG: Die Verifikation wurde nicht erfolgreich abgeschlossen."
+        )
+        lines = [
+            headline,
+            "",
+            "Die folgende Zusammenfassung darf **nicht** als abgeschlossene Implementierung "
+            "gelesen werden. Konkrete, harte Blocker (`.ai_team_dod.json`):",
+            "",
+        ]
+        for c in blocking:
+            detail = f" – {c.detail}" if c.detail else ""
+            lines.append(f"- ❌ **{c.label}**{detail}")
+        return "\n".join(lines)
+
     def _build_provider_exhaustion_report(self) -> str:
         """
         Transparente Diagnose-Tabelle für einen Lauf, den der Fast Circuit Breaker

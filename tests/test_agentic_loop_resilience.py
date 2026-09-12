@@ -136,8 +136,12 @@ class TestFinalIterationStopUsingTools(unittest.TestCase):
         ])
         agent = BackendAgent()
         agent._llm = fake_llm
+        # tools_read_only=True: dieser Test prüft ausschließlich die Stop-Instruktion der
+        # letzten Iteration, nicht das Hard Delivery Gate - "Prüfe den Stand" ist ein reiner
+        # Lese-/Check-Auftrag ohne erwartete Dateischreibung (siehe
+        # test_read_only_task_never_triggers_the_hard_delivery_gate).
         task = AgentTask(task_id="t1", agent_id="backend", description="Prüfe den Stand",
-                          project_dir=self.temp_dir, max_tool_iterations=2)
+                          project_dir=self.temp_dir, max_tool_iterations=2, tools_read_only=True)
 
         result = asyncio.run(agent.execute(task))
 
@@ -320,6 +324,35 @@ class TestCodeInTextWithoutFileWriteRetry(unittest.TestCase):
 
         self.assertTrue(result.success, result.error)
         self.assertEqual(fake_llm.call_count, 1)  # max_tool_iterations=1 -> keine Iteration für einen Retry übrig
+
+    def test_read_only_iterations_until_forced_final_text_still_hits_the_hard_delivery_gate(self):
+        """Realer Fund (fehleranalyse_ki_team.md, CertPulse-Lauf 12.09.2026, Befund 2): der
+        Agent ruft in JEDER Iteration bis zur letzten ein Werkzeug auf (hier: wiederholt
+        list_files statt write_file) - der "keine Datei geschrieben"-Korrektur-Retry weiter
+        oben griff NIE, weil er `iteration < max_iterations` voraussetzt. Erst in der
+        erzwungenen letzten Iteration ("LETZTE Gelegenheit") liefert das Modell reinen Text
+        ohne jede gespeicherte Datei. Das Gate muss auch DIESEN Fall als Fehlschlag werten,
+        statt still mit success=True/files_written=[] durchzuwinken (genau das passierte vor
+        dem Fix: 300k+ Tokens verpufften, ohne dass der Orchestrator es bemerkte)."""
+        list_call = LLMResponse(
+            text="", model_name="fake-model", prompt_tokens=10, completion_tokens=5, total_tokens=15,
+            tool_calls=[ToolCall(id="c1", name="list_files", arguments={})],
+        )
+        fake_llm = _ScriptedLLM([
+            list_call, list_call, list_call, list_call,
+            _final_response("Ich würde app/main.py so aufbauen: ..."),
+        ])
+        agent = BackendAgent()
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="backend", description="Baue app.py",
+                          project_dir=self.temp_dir, max_tool_iterations=5)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertFalse(result.success)
+        self.assertIn("Hard Delivery Gate", result.error)
+        self.assertEqual(result.files_written, [])
+        self.assertEqual(fake_llm.call_count, 5)
 
     def test_read_only_task_never_triggers_the_hard_delivery_gate(self):
         """Ein Nur-Lese-Auftrag (task.tools_read_only=True, z.B. Governance-Fix-Schleife) darf mit

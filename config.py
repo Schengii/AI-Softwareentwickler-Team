@@ -65,8 +65,12 @@ ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 # GROQ_HEAVY_MODEL – ein starkes, aber tatsächlich kostenloses Open-Weight-Modell mit
 # großzügigem Rate-Limit – und erst danach auf die Gemini-Standard-Stufe aus, statt
 # sofort auf das schwächste verfügbare Modell abzurutschen.
+# REALER FUND (2026-09-12): gemini-3.8-flash hat im kostenlosen Google AI Studio Free-Tier ein
+# extrem enges Vorschau-Kontingent von nur 20 Anfragen/Tag (QuotaFailure:
+# GenerateRequestsPerDayPerProjectPerModel-FreeTier, limit: 20). gemini-3.6-flash ist das
+# voll produktive, stabile Flash-Modell mit vollem Free-Tier-Kontingent (15 RPM, 1 Mio Kontext).
 GEMINI_LITE_MODEL: str = os.getenv("GEMINI_LITE_MODEL", "gemini-3.1-flash-lite")
-GEMINI_STANDARD_MODEL: str = os.getenv("GEMINI_STANDARD_MODEL", "gemini-3.8-flash")
+GEMINI_STANDARD_MODEL: str = os.getenv("GEMINI_STANDARD_MODEL", "gemini-3.6-flash")
 GEMINI_HEAVY_MODEL: str = os.getenv("GEMINI_HEAVY_MODEL", "gemini-pro-latest")
 
 CLAUDE_LITE_MODEL: str = os.getenv("CLAUDE_LITE_MODEL", "claude-haiku-4-5-20251001")
@@ -184,7 +188,17 @@ DEFAULT_AGENT_MODEL: str = os.getenv("DEFAULT_AGENT_MODEL", STANDARD_MODEL)
 AGENT_MODELS: dict[str, str] = {
     # ── Führung & Planung: Leads mit Architektur-/Qualitäts-Verantwortung -> HEAVY ──
     "planning_lead":     os.getenv("PLANNING_LEAD_MODEL",   HEAVY_MODEL),
-    "dev_lead":          os.getenv("DEV_LEAD_MODEL",        HEAVY_MODEL),
+    # KRITISCHER FUND (CertPulse, 2026-09-12): dev_lead stand hier bisher auf HEAVY_MODEL. Ohne
+    # ANTHROPIC_API_KEY (dieses Setup) löste das über _free_heavy_fallback_client()
+    # GROQ_HEAVY_MODEL ("openai/gpt-oss-120b") auf - dessen striktes 8.000-TPM-Limit auf Groqs
+    # Free-Tier reicht für den Fachbereichs-Delegations-Prompt (3 ADRs + Interface Contract +
+    # Agenten-Beschreibungen) nicht annähernd aus (real beobachtet: HTTP 413/429 "tokens per
+    # minute"). Die Rolle ist rein koordinierend (delegiert/konsolidiert, siehe
+    # agents/department_lead_agent.py) - dafür reicht STANDARD_MODEL (primär Gemini Flash mit
+    # 1-Mio-Token-Fenster, kein 8.000-TPM-Limit) locker, ohne die Groq-TPM-Falle überhaupt zu
+    # betreten. Ein expliziter DEV_LEAD_MODEL-Override (z.B. auf HEAVY_MODEL) bleibt möglich,
+    # siehe get_model_for_agent()/AGENT_MODEL_ENV_KEYS.
+    "dev_lead":          os.getenv("DEV_LEAD_MODEL",        STANDARD_MODEL),
     "governance_lead":   os.getenv("GOVERNANCE_LEAD_MODEL", HEAVY_MODEL),
     # Leads mit eher konsolidierender/koordinierender Aufgabe -> STANDARD reicht
     "design_lead":       os.getenv("DESIGN_LEAD_MODEL",     os.getenv("CREATIVE_LEAD_MODEL", STANDARD_MODEL)),
@@ -246,8 +260,19 @@ AGENT_MODELS: dict[str, str] = {
 # core/model_capability.py) - realer Fund: bei erschöpftem Groq-Tageslimit liefen architect,
 # security und backend auf gemini-flash-lite weiter und produzierten wiederholt Strukturfehler.
 # Bewusst explizit statt aus AGENT_MODELS abgeleitet, da Env-Overrides die Werte verändern.
+#
+# KRITISCHER FUND (CertPulse, 2026-09-12): "dev_lead" stand hier bisher mit drin - ein
+# provider_exhausted-Fehlschlag DIESER rein koordinierenden Delegations-/Konsolidierungs-Rolle
+# (siehe agents/department_lead_agent.py) loeste denselben Sofortabbruch aus wie der Ausfall
+# einer echten technischen Rolle (architect/backend/...). Ergebnis: KEIN einziger Entwickler-
+# Agent (backend/frontend/database/api_integration) wurde je aufgerufen, obwohl deren Provider
+# noch Kapazitaet gehabt haetten. Ein Abteilungsleiter ist organisatorisch nuetzlich, aber sein
+# Ausfall ist kein Show-Stopper - agents/orchestrator/department.py behandelt einen
+# fehlgeschlagenen Department-Lead jetzt separat (Graceful Degradation auf skip_lead_layer statt
+# Abbruch, siehe dortigen Kommentar), unabhaengig von dieser Liste. "dev_lead" bleibt deshalb
+# bewusst draussen; die tatsaechlich kritischen technischen Rollen darunter sind unveraendert.
 CRITICAL_AGENT_IDS: frozenset[str] = frozenset({
-    "planning_lead", "dev_lead", "governance_lead", "architect", "backend", "database", "ml",
+    "planning_lead", "governance_lead", "architect", "backend", "database", "ml",
     "prompt_engineer", "security", "code_reviewer", "refactoring", "agent_trainer", "compliance",
 })
 # Mindeststufe für CRITICAL_AGENT_IDS: "lite" (keine Sperre), "standard" (Default: keine
@@ -407,12 +432,17 @@ MAX_AGENT_TOOL_ITERATIONS: int = int(os.getenv("MAX_AGENT_TOOL_ITERATIONS", "6")
 # Budget wird daher pro Agenten-Rolle gestaffelt, um unnötigen Tokenverbrauch zu vermeiden,
 # ohne code-schreibende Agenten einzuschränken, die echte Iteration brauchen.
 AGENT_MAX_TOOL_ITERATIONS: dict[str, int] = {
+    # Führung & Fachbereichsleiter: rein koordinierend/delegierend -> 2-3 Iterationen genügen völlig
+    "planning_lead": 3, "dev_lead": 3, "governance_lead": 3, "qa_lead": 3,
+    "design_lead": 3, "content_lead": 3, "creative_lead": 3,
     # Vorwiegend textbasierte Planungs-/Content-Rollen: meist 1-2 Dateien, wenig Iteration nötig
     "product_owner": 3, "business_analyst": 3, "web_research": 3, "finops": 3, "team_lead": 3,
     "copywriter": 3, "ui_ux": 3, "accessibility": 3, "i18n": 3, "documentation": 3,
-    "readme": 3, "github": 2, "image_generator": 3,
-    # Reine Prüf-/Review-Rollen: lesen viel, schreiben nichts -> weniger Iteration nötig
-    "code_reviewer": 4, "compliance": 4, "project_cleaner": 3,
+    "readme": 3, "github": 2, "image_generator": 3, "retrospective": 2,
+    # Architektur & technische Spezialisten: schreiben fokussierte Artefakte -> 4 Iterationen
+    "architect": 4, "devops": 4, "security": 4, "resilience_guard": 4, "tester": 4,
+    # Reine Prüf-/Review-Rollen: lesen viel, schreiben nichts -> 3 Iterationen
+    "code_reviewer": 3, "compliance": 3, "project_cleaner": 3,
 }
 
 # ──────────────────────────────────────────
@@ -611,7 +641,7 @@ ENABLE_TASK_COMPLEXITY_SCALING: bool = os.getenv("ENABLE_TASK_COMPLEXITY_SCALING
 # agents/orchestrator.py nach Erreichen dieses Werts die verbleibenden Fachbereichs-Phasen,
 # Verifikations-Fixversuche sowie Retrospektive/Selbstoptimierung übersprungen ausliefern
 # zu lassen (die bis dahin erarbeiteten Ergebnisse werden trotzdem synthetisiert).
-MAX_RUN_TOKENS: int = int(os.getenv("MAX_RUN_TOKENS", "0"))
+MAX_RUN_TOKENS: int = int(os.getenv("MAX_RUN_TOKENS", "300000"))
 
 # Team-Retrospektive (Verbesserungsvorschlag "Budget-Reserve für Verifikation"): mehrere reale
 # Läufe (u.a. incidentpilot) erschöpften MAX_RUN_TOKENS bereits in der Code-Generierungsphase

@@ -1127,10 +1127,16 @@ class Orchestrator(
 
         # Synthese der Fachbereichs-Ergebnisse durch den Hauptagenten
         notify("🔍 [bold cyan]Phase 5/5:[/bold cyan] Hauptagent konsolidiert Berichte aller Fachbereichsleiter...")
+        # KRITISCHER FUND (CertPulse, 2026-09-12): einmalig VOR der Synthese gezählt (statt erst
+        # später bei der Definition of Done), damit no_implementation_files rechtzeitig als
+        # Anti-Halluzinations-Schutz an ResultAggregator.synthesize() übergeben werden kann - siehe
+        # NO_IMPLEMENTATION_GUARD_INSTRUCTION-Docstring in core/result_aggregator.py.
+        geschriebene_dateien = len({f for r in results for f in (r.files_written or [])})
         final_solution, synth_tokens = await self._result_aggregator.synthesize(
             user_request=user_request,
             task_summary=task_summary,
             results=results,
+            no_implementation_files=geschriebene_dateien == 0,
         )
 
         # Retrospektive & Automatische Selbstoptimierung – werden bei überschrittenem
@@ -1147,7 +1153,7 @@ class Orchestrator(
         # angefangen" und "an der Infrastruktur gescheitert" nicht unterscheiden. Rein additiv:
         # ein Fehler hier darf einen sonst erfolgreichen Lauf nicht kippen.
         try:
-            geschriebene_dateien = len({f for r in results for f in (r.files_written or [])})
+            # geschriebene_dateien bereits oben (vor der Synthese) berechnet - nicht erneut zählen.
             self.last_definition_of_done = build_definition_of_done(
                 project_slug=self.last_project_slug,
                 project_dir=project_dir,
@@ -1313,9 +1319,11 @@ class Orchestrator(
             )
 
         provider_exhaustion_section = self._build_provider_exhaustion_report()
+        incomplete_project_banner = self._build_incomplete_project_banner(self.last_definition_of_done)
 
         final_output = (
-            f"{final_solution}\n\n"
+            (f"{incomplete_project_banner}\n\n---\n\n" if incomplete_project_banner else "")
+            + f"{final_solution}\n\n"
             f"---\n\n"
             + (f"{provider_exhaustion_section}\n\n---\n\n" if provider_exhaustion_section else "")
             + (f"{real_files_section}\n\n---\n\n" if real_files_section else "")

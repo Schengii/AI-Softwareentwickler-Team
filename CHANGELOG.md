@@ -7,6 +7,64 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Hard Delivery Gate übersah Ghost-Code über die komplette letzte Iteration
+
+Aus einer vollständigen Fehleranalyse des CertPulse-Laufs vom 12.09.2026
+(`fehleranalyse_ki_team.md`): trotz 319.244 verbrauchter Tokens und `success: true` von
+allen Entwickler-Agenten wurde **keine einzige** Quell-/Testdatei geschrieben – der Lauf
+brach anschließend über die Verifikations-Token-Reserve ab, bevor der Fehler auffiel.
+
+- **Befund 1 – "Premature Final Answer"-Falle:** Code-schreibende Agenten verbrachten alle
+  bis auf die letzte erlaubte Iteration mit `read_file` auf bereits vorhandene ADRs/den
+  Interface-Contract, ohne je `write_file` aufzurufen. In der erzwungenen letzten Iteration
+  ("LETZTE Gelegenheit … Rufe KEIN weiteres Werkzeug mehr auf") blieb dem Modell dann nur
+  noch reiner Fließtext – der Code "verpuffte" im Antworttext.
+- **Befund 2 – Logikfehler im Hard Delivery Gate:** Die zweite (endgültige) Stufe des Gates
+  in `agents/base_agent.py` verlangte zwingend `no_file_written_retry_used`. Dieses Flag
+  wird aber NUR gesetzt, wenn der Agent VORZEITIG (`iteration < max_iterations`) ohne
+  Tool-Aufruf abschließt. Blieb der Agent bis zur letzten Iteration im Tool-Loop (Befund 1)
+  und lieferte erst dort reinen Text, griff der Korrektur-Retry nie, das Flag blieb `False`,
+  und damit feuerte auch das finale Gate nicht – der Agent meldete `success=True,
+  files_written=[]`, unbemerkt vom Orchestrator.
+- **Fix:** Die Endstufe des Gates greift jetzt zusätzlich, wenn die erzwungene letzte
+  Iteration (`iteration == max_iterations and max_iterations > 1`) OHNE weiteren
+  Werkzeug-Aufruf (`not response.tool_calls`), ohne jede geschriebene Datei und ohne
+  rettbaren Codeblock endet – unabhängig davon, ob der frühere Korrektur-Retry überhaupt
+  zum Zug kam. Die `not response.tool_calls`-Einschränkung ist bewusst: ruft der Agent in
+  der letzten Iteration weiterhin aktiv ein Werkzeug auf, greift stattdessen der bereits
+  bestehende ehrliche "Maximale Werkzeug-Iterationen erreicht"-Fallback – das ist ein
+  Abbruch mangels Zeit, kein "premature final answer" (ohne diese Einschränkung schlug
+  `test_max_iterations_reached_yields_honest_fallback_message` fälschlich mit Hard-Fail
+  fehl). Das bewusst tolerante Verhalten bei nur EINER erlaubten Iteration
+  (`max_iterations == 1`, dort gab es nie eine reale Korrekturchance) bleibt unverändert.
+  Zusätzlich warnt der Loop jetzt bereits EINE Iteration vor der erzwungenen Text-Antwort
+  explizit ("nur noch EINE Werkzeug-Iteration … Rufe JETZT write_file auf"), um den
+  Fehlschlag nach Möglichkeit gar nicht erst entstehen zu lassen.
+
+Verifikation: neuer Regressionstest
+`test_read_only_iterations_until_forced_final_text_still_hits_the_hard_delivery_gate`
+(repliziert exakt das Befund-2-Muster) sowie die komplette bestehende
+`test_agentic_loop_resilience.py`-Suite (23 Tests) und die volle Projekt-Testsuite
+(1927 Tests) grün, `ruff check` fehlerfrei.
+
+---
+
+## 🟢 `source_fingerprint()` erkannte manche Codeänderungen nicht
+
+Bei derselben Gesamtanalyse in `core/framework_revision.py` gefunden (unabhängig vom
+CertPulse-Lauf, aber dieselbe Kategorie "Stale Code unentdeckt" wie der Modul-Gründungsfund
+auditlog_sentinel): `source_fingerprint()` hashte nur Pfad, `st_mtime_ns` und `st_size` –
+nie den Dateiinhalt selbst. Änderte sich der Inhalt einer Datei (z.B. `x = 1` → `x = 2`)
+ohne Größenänderung UND innerhalb der mtime-Auflösung des Dateisystems, blieb der
+Fingerabdruck identisch – reproduzierbar in `tests/test_framework_revision.py::
+TestSourceFingerprint::test_changes_when_a_source_file_changes`. Fix: hasht jetzt den
+tatsächlichen Dateiinhalt aller ~127 Framework-Quelldateien statt nur deren Metadaten –
+bei dieser Dateimenge weiterhin im Millisekundenbereich, aber ohne die Lücke.
+
+Verifikation: `test_framework_revision.py` (6 Tests) grün, `ruff check` fehlerfrei.
+
+---
+
 ## 🟢 Hard Delivery Gate erstickte den Text-Fallback-Rettungsmechanismus
 
 Bei der Analyse eines nach der Performance-Optimierung vollständig durchlaufenden Testlaufs

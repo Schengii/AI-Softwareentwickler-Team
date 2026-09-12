@@ -25,6 +25,27 @@ Deine Aufgabe:
 Antworte auf Deutsch.
 """
 
+# KRITISCHER FUND (CertPulse, 2026-09-12): Der Fast Circuit Breaker brach den Lauf ab, BEVOR
+# auch nur ein einziger Entwickler-Agent (backend/frontend/database/api_integration) aufgerufen
+# wurde - im Workspace lagen physisch nur 3 ADR-Dokumente, kein Quellcode. Trotzdem erstellte
+# dieser Synthese-Schritt einen scheinbar erfolgreichen Bericht MIT Endpoints, Docker-Befehlen
+# und UI-Beschreibungen - frei erfunden, denn `results_text` enthielt dafür keinerlei Grundlage.
+# Ein generatives Modell füllt eine dünne Faktenlage sonst bereitwillig mit plausibel klingendem,
+# aber komplett fiktivem Fachwissen auf. Dieser Zusatzabschnitt wird NUR angehängt, wenn der
+# Aufrufer (agents/orchestrator/__init__.py) tatsächlich 0 in diesem Lauf geschriebene Dateien
+# gezählt hat, und verbietet der Synthese explizit, eine nicht existierende Implementierung zu
+# beschreiben.
+NO_IMPLEMENTATION_GUARD_INSTRUCTION = """
+
+6. WICHTIG - KEINE ERFUNDENE IMPLEMENTIERUNG: In diesem Lauf wurde bislang KEINE einzige
+   Quellcode-Datei geschrieben (nur Planung/Architektur/Dokumentation, siehe Berichte oben).
+   Beschreibe UNTER KEINEN UMSTÄNDEN Endpoints, Docker-Befehle, UI-Elemente, Datenbankschemata
+   oder sonstige Implementierungsdetails, die aus den Berichten oben nicht wörtlich hervorgehen -
+   auch nicht als "geplant" formuliert, wenn es wie eine fertige Beschreibung klingt. Fasse
+   stattdessen ausschließlich zusammen, was tatsächlich geliefert wurde (z. B. Architektur-
+   entscheidungen/ADRs) und benenne unmissverständlich, dass die eigentliche Implementierung noch
+   aussteht bzw. warum sie nicht stattfand."""
+
 # Realer Fund bei einer Bestandsaufnahme des eigenen Teams: product_owner/business_analyst
 # formulieren User Stories mit Given/When/Then-Akzeptanzkriterien (siehe deren System-Prompts),
 # aber nichts im Team prüft am Ende mechanisch, ob diese Kriterien vom fertigen Ergebnis
@@ -59,9 +80,16 @@ class ResultAggregator:
         user_request: str,
         task_summary: str,
         results: list[AgentResult],
+        no_implementation_files: bool = False,
     ) -> tuple[str, int]:
         """
         Fasst alle Agenten-Ergebnisse zu einer finalen Antwort zusammen.
+
+        no_implementation_files: True, wenn der Aufrufer über ALLE Ergebnisse dieses Laufs
+        hinweg 0 tatsächlich geschriebene Dateien gezählt hat (siehe AgentResult.files_written) -
+        aktiviert NO_IMPLEMENTATION_GUARD_INSTRUCTION, damit die Synthese keine fiktive
+        Implementierung beschreibt (siehe deren Docstring für den realen Fund, der das motiviert
+        hat). Standard False, damit bestehende Aufrufer/Tests ohne dieses Detail unverändert bleiben.
 
         Returns:
             Tuple aus (Antworttext, verbrauchte Tokens)
@@ -88,6 +116,8 @@ Erstelle jetzt das finale, strukturierte Gesamtergebnis für den Nutzer."""
         system_prompt = SYNTHESIZE_SYSTEM_PROMPT
         if any(r.agent_id in _ACCEPTANCE_CRITERIA_SOURCE_AGENT_IDS for r in successful):
             system_prompt += ACCEPTANCE_CRITERIA_CHECK_INSTRUCTION
+        if no_implementation_files:
+            system_prompt += NO_IMPLEMENTATION_GUARD_INSTRUCTION
 
         try:
             resp = await self._llm.generate_with_usage(prompt, system_prompt)

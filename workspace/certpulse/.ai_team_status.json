@@ -1,0 +1,30 @@
+[
+  {
+    "timestamp": "2026-09-12T10:49:42+00:00",
+    "task_summary": "FastAPI SSL-Monitoring-Service mit Dashboard implementiert",
+    "verification_ok": false,
+    "budget_aborted": true,
+    "cancelled": false,
+    "files_written_count": 0,
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 🚫 Übersprungen: Lauf-Budget (`MAX_RUN_TOKENS=350,000`) wurde bereits während der Fachbereichs-Phasen oder der Governance-Fix-Schleife erreicht."
+  },
+  {
+    "timestamp": "2026-09-12T10:19:29+00:00",
+    "task_summary": "CertPulse SSL-Monitoring-Service mit API und Dashboard fertiggestellt",
+    "verification_ok": false,
+    "budget_aborted": true,
+    "cancelled": false,
+    "files_written_count": 0,
+    "status": "aborted_due_to_quota",
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 🛑 Übersprungen: Der Lauf wurde abgebrochen, weil der überwiegende Teil der Agenten-Aufrufe an erschöpften API-Kontingenten bzw. fehlenden API-Schlüsseln scheiterte - nicht an einem inhaltlichen Problem. Ein erneuter Versuch mit wieder verfügbarem Kontingent (oder nach Hinterlegen des fehlenden Schlüssels) sollte genügen."
+  },
+  {
+    "timestamp": "2026-09-12T09:28:00+00:00",
+    "task_summary": "CertPulse SSL-Monitoring-Service implementiert",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 3,
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 🧪 Keine Testdateien (test_*.py), kein npm-Test-Skript und kein Rust/Go-Projekt gefunden – Verifikation übersprungen. → tester beauftragt, eine echte Testsuite nachzuliefern.\n- ⚠️ Keine Testdateien (test_*.py), kein npm-Test-Skript und kein Rust/Go-Projekt gefunden – Verifikation übersprungen. Generierter Code wurde NICHT automatisch verifiziert."
+  }
+]

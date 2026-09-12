@@ -1158,8 +1158,24 @@ class Orchestrator(
                 project_slug=self.last_project_slug,
                 project_dir=project_dir,
                 files_written=geschriebene_dateien,
-                tests_ran=verification_ok or "Testlauf" in (verification_summary or ""),
-                tests_passed=verification_ok,
+                # Realer Fund (toggleforge, 2026-09-12): "Testlauf" kam in verification_summary
+                # NIE vor (verification.py schreibt "✅ Echte Testsuite bestanden ..." bzw.
+                # "... Testsuite bestanden."). Zusätzlich kippte ein NACHGELAGERTER Check (z. B.
+                # der Browser-UI-Check auf ein fehlendes statisches Asset) verification_ok auf
+                # False - wodurch eine tatsächlich bestandene Unit-Testsuite als "nicht gelaufen"
+                # und "nicht bestanden" gemeldet wurde. tests_ran/tests_passed müssen daher direkt
+                # am Testsuite-Treffer im Summary hängen, nicht am Gesamt-verification_ok, das auch
+                # UI-/Asset-Befunde einschließt.
+                tests_ran=verification_ok or "Testsuite bestanden" in (verification_summary or ""),
+                tests_passed=verification_ok or "Testsuite bestanden" in (verification_summary or ""),
+                # Separates, nicht-blockierendes UI-Kriterium (siehe Kommentar in
+                # core/definition_of_done.py bei "ui_ok") statt den UI-Status weiterhin nur
+                # implizit über das kaskadierte verification_ok abzubilden.
+                ui_ok=(
+                    True if "Frontend/UI-Check erfolgreich" in (verification_summary or "")
+                    else False if "Frontend/UI-Check fehlgeschlagen" in (verification_summary or "")
+                    else None
+                ),
                 verification_skipped=bool(budget_aborted or manually_cancelled),
                 user_request=user_request,
             )

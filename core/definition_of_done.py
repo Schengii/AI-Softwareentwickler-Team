@@ -177,6 +177,7 @@ def build_definition_of_done(
     lint_clean: bool | None = None,
     app_starts: bool | None = None,
     secrets_clean: bool | None = None,
+    ui_ok: bool | None = None,
     coverage_percent: float | None = None,
     min_coverage: float = 0.0,
     verification_skipped: bool = False,
@@ -204,20 +205,27 @@ def build_definition_of_done(
     # Realer Fund (auditlog_sentinel, 2026-09-10): Nach einem Budget-Abbruch meldete die DoD
     # "keine ausführbaren Tests gefunden", obwohl tests/test_api.py existierte – die Verifikation
     # war nur übersprungen worden. Übersprungen und "nicht vorhanden" sind verschiedene Befunde.
-    tests_on_disk = verification_skipped and not tests_ran and _has_test_files(pfad)
+    #
+    # Weiterer Fund (toggleforge, 2026-09-12): `tests_on_disk` war zusätzlich an
+    # `verification_skipped` gekoppelt. Lief die Verifikation regulär durch (verification_skipped
+    # = False), wurde `tests_on_disk` IMMER False, selbst wenn Testdateien vorhanden waren. Ob
+    # Testdateien auf der Platte liegen, ist aber unabhängig davon, ob der Lauf abgebrochen wurde.
+    tests_on_disk = _has_test_files(pfad)
     if tests_ran:
         exist_detail = ""
-    elif verification_skipped:
+    elif tests_on_disk:
         exist_detail = (
-            "Testdateien vorhanden, aber nicht ausgeführt (Lauf vorzeitig abgebrochen)" if tests_on_disk
-            else "nicht geprüft (Lauf vorzeitig abgebrochen)"
+            "Testdateien vorhanden, aber nicht ausgeführt (Lauf vorzeitig abgebrochen)"
+            if verification_skipped else "Testdateien auf Festplatte vorhanden"
         )
+    elif verification_skipped:
+        exist_detail = "nicht geprüft (Lauf vorzeitig abgebrochen)"
     else:
         exist_detail = "keine ausführbaren Tests gefunden"
     kriterien.append(Criterion(
         key="tests_exist",
         label="Eine echte Testsuite existiert",
-        passed=tests_ran or tests_on_disk,
+        passed=bool(tests_ran or tests_on_disk),
         detail=exist_detail,
     ))
     if tests_passed:
@@ -258,6 +266,20 @@ def build_definition_of_done(
         passed=bool(lint_clean),
         required=False,
         applicable=lint_clean is not None,
+    ))
+    # Realer Fund (toggleforge, 2026-09-12): ein fehlgeschlagener Frontend/UI-Check (z.B. ein
+    # fehlendes statisches Asset wie static/app.js) setzte bislang das GESAMTE verification_ok
+    # zurück und ließ dadurch eine tatsächlich grüne Backend-Unit-Testsuite als "nicht gelaufen"
+    # bzw. "nicht bestanden" erscheinen (siehe tests_ran/tests_passed oben, die inzwischen direkt
+    # am Testsuite-Treffer im Summary hängen statt am kaskadierten verification_ok). Der UI-Status
+    # bekommt hier ein EIGENES, nicht-verpflichtendes Kriterium, damit er sichtbar bleibt, ohne
+    # die Backend-Testsuite mit in den Abgrund zu ziehen.
+    kriterien.append(Criterion(
+        key="ui_ok",
+        label="Frontend/UI-Check ohne Befund",
+        passed=bool(ui_ok),
+        required=False,
+        applicable=ui_ok is not None,
     ))
     if min_coverage > 0:
         erreicht = coverage_percent is not None and coverage_percent >= min_coverage

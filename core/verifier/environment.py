@@ -250,21 +250,71 @@ class EnvironmentMixin:
         return sources
 
     def _ensure_node_environment(self, node_dir: Path, timeout_seconds: float) -> str:
+        """
+        Team-Goal (20260913, Aufgabe 2): unter Windows scheiterte `npm test` gelegentlich daran,
+        dass lokale `node_modules` noch nicht installiert waren, ODER `jest` als globaler Befehl
+        im CMD-Pfad fehlte ("Der Befehl 'jest' ist entweder falsch geschrieben..."), obwohl
+        `package.json` bereits ein reines `"test": "jest"`-Skript deklarierte. Deterministisches
+        Scaffolding statt Hoffnung auf eine bereits vorhandene globale Jest-Installation:
+        - `node_modules` fehlt -> `npm ci` (bei vorhandener package-lock.json, deterministisch)
+          bzw. `npm install --prefer-offline --no-audit` (schneller, kein unnötiger Netzwerk-/
+          Audit-Overhead in der Sandbox). Existiert `node_modules` bereits (z.B. ein vorheriger
+          Verifikations-Durchlauf im selben Projektordner), wird die Installation übersprungen -
+          spart Zeit UND vermeidet ein unnötiges erneutes `npm ci`, das package-lock.json strikt
+          gegen package.json validiert und bei jeder Abweichung fehlschlägt.
+        - Ein `"test"`-Skript, das WÖRTLICH nur `"jest"` lautet, wird auf `"npx jest"`
+          umgeschrieben - `npx` löst die lokal installierte `node_modules/.bin/jest`-Binary
+          zuverlässig auf, unabhängig davon, ob `jest` global im PATH registriert ist.
+        """
         rel = self._relative_label(node_dir)
-        command = ["npm", "ci"] if (node_dir / "package-lock.json").exists() else ["npm", "install"]
         sandbox_active = DockerSandbox.is_active()
         if not sandbox_active and shutil.which("npm") is None:
             return f"⚠️ `npm` ist auf diesem System nicht installiert/verfügbar – Node-Abhängigkeiten ({rel}) übersprungen."
 
-        if sandbox_active:
-            # postinstall-Skripte laufen im Container; node_modules liegt in einem Volume.
-            install_result = DockerSandbox.run_node(command, self.project_dir, node_dir, timeout_seconds)
+        logs: list[str] = []
+        if (node_dir / "node_modules").is_dir():
+            logs.append(f"✅ node_modules bereits vorhanden ({rel}) - Installation übersprungen.")
         else:
-            install_result = CodeSandbox.run_command(command, cwd=node_dir, timeout_seconds=timeout_seconds)
-        status = "✅" if install_result.exit_code == 0 else "⚠️"
-        tail = (install_result.stdout + install_result.stderr).strip()[-800:]
-        label = f"{' '.join(command)} ({rel})" + (" [Docker-Sandbox]" if sandbox_active else "")
-        return f"{status} {label} (exit_code={install_result.exit_code})" + (f"\n{tail}" if install_result.exit_code != 0 else "")
+            command = (
+                ["npm", "ci"] if (node_dir / "package-lock.json").exists()
+                else ["npm", "install", "--prefer-offline", "--no-audit"]
+            )
+            if sandbox_active:
+                # postinstall-Skripte laufen im Container; node_modules liegt in einem Volume.
+                install_result = DockerSandbox.run_node(command, self.project_dir, node_dir, timeout_seconds)
+            else:
+                install_result = CodeSandbox.run_command(command, cwd=node_dir, timeout_seconds=timeout_seconds)
+            status = "✅" if install_result.exit_code == 0 else "⚠️"
+            tail = (install_result.stdout + install_result.stderr).strip()[-800:]
+            label = f"{' '.join(command)} ({rel})" + (" [Docker-Sandbox]" if sandbox_active else "")
+            logs.append(f"{status} {label} (exit_code={install_result.exit_code})" + (f"\n{tail}" if install_result.exit_code != 0 else ""))
+
+        jest_log = self._ensure_robust_jest_test_script(node_dir, rel)
+        if jest_log:
+            logs.append(jest_log)
+        return "\n".join(logs)
+
+    def _ensure_robust_jest_test_script(self, node_dir: Path, rel: str) -> str:
+        """Schreibt ein `package.json`-`"test"`-Skript, das WÖRTLICH nur `"jest"` lautet, auf
+        `"npx jest"` um - siehe _ensure_node_environment()-Docstring. Bewusst konservativ: nur
+        der exakte String `"jest"` (nach Trimmen) wird ersetzt, ein bereits differenzierteres
+        Skript (`"jest --coverage"`, `"jest --ci"`, `"react-scripts test"`, ...) bleibt
+        unangetastet, um keine bewusste Agenten-Konfiguration zu überschreiben."""
+        pkg_json = node_dir / "package.json"
+        try:
+            raw = pkg_json.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            return ""
+        scripts = data.get("scripts")
+        if not isinstance(scripts, dict) or scripts.get("test", "").strip() != "jest":
+            return ""
+        scripts["test"] = "npx jest"
+        try:
+            pkg_json.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        except OSError as e:
+            return f"⚠️ Konnte '\"test\": \"jest\"' in package.json ({rel}) nicht auf 'npx jest' umstellen: {e}"
+        return f"✅ package.json ({rel}): Test-Skript 'jest' -> 'npx jest' umgestellt (robust gegen fehlende globale Jest-Binary unter Windows)."
 
     def _relative_label(self, directory: Path) -> str:
         rel = directory.relative_to(self.project_dir)

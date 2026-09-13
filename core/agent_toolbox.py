@@ -22,6 +22,7 @@ import fnmatch
 import os
 import shlex
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -58,10 +59,21 @@ def split_command_line(command: str, *, windows: bool | None = None) -> list[str
 TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "read_file",
-        "description": "Liest den vollständigen Inhalt einer Datei im Projektverzeichnis. Nutze dies IMMER, bevor du eine bestehende Datei änderst.",
+        "description": (
+            "Liest den vollständigen Inhalt einer Datei im Projektverzeichnis. Nutze dies IMMER, "
+            "bevor du eine bestehende Datei änderst. Wurde dieselbe Datei in dieser Sitzung bereits "
+            "unverändert gelesen, liefert ein erneuter voller read_file-Aufruf nur einen kompakten "
+            "Cache-Hinweis statt des kompletten Inhalts erneut - nutze dann line_start/line_end für "
+            "einen gezielten Abschnitt oder force=true, um den vollen Inhalt trotzdem zu erhalten."
+        ),
         "parameters": {
             "type": "object",
-            "properties": {"path": {"type": "string", "description": "Relativer Pfad zur Datei, z.B. 'app/main.py'"}},
+            "properties": {
+                "path": {"type": "string", "description": "Relativer Pfad zur Datei, z.B. 'app/main.py'"},
+                "line_start": {"type": "integer", "description": "Optional: erste zu lesende Zeile (1-basiert) für einen gezielten Ausschnitt"},
+                "line_end": {"type": "integer", "description": "Optional: letzte zu lesende Zeile (1-basiert, inklusive) für einen gezielten Ausschnitt"},
+                "force": {"type": "boolean", "description": "Optional: true erzwingt den vollen Inhalt, auch wenn dieselbe Datei bereits unverändert gelesen wurde"},
+            },
             "required": ["path"],
         },
     },
@@ -257,6 +269,11 @@ class AgentToolbox:
     # reichen für die meisten Quelldateien, ohne den Kontext unnötig aufzublähen.
     MAX_TOOL_RESULT_CHARS = 8_000
     MAX_LISTED_FILES = 300
+    # Innerhalb dieses Fensters gilt ein erneuter voller read_file-Aufruf auf denselben,
+    # unveränderten Inhalt als Wiederholung "vor wenigen Iterationen" (siehe _read_history) -
+    # groß genug für einen intensiven Fix-Loop innerhalb einer Aufgabe, aber kein permanenter
+    # Cache über die gesamte Sitzung hinweg.
+    READ_CACHE_REPEAT_WINDOW_SECONDS = 300.0
 
     # project_dir zeigt normalerweise auf einen generierten Sandbox-Ordner unter workspace/,
     # der strukturell nie Secrets enthält. Seit /audit-projekt kann project_dir aber auch auf
@@ -288,6 +305,16 @@ class AgentToolbox:
         # Normalisierter absoluter Pfad -> Inhalts-Hash des zuletzt von DIESEM Agenten gesehenen
         # Stands (gelesen oder selbst geschrieben), Grundlage für _reject_if_stale().
         self._seen_digests: dict[str, str] = {}
+        # Team-Optimierung (Goal 20260913, Aufgabe 3): normalisierter absoluter Pfad -> (Inhalts-
+        # Hash, monotone Zeit) des zuletzt vollständig (kein line_start/line_end, kein force)
+        # gelesenen Stands - Grundlage für den Cache-Hinweis in _tool_read_file(). Realer Befund
+        # aus intensiven Fix-Loops: Agenten riefen read_file wiederholt auf dieselbe große,
+        # UNVERÄNDERTE Quelldatei auf, wodurch derselbe 500+-Zeilen-Inhalt mehrfach identisch im
+        # Nachrichtenverlauf landete und den Kontext des Werkzeug-Loops unnötig aufblähte. Der
+        # Inhalts-Hash (nicht Pfad allein) entscheidet über "unverändert" - ein zwischenzeitliches
+        # write_file/edit_file ändert automatisch den Hash, ohne dass dieser Cache separat
+        # invalidiert werden müsste.
+        self._read_history: dict[str, tuple[str, float]] = {}
 
     async def list_files_snapshot(self, subdir: str = "") -> list[str]:
         """Wie das `list_files`-Werkzeug, aber OHNE call_count/call_log zu erhöhen – für einen
@@ -365,7 +392,9 @@ class AgentToolbox:
 
     # ── Datei-Werkzeuge ──────────────────────────────────────────────
 
-    async def _tool_read_file(self, path: str) -> dict:
+    async def _tool_read_file(
+        self, path: str, line_start: int | None = None, line_end: int | None = None, force: bool = False,
+    ) -> dict:
         target = self._resolve(path)
         if not target.exists():
             return {"error": f"Datei '{path}' existiert nicht. Nutze list_files, um vorhandene Dateien zu sehen."}
@@ -376,7 +405,47 @@ class AgentToolbox:
         except Exception as e:
             return {"error": f"Konnte '{path}' nicht lesen: {e}"}
         self._remember_content(target, content)
+
+        targeted = line_start is not None or line_end is not None
+        if not targeted and not force:
+            cache_hit = self._check_read_cache(target, content)
+            if cache_hit is not None:
+                return cache_hit
+        self._read_history[self._digest_key(target)] = (content_digest(content), time.monotonic())
+
+        if targeted:
+            lines = content.splitlines()
+            start_idx = max((line_start or 1) - 1, 0)
+            end_idx = line_end if line_end is not None else len(lines)
+            snippet = "\n".join(lines[start_idx:end_idx])
+            return {
+                "path": path,
+                "content": snippet,
+                "line_start": line_start or 1,
+                "line_end": line_end if line_end is not None else len(lines),
+            }
         return {"path": path, "content": content}
+
+    def _check_read_cache(self, target: Path, content: str) -> dict | None:
+        """Gibt einen kompakten Cache-Hinweis zurück, wenn DIESELBE Datei mit demselben Inhalt
+        bereits vor wenigen Iterationen (READ_CACHE_REPEAT_WINDOW_SECONDS) vollständig gelesen
+        wurde - sonst None (normaler Lesevorgang). Siehe _read_history-Docstring in __init__."""
+        cached = self._read_history.get(self._digest_key(target))
+        if cached is None:
+            return None
+        cached_digest, cached_at = cached
+        if cached_digest != content_digest(content):
+            return None  # Datei wurde seitdem geändert (write_file/edit_file) - kein Cache-Treffer
+        if (time.monotonic() - cached_at) >= self.READ_CACHE_REPEAT_WINDOW_SECONDS:
+            return None
+        return {
+            "path": self._relative(target),
+            "cached": True,
+            "notice": (
+                "Dateiinhalt wurde in diesem Aufruf bereits unverändert übergeben. Nutze die "
+                "vorherige Ausgabe oder spezifiziere line_start/line_end für gezielte Abschnitte."
+            ),
+        }
 
     async def _tool_list_files(self, subdir: str = "") -> dict:
         base = self._resolve(subdir) if subdir else self.project_dir

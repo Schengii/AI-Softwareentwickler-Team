@@ -116,6 +116,70 @@ _BACKEND_HINT_DEP_MARKERS = ("fastapi", "flask", "django", "uvicorn", "starlette
 _BACKEND_HINT_JS_MARKERS = ("express", "fastify", "koa", "nestjs", "@nestjs/core")
 
 
+# Team-Goal (20260913, Aufgabe 1): leichtgewichtige Kandidatenliste für die PROAKTIVE
+# Pre-Flight-Prüfung check_entrypoint_exists() unten - bewusst eine eigene, etwas breitere
+# Liste als _ENTRYPOINT_CANDIDATES oben (die nur Backend-/API-Projekte betrifft): diese Prüfung
+# läuft für JEDES Projekt mit Quelldateien direkt nach Phase 3 (Software-Entwicklung), lange
+# bevor build_definition_of_done() am Ende überhaupt weiß, ob ein Backend gebraucht wird.
+_LIGHTWEIGHT_PY_ENTRYPOINT_CANDIDATES = (
+    "main.py", "app/main.py", "app.py", "src/main.py", "__main__.py", "wsgi.py", "asgi.py",
+)
+_LIGHTWEIGHT_WEB_ENTRYPOINT_CANDIDATES = (
+    "index.html", "src/main.ts", "src/main.js", "ui-src/main.ts", "src/index.ts", "src/index.js",
+    "server.js", "app.js",
+)
+_ENTRYPOINT_SCAN_IGNORED_DIRS = frozenset({
+    ".git", ".venv", "venv", ".ai_team_venv", "node_modules", "__pycache__", "dist", "build",
+})
+_ENTRYPOINT_SOURCE_SUFFIXES = (".py", ".ts", ".tsx", ".js", ".jsx")
+
+
+def check_entrypoint_exists(project_dir: str | Path) -> tuple[bool, str]:
+    """
+    Rein lokale, dateibasierte Pre-Flight-Prüfung: existiert bei bereits vorhandenen
+    Quelldateien (.py/.ts/.tsx/.js/.jsx) mindestens ein physischer, nicht-leerer
+    Haupteinstiegspunkt? Gedacht für den Aufruf DIREKT nach Phase 3 (Software-Entwicklung,
+    siehe agents/orchestrator/department.py) - lange bevor QA, Security, Accessibility und
+    Review-Phasen Tokens auf einem Zwischenstand verbrennen, der ohnehin nie startet.
+
+    Bewusst kein Ersatz für die spätere, gründlichere `missing_entrypoint`-Prüfung in
+    build_definition_of_done() (die zusätzlich erkennt, OB ein Projekt überhaupt einen Server-
+    Einstiegspunkt braucht) oder für `_missing_frontend_entrypoints()` in
+    core/verifier/completeness.py (die zusätzlich `src/`-Strukturen für Frontend-Projekte
+    prüft) - diese Funktion ist absichtlich simpler und billiger, damit sie sich früh und ohne
+    LLM-Aufruf im Orchestrator-Loop einschieben lässt.
+
+    Gibt (True, "") zurück, wenn ein Einstiegspunkt existiert ODER das Projekt (noch) gar keine
+    Quelldateien enthält (kein Software-Code-Projekt - nichts zu bemängeln). Gibt
+    (False, <Begründung>) zurück, wenn Quelldateien existieren, aber kein Startpunkt.
+    """
+    pfad = Path(project_dir)
+    if not pfad.is_dir():
+        return True, ""
+
+    has_source_files = any(
+        f.is_file() and f.suffix in _ENTRYPOINT_SOURCE_SUFFIXES
+        and not any(part in _ENTRYPOINT_SCAN_IGNORED_DIRS for part in f.relative_to(pfad).parts)
+        for f in pfad.rglob("*")
+    )
+    if not has_source_files:
+        return True, ""
+
+    for rel in (*_LIGHTWEIGHT_PY_ENTRYPOINT_CANDIDATES, *_LIGHTWEIGHT_WEB_ENTRYPOINT_CANDIDATES):
+        kandidat = pfad / rel
+        try:
+            if kandidat.is_file() and kandidat.stat().st_size > 0:
+                return True, ""
+        except OSError:
+            continue
+    return False, (
+        "Kein Haupteinstiegspunkt gefunden - es existieren bereits Quelldateien, aber weder "
+        "main.py/app/main.py/app.py/src/main.py/__main__.py/wsgi.py/asgi.py (Python) noch "
+        "index.html/src/main.ts/src/main.js/ui-src/main.ts/src/index.ts/src/index.js/server.js/"
+        "app.js (Web/Node)."
+    )
+
+
 def _find_entrypoint_file(project_dir: Path) -> str | None:
     """Gibt den relativen Pfad des ersten gefundenen Einstiegspunkts zurück - sonst None."""
     for rel in _ENTRYPOINT_CANDIDATES:

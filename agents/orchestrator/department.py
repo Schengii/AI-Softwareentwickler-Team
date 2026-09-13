@@ -8,6 +8,7 @@ anschließend per weiterem LLM-Aufruf konsolidieren.
 
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 from agents.department_lead_agent import DEPARTMENT_DEFINITIONS, DepartmentLeadAgent
 from agents.orchestrator.constants import PHASE_ORDER
@@ -18,9 +19,16 @@ from config import (
     PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT,
 )
 from core.checkpoint import clear_checkpoint, load_checkpoint, save_phase_checkpoint
+from core.definition_of_done import check_entrypoint_exists
 from core.message_bus import AgentResult, AgentTask
 from core.provider_exhaustion import FAILURE_CLASS_PROVIDER_EXHAUSTED
 from core.task_manager import is_micro_task
+
+# Team-Goal (20260913, Aufgabe 1): nach welcher Fachbereichs-Phase der statische Einstiegspunkt-
+# Pre-Flight (check_entrypoint_exists) läuft - "dev_lead" ist Phase 3 (Software-Entwicklung,
+# siehe PHASE_ORDER), direkt nach backend/frontend/... aber VOR den teuren Content-/QA-/
+# Governance-Phasen.
+_ENTRYPOINT_PREFLIGHT_PHASE_ID = "dev_lead"
 
 
 class DepartmentMixin:
@@ -354,6 +362,19 @@ class DepartmentMixin:
             else:
                 notify(f"  📥 [dim]{phase_label} abgeschlossen ({len(member_results)} Ergebnisse).[/dim]")
 
+            # ── Statischer Einstiegspunkt-Pre-Flight (Team-Goal 20260913, Aufgabe 1) ──
+            # Läuft NUR nach Phase 3 (Software-Entwicklung) und NUR, wenn diese Phase nicht
+            # bereits wegen Budget/Abbruch/Provider-Erschöpfung vorzeitig endet - ein einziger,
+            # gezielter Mini-Task an den zuständigen Entwickler VOR den teuren nachgelagerten
+            # Content-/QA-/Governance-Phasen, statt den fehlenden Einstiegspunkt erst über die
+            # `missing_entrypoint`-Kriterium der Definition of Done am Ende zu bemerken (siehe
+            # check_entrypoint_exists()-Docstring in core/definition_of_done.py).
+            if (
+                dept_id == _ENTRYPOINT_PREFLIGHT_PHASE_ID
+                and not budget_aborted and not provider_exhausted_abort and not manually_cancelled
+            ):
+                await self._run_entrypoint_preflight(project_dir, member_ids, all_results, file_owners, notify)
+
             remaining_phase_ids = [d for d, _, _, _ in PHASE_ORDER if d not in completed_phase_ids and d != dept_id]
 
             if provider_exhausted_abort:
@@ -408,6 +429,73 @@ class DepartmentMixin:
             clear_checkpoint(project_dir)
 
         return all_results, file_owners, budget_aborted, manually_cancelled
+
+    def _pick_entrypoint_preflight_agent(self, project_dir: str, member_ids: list[str]) -> str | None:
+        """Bestimmt, wer den fehlenden Einstiegspunkt nachbessern soll: `backend` für Python-
+        lastige Projekte, sonst `frontend` für Web-Projekte - jeweils nur, wenn diese Rolle
+        überhaupt in der aktuellen dev_lead-Phase mitarbeitet (member_ids). Gibt None zurück,
+        wenn weder backend noch frontend in diesem Lauf beteiligt sind (z.B. ein reines
+        Datenbank-/ML-Projekt ohne eigenen Anwendungs-Einstiegspunkt) - dann bleibt der Befund
+        nur eine Live-Warnung ohne automatischen Zusatz-Task."""
+        has_py_files = any(Path(project_dir).rglob("*.py"))
+        if has_py_files and "backend" in member_ids:
+            return "backend"
+        if "frontend" in member_ids:
+            return "frontend"
+        if "backend" in member_ids:
+            return "backend"
+        return None
+
+    async def _run_entrypoint_preflight(
+        self,
+        project_dir: str,
+        member_ids: list[str],
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        notify: Callable[[str], None],
+    ) -> None:
+        """Führt check_entrypoint_exists() aus und dispatcht bei Bedarf einen einzelnen,
+        gezielten Mini-Task an den zuständigen Entwickler - siehe Aufrufer-Docstring
+        (Team-Goal 20260913, Aufgabe 1) für die Begründung."""
+        entrypoint_ok, reason = check_entrypoint_exists(project_dir)
+        if entrypoint_ok:
+            return
+
+        responsible_id = self._pick_entrypoint_preflight_agent(project_dir, member_ids)
+        if not responsible_id or responsible_id not in self._agents:
+            notify(
+                f"  ⚠️ [yellow]Statischer Pre-Flight-Befund:[/yellow] {reason} Kein zuständiger "
+                "Entwickler-Agent in diesem Lauf verfügbar - Befund bleibt für die spätere "
+                "Definition of Done bestehen."
+            )
+            return
+
+        agent_name = self._agents[responsible_id].name
+        notify(
+            f"  🛫 [bold yellow]Statischer Pre-Flight-Befund:[/bold yellow] {reason} Beauftrage "
+            f"{agent_name} gezielt, BEVOR QA und Reviews starten."
+        )
+        preflight_task = AgentTask(
+            task_id="dev_lead_entrypoint_preflight",
+            agent_id=responsible_id,
+            description=(
+                "Statischer Pre-Flight-Befund: Es existieren Quelldateien, aber noch kein "
+                "Haupteinstiegspunkt (z.B. main.py / app/main.py bzw. index.html). Erstelle "
+                "diesen Einstiegspunkt jetzt vollständig, bevor QA und Reviews starten."
+            ),
+            project_dir=project_dir,
+            allow_tools=True,
+        )
+        start_t = time.monotonic()
+        result = await self._run_single_agent(preflight_task)
+        dur = time.monotonic() - start_t
+        all_results.append(result)
+        self._update_file_owners(file_owners, [result])
+        notify(self._status_notify_line(
+            "  ✅ [green]Einstiegspunkt nachgereicht[/green]",
+            "  ❌ [red]Einstiegspunkt weiterhin fehlend[/red]",
+            agent_name, dur, result.success, result.error,
+        ))
 
     async def _run_department_delegation(
         self,

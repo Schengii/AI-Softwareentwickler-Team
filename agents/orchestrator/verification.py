@@ -1331,6 +1331,37 @@ class VerificationMixin:
         cancel_requested: Callable[[], bool] | None = None,
     ) -> tuple[list[AgentResult], str, bool, bool, bool]:
         """
+        Robuste Außenhülle um `_run_verification_loop_impl()` (Fehleranalyse ecochef-Lauf 3,
+        `logs/runs/20260913_163546_ecochef.jsonl`, abort_reason "exception:TypeError"): egal was
+        innerhalb der Schleife schiefgeht (z.B. unerwartete Failure-Datentypen aus einem
+        Testrunner-Sonderfall) - `process()` erwartet hier IMMER ein valides 5er-Tupel
+        `(all_results, summary, budget_aborted, manually_cancelled, verification_ok)` und darf NIE
+        mit einer durchgereichten Exception abstürzen. `all_results` wird dabei bewusst
+        unverändert zurückgegeben (statt eines Teilzustands), da bei einem Absturz nicht sicher
+        feststeht, wie weit die Schleife intern schon mutiert hat; `verification_ok=False` macht
+        den unvollständigen Verifikationsstatus sichtbar statt ihn zu verschleiern.
+        """
+        try:
+            return await self._run_verification_loop_impl(
+                project_dir, all_results, file_owners, notify,
+                run_start_tokens=run_start_tokens, cancel_requested=cancel_requested,
+            )
+        except Exception as e:
+            logging.getLogger(__name__).error("Unerwarteter Fehler in _run_verification_loop: %r", e, exc_info=True)
+            notify(f"  ⚠️ [bold yellow]Verifikationsschleife wegen unerwarteter Ausnahme abgefangen:[/bold yellow] {e}")
+            summary = f"### 🧪 Verifikations-Protokoll\n- ⚠️ Verifikation konnte wegen eines internen Fehlers nicht vollständig abgeschlossen werden: {e}"
+            return all_results, summary, False, False, False
+
+    async def _run_verification_loop_impl(
+        self,
+        project_dir: str,
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        notify: Callable[[str], None],
+        run_start_tokens: int | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> tuple[list[AgentResult], str, bool, bool, bool]:
+        """
         Ersetzt die alte Keyword-basierte Fix-Schleife. Installiert Abhängigkeiten
         in einer isolierten Umgebung, führt die echte Testsuite aus und schickt bei
         Fehlschlägen einen GEZIELTEN Korrekturauftrag an genau die Agenten, deren
@@ -1851,14 +1882,17 @@ class VerificationMixin:
                     ):
                         escalation_attempted = True
                         stuck_owners = {
-                            file_owners[f] for failure in report.failures for f in failure.files if f in file_owners
+                            file_owners[f]
+                            for failure in (report.failures or [])
+                            for f in (failure.files or [])
+                            if isinstance(f, str) and f in file_owners
                         } & set(self._agents.keys())
                         lead_targets = {
                             dept_id for dept_id, defn in DEPARTMENT_DEFINITIONS.items()
                             if stuck_owners & set(defn["members"]) and dept_id in self._dept_leads
                         }
                         top_failures = "\n\n".join(
-                            f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(f.files) or 'unbekannt'}"
+                            f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(str(x) for x in (f.files or [])) or 'unbekannt'}"
                             for f in report.failures[:5]
                         )
                         if lead_targets:
@@ -2058,7 +2092,7 @@ class VerificationMixin:
             fix_tasks = []
             for agent_id, fails in agents_to_fix.items():
                 failure_text = "\n\n".join(
-                    f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(f.files) or 'unbekannt'}"
+                    f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(str(x) for x in (f.files or [])) or 'unbekannt'}"
                     + (f"\n{diag}" if (diag := _failure_diagnosis(f.message, triages.get(id(f)))) else "")
                     for f in fails
                 )

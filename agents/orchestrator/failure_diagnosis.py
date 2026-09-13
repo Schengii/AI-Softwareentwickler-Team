@@ -283,7 +283,12 @@ def _route_failure_owners(
     Produktivcode eines anderen Agenten, wird er entfernt; als letzter Fallback greift er nur,
     wenn sonst niemand zuständig ist.
     """
-    files = list(files)
+    # Defensive gegen unerwartete Failure-Daten (ecochef-Lauf 3, abort_reason
+    # "exception:TypeError"): `message`/`files` können bei manchen Testrunner-Sonderfällen
+    # None sein statt der erwarteten str/Iterable[str] - ohne diese Absicherung crasht der
+    # nachfolgende `f in file_owners`-Check bzw. jede Regex-Suche auf `message`.
+    message = message or ""
+    files = [f for f in (files or []) if isinstance(f, str)]
     # Strukturelle Fehler (Syntax/Collection/Import/Settings) zuerst: core/failure_triage.py
     # entscheidet anhand von interface_contract.json bzw. des realen Anbieter-Codes, WER vom
     # Vertrag abweicht (Konsument oder Anbieter), statt pauschal den Owner des Zielmoduls zu

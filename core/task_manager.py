@@ -41,7 +41,11 @@ _DECOMPOSE_EXCLUDED_AGENT_IDS = ("retrospective", "agent_trainer")
 # Anfrage ein passendes Stichwort enthält oder die Rolle ausdrücklich benennt. Ein Projekt, das
 # wirklich Mehrsprachigkeit braucht, bekommt weiterhin den i18n-Agenten.
 _NICHE_AGENT_TRIGGERS: dict[str, tuple[str, ...]] = {
-    "mobile": ("mobile", "android", "ios", "app-store", "react native", "flutter", "smartphone"),
+    "mobile": (
+        "mobile", "android", "ios", "app-store", "react native", "flutter",
+        "smartphone", "cordova", "capacitor", "pwa", "hybrid-app", "ionic",
+        "mobile app", "mobil-app", "app-entwicklung",
+    ),
     "i18n": ("i18n", "mehrsprach", "übersetz", "ubersetz", "lokalisier", "internationalisier", "sprachen"),
     "finops": ("finops", "kosten", "budget", "hosting", "cloud-kosten", "preis", "abrechnung"),
     "prompt_engineer": ("prompt", "llm", "ki-modell", "sprachmodell", "rag", "embedding", "agent"),
@@ -245,16 +249,17 @@ AVAILABLE_AGENTS = {
         ),
     },
     "mobile": {
-        "name": "Mobile-Entwickler",
+        "name": "Mobile- & App-Entwickler",
         "phase": 3,
-        # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, unused_agent-Fund): siehe oben -
-        # ohne explizite Trigger wählt der Planer bei unklarer Plattform reflexhaft 'frontend'
-        # (Web) statt eine native/Cross-Platform-App zu erkennen.
+        # Team-Optimierung: Mobile-Agent deckt Cross-Platform, Hybrid (Cordova/Capacitor/PWA)
+        # und natives iOS/Android ab. Wird bei allen mobilen Applikationen und Device-APIs gewählt.
         "description": (
-            "Cross-Platform Apps mit Flutter/React Native sowie natives iOS/Android. "
-            "Einsetzen bei: (1) explizitem Wunsch nach einer App statt einer Website, "
-            "(2) Offline-First-Anforderungen, (3) nativen Device-APIs (Kamera, Push-"
-            "Notifications, GPS). NICHT bei responsiven Web-Frontends - das macht 'frontend'."
+            "Spezialist für mobile Apps: Cross-Platform (React Native, Flutter), Hybrid-Apps "
+            "(Capacitor, Apache Cordova, Ionic) und Progressive Web Apps (PWA) sowie natives "
+            "iOS (Swift) und Android (Kotlin). Einsetzen bei: (1) Smartphone-/Tablet-Apps jeglicher "
+            "Art, (2) Hybrid- & Web-to-App-Projekten (Cordova/Capacitor/PWA/config.xml), "
+            "(3) Offline-First-Speicherung, Barcode-/Kamera-Scanning oder nativen Geräte-APIs. "
+            "Arbeitet bei Web-basierten Hybrid-Apps Hand-in-Hand mit 'frontend'."
         ),
     },
     "ml": {

@@ -180,6 +180,40 @@ class TestGovernanceLoopResilience(unittest.TestCase):
         self.assertFalse(budget_aborted)
         self.assertFalse(cancelled)
 
+    def test_verification_loop_resilience_on_type_error(self):
+        """Analog zu den Wrappern oben, für die eigentliche Test-Verifikationsschleife
+        (ecochef-Lauf 3, `logs/runs/20260913_163546_ecochef.jsonl`, abort_reason
+        "exception:TypeError"): ein TypeError irgendwo in `_run_verification_loop_impl()` darf
+        NIE bis zu process() durchschlagen - die robuste Außenhülle `_run_verification_loop()`
+        fängt ihn ab, liefert `all_results` unverändert zurück und setzt `verification_ok`
+        sauber auf False, statt den Lauf mit einer durchgereichten Exception abstürzen zu lassen."""
+        original_results = [
+            AgentResult(task_id="t1", agent_id="backend", agent_name="Backend", success=True, content="ok"),
+        ]
+
+        async def _boom(*args, **kwargs):
+            raise TypeError("Simulierter unerwarteter TypeError in der Verifikationsschleife")
+
+        with patch.object(self.orchestrator, "_run_verification_loop_impl", side_effect=_boom):
+            try:
+                results, summary, budget_aborted, cancelled, verification_ok = asyncio.run(
+                    self.orchestrator._run_verification_loop(
+                        project_dir=self.temp_workspace,
+                        all_results=original_results,
+                        file_owners={},
+                        notify=lambda msg: None,
+                        run_start_tokens=0,
+                    )
+                )
+            except Exception as e:  # pragma: no cover - genau das darf NICHT passieren
+                self.fail(f"_run_verification_loop() ließ eine Exception durchschlagen: {e}")
+
+        self.assertIs(results, original_results)
+        self.assertIsInstance(summary, str)
+        self.assertFalse(budget_aborted)
+        self.assertFalse(cancelled)
+        self.assertFalse(verification_ok)
+
 
 if __name__ == "__main__":
     unittest.main()

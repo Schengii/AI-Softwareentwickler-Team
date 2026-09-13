@@ -652,9 +652,11 @@ def triage_structural_failure(
 ) -> StructuralTriage | None:
     """Klassifiziert einen strukturellen Testfehler; None für alle übrigen Fehlerbilder
     (Assertion, Laufzeitfehler, Drittanbieter-Dependency), die das reguläre Routing behandelt."""
+    message = message or ""
+    files = files or []
     root = Path(project_dir) if project_dir else None
     known = {_norm(k) for k in file_owners}
-    rel_files = [rel for f in files if (rel := _to_project_rel(f, root, known))]
+    rel_files = [rel for f in files if isinstance(f, str) and (rel := _to_project_rel(f, root, known))]
     return (
         _triage_syntax(message, root, known, rel_files)
         or _triage_event_loop_import_error(message, root, known)

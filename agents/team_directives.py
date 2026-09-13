@@ -48,6 +48,21 @@ _PYTEST_ASYNCIO_CONFIG_RULE = """- Nutzt das Projekt `asyncio`, FastAPI oder asy
 # importierte, sondern stattdessen nativ per `httpx`/`fetch` gegen die REST-API rief) - der Mock
 # griff dadurch nie, der Test bestand nur, weil der eigentliche Aufruf-Pfad komplett ungetestet
 # blieb, oder scheiterte mit einem ImportError für ein nie installiertes Paket.
+# Team-Optimierung (ecochef-Lauf 3, `logs/runs/20260913_163546_ecochef.jsonl`): der tester-Agent
+# mockte frei erfundene Methoden (`addIngredient`, `removeIngredient`, `getIngredients`) auf einer
+# Service-Klasse, die diese Methoden gar nicht anbot - die Tests bestanden nur, weil der Mock nie
+# gegen die echte Signatur geprüft wurde, während der reale Aufruf im Produktivcode mit einer
+# völlig anderen Methode/Signatur weiterhin ungetestet blieb.
+TESTER_MOCK_SOURCE_INSPECTION_DIRECTIVE = """
+## 🔍 Mock-Vertrag: Quellcode-Inspektion vor jedem Mock (VERBINDLICH)
+KRITISCHE PFLICHT VOR DEM SCHREIBEN VON MOCKS:
+Lies IMMER die Zieldatei des Services (z.B. `storage.service.ts`), bevor du ihn in Tests mockst.
+Erfinde NIEMALS Methoden (wie addIngredient, removeIngredient, getIngredients), die auf der
+Zielklasse gar nicht existieren!
+Prüfe genau, welche Methoden und Signaturen die Klasse tatsächlich anbietet. Mocke nur Methoden,
+die im Quellcode definiert sind.
+"""
+
 TESTER_MOCK_DEPENDENCY_SYNC_DIRECTIVE = """
 ## 🔗 Mock-Vertrag: nur mocken, was wirklich installiert UND genutzt wird
 - Prüfe vor dem Schreiben eines Mocks IMMER zuerst die tatsächlichen Abhängigkeiten des Projekts
@@ -193,6 +208,7 @@ TESTER_CONTRACT_DIRECTIVE = f"""
 - Direkt nach dem Schreiben führst du `run_tests` aus; Collection-Fehler (ImportError/SyntaxError)
   behebst du vor allem anderen.
 {_PYTEST_ASYNCIO_CONFIG_RULE}
+{TESTER_MOCK_SOURCE_INSPECTION_DIRECTIVE}
 {TESTER_MOCK_DEPENDENCY_SYNC_DIRECTIVE}"""
 
 FRONTEND_CONTRACT_DIRECTIVE = f"""

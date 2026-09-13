@@ -42,6 +42,9 @@ class TestEinblenden:
     @pytest.mark.parametrize("anfrage,rolle", [
         ("Baue eine mehrsprachige Oberflaeche", "i18n"),
         ("Erstelle eine Android-App", "mobile"),
+        ("Erstelle eine Cordova Hybrid-App mit Barcode-Scanner", "mobile"),
+        ("Entwickle eine PWA mit Offline-Storage", "mobile"),
+        ("Baue eine Capacitor App", "mobile"),
         ("Wie hoch sind die Hosting-Kosten?", "finops"),
         ("Schreibe Marketing-Texte fuer die Landing-Page", "copywriter"),
         ("Baue eine ETL-Datenpipeline", "data_engineer"),

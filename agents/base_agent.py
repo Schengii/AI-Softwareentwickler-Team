@@ -60,6 +60,38 @@ CODE_WRITING_AGENT_IDS = {
     "mobile", "ml", "devops", "tester", "resilience_guard", "refactoring",
     "readme", "documentation", "security", "performance",
 }
+# HINWEIS (`/goal`-Auftrag, Schwachstelle 3): compliance und code_reviewer werden BEWUSST NICHT
+# hier aufgenommen - beide sind laut agents/orchestrator/constants.py.REVIEW_ONLY_AGENT_IDS
+# etablierte reine Text-Review-Rollen, deren Befund-Text der Governance-Fix-Loop (agents/
+# orchestrator/verification.py._run_governance_fix_loop) direkt aus `AgentResult.content`
+# konsumiert, KEIN write_file-Aufruf nötig oder erwartet. Ein Test schützt genau das
+# (tests/test_error_visibility.py::test_metrics_summary_does_not_flag_review_only_or_planning_
+# roles) - beide hier aufzunehmen würde legitime, dateilose Review-Abschlüsse fälschlich als
+# "Hard Delivery Gate"-Fehlschlag markieren.
+
+# Team-Optimierung (`/goal`-Auftrag, Schwachstelle 3): Ziel-Dateivorschlag je Analyse-Rolle für
+# den Korrektur-Hinweis unten (_analysis_target_file_hint()) - ein generischer "ruf write_file
+# auf"-Hinweis lässt das Modell erneut raten, WELCHE Datei gemeint ist; der konkrete Pfad
+# (identisch zu dem, den der jeweilige Agenten-System-Prompt selbst als Standard-Ausgabeziel
+# nennt, siehe security_agent.py) nimmt genau dieses Raten weg. compliance/code_reviewer bleiben
+# hier trotz der REVIEW_ONLY-Ausnahme oben gelistet, falls ein zukünftiger Aufrufer (außerhalb
+# des Hard Delivery Gate) denselben Zieldatei-Hinweis für diese Rollen braucht.
+_ANALYSIS_AGENT_TARGET_FILES = {
+    "security": "docs/SECURITY_AUDIT.md",
+    "compliance": "docs/COMPLIANCE_REPORT.md",
+    "code_reviewer": "docs/CODE_REVIEW.md",
+    "documentation": "README.md",
+}
+
+
+def _analysis_target_file_hint(agent_id: str) -> str:
+    """Rollenspezifischer Zusatzsatz für den Hard-Delivery-Gate-Korrekturhinweis: nennt
+    Analyse-Rollen (security/compliance/code_reviewer/documentation) explizit die Zieldatei,
+    statt sie nur pauschal zu write_file/edit_file aufzufordern."""
+    target = _ANALYSIS_AGENT_TARGET_FILES.get(agent_id)
+    if not target:
+        return ""
+    return f" Speichere deine Analyse jetzt SOFORT per write_file(\"{target}\", ...)."
 
 # Realer Fund aus einem echten End-to-End-Testlauf: architect wurde korrekt eingeplant und
 # explizit mit "erstelle ADR" beauftragt (core/task_manager.py DECOMPOSE_SYSTEM_PROMPT-Regel),
@@ -316,7 +348,7 @@ class BaseAgent(ABC):
                         "gespeichert. Nur noch EINE Werkzeug-Iteration steht dir zur Verfügung, "
                         "bevor du zwingend nur noch Text liefern darfst. Rufe JETZT write_file "
                         "für deine wichtigste Zieldatei auf - reines Lesen reicht ab hier nicht "
-                        "mehr aus."
+                        "mehr aus." + _analysis_target_file_hint(self.agent_id)
                     ),
                 ))
             if iteration == hard_limit and max_iterations > 1:
@@ -444,15 +476,24 @@ class BaseAgent(ABC):
                     # Fehlschlag als "Fertig!" zu verkaufen.
                     no_file_written_retry_used = True
                     turns.append(AgentMessage(role="assistant", text=response.text, tool_calls=[]))
-                    turns.append(AgentMessage(
-                        role="user",
-                        text=(
+                    # Bei den Analyse-Rollen (security/compliance/code_reviewer/documentation)
+                    # nennt der Hinweis explizit die erwartete Zieldatei statt der generischen
+                    # "Code verpufft"-Formulierung, die für reinen Analyse-Fließtext unpassend ist.
+                    analysis_hint = _analysis_target_file_hint(self.agent_id)
+                    if analysis_hint:
+                        gate_hint_text = (
+                            "FEHLER: Du hast wertvolle Analyse geliefert, aber kein Dateitool "
+                            "aufgerufen." + analysis_hint + " Erst danach eine kurze "
+                            "Abschlusszusammenfassung."
+                        )
+                    else:
+                        gate_hint_text = (
                             "FEHLER: Du bist ein Code-schreibender Agent, hast aber keine einzige "
                             "Datei über write_file/edit_file gespeichert. Dein Code verpufft! "
                             "Speichere den Code jetzt zwingend mit write_file/edit_file – erst "
                             "danach eine kurze Abschlusszusammenfassung."
-                        ),
-                    ))
+                        )
+                    turns.append(AgentMessage(role="user", text=gate_hint_text))
                     continue
                 elif (
                     not response.tool_calls

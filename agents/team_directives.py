@@ -88,6 +88,32 @@ PYTHON_CODE_CONTRACT_DIRECTIVE = f"""
 {_SETTINGS_RULE}
 {_ASYNC_EVENT_LOOP_DIRECTIVE}"""
 
+# Team-Optimierung (`/goal`-Auftrag, Schwachstelle 1 aus den Läufen eventstream_zero/
+# aethermesh/chronospulse/incident_pulse): mehrere reale Läufe lieferten ein Backend, das
+# ausschließlich aus Submodulen (app/core/*.py, app/security/*.py, ...) ohne jeden zentralen
+# Einstiegspunkt bestand - core/verifier/testrunner.py._find_incomplete_project_reason()
+# erkennt genau dieses Muster zwar NACHTRÄGLICH (Python-Dateien + Manifest, aber kein
+# main.py/app.py/...), das kommt aber erst NACH bereits verbranntem Token-Budget zum Tragen.
+# Diese Pflicht wirkt VORHER, direkt im Backend-System-Prompt.
+_BACKEND_ENTRYPOINT_DIRECTIVE = """
+## 🚪 Pflicht-Einstiegspunkt (VERBINDLICH, keine Ausnahme)
+- Sobald das Projekt ein Backend, eine API oder Serverkomponenten enthält, legst du als
+  ALLERERSTE oder ZWEITE Datei zwingend den zentralen Einstiegspunkt an (bevorzugt
+  `app/main.py`, ersatzweise `main.py`) – NIEMALS erst, nachdem alle Submodule fertig sind.
+- Dieser Einstiegspunkt MUSS enthalten:
+  1. Eine initialisierte App-Instanz auf Modulebene (`app = FastAPI(...)`).
+  2. Einen Lifespan-Handler (`@asynccontextmanager async def lifespan(app: FastAPI): ...`,
+     via `FastAPI(lifespan=lifespan)` eingebunden) für Startup-/Shutdown-Ressourcen
+     (DB-Engine, HTTP-Clients, Singletons – siehe Async & Event-Loop Direktive unten).
+  3. Einen Health-Check-Endpunkt `GET /health`, der ohne Auth erreichbar ist und mindestens
+     `{"status": "ok"}` liefert.
+  4. Falls statische Web-Assets existieren (`public/`, `static/`, `app/static/`): den Mount
+     `app.mount("/", StaticFiles(directory=...), name=...)`.
+- Ein Projekt darf NIEMALS nur aus Submodulen (app/core/, app/security/, ...) ohne diesen
+  Einstiegspunkt bestehen – ein Backend ohne `app/main.py`/`main.py` gilt als unvollständig
+  abgebrochen, unabhängig davon, wie vollständig die einzelnen Submodule sind.
+"""
+
 BACKEND_CONTRACT_DIRECTIVE = f"""
 ## 📜 Contract First – Implementierung gegen den Vertrag
 - Lies vor dem ersten Schreiben `{INTERFACE_CONTRACT_FILE}` (falls vorhanden) und implementiere JEDES
@@ -97,6 +123,7 @@ BACKEND_CONTRACT_DIRECTIVE = f"""
   Fehlt der Vertrag, legst du ihn für jedes modulübergreifend genutzte Symbol selbst an.
 - Importierst du aus dem Modul eines anderen Agenten, prüfst du das Symbol vorher per
   read_file/search_code, statt eine Signatur anzunehmen.
+{_BACKEND_ENTRYPOINT_DIRECTIVE}
 {_SETTINGS_RULE}
 {_ASYNC_EVENT_LOOP_DIRECTIVE}"""
 

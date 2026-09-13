@@ -65,6 +65,9 @@ class EnvironmentMixin:
         # zusätzlicher pip-Aufruf für Projekte ohne Python-Tests.
         if req_files and self._find_python_test_files():
             logs.append(self._ensure_pytest_available(timeout_seconds))
+        pytest_ini_log = self._ensure_pytest_ini()
+        if pytest_ini_log:
+            logs.append(pytest_ini_log)
         for node_dir in self._find_node_projects():
             logs.append(self._ensure_node_environment(node_dir, timeout_seconds))
         if self._has_rust_project():
@@ -205,6 +208,46 @@ class EnvironmentMixin:
             f"{status} `pytest`/`pytest-asyncio` fehlten in der Umgebung (nicht in requirements.txt/"
             f"requirements-dev.txt) - nachinstalliert (exit_code={install_result.exit_code})"
         )
+
+    # Team-Optimierung (`/goal`-Auftrag, Schwachstelle 2 aus den Laeufen eventstream_zero/
+    # aethermesh/chronospulse/incident_pulse): `agents/team_directives.py._PYTEST_ASYNCIO_
+    # CONFIG_RULE` weist Architect/Tester zwar an, selbst eine `pytest.ini` mit
+    # `asyncio_mode = auto` anzulegen - verlaesst sich dafuer aber allein auf das LLM. Bleibt
+    # dieser Schritt aus (vergessen, abgebrochener Lauf, Modell haelt sich nicht daran), griff
+    # bisher nur noch der CLI-Fallback `-o asyncio_mode=auto` in testrunner.py - der deckt zwar
+    # die vom Framework selbst gestartete Sandbox-Testausfuehrung ab, nicht aber einen manuellen
+    # `pytest`-Aufruf im ausgelieferten Projekt (z.B. durch den Kunden oder CI/CD ausserhalb
+    # dieser Sandbox), wo ohne `asyncio_mode = auto` jede `async def test_...`-Funktion
+    # stillschweigend uebersprungen wird ("async def functions are not natively supported").
+    # Deterministisches Scaffolding VOR dem ersten Testlauf schliesst diese Luecke unabhaengig
+    # vom LLM-Verhalten: existiert bereits eine `pytest.ini` (typischerweise vom Architect/
+    # Tester selbst angelegt), wird sie NIEMALS ueberschrieben - eine dort bereits vorhandene
+    # projektspezifische Konfiguration (z.B. `testpaths`, `markers`) darf nicht verloren gehen.
+    def _ensure_pytest_ini(self) -> str:
+        pytest_ini = self.project_dir / "pytest.ini"
+        if pytest_ini.exists():
+            return ""
+        if not any(
+            "async def test_" in src or "pytest.mark.asyncio" in src
+            for src in self._read_python_test_sources()
+        ):
+            return ""
+        try:
+            pytest_ini.write_text(
+                "[pytest]\nasyncio_mode = auto\npythonpath = .\n", encoding="utf-8",
+            )
+        except OSError as e:
+            return f"⚠️ Konnte pytest.ini nicht deterministisch anlegen: {e}"
+        return "✅ pytest.ini (asyncio_mode=auto, pythonpath=.) deterministisch angelegt - Projekt enthaelt async-Tests, aber keine eigene pytest.ini."
+
+    def _read_python_test_sources(self) -> list[str]:
+        sources: list[str] = []
+        for test_file in self._find_python_test_files():
+            try:
+                sources.append(test_file.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
+        return sources
 
     def _ensure_node_environment(self, node_dir: Path, timeout_seconds: float) -> str:
         rel = self._relative_label(node_dir)

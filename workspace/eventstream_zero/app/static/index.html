@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="de" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EventStream-Zero | Live Monitoring Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Zum Hauptinhalt springen</a>
+  
+  <div class="dashboard-layout">
+    <header class="topbar">
+      <div class="logo-area">
+        <span class="logo-icon" aria-hidden="true">⚡</span>
+        <div>
+          <h1 class="brand-title">EventStream-Zero</h1>
+          <span class="brand-subtitle">Distributed Streaming &amp; Processing Engine</span>
+        </div>
+      </div>
+      
+      <div class="cluster-status-pill" id="clusterStatusPill" role="status" aria-live="polite">
+        <span class="status-indicator live" id="clusterStatusDot"></span>
+        <span id="clusterStatusText">Verbinde Cluster...</span>
+      </div>
+
+      <div class="header-actions">
+        <span class="badge ws-badge" id="wsConnectionBadge" aria-live="polite">WS: getrennt</span>
+        <button id="btnRefresh" class="btn btn-secondary btn-sm" aria-label="Daten manuell aktualisieren">
+          Sync
+        </button>
+      </div>
+    </header>
+
+    <main class="main-content" id="main-content">
+      <section class="kpi-grid" aria-label="Cluster Kennzahlen">
+        <div class="card kpi-card">
+          <h2 class="kpi-title">Durchsatz Ingress</h2>
+          <div class="kpi-value" id="kpiThroughput" aria-live="polite">0 <small class="kpi-unit">msg/s</small></div>
+        </div>
+        <div class="card kpi-card">
+          <h2 class="kpi-title">Aktive Partitionen</h2>
+          <div class="kpi-value" id="kpiPartitions" aria-live="polite">0 <small class="kpi-unit">Partitionen</small></div>
+        </div>
+        <div class="card kpi-card">
+          <h2 class="kpi-title">Consumer Lag</h2>
+          <div class="kpi-value" id="kpiLag" aria-live="polite">0 <small class="kpi-unit">ms</small></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">Event Studio &amp; Test-Producer</h2>
+        <form id="publishForm" class="publish-form">
+          <div class="form-group">
+            <label for="publishTopicSelect">Ziel-Topic</label>
+            <select id="publishTopicSelect" class="form-control" required>
+              <option value="">-- Topic wählen --</option>
+              <option value="telemetry">telemetry</option>
+              <option value="events">events</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="publishPayloadInput">JSON Payload</label>
+            <textarea id="publishPayloadInput" class="form-control" required>{"source": "dashboard", "message": "ping"}</textarea>
+          </div>
+          <button type="submit" class="btn btn-primary">Nachricht senden</button>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="feed-heading">
+        <h2 id=\"feed-heading\" class="card-title">Letzte gestreamte Events</h2>
+        <div class="event-feed" id="liveEventFeed" role="log" aria-live="polite" aria-atomic="false">
+          <div class="feed-item placeholder">Warte auf eingehende Events...</div>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

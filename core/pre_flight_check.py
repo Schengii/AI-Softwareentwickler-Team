@@ -181,6 +181,93 @@ def _check_conflicting_sqlalchemy_engines(sources_by_file: dict[str, str]) -> Pr
     )
 
 
+class _ModuleLevelEventLoopVisitor(ast.NodeVisitor):
+    """Findet `asyncio.get_event_loop()`-Aufrufe (und darauf verkettete `.time()`-Aufrufe)
+    AUSSERHALB jeder Funktion/Methode - siehe _check_module_level_event_loop_calls() unten
+    fuer den vollen Kontext."""
+
+    def __init__(self) -> None:
+        self.func_depth = 0
+        self.hits: list[int] = []
+
+    def _enter_function_scope(self, node: ast.AST) -> None:
+        self.func_depth += 1
+        self.generic_visit(node)
+        self.func_depth -= 1
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        self._enter_function_scope(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+        self._enter_function_scope(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+        self._enter_function_scope(node)
+
+    @staticmethod
+    def _is_get_event_loop_call(node: ast.Call) -> bool:
+        return isinstance(node.func, ast.Attribute) and node.func.attr == "get_event_loop"
+
+    @classmethod
+    def _is_loop_time_call(cls, node: ast.Call) -> bool:
+        # Erkennt gezielt `<...>.get_event_loop().time()`/`loop.time()` NUR, wenn der Empfaenger
+        # selbst ein get_event_loop()-Aufruf ist - ein stinknormales `time.time()` (Stdlib-Modul
+        # `time`, voellig unabhaengig vom Event-Loop) darf NIEMALS als Fund auftauchen.
+        return (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "time"
+            and isinstance(node.func.value, ast.Call)
+            and cls._is_get_event_loop_call(node.func.value)
+        )
+
+    def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
+        if self.func_depth == 0 and (self._is_get_event_loop_call(node) or self._is_loop_time_call(node)):
+            self.hits.append(node.lineno)
+        self.generic_visit(node)
+
+
+def _check_module_level_event_loop_calls(sources_by_file: dict[str, str]) -> list[PreFlightIssue]:
+    """Team-Optimierung (`/goal`-Auftrag, Schwachstelle 4 aus den Laeufen eventstream_zero/
+    aethermesh/chronospulse/incident_pulse): `agents/team_directives.py._ASYNC_EVENT_LOOP_
+    DIRECTIVE` verbietet `asyncio.get_event_loop()` auf Modulebene bereits per Prompt-Text -
+    das ist aber nur eine Bitte an das LLM, kein Schutz. In Python 3.10+ existiert dort noch
+    kein laufender Event-Loop; der Aufruf wirft beim Import durch pytest sofort
+    `RuntimeError: There is no current event loop in thread 'MainThread'` und laesst die
+    GESAMTE Testsuite schon in der Collection-Phase scheitern - ein bekanntes, mehrfach real
+    beobachtetes Fehlerbild. Dieser Check erkennt es statisch per AST VOR dem teuren Testlauf,
+    damit der betroffene Agent den Fund gezielt (Datei + Zeile) vorgelegt bekommt, statt erst
+    ueber einen kryptischen pytest-Collection-Traceback."""
+    issues: list[PreFlightIssue] = []
+    for rel_path, source in sources_by_file.items():
+        try:
+            tree = ast.parse(source, filename=rel_path)
+        except SyntaxError:
+            continue  # Syntaxfehler werden bereits vom Haupt-Loop in _run_checks() gemeldet.
+        visitor = _ModuleLevelEventLoopVisitor()
+        visitor.visit(tree)
+        for line in visitor.hits:
+            issues.append(PreFlightIssue(
+                file=rel_path,
+                line=line,
+                issue_type="module_level_event_loop_call",
+                message=(
+                    "`asyncio.get_event_loop()`/`.time()` darauf wird auf Modulebene (ausserhalb "
+                    "einer Funktion/Methode) aufgerufen - in Python 3.10+ existiert dort noch kein "
+                    "laufender Event-Loop, der Aufruf wirft beim Import durch pytest sofort "
+                    "`RuntimeError: There is no current event loop in thread 'MainThread'` und "
+                    "laesst die gesamte Testsuite schon in der Collection-Phase scheitern."
+                ),
+                suggestion=(
+                    "Fuer Zeitmessungen/Cooldowns/TTLs/Timeouts IMMER `time.monotonic()` statt "
+                    "`asyncio.get_event_loop().time()` verwenden. Globale Singletons (Circuit "
+                    "Breaker, httpx.AsyncClient, ...) NIEMALS ungeschuetzt auf Modulebene "
+                    "instanziieren - ausschliesslich im FastAPI-Lifespan oder einer asynchronen "
+                    "Factory-Methode."
+                ),
+            ))
+    return issues
+
+
 def _resolve_module_file(project_dir: Path, importer_rel_path: str, module: str | None, level: int) -> Path | None:
     """Findet die tatsaechliche .py-Datei/das __init__.py hinter einem lokalen `from ... import`
     - Grundlage fuer _check_imported_names_exist() unten. Gibt None zurueck, wenn das Ziel nicht
@@ -367,7 +454,7 @@ class PreFlightReport:
         zum Scheitern bringen (missing_init, syntax_error)."""
         blocking_types = {
             "missing_init", "syntax_error", "unresolved_import_name",
-            "conflicting_sqlalchemy_engines",
+            "conflicting_sqlalchemy_engines", "module_level_event_loop_call",
         }
         return any(i.issue_type in blocking_types for i in self.issues)
 
@@ -686,6 +773,12 @@ def _run_checks(project_path: Path, report: PreFlightReport) -> None:
         if key not in seen_issues:
             seen_issues.add(key)
             report.issues.append(sqla_conflict_issue)
+
+    for event_loop_issue in _check_module_level_event_loop_calls(sources_by_file):
+        key = ("module_level_event_loop_call", event_loop_issue.file, str(event_loop_issue.line))
+        if key not in seen_issues:
+            seen_issues.add(key)
+            report.issues.append(event_loop_issue)
 
     empty_test_issue = _check_empty_test_suite(project_path, sources_by_file)
     if empty_test_issue:

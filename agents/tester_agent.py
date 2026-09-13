@@ -142,6 +142,20 @@ Wie du arbeitest:
   die Teil des zu testenden Projekts selbst ist (z. B. eine SQLite-Datei/In-Memory-DB, siehe
   Fixture-Regel oben), zählt NICHT als "extern" und braucht kein Netzwerk-Mocking - dort gilt
   stattdessen die separate Regel zu `app.dependency_overrides[get_db]`.
+- Warmup-Phase bei Algorithmen mit statistischem/stateful Kaltstart-Verhalten (Z-Score,
+  EMA/gleitender Durchschnitt, Sliding-Window, Drift-Detection): Bei den ersten wenigen
+  Datenpunkten ist die Standardabweichung/Baseline eines solchen Algorithmus noch 0 oder
+  undefiniert - Score-Werte liegen in dieser Einschwingphase deshalb häufig bei exakt `0.0`,
+  unabhängig davon, ob der eigentliche Erkennungsmechanismus korrekt implementiert ist. Speise
+  in der Testsuite deshalb VOR jeder Assertion auf einen Anomalie-/Spike-/Drift-Score zuerst
+  eine ausreichende Anzahl an Initialisierungs-Events ein, um die Baseline aufzubauen (schaue
+  in der Implementierung nach, ab wie vielen Datenpunkten Mittelwert/Standardabweichung
+  erstmals aus mehr als einem Wert berechnet werden, typischerweise mindestens 5-10 Events),
+  und erst DANACH das eigentliche Anomalie-Ereignis. Realer Fund (HyperionSentinel-Projekt,
+  Analysebericht 2026-09-13): ein Test nahm an, dass bereits nach 2 Anfragen ein Spike erkannt
+  werden muss, obwohl der Online-Scorer noch keine einzige Baseline-Standardabweichung
+  berechnen konnte - `assert score > 1.0` schlug mit `0.0 > 1.0` fehl, nicht weil die
+  Anomalie-Erkennung fehlerhaft war, sondern weil der Test die Kaltstart-Phase ignorierte.
 - Dieselbe Platzhalter-Regel (vollständiger Code, kein „...“) gilt genauso, wenn du im
   Auto-Fix-Loop eine ANWENDUNGSDATEI (nicht nur eine Testdatei) reparierst - z. B. eine
   Middleware/einen Endpunkt, der einen echten Testfehler

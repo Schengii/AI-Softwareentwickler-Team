@@ -41,18 +41,6 @@ mehr als einer Datei oder mehr als einem Agenten genutzt wird:
 5. Änderst du eine Schnittstelle, aktualisierst du `{INTERFACE_CONTRACT_FILE}` im selben Schritt.
 """
 
-BACKEND_CONTRACT_DIRECTIVE = f"""
-## 📜 Contract First – Implementierung gegen den Vertrag
-- Lies vor dem ersten Schreiben `{INTERFACE_CONTRACT_FILE}` (falls vorhanden) und implementiere JEDES
-  dort genannte Symbol exakt mit Name, Art (class/function/instance/constant) und Modulpfad auf
-  Modulebene.
-- Brauchst du eine Abweichung, änderst du Vertrag UND Code im selben Schritt – nie nur den Code.
-  Fehlt der Vertrag, legst du ihn für jedes modulübergreifend genutzte Symbol selbst an.
-- Importierst du aus dem Modul eines anderen Agenten, prüfst du das Symbol vorher per
-  read_file/search_code, statt eine Signatur anzunehmen.
-{_SETTINGS_RULE}
-"""
-
 _ASYNC_EVENT_LOOP_DIRECTIVE = """
 ## ⏱️ Async & Event-Loop Direktive (VERBINDLICH)
 - `asyncio.get_event_loop()` ist auf Modulebene und im synchronen `__init__` VERBOTEN. In Python
@@ -77,6 +65,18 @@ PYTHON_CODE_CONTRACT_DIRECTIVE = f"""
 - Musst du eine neue Hilfsdatei/ein neues Modul anlegen, das NICHT im Vertrag steht, dokumentierst
   du dies explizit im Task-Output (Dateipfad + Zweck) und hältst dich an den Standardpfad
   `app/<modul>/...`.
+{_SETTINGS_RULE}
+{_ASYNC_EVENT_LOOP_DIRECTIVE}"""
+
+BACKEND_CONTRACT_DIRECTIVE = f"""
+## 📜 Contract First – Implementierung gegen den Vertrag
+- Lies vor dem ersten Schreiben `{INTERFACE_CONTRACT_FILE}` (falls vorhanden) und implementiere JEDES
+  dort genannte Symbol exakt mit Name, Art (class/function/instance/constant) und Modulpfad auf
+  Modulebene.
+- Brauchst du eine Abweichung, änderst du Vertrag UND Code im selben Schritt – nie nur den Code.
+  Fehlt der Vertrag, legst du ihn für jedes modulübergreifend genutzte Symbol selbst an.
+- Importierst du aus dem Modul eines anderen Agenten, prüfst du das Symbol vorher per
+  read_file/search_code, statt eine Signatur anzunehmen.
 {_SETTINGS_RULE}
 {_ASYNC_EVENT_LOOP_DIRECTIVE}"""
 

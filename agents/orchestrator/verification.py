@@ -2492,6 +2492,29 @@ class VerificationMixin:
                     notify(f"  ♿ [bold red]Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße.[/bold red]")
                     summary_lines.append(f"- ♿ ⚠️ Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße: {top}")
 
+        # Bugfix (Analysebericht 2026-09-13, HyperionSentinel-Lauf): budget_aborted konnte bis
+        # hierhin auch dann noch True werden, wenn die Kern-Testsuite über den Resilienz-Puffer
+        # (confirmation_buffer_used oben) bereits erfolgreich bestanden hatte (verification_ok
+        # == True) - eine NACHGELAGERTE, rein optionale Prüfung (Docker-Build, Vollständigkeits-
+        # Check, Lastentest, ...) traf danach erneut auf dasselbe (weiterhin überschrittene)
+        # Token-Limit und setzte budget_aborted = True, obwohl am eigentlichen Ergebnis nichts
+        # mehr abzubrechen war. Real beobachtet: `run_closed` meldete `budget_aborted: true`
+        # UND `verification_ok: true` gleichzeitig, wodurch der Lauf in Dashboard/Team-Historie
+        # fälschlich als abgebrochen statt als erfolgreich zählte. Ein NACHGELAGERTER Fehlschlag
+        # (Coverage unter Schwelle, Runtime-Smoke/Lastentest/Browser-Check fehlgeschlagen) setzt
+        # verification_ok oben explizit wieder auf False zurück - genau dann bleibt
+        # budget_aborted zurecht bestehen. Nur wenn verification_ok an DIESER Stelle noch True
+        # ist (die Kern-Testsuite bestand UND kein nachgelagerter Check fand einen echten
+        # Fehlschlag), gilt der Lauf als erfolgreich abgeschlossen - mit einem Hinweis, dass
+        # lediglich weitere optionale Prüfungen wegen des Budgets übersprungen wurden.
+        if verification_ok and budget_aborted:
+            summary_lines.append(
+                "- ℹ️ Token-Budget nach bestandener Kern-Testsuite erreicht – "
+                "nachgelagerte optionale Prüfungen wurden übersprungen, der Lauf gilt "
+                "trotzdem als erfolgreich abgeschlossen."
+            )
+            budget_aborted = False
+
         verification_summary = "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n" + (
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."
         )

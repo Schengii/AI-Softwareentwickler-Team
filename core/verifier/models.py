@@ -629,7 +629,7 @@ _SQLA_DECLARATIVE_BASE_RE = re.compile(
 # hätte finden können. Diese Regex greift stattdessen direkt am DSN-Schema selbst an - jedes
 # `<dialekt>+<treiber>://`-Literal benennt seinen benötigten Treiber explizit im String selbst.
 _SQLA_DSN_DRIVER_RE = re.compile(
-    r"""["']((?:postgresql|mysql|mariadb|sqlite)\+(\w+))://"""
+    r"""["']((?:postgresql|mysql|mariadb|sqlite)\+(\w+)):/{2,4}"""
 )
 # DSN-Treibername -> tatsächlicher PyPI-Paketname, wo beide voneinander abweichen (sonst wird
 # der Treibername selbst als Paketname angenommen, z.B. "asyncpg" -> "asyncpg").

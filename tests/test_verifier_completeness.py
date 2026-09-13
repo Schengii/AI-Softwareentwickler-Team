@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 
 from core.verifier import ProjectVerifier
+from core.verifier.models import _SQLA_DSN_DRIVER_RE
 
 
 class TestCompletenessCheck(unittest.TestCase):
@@ -936,6 +937,25 @@ class TestCompletenessCheck(unittest.TestCase):
             report = verifier.check_completeness()
             self.assertTrue(report.passed)
 
+    def test_sqla_dsn_driver_regex_matches_variable_slash_count(self):
+        # HyperionSentinel-Fund (2026-09-13): SQLite-DSNs verwenden 3 Slashes bei relativen
+        # ("sqlite+aiosqlite:///./x.db") und 4 Slashes bei absoluten Pfaden
+        # ("sqlite+aiosqlite:////abs/x.db"), waehrend Postgres/MySQL-DSNs klassisch nur 2
+        # Slashes ("postgresql+asyncpg://host/db") verwenden. Die Regex muss alle drei Faelle
+        # erkennen und den Treibernamen korrekt extrahieren.
+        self.assertEqual(
+            _SQLA_DSN_DRIVER_RE.findall("DATABASE_URL = 'postgresql+asyncpg://user:pw@host/db'"),
+            [("postgresql+asyncpg", "asyncpg")],
+        )
+        self.assertEqual(
+            _SQLA_DSN_DRIVER_RE.findall("DATABASE_URL = 'sqlite+aiosqlite:///./x.db'"),
+            [("sqlite+aiosqlite", "aiosqlite")],
+        )
+        self.assertEqual(
+            _SQLA_DSN_DRIVER_RE.findall("DATABASE_URL = 'sqlite+aiosqlite:////abs/pfad/x.db'"),
+            [("sqlite+aiosqlite", "aiosqlite")],
+        )
+
     def test_sqlite_dsn_driver_message_names_correct_scheme(self):
         # Regressionstest für einen Fehlalarm in der ersten Fassung dieses Checks: die
         # Meldung hardcodierte "postgresql+<treiber>" unabhängig vom tatsächlichen Schema.
@@ -954,6 +974,24 @@ class TestCompletenessCheck(unittest.TestCase):
             issue = next(i for i in report.issues if "aiosqlite" in i.message)
             self.assertIn("sqlite+aiosqlite://", issue.message)
             self.assertNotIn("postgresql+aiosqlite", issue.message)
+
+    def test_detects_missing_aiosqlite_with_absolute_path_dsn_four_slashes(self):
+        # HyperionSentinel-Fund (2026-09-13): ein absoluter SQLite-Pfad verwendet VIER Slashes
+        # (`sqlite+aiosqlite:////abs/pfad/x.db`) statt der drei Slashes bei relativen Pfaden -
+        # `_SQLA_DSN_DRIVER_RE` muss eine variable Slash-Anzahl (2 bis 4) akzeptieren.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            app_dir = project_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            (app_dir / "database.py").write_text(
+                "DATABASE_URL = 'sqlite+aiosqlite:////abs/pfad/x.db'\n", encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\nsqlalchemy\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            self.assertTrue(any("aiosqlite" in i.message for i in report.issues))
 
     def test_write_route_with_multiline_signature_and_background_task_not_flagged(self):
         # Zwölfter realer Fund (incidentpilot-Projekt): eine mehrzeilige Funktionssignatur mit

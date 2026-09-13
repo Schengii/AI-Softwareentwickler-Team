@@ -38,6 +38,19 @@ class TestCoreRolePrompts(unittest.TestCase):
         self.assertIn(BACKEND_CONTRACT_DIRECTIVE, prompt)
         self.assertIn(FIX_LOOP_DIRECTIVE, prompt)
 
+    def test_backend_forbids_get_event_loop_in_sync_context(self):
+        # Analysebericht 2026-09-13 (HyperionSentinel): BACKEND_CONTRACT_DIRECTIVE band bisher
+        # NICHT die Async-&-Event-Loop-Direktive ein (anders als PYTHON_CODE_CONTRACT_DIRECTIVE,
+        # das resilience_guard/ml/security/... bereits abdeckt) - ein `backend`-generiertes
+        # `CircuitBreaker.__init__` oder ein Modul-Level-Singleton konnte deshalb unbemerkt
+        # `asyncio.get_event_loop()` aufrufen und die gesamte Testsuite schon beim `pytest`-Import
+        # mit `RuntimeError: There is no current event loop` zum Absturz bringen (realer Fund im
+        # Vorgänger-Projekt `incident_pulse`).
+        prompt = _prompt(BackendAgent)
+        self.assertIn("asyncio.get_event_loop()", prompt)
+        self.assertIn("time.monotonic()", prompt)
+        self.assertIn("VERBOTEN", prompt)
+
     def test_tester_imports_only_real_symbols(self):
         prompt = _prompt(TesterAgent)
         self.assertIn(TESTER_CONTRACT_DIRECTIVE, prompt)

@@ -1,0 +1,27 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/core/security.py": {
+      "TokenValidator": "class"
+    },
+    "app/services/rate_limiter.py": {
+      "RateLimiterService": "class"
+    },
+    "app/services/circuit_breaker.py": {
+      "CircuitBreaker": "class"
+    },
+    "app/storage/primary.py": {
+      "RedisStorage": "class"
+    },
+    "app/storage/fallback.py": {
+      "InMemoryStorage": "class"
+    },
+    "app/api/dependencies.py": {
+      "get_rate_limiter": "function",
+      "get_token_validator": "function"
+    }
+  }
+}

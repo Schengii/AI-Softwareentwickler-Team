@@ -1563,14 +1563,30 @@ class VerificationMixin:
             )
             summary_lines.extend(smoke_gate_summary)
 
+        # Resilienz-Puffer (Team-Optimierung, Analysebericht 2026-09-13): höchstens EINMAL pro
+        # Lauf genutzt, damit ein knapp (<10%) überschrittenes MAX_RUN_TOKENS nicht die letzte,
+        # bereits fällige Testlauf-Bestätigung hart abbricht - siehe
+        # BudgetMixin._run_budget_within_confirmation_buffer.
+        confirmation_buffer_used = False
         for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
             if run_start_tokens is not None and (
                 self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
             ):
-                budget_aborted = True
-                notify("  🚫 [bold red]Budget erreicht[/bold red] – weitere Verifikations-/Fixversuche werden übersprungen.")
-                summary_lines.append(f"- 🚫 {self._budget_exceeded_label(run_start_tokens)} erreicht – Verifikation nach Versuch {attempt - 1} abgebrochen.")
-                break
+                if (
+                    not confirmation_buffer_used
+                    and not self._project_budget_exceeded(run_start_tokens)
+                    and self._run_budget_within_confirmation_buffer(run_start_tokens)
+                ):
+                    confirmation_buffer_used = True
+                    notify(
+                        "  🧭 [dim]Lauf-Budget knapp (< 10%) überschritten – letzter Testlauf zur "
+                        "Bestätigung der Testsuite wird trotzdem noch ausgeführt.[/dim]"
+                    )
+                else:
+                    budget_aborted = True
+                    notify("  🚫 [bold red]Budget erreicht[/bold red] – weitere Verifikations-/Fixversuche werden übersprungen.")
+                    summary_lines.append(f"- 🚫 {self._budget_exceeded_label(run_start_tokens)} erreicht – Verifikation nach Versuch {attempt - 1} abgebrochen.")
+                    break
             if cancel_requested and cancel_requested():
                 manually_cancelled = True
                 notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – weitere Verifikations-/Fixversuche werden übersprungen.")

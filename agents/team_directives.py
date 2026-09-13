@@ -53,6 +53,20 @@ BACKEND_CONTRACT_DIRECTIVE = f"""
 {_SETTINGS_RULE}
 """
 
+_ASYNC_EVENT_LOOP_DIRECTIVE = """
+## ⏱️ Async & Event-Loop Direktive (VERBINDLICH)
+- `asyncio.get_event_loop()` ist auf Modulebene und im synchronen `__init__` VERBOTEN. In Python
+  3.10+ existiert dort noch kein laufender Event-Loop – der Aufruf wirft beim Import durch pytest
+  sofort `RuntimeError: There is no current event loop in thread 'MainThread'` und lässt die
+  gesamte Testsuite schon in der Collection-Phase scheitern.
+- Für Zeitmessungen, Cooldowns, TTLs und Timeouts (Circuit Breaker, Rate Limiter, Caches) wird
+  STANDARDMÄSSIG `time.monotonic()` verwendet, NIEMALS `loop.time()`/`asyncio.get_event_loop().time()`.
+- Globale Singletons (z. B. CircuitBreaker-Instanzen, HTTP-Clients wie `httpx.AsyncClient`) werden
+  NIEMALS ungeschützt auf Modulebene instanziiert. Sie entstehen ausschließlich im FastAPI-Lifespan
+  (`@asynccontextmanager async def lifespan(...)`) oder in einer asynchronen Factory-Methode
+  (`async def get_instance(cls) -> "X"`), niemals beim Import.
+"""
+
 PYTHON_CODE_CONTRACT_DIRECTIVE = f"""
 ## 📜 Contract First – verbindlich für alle Python-Code schreibenden Agenten
 - Prüfe IMMER ZUERST `{INTERFACE_CONTRACT_FILE}` (per read_file/search_code), bevor du neue Dateien,
@@ -64,7 +78,7 @@ PYTHON_CODE_CONTRACT_DIRECTIVE = f"""
   du dies explizit im Task-Output (Dateipfad + Zweck) und hältst dich an den Standardpfad
   `app/<modul>/...`.
 {_SETTINGS_RULE}
-"""
+{_ASYNC_EVENT_LOOP_DIRECTIVE}"""
 
 TESTER_CONTRACT_DIRECTIVE = f"""
 ## 📜 Contract First – Tests gegen die echte Schnittstelle

@@ -71,6 +71,7 @@ from core.verifier.models import (
     _TRUSTED_HOST_WILDCARD_RE,
     CompletenessIssue,
     CompletenessReport,
+    find_toplevel_event_loop_calls,
 )
 
 _logger = logging.getLogger(__name__)
@@ -139,6 +140,7 @@ class CompletenessMixin:
         issues.extend(self._resilience_fallback_type_mismatch(py_texts))
         issues.extend(self._direct_dict_return_type_mismatch(py_texts))
         issues.extend(self._wildcard_security_middleware(py_texts))
+        issues.extend(self._scan_for_toplevel_event_loop(py_texts))
 
         return CompletenessReport(attempted=True, passed=not issues, issues=issues)
 
@@ -751,6 +753,32 @@ class CompletenessMixin:
                     "jeder async Test schlägt beim Ausführen mit einem Fixture-/Marker-Fehler "
                     "fehl (fehlendes pytest-Plugin).",
         )]
+
+    def _scan_for_toplevel_event_loop(self, py_texts: dict[str, str]) -> list[CompletenessIssue]:
+        """Realer Fund (ChronosLedger/AegisMesh, 2026-09-13): `asyncio.get_event_loop()` auf
+        Modulebene oder im synchronen `__init__` eines CircuitBreakers/Rate Limiters (z. B. für
+        eine Cooldown-/TTL-Uhr) wirft beim Import durch pytest sofort `RuntimeError: There is no
+        current event loop in thread 'MainThread'` - in Python 3.10+ existiert außerhalb einer
+        laufenden `async def`-Funktion kein impliziter Event-Loop mehr. Diese Prüfung meldet den
+        Fund STATISCH per AST VORAB als CompletenessIssue, statt erst pytest daran scheitern zu
+        lassen (siehe core.failure_triage._triage_event_loop_import_error für die Triage, falls
+        der Fehler dennoch erst zur Laufzeit auftritt, z. B. bei dynamisch erzeugtem Code)."""
+        issues: list[CompletenessIssue] = []
+        for rel, text in sorted(py_texts.items()):
+            for line in find_toplevel_event_loop_calls(text):
+                issues.append(CompletenessIssue(
+                    file_path=rel,
+                    line_number=line,
+                    message=f"`asyncio.get_event_loop()` wird in {rel}:{line} auf Modulebene "
+                            f"bzw. in einer synchronen Funktion (z. B. `__init__`) aufgerufen - "
+                            f"dort läuft beim Import durch pytest noch kein Event-Loop, was sofort "
+                            f"mit `RuntimeError: There is no current event loop in thread "
+                            f"'MainThread'` abbricht. Verwende `time.monotonic()` für Zeitmessungen/"
+                            f"Cooldowns/TTLs und initialisiere Async-Objekte (Singletons, HTTP-"
+                            f"Clients) erst im FastAPI-Lifespan oder in einer async Factory-Methode.",
+                    kind="toplevel_event_loop",
+                ))
+        return issues
 
     def _conflicting_sqlalchemy_config(self, py_texts: dict[str, str]) -> list[CompletenessIssue]:
         """Erster Teil desselben logpulse-Funds: `app/database.py` definierte eine asynchrone

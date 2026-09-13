@@ -1,5 +1,4 @@
 import { Recipe, RecipeGenerationOptions, EcoScoreGrade, DifficultyLevel } from '../models/eco-chef.models';
-import { GoogleGenAI } from '@google/genai';
 import { RECIPE_SYSTEM_PROMPT, PANTRY_SUGGESTIONS_PROMPT } from '../prompts/gemini.prompts';
 
 declare const process: { env?: { GEMINI_API_KEY?: string } } | undefined;
@@ -121,25 +120,49 @@ export class GeminiService {
   }
 
   private async callGeminiApi(prompt: string, apiKey: string): Promise<string> {
+    const url = `${this.defaultBaseUrl}/${this.modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    let response: Response;
+
     try {
-      const ai = new GoogleGenAI({ apiKey: apiKey });
-      const response = await ai.models.generateContent({
-        model: this.modelName,
-        contents: prompt,
-        config: {
-          temperature: 0.7,
-          responseMimeType: 'application/json',
-        }
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [{ text: prompt }]
+            }
+          ],
+          generationConfig: {
+            temperature: 0.7,
+            responseMimeType: 'application/json'
+          }
+        })
       });
-      
-      if (!response.text) throw new Error('Keine Textantwort erhalten.');
-      return response.text;
-    } catch (error: any) {
-      if (error.message && error.message.includes('Textantwort')) {
-        throw error;
-      }
-      throw new Error(`Gemini API Fehler: ${error.message || 'Unbekannter Fehler'}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Netzwerkfehler';
+      throw new Error(`Verbindung zur Gemini API fehlgeschlagen: ${msg}`);
     }
+
+    if (!response.ok) {
+      if (response.status === 400 || response.status === 403) {
+        throw new Error('Ungültiger Gemini API-Schlüssel oder fehlende Berechtigung');
+      }
+      if (response.status === 429) {
+        throw new Error('Rate-Limit überschritten');
+      }
+      throw new Error(`Gemini API Serverfehler: HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    const candidateText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!candidateText) {
+      throw new Error('Keine Textantwort erhalten.');
+    }
+
+    return candidateText;
   }
 
   private sanitizeJsonString(raw: string): string {
@@ -181,8 +204,7 @@ export class GeminiService {
       difficulty: validDifficulty,
       dietaryCategory: Array.isArray(parsed.dietaryCategory) ? parsed.dietaryCategory : ['vegetarian'],
       ingredients: Array.isArray(parsed.ingredients)
-        ? parsed.ingredients.map((ing, idx) => ({
-            id: ing.id || `ing-${idx}`,
+        ? parsed.ingredients.map((ing) => ({
             name: ing.name || 'Zutat',
             amount: Number(ing.amount) || 1,
             unit: ing.unit || 'Stück',

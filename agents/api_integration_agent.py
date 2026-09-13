@@ -6,7 +6,7 @@ Webhooks, OAuth2 Flow, GraphQL Schemas und Drittanbieter-Integrationen (Stripe, 
 """
 
 from agents.base_agent import BaseAgent
-from agents.team_directives import PYTHON_CODE_CONTRACT_DIRECTIVE
+from agents.team_directives import EXTERNAL_API_SDK_SYNC_DIRECTIVE, PYTHON_CODE_CONTRACT_DIRECTIVE
 
 
 class ApiIntegrationAgent(BaseAgent):
@@ -59,4 +59,4 @@ Dein Standard-Ausgabeformat:
 ```
 
 Antworte auf Deutsch. Liefere stets sofort einsatzbereiten, exakt typisierten und fehlerfreien Code/Spezifikationen.
-""" + PYTHON_CODE_CONTRACT_DIRECTIVE
+""" + PYTHON_CODE_CONTRACT_DIRECTIVE + EXTERNAL_API_SDK_SYNC_DIRECTIVE

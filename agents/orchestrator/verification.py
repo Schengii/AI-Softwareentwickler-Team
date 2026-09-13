@@ -155,6 +155,35 @@ class VerificationMixin:
         cancel_requested: Callable[[], bool] | None = None,
     ) -> tuple[list[AgentResult], str, bool, bool]:
         """
+        Robuste Außenhülle um `_run_governance_fix_loop_impl()` (Fehleranalyse 2026-09-13,
+        reale unbehandelte TypeErrors im Governance-Loop): egal was innerhalb der Schleife
+        schiefgeht (z.B. ein nicht-String-`block` in `finding_from_critical_block()`, ein
+        defektes Ticket-System o.ä.) - `process()` erwartet hier IMMER ein valides Tupel
+        `(all_results, summary, budget_aborted, manually_cancelled)` und darf NIE mit einer
+        durchgereichten Exception abstürzen. `all_results` wird dabei bewusst unverändert
+        zurückgegeben (statt eines Teilzustands), da bei einem Absturz nicht sicher feststeht,
+        wie weit die Schleife intern schon mutiert hat.
+        """
+        try:
+            return await self._run_governance_fix_loop_impl(
+                project_dir, all_results, file_owners, notify,
+                run_start_tokens=run_start_tokens, cancel_requested=cancel_requested,
+            )
+        except Exception as e:
+            logging.getLogger(__name__).warning("Governance-Fix-Schleife abgebrochen (unerwarteter Fehler): %s", e, exc_info=True)
+            notify(f"⚠️ [bold yellow]Governance-Fix-Schleife wegen eines unerwarteten Fehlers übersprungen:[/bold yellow] {e}")
+            return all_results, "", False, False
+
+    async def _run_governance_fix_loop_impl(
+        self,
+        project_dir: str,
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        notify: Callable[[str], None],
+        run_start_tokens: int | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> tuple[list[AgentResult], str, bool, bool]:
+        """
         Realer Fund bei einer Bestandsaufnahme des eigenen Teams: code_reviewer/security/
         compliance (REVIEW_ONLY_AGENT_IDS) kategorisieren Befunde in ihren Reports selbst nach
         Schweregrad ("Kritisch") - das löste bisher NIE einen Korrekturauftrag aus, nur ein
@@ -650,7 +679,12 @@ class VerificationMixin:
                         if stuck_owner_ids & set(defn["members"]) and dept_id in self._dept_leads
                     }
                     if lead_targets:
-                        still_critical_text = "\n\n".join(still_critical)[:3000]
+                        # Dieselbe Absicherung wie bei `still_critical_detail` weiter unten - auch
+                        # hier darf ein nicht-string-facher Eintrag in `still_critical` nicht mit
+                        # einem TypeError abbrechen.
+                        still_critical_text = "\n\n".join(
+                            b if isinstance(b, str) else str(b) for b in still_critical
+                        )[:3000]
                         notify(
                             f"  🔀 [bold yellow]Strategiewechsel (Eskalation):[/bold yellow] Der "
                             f"verpflichtende Re-Review meldet nach dem letzten Fixversuch weiterhin "
@@ -727,39 +761,57 @@ class VerificationMixin:
                         f"{len(still_critical)} kritische(n) Befund(e) – Backlog-Ticket eröffnet statt "
                         "stillschweigend zu übernehmen."
                     )
-                    still_critical_detail = "\n\n".join(still_critical) + self._provider_exhaustion_ticket_note()
-                    # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echte PR-Review-
-                    # Kommentare): dieselben still_critical-Blöcke, die gerade als Fließtext im
-                    # Backlog-Ticket landen, werden hier ZUSÄTZLICH in ReviewFinding-Objekte
-                    # (mit best-effort extrahiertem file_path) umgewandelt und am Orchestrator
-                    # gespeichert - interface/cli.py._ask_for_git_push()/core/backlog_worker.py
-                    # lesen dieses Attribut nach einem erfolgreichen create_pull_request() und
-                    # hinterlassen echte, dateibezogene GitHub-Review-Kommentare am PR
-                    # (agents/github_agent.py.post_pr_review()), statt den Befund nur im PR-Body
-                    # zu verstecken, wo ihn ein menschlicher Reviewer leicht überliest.
-                    self.last_unresolved_review_findings.extend(
-                        finding_from_critical_block(block) for block in still_critical
-                    )
+                    # Fehleranalyse 2026-09-13: `still_critical` mischt Freitext-Blöcke aus dem
+                    # LLM-Re-Review mit den oben angehängten `structural_still_critical`-Strings -
+                    # beide sind zwar in der Praxis immer `str`, ein zukünftiger, nicht-string-
+                    # facher Eintrag (z.B. ein versehentlich durchgereichtes Exception-Objekt)
+                    # riss hier bisher per TypeError in `finding_from_critical_block()` (erwartet
+                    # `block: str`) die gesamte Governance-Fix-Schleife mit sich. `str(block)`
+                    # statt eines harten Abbruchs bewahrt den Fund wenigstens als Text.
+                    still_critical_detail = "\n\n".join(
+                        b if isinstance(b, str) else str(b) for b in still_critical
+                    ) + self._provider_exhaustion_ticket_note()
                     try:
-                        upsert_ticket(
-                            ticket_id=f"unresolved-governance-critical-{getattr(self, 'last_project_slug', 'project')}",
-                            title=f"Ungelöster kritischer Governance-Befund: {getattr(self, 'last_project_slug', 'project')}",
-                            source="orchestrator", status="blocked",
+                        # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echte PR-Review-
+                        # Kommentare): dieselben still_critical-Blöcke, die gerade als Fließtext im
+                        # Backlog-Ticket landen, werden hier ZUSÄTZLICH in ReviewFinding-Objekte
+                        # (mit best-effort extrahiertem file_path) umgewandelt und am Orchestrator
+                        # gespeichert - interface/cli.py._ask_for_git_push()/core/backlog_worker.py
+                        # lesen dieses Attribut nach einem erfolgreichen create_pull_request() und
+                        # hinterlassen echte, dateibezogene GitHub-Review-Kommentare am PR
+                        # (agents/github_agent.py.post_pr_review()), statt den Befund nur im PR-Body
+                        # zu verstecken, wo ihn ein menschlicher Reviewer leicht überliest.
+                        self.last_unresolved_review_findings.extend(
+                            finding_from_critical_block(block if isinstance(block, str) else str(block))
+                            for block in still_critical
+                        )
+                        try:
+                            upsert_ticket(
+                                ticket_id=f"unresolved-governance-critical-{getattr(self, 'last_project_slug', 'project')}",
+                                title=f"Ungelöster kritischer Governance-Befund: {getattr(self, 'last_project_slug', 'project')}",
+                                source="orchestrator", status="blocked",
+                                project_slug=getattr(self, "last_project_slug", "project"),
+                                detail=still_critical_detail,
+                            )
+                        except Exception as e:
+                            notify(f"⚠️ [dim yellow]Ticket für ungelösten Governance-Befund konnte nicht angelegt werden: {e}[/dim yellow]")
+                        record_lesson(
                             project_slug=getattr(self, "last_project_slug", "project"),
+                            category="unresolved_governance_critical",
                             detail=still_critical_detail,
                         )
+                        log_decision(project_dir, "unresolved_governance_critical_ticket_opened", still_critical_detail)
+                        await asyncio.to_thread(
+                            notify_external, "Ungelöster kritischer Governance-Befund",
+                            f"{getattr(self, 'last_project_slug', 'project')}: {still_critical_detail[:300]}",
+                        )
                     except Exception as e:
-                        notify(f"⚠️ [dim yellow]Ticket für ungelösten Governance-Befund konnte nicht angelegt werden: {e}[/dim yellow]")
-                    record_lesson(
-                        project_slug=getattr(self, "last_project_slug", "project"),
-                        category="unresolved_governance_critical",
-                        detail=still_critical_detail,
-                    )
-                    log_decision(project_dir, "unresolved_governance_critical_ticket_opened", still_critical_detail)
-                    await asyncio.to_thread(
-                        notify_external, "Ungelöster kritischer Governance-Befund",
-                        f"{getattr(self, 'last_project_slug', 'project')}: {still_critical_detail[:300]}",
-                    )
+                        # Robustheits-Netz (Fehleranalyse 2026-09-13): Ticket-Erstellung, Lern-
+                        # protokoll und externe Benachrichtigung sind Nebenwirkungen der eigentlich
+                        # bereits abgeschlossenen Fund-Ermittlung - ein Fehler hier (z.B. ein
+                        # defektes Backlog-/Notify-Backend) darf den Governance-Fix-Lauf selbst
+                        # nicht mit einer unbehandelten Exception zum Absturz bringen.
+                        notify(f"⚠️ [dim yellow]Nachbearbeitung des ungelösten Governance-Befunds fehlgeschlagen: {e}[/dim yellow]")
                 else:
                     summary_lines.append(f"- ✅ Re-Review nach Versuch {attempt} bestätigt: keine kritischen Befunde mehr.")
 
@@ -770,6 +822,35 @@ class VerificationMixin:
         return all_results, summary, budget_aborted, manually_cancelled
 
     async def _run_permission_blocked_clarification_fix(
+        self,
+        project_dir: str,
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        notify: Callable[[str], None],
+        run_start_tokens: int | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> tuple[list[AgentResult], str, bool, bool]:
+        """
+        Robuste Außenhülle um `_run_permission_blocked_clarification_fix_impl()` (Fehleranalyse
+        2026-09-13, analog zu `_run_governance_fix_loop` oben) - garantiert, dass `process()`
+        auch bei einem unerwarteten Fehler in dieser Klärungs-Schleife (z.B. beim Ticket- oder
+        Lernprotokoll-Zugriff) IMMER ein valides Tupel erhält, statt mit einer durchgereichten
+        Exception abzustürzen.
+        """
+        try:
+            return await self._run_permission_blocked_clarification_fix_impl(
+                project_dir, all_results, file_owners, notify,
+                run_start_tokens=run_start_tokens, cancel_requested=cancel_requested,
+            )
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "Fix-Schleife für schreibgeschützt blockierte Rückfragen abgebrochen (unerwarteter Fehler): %s",
+                e, exc_info=True,
+            )
+            notify(f"⚠️ [bold yellow]Fix für schreibgeschützt blockierte Rückfragen wegen eines unerwarteten Fehlers übersprungen:[/bold yellow] {e}")
+            return all_results, "", False, False
+
+    async def _run_permission_blocked_clarification_fix_impl(
         self,
         project_dir: str,
         all_results: list[AgentResult],
@@ -913,33 +994,44 @@ class VerificationMixin:
                         f"- 🛑 Re-Review bestätigt den Fix NICHT – {len(still_critical)} weiterhin kritische(r) "
                         "Befund(e). Backlog-Ticket für menschliche Prüfung eröffnet."
                     )
-                    still_critical_detail = "\n\n".join(still_critical) + self._provider_exhaustion_ticket_note()
-                    # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echte PR-Review-
-                    # Kommentare) - siehe die ausführliche Begründung bei der Schwester-Stelle in
-                    # _run_governance_fix_loop() oben.
-                    self.last_unresolved_review_findings.extend(
-                        finding_from_critical_block(block) for block in still_critical
-                    )
+                    # Fehleranalyse 2026-09-13 / analog zur Schwester-Stelle in
+                    # _run_governance_fix_loop_impl() oben: `str(block)` statt eines harten
+                    # TypeError-Abbruchs, falls `still_critical` je einen Nicht-String enthält.
+                    still_critical_detail = "\n\n".join(
+                        b if isinstance(b, str) else str(b) for b in still_critical
+                    ) + self._provider_exhaustion_ticket_note()
                     try:
-                        upsert_ticket(
-                            ticket_id=f"unresolved-permission-blocked-{getattr(self, 'last_project_slug', 'project')}",
-                            title=f"Ungelöster, zuvor schreibgeschützt blockierter Befund: {getattr(self, 'last_project_slug', 'project')}",
-                            source="orchestrator", status="blocked",
+                        # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echte PR-Review-
+                        # Kommentare) - siehe die ausführliche Begründung bei der Schwester-Stelle in
+                        # _run_governance_fix_loop_impl() oben.
+                        self.last_unresolved_review_findings.extend(
+                            finding_from_critical_block(block if isinstance(block, str) else str(block))
+                            for block in still_critical
+                        )
+                        try:
+                            upsert_ticket(
+                                ticket_id=f"unresolved-permission-blocked-{getattr(self, 'last_project_slug', 'project')}",
+                                title=f"Ungelöster, zuvor schreibgeschützt blockierter Befund: {getattr(self, 'last_project_slug', 'project')}",
+                                source="orchestrator", status="blocked",
+                                project_slug=getattr(self, "last_project_slug", "project"),
+                                detail=still_critical_detail,
+                            )
+                        except Exception as e:
+                            notify(f"⚠️ [dim yellow]Ticket konnte nicht angelegt werden: {e}[/dim yellow]")
+                        record_lesson(
                             project_slug=getattr(self, "last_project_slug", "project"),
+                            category="unresolved_permission_blocked_fix",
                             detail=still_critical_detail,
                         )
+                        log_decision(project_dir, "unresolved_permission_blocked_fix_ticket_opened", still_critical_detail)
+                        await asyncio.to_thread(
+                            notify_external, "Ungelöster, zuvor schreibgeschützt blockierter Befund",
+                            f"{getattr(self, 'last_project_slug', 'project')}: {still_critical_detail[:300]}",
+                        )
                     except Exception as e:
-                        notify(f"⚠️ [dim yellow]Ticket konnte nicht angelegt werden: {e}[/dim yellow]")
-                    record_lesson(
-                        project_slug=getattr(self, "last_project_slug", "project"),
-                        category="unresolved_permission_blocked_fix",
-                        detail=still_critical_detail,
-                    )
-                    log_decision(project_dir, "unresolved_permission_blocked_fix_ticket_opened", still_critical_detail)
-                    await asyncio.to_thread(
-                        notify_external, "Ungelöster, zuvor schreibgeschützt blockierter Befund",
-                        f"{getattr(self, 'last_project_slug', 'project')}: {still_critical_detail[:300]}",
-                    )
+                        # Robustheits-Netz (Fehleranalyse 2026-09-13): siehe Begründung bei der
+                        # Schwester-Stelle in _run_governance_fix_loop_impl() oben.
+                        notify(f"⚠️ [dim yellow]Nachbearbeitung des ungelösten, schreibgeschützt blockierten Befunds fehlgeschlagen: {e}[/dim yellow]")
                 else:
                     summary_lines.append("- ✅ Re-Review bestätigt: Fix erfolgreich.")
 

@@ -74,4 +74,109 @@ export class BarcodeService {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-      response = await fetch(endpoint, {\n        method: 'GET',\n        headers: {\n          'User-Agent': this.userAgent,\n          'Accept': 'application/json'\n        },\n        signal: controller.signal\n      });\n\n      clearTimeout(timeoutId);\n    } catch (err: unknown) {\n      if (err instanceof Error && err.name === 'AbortError') {\n        throw new Error(`Zeitüberschreitung bei der Abfrage von Barcode ${barcode}. Bitte Internetverbindung prüfen.`);\n      }\n      const msg = err instanceof Error ? err.message : 'Netzwerkfehler';\n      throw new Error(`Konnte OpenFoodFacts nicht erreichen: ${msg}`);\n    }\n\n    if (!response.ok) {\n      if (response.status === 404) {\n        throw new Error(`Produkt mit Barcode ${barcode} wurde bei OpenFoodFacts nicht gefunden.`);\n      }\n      throw new Error(`OpenFoodFacts Serverfehler: HTTP ${response.status}`);\n    }\n\n    const data = (await response.json()) as OpenFoodFactsProductResponse;\n\n    if (data.status === 0 || !data.product) {\n      throw new Error(`Produkt mit Barcode ${barcode} existiert nicht in der OpenFoodFacts-Datenbank.`);\n    }\n\n    const parsedInfo = this.mapToProductInfo(barcode, data.product);\n    this.cache.set(barcode, parsedInfo);\n\n    return parsedInfo;\n  }\n\n  /**\n   * Alias für getProductByBarcode zur Abwärtskompatibilität mit bestehenden Tests\n   */\n  public async getProductInfo(rawBarcode: string): Promise<BarcodeProductInfo> {\n    return this.getProductByBarcode(rawBarcode);\n  }\n\n  /**\n   * Wandelt BarcodeProductInfo in ein PantryItem um\n   */\n  public toPantryItem(product: BarcodeProductInfo, defaultAmount = 1, defaultUnit = 'Stück'): PantryItem {\n    return {\n      id: `pantry-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,\n      barcode: product.barcode,\n      name: product.name,\n      quantity: defaultAmount,\n      unit: defaultUnit,\n      category: product.category || 'Lebensmittel',\n      ecoScore: product.ecoScore,\n      nutriScore: product.nutriScore,\n      addedAt: Date.now()\n    };\n  }\n\n  /**\n   * Leert den internen Cache\n   */\n  public clearCache(): void {\n    this.cache.clear();\n  }\n\n  private mapToProductInfo(barcode: string, raw: NonNullable<OpenFoodFactsProductResponse['product']>): BarcodeProductInfo {\n    const name = raw.product_name_de || raw.product_name || raw.generic_name || 'Unbekanntes Lebensmittel';\n    const brand = raw.brands ? raw.brands.split(',')[0].trim() : undefined;\n\n    const rawEco = (raw.ecoscore_grade || 'unknown').toLowerCase();\n    const ecoScore: EcoScoreGrade = ['a', 'b', 'c', 'd', 'e'].includes(rawEco) ? (rawEco as EcoScoreGrade) : 'unknown';\n\n    const rawNutri = (raw.nutriscore_grade || 'unknown').toLowerCase();\n    const nutriScore: NutriScoreGrade = ['a', 'b', 'c', 'd', 'e'].includes(rawNutri)\n      ? (rawNutri as NutriScoreGrade)\n      : 'unknown';\n\n    const categories = (raw.categories_tags || [])\n      .map(cat => cat.replace(/^[a-z]{2}:/, '').replace(/-/g, ' '))\n      .filter(cat => cat.length > 0);\n\n    const allergens = (raw.allergens_tags || raw.allergens_hierarchy || [])\n      .map(all => all.replace(/^[a-z]{2}:/, '').replace(/-/g, ' ').trim())\n      .filter(all => all.length > 0);\n\n    const imageUrl = raw.image_front_url || raw.image_url || raw.image_front_small_url || undefined;\n    const ingredientsText = raw.ingredients_text_de || raw.ingredients_text || undefined;\n\n    return {\n      barcode,\n      name,\n      brand,\n      category: categories.length > 0 ? categories[0] : undefined,\n      ecoScore,\n      nutriScore,\n      allergens: Array.from(new Set(allergens)),\n      imageUrl,\n      ingredients: ingredientsText ? [ingredientsText] : undefined\n    };\n  }\n}\n\nexport const barcodeService = BarcodeService.getInstance();\n
+      response = await fetch(endpoint, {
+        method: 'GET',
+        headers: {
+          'User-Agent': this.userAgent,
+          'Accept': 'application/json'
+        },
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new Error(`Zeitüberschreitung bei der Abfrage von Barcode ${barcode}. Bitte Internetverbindung prüfen.`);
+      }
+      const msg = err instanceof Error ? err.message : 'Netzwerkfehler';
+      throw new Error(`Konnte OpenFoodFacts nicht erreichen: ${msg}`);
+    }
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error(`Produkt mit Barcode ${barcode} wurde bei OpenFoodFacts nicht gefunden.`);
+      }
+      throw new Error(`OpenFoodFacts Serverfehler: HTTP ${response.status}`);
+    }
+
+    const data = (await response.json()) as OpenFoodFactsProductResponse;
+
+    if (data.status === 0 || !data.product) {
+      throw new Error(`Produkt mit Barcode ${barcode} existiert nicht in der OpenFoodFacts-Datenbank.`);
+    }
+
+    const parsedInfo = this.mapToProductInfo(barcode, data.product);
+    this.cache.set(barcode, parsedInfo);
+
+    return parsedInfo;
+  }
+
+  /**
+   * Alias für getProductByBarcode zur Abwärtskompatibilität mit bestehenden Tests
+   */
+  public async getProductInfo(rawBarcode: string): Promise<BarcodeProductInfo> {
+    return this.getProductByBarcode(rawBarcode);
+  }
+
+  /**
+   * Wandelt BarcodeProductInfo in ein PantryItem um
+   */
+  public toPantryItem(product: BarcodeProductInfo, defaultAmount = 1, defaultUnit = 'Stück'): PantryItem {
+    return {
+      id: `pantry-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      barcode: product.barcode,
+      name: product.name,
+      quantity: defaultAmount,
+      unit: defaultUnit,
+      category: product.category || 'Lebensmittel',
+      ecoScore: product.ecoScore,
+      nutriScore: product.nutriScore,
+      addedAt: Date.now()
+    };
+  }
+
+  /**
+   * Leert den internen Cache
+   */
+  public clearCache(): void {
+    this.cache.clear();
+  }
+
+  private mapToProductInfo(barcode: string, raw: NonNullable<OpenFoodFactsProductResponse['product']>): BarcodeProductInfo {
+    const name = raw.product_name_de || raw.product_name || raw.generic_name || 'Unbekanntes Lebensmittel';
+    const brand = raw.brands ? raw.brands.split(',')[0].trim() : undefined;
+
+    const rawEco = (raw.ecoscore_grade || 'unknown').toLowerCase();
+    const ecoScore: EcoScoreGrade = ['a', 'b', 'c', 'd', 'e'].includes(rawEco) ? (rawEco as EcoScoreGrade) : 'unknown';
+
+    const rawNutri = (raw.nutriscore_grade || 'unknown').toLowerCase();
+    const nutriScore: NutriScoreGrade = ['a', 'b', 'c', 'd', 'e'].includes(rawNutri)
+      ? (rawNutri as NutriScoreGrade)
+      : 'unknown';
+
+    const categories = (raw.categories_tags || [])
+      .map(cat => cat.replace(/^[a-z]{2}:/, '').replace(/-/g, ' '))
+      .filter(cat => cat.length > 0);
+
+    const allergens = (raw.allergens_tags || raw.allergens_hierarchy || [])
+      .map(all => all.replace(/^[a-z]{2}:/, '').replace(/-/g, ' ').trim())
+      .filter(all => all.length > 0);
+
+    const imageUrl = raw.image_front_url || raw.image_url || raw.image_front_small_url || undefined;
+    const ingredientsText = raw.ingredients_text_de || raw.ingredients_text || undefined;
+
+    return {
+      barcode,
+      name,
+      brand,
+      category: categories.length > 0 ? categories[0] : undefined,
+      ecoScore,
+      nutriScore,
+      allergens: Array.from(new Set(allergens)),
+      imageUrl,
+      ingredients: ingredientsText ? [ingredientsText] : undefined
+    };
+  }
+}
+
+export const barcodeService = BarcodeService.getInstance();

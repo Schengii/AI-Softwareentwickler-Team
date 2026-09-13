@@ -85,6 +85,19 @@ class TestTierZuordnungFolgtVerfuegbarenKeys:
     """Kernbefund: HEAVY_MODEL zeigte bedingungslos auf Claude, auch ohne ANTHROPIC_API_KEY –
     13 Rollen und der Orchestrator hatten damit kein funktionierendes Primärmodell."""
 
+    @pytest.fixture(autouse=True)
+    def _kein_dotenv_reload(self, monkeypatch):
+        """Fehleranalyse 2026-09-13: `importlib.reload(config)` führt config.py's `load_dotenv()`
+        erneut aus. Auf einer Entwicklermaschine mit einer eigenen, lokalen `.env` (z. B. mit
+        fest gepinntem `HEAVY_MODEL=gemini-pro-latest` für ein Setup ohne ANTHROPIC_API_KEY,
+        real beobachtet) füllt das eine gerade per `monkeypatch.delenv(...)` gelöschte Variable
+        sofort wieder auf – `delenv` bedeutete dadurch faktisch nicht "ungesetzt", sondern nur
+        "auf den lokalen .env-Wert zurückgesetzt", und diese Tests prüften plötzlich den Inhalt
+        einer beliebigen `.env`-Datei statt der eigentlichen Tier-Zuordnungslogik. Diese Klasse
+        will explizit das Verhalten OHNE gesetzten Override sehen, unabhängig vom Inhalt einer
+        lokalen `.env` – `load_dotenv()` wird deshalb für die Dauer dieser Tests zu einem No-Op."""
+        monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: False)
+
     def test_heavy_meidet_provider_ohne_schluessel(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "")
         monkeypatch.setenv("GROQ_API_KEY", "groq-key")
@@ -100,6 +113,10 @@ class TestTierZuordnungFolgtVerfuegbarenKeys:
     def test_heavy_nutzt_claude_sobald_ein_schluessel_da_ist(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
         monkeypatch.delenv("HEAVY_MODEL", raising=False)
+        # Wie in test_orchestrator_meidet_provider_ohne_schluessel unten: ORCHESTRATOR_MODEL
+        # wird hier ebenfalls geprüft, muss also genauso explizit ungesetzt sein - sonst
+        # gewinnt ein evtl. bereits im echten Prozess-Environment gesetzter Wert.
+        monkeypatch.delenv("ORCHESTRATOR_MODEL", raising=False)
         neu = importlib.reload(config)
         try:
             assert neu.HEAVY_MODEL == neu.CLAUDE_STANDARD_MODEL

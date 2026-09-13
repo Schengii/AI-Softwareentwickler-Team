@@ -467,6 +467,41 @@ class AgentToolbox:
             return None
         return "⚠️ Mögliches Phantomsymbol – prüfe mit read_file, ob der Import zur echten Schnittstelle passt: " + "; ".join(problems)
 
+    # Endungen, für die es (anders als .py mit ast.parse in _reject_if_invalid_python) keinen
+    # eingebauten Parser gibt, der literale `\n`-Ketten zuverlässig als Syntaxfehler erkennt -
+    # siehe _reject_if_literal_newline_corruption() für den vollen Kontext des realen Funds.
+    _LITERAL_NEWLINE_CHECK_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".json", ".html", ".css")
+    _MIN_LITERAL_NEWLINE_HITS = 3
+
+    @classmethod
+    def _reject_if_literal_newline_corruption(cls, path: str, content: str) -> str | None:
+        """Gibt eine Fehlermeldung zurück, wenn `content` erkennbar der in
+        `_reject_if_invalid_python()` beschriebenen Korruption entspricht (literale `\\n`-Zeichen
+        statt echter Zeilenumbrüche), aber die Endung KEINEN eigenen Parser hat, der das schon
+        als Syntaxfehler abfangen würde (.py läuft bereits über ast.parse, JSON-Dateien über
+        `_reject_if_corrupted_manifest`/den eigentlichen JSON-Parser an anderer Stelle - hier
+        zusätzlich als Netz, falls eine solche Datei kein gültiges JSON sein muss).
+
+        Heuristik bewusst konservativ, um normale Quelldateien mit vereinzelten, ECHTEN
+        Escape-Sequenzen in String-Literalen (z.B. `console.log("a\\nb")`) nicht fälschlich
+        abzulehnen: nur wenn die Datei praktisch NUR aus einer einzigen physischen Zeile besteht
+        (kein oder kaum ein echter Zeilenumbruch) UND gleichzeitig mehrfach die literale
+        Zwei-Zeichen-Folge `\\n` enthält, deutet das auf eine komplett flachgeklopfte Datei hin -
+        genau das reale Muster (vermutlich doppelt JSON-serialisierter LLM-Output), nicht auf
+        normalen, mehrzeiligen Code mit ein paar Escape-Sequenzen darin."""
+        if not content or not path.lower().endswith(cls._LITERAL_NEWLINE_CHECK_EXTENSIONS):
+            return None
+        real_newlines = content.count("\n")
+        literal_hits = content.count("\\n")
+        if real_newlines > 1 or literal_hits < cls._MIN_LITERAL_NEWLINE_HITS:
+            return None
+        return (
+            f"'{path}' wurde NICHT gespeichert: der Inhalt besteht praktisch aus einer einzigen "
+            f"Zeile, enthält aber {literal_hits}x die literale Zeichenfolge '\\n' statt echter "
+            "Zeilenumbrüche (typisches Muster einer doppelt serialisierten/kaputten Ausgabe). "
+            "Prüfe den Inhalt und schreibe ihn mit echten Zeilenumbrüchen erneut."
+        )
+
     @staticmethod
     def _reject_if_corrupted_manifest(path: str, content: str) -> str | None:
         """Gibt eine Fehlermeldung zurück, wenn `path` ein Dependency-Manifest (requirements.txt,
@@ -553,6 +588,9 @@ class AgentToolbox:
 
     async def _tool_write_file(self, path: str, content: str) -> dict:
         rejection = self._reject_if_invalid_python(path, content)
+        if rejection:
+            return {"error": rejection}
+        rejection = self._reject_if_literal_newline_corruption(path, content)
         if rejection:
             return {"error": rejection}
         rejection = self._reject_if_corrupted_manifest(path, content)
@@ -645,6 +683,9 @@ class AgentToolbox:
 
         updated = current.replace(old_text, new_text, 1)
         rejection = self._reject_if_invalid_python(path, updated)
+        if rejection:
+            return {"error": rejection}
+        rejection = self._reject_if_literal_newline_corruption(path, updated)
         if rejection:
             return {"error": rejection}
         rejection = self._reject_if_corrupted_manifest(path, updated)

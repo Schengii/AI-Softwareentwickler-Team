@@ -9,6 +9,7 @@ import uuid
 from config import ENABLE_NICHE_AGENT_FILTER
 from core.llm_factory import LLMFactory
 from core.message_bus import AgentTask
+from core.team_memory import format_team_lessons_for_agents
 
 # ──────────────────────────────────────────────────────────
 # Alle verfügbaren Agenten (30 Spezialisten)
@@ -506,6 +507,9 @@ Wichtige Regeln:
   oder FAQ-Inhalte benötigen (verhindert unprofessionelles Lorem-Ipsum)
 - image_generator einbeziehen, sobald Icons, SVG-Logos oder Banner für UIs/Landingpages benötigt werden
 - i18n einbeziehen, sobald Mehrsprachigkeit, Lokalisierung oder RTL-Unterstützung relevant sind
+- Berücksichtige die bekannten Team-Lektionen. Plane bei Projekten mit APIs oder Web-UIs
+  zwingend den Haupteinstiegspunkt (main.py bzw. main.ts/index.html) explizit als Teilaufgabe
+  für den zuständigen Entwickler ein, um "missing_entrypoint"-Blocker zu vermeiden.
 """
 
 
@@ -552,12 +556,26 @@ class TaskManager:
                 "bestehenden 'project_slug' (kein Suffix wie '_repair' oder '_fix')!"
             )
 
+        # Selbstlernen in der Planungsphase (Fehleranalyse 2026-09-13): bisher kannten nur die
+        # einzelnen Entwickler-Agenten (agents/orchestrator/__init__.py.team_lessons_context)
+        # vergangene Team-Lektionen, der Planer selbst zerlegte Aufgaben ohne dieses Wissen -
+        # ein wiederkehrender Blocker wie "missing_entrypoint" wurde so nie schon in der
+        # Zerlegung als eigene Teilaufgabe vorgesehen, sondern erst nachträglich von einem
+        # einzelnen Agenten (falls überhaupt) bemerkt.
+        team_lessons_section = ""
+        team_lessons_text = format_team_lessons_for_agents(limit=5)
+        if team_lessons_text:
+            team_lessons_section = (
+                "\n\nBEKANNTE TEAM-LEKTIONEN AUS FRÜHEREN FEHLERN:\n" + team_lessons_text
+            )
+
         prompt = f"""Analysiere folgende Nutzeranfrage und erstelle einen effizienten Aufgabenplan:
 
 NUTZERANFRAGE:
 {user_request}
 {context_section}
 {existing_projects_section}
+{team_lessons_section}
 
 VERFÜGBARE AGENTEN:
 {agents_description}

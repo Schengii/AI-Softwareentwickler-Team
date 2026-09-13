@@ -41,6 +41,44 @@ _PYTEST_ASYNCIO_CONFIG_RULE = """- Nutzt das Projekt `asyncio`, FastAPI oder asy
   ("async def functions are not natively supported") - der generierte Code bleibt dann komplett
   ungeprüft, selbst wenn er fehlerfrei ist."""
 
+# Team-Optimierung (Fehleranalyse 2026-09-13, Vertrags-Synchronisation Tester ↔ Entwickler):
+# real beobachtet wurden Tests, die eine Bibliothek/ein SDK mockten, das im Projekt gar nicht
+# als Abhängigkeit registriert war (z. B. `unittest.mock.patch("openai.ChatCompletion...")`,
+# obwohl weder `openai` in requirements.txt stand noch der Entwickler-Code das SDK überhaupt
+# importierte, sondern stattdessen nativ per `httpx`/`fetch` gegen die REST-API rief) - der Mock
+# griff dadurch nie, der Test bestand nur, weil der eigentliche Aufruf-Pfad komplett ungetestet
+# blieb, oder scheiterte mit einem ImportError für ein nie installiertes Paket.
+TESTER_MOCK_DEPENDENCY_SYNC_DIRECTIVE = """
+## 🔗 Mock-Vertrag: nur mocken, was wirklich installiert UND genutzt wird
+- Prüfe vor dem Schreiben eines Mocks IMMER zuerst die tatsächlichen Abhängigkeiten des Projekts
+  (`requirements.txt`/`requirements-dev.txt` bzw. `package.json`) per read_file. Mocke KEINE
+  Bibliothek/kein SDK, das dort nicht als Abhängigkeit eingetragen ist - ein Mock für ein nie
+  installiertes Paket täuscht Testabdeckung nur vor und bricht bei einem echten `pip install`/
+  `npm install` ohnehin mit ImportError.
+- Verwende dieselbe Aufruf-Methodik wie der Entwickler im tatsächlichen Quellcode: Ruft die
+  Anwendung eine externe API nativ per `fetch`/`httpx.AsyncClient`/`requests` auf, mockst du GENAU
+  diesen HTTP-Aufruf (z. B. `respx`, `pytest-httpx`, `msw`) - nicht ein SDK-Objekt, das im
+  Produktivcode gar nicht vorkommt. Nutzt der Code stattdessen wirklich ein SDK (z. B. `openai`,
+  `stripe`), mockst du dessen Client/Methoden, nicht die rohe HTTP-Ebene darunter.
+"""
+
+# Team-Optimierung (Fehleranalyse 2026-09-13, Vertrags-Synchronisation mit TESTER_MOCK_
+# DEPENDENCY_SYNC_DIRECTIVE oben): dieselbe Aufruf-Methodik, die api_integration/frontend hier
+# für externe APIs wählen, entscheidet direkt darüber, was der tester-Agent später sinnvoll
+# mocken kann - ein SDK-Import ohne Eintrag in requirements.txt/package.json bricht sowohl den
+# echten Build als auch jeden SDK-Mock des Testers.
+EXTERNAL_API_SDK_SYNC_DIRECTIVE = """
+## 🔗 Externe APIs: nativer Aufruf ODER echtes, registriertes SDK
+- Für externe APIs (z. B. Google Gemini, OpenAI, Stripe) verwendest du bevorzugt den nativen
+  HTTP-Aufruf (`fetch` in JS/TS, `httpx`/`requests` in Python) direkt gegen die dokumentierte
+  REST-Schnittstelle, statt ein zusätzliches SDK einzuführen, wenn der native Aufruf genauso
+  einfach ist.
+- Entscheidest du dich stattdessen für das offizielle SDK, stellst du sicher, dass es auch
+  TATSÄCHLICH in `package.json` (dependencies) bzw. `requirements.txt` eingetragen ist -
+  niemals `import openai`/`from stripe import ...` ohne den passenden Manifest-Eintrag im
+  selben Schritt, sonst bricht der Build/die Testsuite mit einem ImportError/`Module not found`.
+"""
+
 ARCHITECT_CONTRACT_DIRECTIVE = f"""
 ## 📜 Contract First – verbindlicher Modul-Schnittstellen-Vertrag
 Bevor implementiert wird, legst du die öffentliche Python-Schnittstelle JEDES Moduls fest, das von
@@ -155,9 +193,9 @@ TESTER_CONTRACT_DIRECTIVE = f"""
 - Direkt nach dem Schreiben führst du `run_tests` aus; Collection-Fehler (ImportError/SyntaxError)
   behebst du vor allem anderen.
 {_PYTEST_ASYNCIO_CONFIG_RULE}
-"""
+{TESTER_MOCK_DEPENDENCY_SYNC_DIRECTIVE}"""
 
-FRONTEND_CONTRACT_DIRECTIVE = """
+FRONTEND_CONTRACT_DIRECTIVE = f"""
 ## 📜 Contract First – Web-Assets sofort physisch speichern
 - Speichere JEDES Web-Asset (HTML, CSS, JS) SOFORT als erste Aktion per `write_file("static/<datei>", ...)`
   – gib niemals riesige Codeblöcke im Antworttext aus, um das 8.192-Token-Ausgabelimit von Gemini
@@ -166,7 +204,7 @@ FRONTEND_CONTRACT_DIRECTIVE = """
   als kompletten Fehlschlag – die eigentlich fertige Arbeit fehlte danach ganz im Projekt.
 - Erst NACH dem `write_file`-Aufruf erklärst du wichtige Entscheidungen kurz in Prosa, nie als
   Ersatz für die physische Datei.
-"""
+{EXTERNAL_API_SDK_SYNC_DIRECTIVE}"""
 
 FIX_LOOP_DIRECTIVE = f"""
 ## 🧭 Fix-Loop-Disziplin: Ursache vor Symptom

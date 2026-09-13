@@ -258,6 +258,62 @@ class TestParseNodeFailures(unittest.TestCase):
         self.assertEqual(len(failures), 1)
         self.assertIn("package.json", failures[0].files)
 
+    def test_windows_cmd_command_not_found_implicates_package_json(self):
+        # Team-Optimierung (Logs-Tiefenanalyse logs/runs/ und logs/verification/): scheitert
+        # `npm test` unter Windows bereits VOR jedem Testlauf, weil ein im npm-Skript
+        # aufgerufener Befehl nicht gefunden wird, meldet cmd.exe das deutsch als "Der Befehl
+        # "<x>" ist entweder falsch geschrieben oder konnte nicht gefunden werden." - dieses
+        # Fehlerbild hat KEIN "FAIL <datei>"-Muster, landet also im generischen <npm test>-
+        # Fallback, muss dabei aber trotzdem zwingend package.json implizieren, sonst landet
+        # der Fix-Auftrag beim tester statt bei frontend/devops (siehe _route_failure_owners).
+        (self.project_dir / "package.json").write_text('{"name": "x"}', encoding="utf-8")
+        output = (
+            "'vite' ist entweder falsch geschrieben oder konnte nicht gefunden werden.\n"
+        )
+        exec_result = ExecutionResult(exit_code=1, stdout=output, stderr="", duration_seconds=1.0)
+        verifier = ProjectVerifier(self.project_dir)
+
+        failures = verifier._parse_node_failures(exec_result, self.project_dir)
+
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0].test_id, "<npm test>")
+        self.assertIn("package.json", failures[0].files)
+
+    def test_windows_cmd_der_befehl_variant_implicates_package_json(self):
+        # Variante mit dem Befehlsnamen in Anführungszeichen VOR "ist entweder falsch
+        # geschrieben" (die tatsächliche cmd.exe-Formulierung, z.B. bei einem fehlenden
+        # `npx`/`vitest` im PATH).
+        (self.project_dir / "package.json").write_text('{"name": "x"}', encoding="utf-8")
+        output = 'Der Befehl "vitest" ist entweder falsch geschrieben oder\n' \
+                 "konnte nicht gefunden werden.\n"
+        exec_result = ExecutionResult(exit_code=1, stdout=output, stderr="", duration_seconds=1.0)
+        verifier = ProjectVerifier(self.project_dir)
+
+        failures = verifier._parse_node_failures(exec_result, self.project_dir)
+
+        self.assertIn("package.json", failures[0].files)
+
+    def test_posix_command_not_found_implicates_package_json(self):
+        (self.project_dir / "package.json").write_text('{"name": "x"}', encoding="utf-8")
+        output = "sh: 1: vitest: command not found\n"
+        exec_result = ExecutionResult(exit_code=127, stdout=output, stderr="", duration_seconds=1.0)
+        verifier = ProjectVerifier(self.project_dir)
+
+        failures = verifier._parse_node_failures(exec_result, self.project_dir)
+
+        self.assertIn("package.json", failures[0].files)
+
+    def test_windows_not_recognized_variant_implicates_package_json(self):
+        (self.project_dir / "package.json").write_text('{"name": "x"}', encoding="utf-8")
+        output = "'vitest' is not recognized as an internal or external command,\n" \
+                 "operable program or batch file.\n"
+        exec_result = ExecutionResult(exit_code=1, stdout=output, stderr="", duration_seconds=1.0)
+        verifier = ProjectVerifier(self.project_dir)
+
+        failures = verifier._parse_node_failures(exec_result, self.project_dir)
+
+        self.assertIn("package.json", failures[0].files)
+
     def test_ordinary_assertion_failure_does_not_implicate_package_json(self):
         # Gegenprobe: ein ganz normaler Assertion-Fehlschlag (keine Konfigurations-
         # Fehlersignatur) darf package.json NICHT zusätzlich implizieren - sonst würde JEDER

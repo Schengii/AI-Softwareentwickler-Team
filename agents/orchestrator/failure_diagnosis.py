@@ -33,6 +33,7 @@ from core.failure_triage import (
     resolve_triage_owner,
     triage_structural_failure,
 )
+from core.verifier.models import _NODE_ENV_ERROR_PATTERN
 from memory.agent_knowledge_base import agent_knowledge_base
 
 # Realer Fund (taskpulse-Projekt, 2026-09-03): eine fehlende `app/models.py` (referenziert per
@@ -93,6 +94,9 @@ _MODULE_ATTRIBUTE_ERROR_RE = re.compile(
 _INSTANCE_ATTRIBUTE_ERROR_RE = re.compile(r"AttributeError:\s*'(\w+)' object has no attribute '(\w+)'")
 # Agenten, die ein Dependency-Manifest fachlich pflegen dürfen (siehe _dependency_fix_owner).
 _DEPENDENCY_FIX_AGENT_IDS = ("backend", "refactoring")
+# Agenten, die eine package.json (Node-Projekt-Manifest/Skripte) fachlich pflegen dürfen -
+# siehe _node_env_fix_owner(). Analog zu _DEPENDENCY_FIX_AGENT_IDS für requirements.txt.
+_NODE_ENV_FIX_AGENT_IDS = ("frontend", "devops", "backend")
 
 
 def _diagnose_runtime_failure(message: str) -> str | None:
@@ -203,6 +207,22 @@ def _dependency_fix_owner(file_owners: dict[str, str], available_agents: Collect
     manifest_owner = file_owners.get("requirements.txt")
     preferred = manifest_owner if manifest_owner in _DEPENDENCY_FIX_AGENT_IDS else None
     for candidate in (preferred, *_DEPENDENCY_FIX_AGENT_IDS):
+        if candidate and candidate in available_agents:
+            return candidate
+    return None
+
+
+def _node_env_fix_owner(file_owners: dict[str, str], available_agents: Collection[str]) -> str | None:
+    """Bevorzugt den bisherigen Owner von package.json (sofern frontend/devops/backend), sonst
+    frontend, sonst devops, sonst backend - nie den tester. Team-Optimierung (Logs-Tiefenanalyse
+    logs/runs/ und logs/verification/): eine fehlende/falsch konfigurierte npm/npx-Binary bzw.
+    ein falsch benanntes Skript in package.json (siehe _NODE_ENV_ERROR_PATTERN, u.a. Windows-
+    cmd.exe-Meldungen wie 'ist entweder falsch geschrieben ...' oder ''X' is not recognized ...')
+    ist ein Umgebungs-/Konfigurationsproblem des Node-Projekts, kein Testcode-Fehler - der
+    tester kann weder die PATH-Umgebung noch ein npm-Skript in package.json fachlich beheben."""
+    manifest_owner = file_owners.get("package.json")
+    preferred = manifest_owner if manifest_owner in _NODE_ENV_FIX_AGENT_IDS else None
+    for candidate in (preferred, *_NODE_ENV_FIX_AGENT_IDS):
         if candidate and candidate in available_agents:
             return candidate
     return None
@@ -319,6 +339,10 @@ def _route_failure_owners(
         owners = {route_owner}
     elif _dependency_error_module(message, file_owners, project_dir) and (dep_owner := _dependency_fix_owner(file_owners, available_agents)):
         owners = {dep_owner}
+    elif _NODE_ENV_ERROR_PATTERN.search(message) and (node_owner := _node_env_fix_owner(file_owners, available_agents)):
+        # Node/npm-Umgebungsfehler (fehlende npm/npx-Binary, falsch konfiguriertes npm-Skript) -
+        # geht an den Owner von package.json (i.d.R. frontend/devops), NICHT an den tester.
+        owners = {node_owner}
     elif (
         (im := _INSTANCE_ATTRIBUTE_ERROR_RE.search(message))
         and im.group(1) != "dict"

@@ -89,11 +89,22 @@ _NODE_STACK_FILE_PATTERN = re.compile(r"\(([^():\n]+\.(?:js|jsx|ts|tsx)):\d+:\d+
 # fast immer in der Node-Projekt-KONFIGURATION (package.json ohne "type":"module", fehlende
 # Jest-Transform/Babel-Config), nicht in der Testlogik selbst. Erkennt die verbreitetsten
 # Signaturen genau dieser Fehlerklasse, siehe _parse_node_failures().
+#
+# Erweiterung (Logs-Tiefenanalyse logs/runs/ und logs/verification/): auf Windows scheitert
+# `npm test` oft schon VOR jedem Testlauf, weil `npm`/`npx`/ein npm-Skript im PATH fehlt oder
+# das npm-Skript in package.json selbst einen nicht gefundenen Befehl aufruft - cmd.exe meldet
+# das auf Deutsch ("... ist entweder falsch geschrieben ...") oder Englisch ("is not recognized
+# as an internal or external command"), POSIX-Shells mit "command not found". Das ist KEIN
+# Testcode-Fehler, sondern dieselbe Klasse Umgebungs-/Konfigurationsproblem wie oben.
 _NODE_ENV_ERROR_PATTERN = re.compile(
     r"Cannot use import statement outside a module"
     r"|Jest encountered an unexpected token"
     r"|Cannot find module '[^']+' from"
-    r"|is not defined by \"exports\"",
+    r"|is not defined by \"exports\""
+    r"|Der Befehl \"[^\"]+\" ist entweder falsch geschrieben"
+    r"|ist entweder falsch geschrieben oder konnte nicht gefunden werden"
+    r"|'[^']+' is not recognized as an internal or external command"
+    r"|command not found",
     re.IGNORECASE,
 )
 

@@ -1306,6 +1306,15 @@ class VerificationMixin:
         # Zweig ein zweites Mal greifen, NACHDEM escalation_attempted schon True ist - top_failures
         # würde dann sonst nie (neu) berechnet, aber unten beim Ticket-Text referenziert.
         top_failures = ""
+        # Ebenso defensiv vorinitialisiert: wird das Budget bereits VOR der ersten Eskalation
+        # überschritten (run_start_tokens-Check oben), bleibt der gesamte
+        # "if not escalation_attempted and not (...)"-Zweig ungelaufen und stuck_owners würde
+        # nie gesetzt - der direkt danach folgende Check "if not model_escalation_attempted and
+        # stuck_owners" würde dann mit einem NameError crashen (real möglich bei knappem
+        # Token-Budget + fehlenden betroffenen Dateien, z.B. bei `npm test`-Fehlern ohne
+        # zuordenbare Datei). Ein leeres Set ist hier bewusst "kein stecken gebliebener Owner
+        # gefunden" statt eines Absturzes.
+        stuck_owners: set = set()
         # Cross-Run-Gedächtnis (Team-Retrospektive nach dem taskpulse-Lauf, zweite Runde): ein
         # offenes Ticket aus einem VORHERIGEN Lauf desselben Projekts fließt als Kontext in den
         # ERSTEN Fix-Auftrag dieses Laufs ein (siehe _prior_run_context()) - und wird, sobald
@@ -1742,123 +1751,67 @@ class VerificationMixin:
             current_signature = _issue_signature(report.failures, lambda f: (f.test_id, _failure_fingerprint(f.message)))
             if _no_progress(previous_failure_signature, current_signature):
                 escalated_and_resolved = False
-                if not escalation_attempted and not (
-                    run_start_tokens is not None and (
-                        self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
-                    )
-                ):
-                    escalation_attempted = True
-                    stuck_owners = {
-                        file_owners[f] for failure in report.failures for f in failure.files if f in file_owners
-                    } & set(self._agents.keys())
-                    lead_targets = {
-                        dept_id for dept_id, defn in DEPARTMENT_DEFINITIONS.items()
-                        if stuck_owners & set(defn["members"]) and dept_id in self._dept_leads
-                    }
-                    top_failures = "\n\n".join(
-                        f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(f.files) or 'unbekannt'}"
-                        for f in report.failures[:5]
-                    )
-                    if lead_targets:
-                        notify(
-                            f"  🔀 [bold yellow]Strategiewechsel (Eskalation):[/bold yellow] Derselbe Fehler nach "
-                            f"einem wirkungslosen Fixversuch – ziehe Fachbereichsleiter "
-                            f"({', '.join(sorted(lead_targets))}) statt derselben Wiederholung hinzu..."
+                try:
+                    if not escalation_attempted and not (
+                        run_start_tokens is not None and (
+                            self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
                         )
-                        escalation_tasks = [
-                            AgentTask(
-                                task_id=f"verify_escalation_{dept_id}_{attempt}",
-                                agent_id=dept_id,
-                                description=(
-                                    "Ein vorheriger, gezielter Fixversuch deines Fachbereichs hat den folgenden "
-                                    "echten Testfehler NICHT behoben (identisch vor und nach dem Versuch) - "
-                                    "derselbe Ansatz hat also erkennbar nicht funktioniert. Analysiere das Problem "
-                                    "aus einer anderen Perspektive (z.B. falsche Grundannahme, fehlende "
-                                    "Abhängigkeit zwischen Dateien, falscher zuständiger Agent) und weise dein "
-                                    f"Team mit einer GEÄNDERTEN Strategie an, statt denselben Fix zu wiederholen.\n\n{top_failures}"
-                                ),
-                                context="", project_dir=project_dir,
-                            )
-                            for dept_id in lead_targets
-                        ]
-                        fix_results = await self._run_agents_parallel(escalation_tasks, notify=notify)
-                        self._update_file_owners(file_owners, fix_results)
-                        all_results.extend(fix_results)
-                        summary_lines.append(
-                            f"- 🔀 Versuch {attempt}: kein Fortschritt beim vorherigen Fix → Eskalation an "
-                            f"Fachbereichsleiter ({', '.join(sorted(lead_targets))}) mit geänderter Strategie."
+                    ):
+                        escalation_attempted = True
+                        stuck_owners = {
+                            file_owners[f] for failure in report.failures for f in failure.files if f in file_owners
+                        } & set(self._agents.keys())
+                        lead_targets = {
+                            dept_id for dept_id, defn in DEPARTMENT_DEFINITIONS.items()
+                            if stuck_owners & set(defn["members"]) and dept_id in self._dept_leads
+                        }
+                        top_failures = "\n\n".join(
+                            f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(f.files) or 'unbekannt'}"
+                            for f in report.failures[:5]
                         )
-                        # WICHTIG: das Ergebnis der Eskalation wird HIER SOFORT per echtem
-                        # Testlauf geprüft (nicht über `continue` in die äußere Schleife
-                        # zurückgereicht) - ein `continue` würde einen der ohnehin knappen
-                        # MAX_VERIFICATION_ITERATIONS-Versuche für die Eskalation selbst
-                        # verbrauchen und im letzten erlaubten Versuch dazu führen, dass die
-                        # Schleife nach der Eskalation kommentarlos endet, OHNE das Scheitern
-                        # zu melden oder ein Ticket zu eröffnen (so beim ersten Implementierungs-
-                        # versuch real per Test aufgedeckt, siehe
-                        # tests/test_verification_no_progress_breaker.py).
-                        await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
-                        report = await self._run_tests_logged(verifier, "nach-fixversuch")
-                        if report.passed:
-                            notify(f"  ✅ [bold green]Eskalation erfolgreich:[/bold green] Alle Tests bestanden (Versuch {attempt}, {report.duration_seconds:.1f}s).")
-                            summary_lines.append("- ✅ Eskalation an Fachbereichsleiter behob den Fehler – Testsuite bestanden.")
-                            verification_ok = True
-                            if had_prior_test_ticket and test_ticket_id:
-                                try:
-                                    upsert_ticket(
-                                        ticket_id=test_ticket_id,
-                                        title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
-                                        source="orchestrator", status="done", project_slug=self.last_project_slug,
-                                        detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
-                                    )
-                                except Exception as e:
-                                    notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
-                            break
-                        escalated_and_resolved = True  # Eskalation lief, aber weiterhin rot - unten normal abbrechen.
-
-                    # Team-Optimierung (Retrospektive 2026-09-05, Punkt 3): letzter Versuch VOR
-                    # dem endgültigen Aufgeben - dieselben stecken gebliebenen Agenten (NICHT die
-                    # Fachbereichsleiter, die haben es gerade erst versucht) bekommen für GENAU
-                    # diesen einen Fix-Auftrag ein stärkeres Modell (HEAVY_MODEL), statt den Fehler
-                    # unverändert in ein Ticket zu schieben, das ohnehin erst bei einem viel
-                    # späteren Backlog-Retry (core/backlog_worker.py) dieselbe Eskalation bekäme.
-                    if not model_escalation_attempted and stuck_owners:
-                        model_escalation_attempted = True
-                        escalated_agent_ids = self._escalate_agent_models(stuck_owners)
-                        if escalated_agent_ids:
+                        if lead_targets:
                             notify(
-                                f"  ⬆️ [bold yellow]Letzter Versuch mit stärkerem Modell:[/bold yellow] "
-                                f"{', '.join(sorted(escalated_agent_ids))} laufen für diesen Fix-Auftrag "
-                                "auf HEAVY_MODEL, statt direkt aufzugeben."
+                                f"  🔀 [bold yellow]Strategiewechsel (Eskalation):[/bold yellow] Derselbe Fehler nach "
+                                f"einem wirkungslosen Fixversuch – ziehe Fachbereichsleiter "
+                                f"({', '.join(sorted(lead_targets))}) statt derselben Wiederholung hinzu..."
                             )
-                            model_escalation_tasks = [
+                            escalation_tasks = [
                                 AgentTask(
-                                    task_id=f"verify_model_escalation_{owner}_{attempt}",
-                                    agent_id=owner,
+                                    task_id=f"verify_escalation_{dept_id}_{attempt}",
+                                    agent_id=dept_id,
                                     description=(
-                                        "Dein vorheriger, gezielter Fixversuch UND die Eskalation an deinen "
-                                        "Fachbereichsleiter haben den folgenden echten Testfehler NICHT behoben - "
-                                        "du bekommst jetzt für diesen letzten Versuch ein stärkeres Modell. "
-                                        "Analysiere die Grundannahme neu, statt denselben Ansatz ein drittes Mal "
-                                        f"zu wiederholen.\n\n{top_failures}"
+                                        "Ein vorheriger, gezielter Fixversuch deines Fachbereichs hat den folgenden "
+                                        "echten Testfehler NICHT behoben (identisch vor und nach dem Versuch) - "
+                                        "derselbe Ansatz hat also erkennbar nicht funktioniert. Analysiere das Problem "
+                                        "aus einer anderen Perspektive (z.B. falsche Grundannahme, fehlende "
+                                        "Abhängigkeit zwischen Dateien, falscher zuständiger Agent) und weise dein "
+                                        f"Team mit einer GEÄNDERTEN Strategie an, statt denselben Fix zu wiederholen.\n\n{top_failures}"
                                     ),
                                     context="", project_dir=project_dir,
                                 )
-                                for owner in sorted(escalated_agent_ids)
+                                for dept_id in lead_targets
                             ]
-                            fix_results = await self._run_agents_parallel(model_escalation_tasks, notify=notify)
+                            fix_results = await self._run_agents_parallel(escalation_tasks, notify=notify)
                             self._update_file_owners(file_owners, fix_results)
                             all_results.extend(fix_results)
                             summary_lines.append(
-                                f"- ⬆️ Versuch {attempt}: kein Fortschritt auch nach Eskalation an den "
-                                f"Fachbereichsleiter → letzter Versuch mit HEAVY_MODEL für "
-                                f"{', '.join(sorted(escalated_agent_ids))}."
+                                f"- 🔀 Versuch {attempt}: kein Fortschritt beim vorherigen Fix → Eskalation an "
+                                f"Fachbereichsleiter ({', '.join(sorted(lead_targets))}) mit geänderter Strategie."
                             )
+                            # WICHTIG: das Ergebnis der Eskalation wird HIER SOFORT per echtem
+                            # Testlauf geprüft (nicht über `continue` in die äußere Schleife
+                            # zurückgereicht) - ein `continue` würde einen der ohnehin knappen
+                            # MAX_VERIFICATION_ITERATIONS-Versuche für die Eskalation selbst
+                            # verbrauchen und im letzten erlaubten Versuch dazu führen, dass die
+                            # Schleife nach der Eskalation kommentarlos endet, OHNE das Scheitern
+                            # zu melden oder ein Ticket zu eröffnen (so beim ersten Implementierungs-
+                            # versuch real per Test aufgedeckt, siehe
+                            # tests/test_verification_no_progress_breaker.py).
                             await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
-                            report = await self._run_tests_logged(verifier, "nach-eskalation")
+                            report = await self._run_tests_logged(verifier, "nach-fixversuch")
                             if report.passed:
-                                notify(f"  ✅ [bold green]Modell-Eskalation erfolgreich:[/bold green] Alle Tests bestanden (Versuch {attempt}, {report.duration_seconds:.1f}s).")
-                                summary_lines.append("- ✅ Fix mit HEAVY_MODEL behob den Fehler – Testsuite bestanden.")
+                                notify(f"  ✅ [bold green]Eskalation erfolgreich:[/bold green] Alle Tests bestanden (Versuch {attempt}, {report.duration_seconds:.1f}s).")
+                                summary_lines.append("- ✅ Eskalation an Fachbereichsleiter behob den Fehler – Testsuite bestanden.")
                                 verification_ok = True
                                 if had_prior_test_ticket and test_ticket_id:
                                     try:
@@ -1871,30 +1824,96 @@ class VerificationMixin:
                                     except Exception as e:
                                         notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
                                 break
-                            escalated_and_resolved = True  # Auch mit stärkerem Modell weiterhin rot - unten normal abbrechen.
+                            escalated_and_resolved = True  # Eskalation lief, aber weiterhin rot - unten normal abbrechen.
 
-                notify(
-                    "  🛑 [bold red]Kein Fortschritt:[/bold red] identische Testfehler wie vor dem letzten "
-                    f"Fixversuch{' (auch nach Eskalation an den Fachbereichsleiter)' if escalated_and_resolved else ''} "
-                    "– breche Verifikations-Schleife ab statt unverändert zu wiederholen."
-                )
-                summary_lines.append(
-                    f"- 🛑 Versuch {attempt}: dieselben {len(report.failures)} Testfehler wie nach dem vorherigen "
-                    "Fixversuch (keine Veränderung)" + (" - auch nach Eskalation" if escalated_and_resolved else "") +
-                    " – Schleife abgebrochen statt einen wirkungslosen weiteren Versuch zu verbrauchen."
-                )
-                if self.last_project_slug:
-                    try:
-                        upsert_ticket(
-                            ticket_id=f"recurring-failure-{self.last_project_slug}",
-                            title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
-                            source="orchestrator", status="blocked", project_slug=self.last_project_slug,
-                            detail=f"Fixversuch änderte nichts an {len(report.failures)} Testfehler(n) – "
-                                   "vermutlich falscher/unzureichend instruierter Agent.\n\n" + top_failures
-                                   + self._provider_exhaustion_ticket_note(),
-                        )
-                    except Exception as e:
-                        notify(f"  ⚠️ [dim yellow]Ticket für ungelösten Testfehler konnte nicht angelegt werden: {e}[/dim yellow]")
+                        # Team-Optimierung (Retrospektive 2026-09-05, Punkt 3): letzter Versuch VOR
+                        # dem endgültigen Aufgeben - dieselben stecken gebliebenen Agenten (NICHT die
+                        # Fachbereichsleiter, die haben es gerade erst versucht) bekommen für GENAU
+                        # diesen einen Fix-Auftrag ein stärkeres Modell (HEAVY_MODEL), statt den Fehler
+                        # unverändert in ein Ticket zu schieben, das ohnehin erst bei einem viel
+                        # späteren Backlog-Retry (core/backlog_worker.py) dieselbe Eskalation bekäme.
+                        if not model_escalation_attempted and stuck_owners:
+                            model_escalation_attempted = True
+                            escalated_agent_ids = self._escalate_agent_models(stuck_owners)
+                            if escalated_agent_ids:
+                                notify(
+                                    f"  ⬆️ [bold yellow]Letzter Versuch mit stärkerem Modell:[/bold yellow] "
+                                    f"{', '.join(sorted(escalated_agent_ids))} laufen für diesen Fix-Auftrag "
+                                    "auf HEAVY_MODEL, statt direkt aufzugeben."
+                                )
+                                model_escalation_tasks = [
+                                    AgentTask(
+                                        task_id=f"verify_model_escalation_{owner}_{attempt}",
+                                        agent_id=owner,
+                                        description=(
+                                            "Dein vorheriger, gezielter Fixversuch UND die Eskalation an deinen "
+                                            "Fachbereichsleiter haben den folgenden echten Testfehler NICHT behoben - "
+                                            "du bekommst jetzt für diesen letzten Versuch ein stärkeres Modell. "
+                                            "Analysiere die Grundannahme neu, statt denselben Ansatz ein drittes Mal "
+                                            f"zu wiederholen.\n\n{top_failures}"
+                                        ),
+                                        context="", project_dir=project_dir,
+                                    )
+                                    for owner in sorted(escalated_agent_ids)
+                                ]
+                                fix_results = await self._run_agents_parallel(model_escalation_tasks, notify=notify)
+                                self._update_file_owners(file_owners, fix_results)
+                                all_results.extend(fix_results)
+                                summary_lines.append(
+                                    f"- ⬆️ Versuch {attempt}: kein Fortschritt auch nach Eskalation an den "
+                                    f"Fachbereichsleiter → letzter Versuch mit HEAVY_MODEL für "
+                                    f"{', '.join(sorted(escalated_agent_ids))}."
+                                )
+                                await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
+                                report = await self._run_tests_logged(verifier, "nach-eskalation")
+                                if report.passed:
+                                    notify(f"  ✅ [bold green]Modell-Eskalation erfolgreich:[/bold green] Alle Tests bestanden (Versuch {attempt}, {report.duration_seconds:.1f}s).")
+                                    summary_lines.append("- ✅ Fix mit HEAVY_MODEL behob den Fehler – Testsuite bestanden.")
+                                    verification_ok = True
+                                    if had_prior_test_ticket and test_ticket_id:
+                                        try:
+                                            upsert_ticket(
+                                                ticket_id=test_ticket_id,
+                                                title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                                                source="orchestrator", status="done", project_slug=self.last_project_slug,
+                                                detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
+                                            )
+                                        except Exception as e:
+                                            notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
+                                    break
+                                escalated_and_resolved = True  # Auch mit stärkerem Modell weiterhin rot - unten normal abbrechen.
+
+                    notify(
+                        "  🛑 [bold red]Kein Fortschritt:[/bold red] identische Testfehler wie vor dem letzten "
+                        f"Fixversuch{' (auch nach Eskalation an den Fachbereichsleiter)' if escalated_and_resolved else ''} "
+                        "– breche Verifikations-Schleife ab statt unverändert zu wiederholen."
+                    )
+                    summary_lines.append(
+                        f"- 🛑 Versuch {attempt}: dieselben {len(report.failures)} Testfehler wie nach dem vorherigen "
+                        "Fixversuch (keine Veränderung)" + (" - auch nach Eskalation" if escalated_and_resolved else "") +
+                        " – Schleife abgebrochen statt einen wirkungslosen weiteren Versuch zu verbrauchen."
+                    )
+                    if self.last_project_slug:
+                        try:
+                            upsert_ticket(
+                                ticket_id=f"recurring-failure-{self.last_project_slug}",
+                                title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                                source="orchestrator", status="blocked", project_slug=self.last_project_slug,
+                                detail=f"Fixversuch änderte nichts an {len(report.failures)} Testfehler(n) – "
+                                       "vermutlich falscher/unzureichend instruierter Agent.\n\n" + top_failures
+                                       + self._provider_exhaustion_ticket_note(),
+                            )
+                        except Exception as e:
+                            notify(f"  ⚠️ [dim yellow]Ticket für ungelösten Testfehler konnte nicht angelegt werden: {e}[/dim yellow]")
+                except Exception as e:
+                    notify(
+                        f"  ⚠️ [dim yellow]Eskalations-/Ticket-Verarbeitung nach nicht behobenem "
+                        f"Testfehler fehlgeschlagen (kein Absturz des Laufs): {e}[/dim yellow]"
+                    )
+                    summary_lines.append(
+                        f"- ⚠️ Eskalations-/Ticket-Verarbeitung nach nicht behobenem Testfehler "
+                        f"fehlgeschlagen, ohne den Lauf abzubrechen: {e}"
+                    )
                 break
             previous_failure_signature = current_signature
 

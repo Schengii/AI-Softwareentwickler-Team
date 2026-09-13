@@ -1,0 +1,24 @@
+/* Skip-Link für Tastaturnutzer */
+.skip-link {
+    position: absolute;
+    top: -40px;
+    left: 0;
+    background: #000;
+    color: #fff;
+    padding: 8px;
+    z-index: 100;
+}
+.skip-link:focus { top: 0; }
+
+/* Sichtbarer Fokus-Indikator */
+:focus-visible {
+    outline: 3px solid #ffbf47;
+    outline-offset: 2px;
+}
+
+/* Kontrast-Sicherung */
+body {
+    color: #1a1a1a;
+    background-color: #ffffff;
+    line-height: 1.5;
+}

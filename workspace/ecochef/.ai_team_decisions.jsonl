@@ -1,0 +1,3 @@
+{"timestamp": "2026-09-13T12:51:22.691672+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 1: 4 kritische(r) Befund(e) → security, api_integration"}
+{"timestamp": "2026-09-13T14:05:14.932593+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 1: 1 kritische(r) Befund(e) → frontend"}
+{"timestamp": "2026-09-13T14:06:10.598792+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 2: 1 kritische(r) Befund(e) → frontend"}

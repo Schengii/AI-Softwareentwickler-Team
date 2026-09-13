@@ -107,11 +107,17 @@ _BACKEND_ENTRYPOINT_DIRECTIVE = """
      (DB-Engine, HTTP-Clients, Singletons – siehe Async & Event-Loop Direktive unten).
   3. Einen Health-Check-Endpunkt `GET /health`, der ohne Auth erreichbar ist und mindestens
      `{"status": "ok"}` liefert.
-  4. Falls statische Web-Assets existieren (`public/`, `static/`, `app/static/`): den Mount
+  4. Die Registrierung ALLER von dir (oder anderen Agenten laut Vertrag) angelegten Router:
+     jedes `APIRouter`-Modul (z. B. `app/api/*.py`) bindest du im Einstiegspunkt zwingend per
+     `app.include_router(...)` ein – ein Router, der nur definiert, aber nie eingebunden wird,
+     ist unter keiner URL erreichbar und lässt jeden Endpunkt-Test mit 404 scheitern.
+  5. Falls statische Web-Assets existieren (`public/`, `static/`, `app/static/`): den Mount
      `app.mount("/", StaticFiles(directory=...), name=...)`.
 - Ein Projekt darf NIEMALS nur aus Submodulen (app/core/, app/security/, ...) ohne diesen
-  Einstiegspunkt bestehen – ein Backend ohne `app/main.py`/`main.py` gilt als unvollständig
-  abgebrochen, unabhängig davon, wie vollständig die einzelnen Submodule sind.
+  Einstiegspunkt bestehen – ein Backend ohne `app/main.py`/`main.py` mit vollständiger
+  App-Instanz, eingebundenen Routen und Static-Files-Mount gilt als unvollständig abgebrochen
+  und lässt den Gesamtlauf scheitern, unabhängig davon, wie vollständig die einzelnen
+  Submodule sind.
 """
 
 BACKEND_CONTRACT_DIRECTIVE = f"""

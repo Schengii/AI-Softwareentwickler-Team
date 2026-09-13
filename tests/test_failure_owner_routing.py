@@ -121,6 +121,58 @@ class TestExistingRoutingRulesStillApply(unittest.TestCase):
         self.assertEqual(_route(message, ["tests/test_auth.py"]), {"database"})
 
 
+class TestNodeEnvErrorRouting(unittest.TestCase):
+    """/goal-Auftrag (Logs-Tiefenanalyse logs/runs/ und logs/verification/): ein unter Windows
+    gescheitertes `npm test` (fehlende npm/npx-Binary bzw. falsch konfiguriertes npm-Skript,
+    siehe core/verifier/models._NODE_ENV_ERROR_PATTERN) hat KEINEN Test-Code-Bezug im
+    Traceback - der generische Fallback ordnete das bisher trotzdem dem tester zu, der die
+    PATH-Umgebung bzw. package.json fachlich nicht beheben kann. Muss stattdessen an den Owner
+    von package.json (i.d.R. frontend/devops) gehen."""
+
+    _NODE_OWNERS = {
+        "package.json": "frontend",
+        "tests/test_ui.py": "tester",
+    }
+    _NODE_AGENTS = {"frontend", "devops", "backend", "tester"}
+
+    def test_german_windows_cmd_error_goes_to_package_json_owner_not_tester(self):
+        message = '\'vite\' ist entweder falsch geschrieben oder konnte nicht gefunden werden.'
+        owners = _route(
+            message, ["tests/test_ui.py"], self._NODE_OWNERS, self._NODE_AGENTS,
+        )
+        self.assertEqual(owners, {"frontend"})
+
+    def test_english_windows_cmd_error_goes_to_package_json_owner_not_tester(self):
+        message = "'vitest' is not recognized as an internal or external command,\noperable program or batch file."
+        owners = _route(
+            message, ["tests/test_ui.py"], self._NODE_OWNERS, self._NODE_AGENTS,
+        )
+        self.assertEqual(owners, {"frontend"})
+
+    def test_posix_command_not_found_goes_to_package_json_owner_not_tester(self):
+        message = "sh: 1: vitest: command not found"
+        owners = _route(
+            message, ["tests/test_ui.py"], self._NODE_OWNERS, self._NODE_AGENTS,
+        )
+        self.assertEqual(owners, {"frontend"})
+
+    def test_falls_back_to_devops_without_frontend(self):
+        owners = _route(
+            "command not found: vitest", ["tests/test_ui.py"], self._NODE_OWNERS,
+            {"devops", "backend", "tester"},
+        )
+        self.assertEqual(owners, {"devops"})
+
+    def test_without_any_node_owner_falls_back_to_tester(self):
+        # Kein frontend/devops/backend im Team und package.json ohne bekannten Owner - dann
+        # bleibt der generische tester-Fallback (kein Absturz, kein verwaister Fix-Auftrag).
+        owners = _route(
+            "command not found: vitest", ["tests/test_ui.py"], {"tests/test_ui.py": "tester"},
+            {"tester"},
+        )
+        self.assertEqual(owners, {"tester"})
+
+
 class TestInstanceAttributeErrorRouting(unittest.TestCase):
     """ki_team_fehleranalyse_zusammenfassung.md, Befund 2 (chronos_ledger-Lauf 20260912_181917):
     `detector.record_metric(...)` (Aufruf in tests/test_ledger.py) schlug mit `AttributeError:

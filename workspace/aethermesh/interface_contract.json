@@ -1,0 +1,25 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/engine/queue.py": {
+      "JobQueue": "class",
+      "job_queue": "instance"
+    },
+    "app/engine/worker.py": {
+      "WorkerPool": "class",
+      "worker_pool": "instance"
+    },
+    "app/engine/backpressure.py": {
+      "BackpressureController": "class",
+      "backpressure_controller": "instance"
+    },
+    "app/models/job.py": {
+      "Job": "class",
+      "JobStatus": "class",
+      "JobCreate": "class"
+    }
+  }
+}

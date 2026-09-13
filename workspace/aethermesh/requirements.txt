@@ -1,0 +1,8 @@
+greenlet
+locust
+pydantic-settings
+sqlalchemy
+fastapi
+pytest
+pytest-cov
+pytest-asyncio

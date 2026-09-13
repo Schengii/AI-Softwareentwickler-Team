@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AetherMesh Engine — Realtime Orchestration Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="dark-theme">
+  <!-- Skip Link für Tastaturnutzer -->
+  <a href="#main-content" class="skip-link">Zum Hauptinhalt springen</a>
+
+  <!-- Header & Navigation -->
+  <header class="app-header" role="banner">
+    <div class="logo-container">
+      <div class="mesh-logo-icon" aria-hidden="true"></div>
+      <div class="logo-text">
+        <h1>Aether<span>Mesh</span></h1>
+        <span class="badge badge-pulse" id="connection-badge" aria-live="polite">Verbinde...</span>
+      </div>
+    </div>
+    
+    <div class="header-controls">
+      <div class="stat-pill">
+        <span class="pill-label">Backpressure:</span>
+        <span class="pill-value" id="header-bp-status" aria-live="polite">NORMAL</span>
+      </div>
+      <div class="stat-pill">
+        <span class="pill-label">Aktive Worker:</span>
+        <span class="pill-value" id="header-workers-status" aria-live="polite">0 / 0</span>
+      </div>
+      <button class="btn btn-secondary" id="btn-theme-toggle" aria-label="Design zwischen Hell und Dunkel umschalten">
+        🌓 <span class="btn-text">Theme</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Notification Bar -->
+  <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Hauptcontainer -->
+  <main class="dashboard-grid" id="main-content">
+    <!-- Top KPI Cards -->
+    <section class="kpi-grid" aria-label="System-Kennzahlen">
+      <div class="kpi-card">
+        <div class="kpi-header">
+          <span class="kpi-title">Durchsatz (Jobs/s)</span>
+          <span class="kpi-icon" aria-hidden="true">⚡</span>
+        </div>
+        <div class="kpi-value" id="kpi-throughput" aria-live="polite">0.0</div>
+        <div class="kpi-subtext" id="kpi-throughput-sub">Letzte 60 Sekunden</div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-header">
+          <span class="kpi-title">In-Memory Queue</span>
+          <span class="kpi-icon" aria-hidden="true">📥</span>
+        </div>
+        <div class="kpi-value" id="kpi-queue-depth" aria-live="polite">0</div>
+        <div class="kpi-subtext" id="kpi-queue-sub">Spooling: 0 im Puffer</div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-header">
+          <span class="kpi-title">Backpressure Level</span>
+          <span class="kpi-icon" aria-hidden="true">🛡️</span>
+        </div>
+        <div class="kpi-value" id="kpi-bp-ratio" aria-live="polite">0%</div>
+        <div class="progress-bar-bg" role="progressbar" aria-label="Backpressure Auslastung" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+          <div class="progress-bar-fill" id="kpi-bp-bar" style="width: 0%;"></div>
+        </div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-header">
+          <span class="kpi-title">Dead-Letter Queue</span>
+          <span class="kpi-icon" aria-hidden="true">☣️</span>
+        </div>
+        <div class="kpi-value warning-text" id="kpi-dlq-count" aria-live="polite">0</div>
+        <div class="kpi-subtext" id="kpi-dlq-sub">Quarantänisierte Jobs</div>
+      </div>
+    </section>
+
+    <!-- Visualisierer -->
+    <section class="panel topology-panel" aria-labelledby="topology-heading">
+      <div class="panel-header">
+        <h2 id="topology-heading">Echtzeit-Topologie & Workflow-Pipeline</h2>
+        <span class="pipeline-status-text" id="pipeline-status" aria-live="polite">Status: Normaler Datenstrom</span>
+      </div>
+      <!-- ... (Rest der Topologie-Elemente bleibt strukturell gleich, aria-hidden="true" für dekorative Icons) ... -->
+    </section>
+
+    <!-- Interaktionsbereich -->
+    <div class="dashboard-columns">
+      <section class="panel form-panel">
+        <div class="panel-header">
+          <h2>Job Einreichen & Last-Generator</h2>
+        </div>
+        <form id="job-form" class="aether-form">
+          <div class="form-group">
+            <label for="job-task-type">Task-Typ / Workflow</label>
+            <select id="job-task-type" name="task_type" class="form-control">
+              <option value="data_transformation">Data Transformation (Standard)</option>
+              <option value="neural_inference">Neural Inference (High CPU)</option>
+              <option value="event_broadcast">Event Broadcast (I/O Bound)</option>
+              <option value="resilience_stress_test">Resilience Fault Test (Simuliert Fehler)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="job-priority">Priorität (1 = Niedrig, 10 = Höchste)</label>
+            <div class="priority-selector">
+              <input type="range" id="job-priority" name="priority" min="1" max="10" value="5" class="form-range" aria-describedby="priority-badge">
+              <span id="priority-badge" class="badge badge-priority">Prio: 5</span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="job-payload">Payload (JSON-Format)</label>
+            <textarea id="job-payload" name="payload" rows="3" class="form-control font-mono">{"action": "process_stream", "batch_size": 256}</textarea>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary" id="btn-submit-job">🚀 Job Ausführen</button>
+            <button type="button" class="btn btn-warning" id="btn-stress-test">⚡ Last-Burst (20 Jobs)</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

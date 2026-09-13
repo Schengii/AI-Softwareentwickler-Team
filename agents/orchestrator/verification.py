@@ -24,6 +24,7 @@ unten), damit bestehende Importe (Tests, core-Module) unangetastet bleiben.
 import asyncio
 import logging
 from collections.abc import Callable
+from pathlib import Path
 
 from agents.department_lead_agent import DEPARTMENT_DEFINITIONS
 from agents.orchestrator.constants import REVIEW_ONLY_AGENT_IDS
@@ -1159,6 +1160,44 @@ class VerificationMixin:
             )
         return summary
 
+    _DEPENDENCY_MANIFEST_NAMES = frozenset({
+        "requirements.txt", "requirements-dev.txt", "requirements_dev.txt", "requirements-test.txt",
+        "package.json", "pyproject.toml", "pipfile", "poetry.lock",
+    })
+
+    @classmethod
+    def _fix_touched_dependency_manifests(cls, fix_results: list[AgentResult]) -> bool:
+        """True, wenn ein Fix-Agent (tester, backend, ...) eine Dependency-Datei (requirements.txt,
+        package.json, pyproject.toml, ...) neu angelegt oder verändert hat."""
+        return any(
+            Path(f).name.lower() in cls._DEPENDENCY_MANIFEST_NAMES
+            for r in fix_results for f in r.files_written
+        )
+
+    async def _resync_environment_if_dependencies_changed(
+        self, verifier: ProjectVerifier, fix_results: list[AgentResult],
+        notify: Callable[[str], None], summary_lines: list[str],
+    ) -> None:
+        """
+        Team-Optimierung (Analysebericht `ki_team_schwachstellen_und_fehleranalyse_aethermesh_
+        20260913.md`, Schwachstelle 2): `verifier.ensure_environment()` lief bisher NUR einmal
+        ganz zu Beginn der Verifizierungsphase. Trägt ein Fix-Agent (`tester`, `backend`, ...) im
+        Rahmen der Fix-Schleife ein neues Paket in `requirements.txt`/`package.json`/
+        `pyproject.toml` ein (z.B. `pytest-asyncio`), lief der darauffolgende Testlauf bisher
+        gegen die UNVERÄNDERTE venv - das neu eingetragene Paket war schlicht nicht installiert,
+        der eigentlich korrekte Fix scheiterte am Re-Test aus einem rein infrastrukturellen
+        Grund. Ein erneuter `ensure_environment()`-Aufruf VOR dem nächsten Testlauf schließt
+        diese Lücke, läuft aber gezielt NUR, wenn tatsächlich eine Manifest-Datei verändert
+        wurde (kein unnötiger pip/npm-Install bei reinen Code-Fixes).
+        """
+        if not self._fix_touched_dependency_manifests(fix_results):
+            return
+        notify("  📦 [cyan]Dependency-Manifest durch Fix-Agent geändert:[/cyan] synchronisiere Umgebung erneut vor dem Re-Test...")
+        install_log = await asyncio.to_thread(verifier.ensure_environment)
+        if install_log:
+            notify(f"  📦 {install_log.splitlines()[0]}")
+            summary_lines.append(f"- 📦 Umgebung nach Fix-Versuch neu synchronisiert: {install_log.splitlines()[0]}")
+
     async def _run_tests_logged(self, verifier: ProjectVerifier, phase: str) -> VerificationReport:
         """
         Führt die echte Testsuite aus und schreibt deren ROHE Ausgabe (stdout+stderr) in das
@@ -1563,35 +1602,36 @@ class VerificationMixin:
             )
             summary_lines.extend(smoke_gate_summary)
 
-        # Resilienz-Puffer (Team-Optimierung, Analysebericht 2026-09-13): höchstens EINMAL pro
-        # Lauf genutzt, damit ein knapp (<10%) überschrittenes MAX_RUN_TOKENS nicht die letzte,
-        # bereits fällige Testlauf-Bestätigung hart abbricht - siehe
-        # BudgetMixin._run_budget_within_confirmation_buffer.
-        confirmation_buffer_used = False
         for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
-            if run_start_tokens is not None and (
-                self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
-            ):
-                if (
-                    not confirmation_buffer_used
-                    and not self._project_budget_exceeded(run_start_tokens)
-                    and self._run_budget_within_confirmation_buffer(run_start_tokens)
-                ):
-                    confirmation_buffer_used = True
-                    notify(
-                        "  🧭 [dim]Lauf-Budget knapp (< 10%) überschritten – letzter Testlauf zur "
-                        "Bestätigung der Testsuite wird trotzdem noch ausgeführt.[/dim]"
-                    )
-                else:
-                    budget_aborted = True
-                    notify("  🚫 [bold red]Budget erreicht[/bold red] – weitere Verifikations-/Fixversuche werden übersprungen.")
-                    summary_lines.append(f"- 🚫 {self._budget_exceeded_label(run_start_tokens)} erreicht – Verifikation nach Versuch {attempt - 1} abgebrochen.")
-                    break
             if cancel_requested and cancel_requested():
                 manually_cancelled = True
                 notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – weitere Verifikations-/Fixversuche werden übersprungen.")
                 summary_lines.append(f"- ⏹️ Manuell abgebrochen – Verifikation nach Versuch {attempt - 1} beendet.")
                 break
+
+            # Team-Optimierung (Analysebericht `ki_team_schwachstellen_und_fehleranalyse_
+            # aethermesh_20260913.md`, Schwachstelle 3): das Budget darf NEUE, tokenkostende
+            # Fix-Agent-Aufträge blockieren, aber NIEMALS einen reinen lokalen Testlauf - pytest
+            # selbst verbraucht 0 LLM-Tokens. Vorher brach die Schleife HIER, VOR dem Testlauf,
+            # sofort ab, sobald das Budget (inkl. 10%-Puffer) überschritten war - selbst wenn ein
+            # Fix-Agent im vorherigen Versuch seinen Fix bereits erfolgreich ins Dateisystem
+            # geschrieben hatte (realer Fund: AetherMesh-Lauf, `budget_aborted: true` trotz
+            # bereits vorhandener, funktionierender pytest.ini). Das Projekt wurde dadurch
+            # fälschlich als gescheitert gewertet, obwohl ein kostenloser Re-Test es als grün
+            # bestätigt hätte. `budget_aborted` wird daher nur noch gesetzt und erst NACH dem
+            # Testlauf ausgewertet (siehe unten, vor dem Dispatch neuer Fix-Agenten).
+            if not budget_aborted and run_start_tokens is not None and (
+                self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+            ):
+                budget_aborted = True
+                notify(
+                    "  🚫 [bold red]Budget erreicht[/bold red] – keine neuen Fix-Agenten mehr, "
+                    "der laufende Bestätigungstest wird aber weiter ausgeführt (kostet 0 Tokens)."
+                )
+                summary_lines.append(
+                    f"- 🚫 {self._budget_exceeded_label(run_start_tokens)} erreicht – ab Versuch {attempt} "
+                    "werden keine neuen Fix-Agenten mehr beauftragt, lokale Bestätigungstests laufen weiter."
+                )
 
             notify(f"  🧪 [yellow]Testlauf {attempt}/{MAX_VERIFICATION_ITERATIONS}:[/yellow] Führe echte Tests aus...")
             report = await self._run_tests_logged(verifier, "erstlauf")
@@ -1619,7 +1659,7 @@ class VerificationMixin:
                     # Problem und bleibt bewusst unangetastet, damit der tester nicht fälschlich mit
                     # einer Aufgabe beauftragt wird, die architect/backend lösen müssten.
                     if (
-                        not no_tests_fix_attempted and "tester" in self._agents
+                        not no_tests_fix_attempted and not budget_aborted and "tester" in self._agents
                         and ("Testdatei" in report.reason_skipped or "Testsuite" in report.reason_skipped)
                     ):
                         no_tests_fix_attempted = True
@@ -1642,6 +1682,7 @@ class VerificationMixin:
                         fix_results = await self._run_agents_parallel([fix_task], notify=notify)
                         self._update_file_owners(file_owners, fix_results)
                         all_results.extend(fix_results)
+                        await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
                         continue
                     break
                 # Bewusst ⚠️ statt ℹ️: "keine Tests gefunden" bedeutet, dass generierter Code
@@ -1653,7 +1694,7 @@ class VerificationMixin:
                 # am incidentpilot-Projekt: tester blieb ganz ohne Testdatei, statt hier nur
                 # sichtbar zu bleiben, wird jetzt EIN gezielter Nachbeauftragungs-Versuch
                 # unternommen, bevor endgültig aufgegeben wird.
-                if not no_tests_fix_attempted and "tester" in self._agents:
+                if not no_tests_fix_attempted and not budget_aborted and "tester" in self._agents:
                     no_tests_fix_attempted = True
                     notify(f"  🧪 [yellow]{report.reason_skipped}[/yellow] – beauftrage tester mit einer echten Testsuite...")
                     summary_lines.append(f"- 🧪 {report.reason_skipped} → tester beauftragt, eine echte Testsuite nachzuliefern.")
@@ -1673,6 +1714,7 @@ class VerificationMixin:
                     fix_results = await self._run_agents_parallel([fix_task], notify=notify)
                     self._update_file_owners(file_owners, fix_results)
                     all_results.extend(fix_results)
+                    await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
                     continue
                 notify(f"  ⚠️ [yellow]{report.reason_skipped}[/yellow]")
                 summary_lines.append(f"- ⚠️ {report.reason_skipped} Generierter Code wurde NICHT automatisch verifiziert.")
@@ -1755,6 +1797,7 @@ class VerificationMixin:
                         # zu melden oder ein Ticket zu eröffnen (so beim ersten Implementierungs-
                         # versuch real per Test aufgedeckt, siehe
                         # tests/test_verification_no_progress_breaker.py).
+                        await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
                         report = await self._run_tests_logged(verifier, "nach-fixversuch")
                         if report.passed:
                             notify(f"  ✅ [bold green]Eskalation erfolgreich:[/bold green] Alle Tests bestanden (Versuch {attempt}, {report.duration_seconds:.1f}s).")
@@ -1811,6 +1854,7 @@ class VerificationMixin:
                                 f"Fachbereichsleiter → letzter Versuch mit HEAVY_MODEL für "
                                 f"{', '.join(sorted(escalated_agent_ids))}."
                             )
+                            await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
                             report = await self._run_tests_logged(verifier, "nach-eskalation")
                             if report.passed:
                                 notify(f"  ✅ [bold green]Modell-Eskalation erfolgreich:[/bold green] Alle Tests bestanden (Versuch {attempt}, {report.duration_seconds:.1f}s).")
@@ -1853,6 +1897,15 @@ class VerificationMixin:
                         notify(f"  ⚠️ [dim yellow]Ticket für ungelösten Testfehler konnte nicht angelegt werden: {e}[/dim yellow]")
                 break
             previous_failure_signature = current_signature
+
+            if budget_aborted:
+                notify("  🚫 [bold red]Budget erreicht[/bold red] – kein neuer Fix-Auftrag mehr, letzter Teststand wird übernommen.")
+                summary_lines.append(
+                    f"- 🚫 Budget erreicht – Verifikation nach Versuch {attempt} mit "
+                    f"{len(report.failures)} verbleibendem/n Testfehler(n) abgebrochen, ohne einen weiteren "
+                    "(tokenkostenden) Fix-Agenten zu beauftragen."
+                )
+                break
 
             agents_to_fix: dict[str, list] = {}
             tester_participated = any(r.agent_id == "tester" for r in all_results)
@@ -1920,14 +1973,21 @@ class VerificationMixin:
             structural_only = all(triages.get(id(f)) is not None for fails in agents_to_fix.values() for f in fails)
             manifest_snapshot = snapshot_dependency_manifests(project_dir) if project_dir and structural_only else None
             fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
-            if manifest_snapshot is not None and (restored := restore_dependency_manifests(project_dir, manifest_snapshot)):
-                notify(f"  ⛔ [yellow]Manifest-Änderungen bei reinem Strukturfehler zurückgesetzt:[/yellow] {', '.join(restored)}")
+            restored_manifests = (
+                restore_dependency_manifests(project_dir, manifest_snapshot) if manifest_snapshot is not None else []
+            )
+            if restored_manifests:
+                notify(f"  ⛔ [yellow]Manifest-Änderungen bei reinem Strukturfehler zurückgesetzt:[/yellow] {', '.join(restored_manifests)}")
                 summary_lines.append(
-                    f"- ⛔ Versuch {attempt}: unnötige Änderungen an {', '.join(restored)} zurückgesetzt "
+                    f"- ⛔ Versuch {attempt}: unnötige Änderungen an {', '.join(restored_manifests)} zurückgesetzt "
                     "(Ursache war die Code-Struktur, keine Abhängigkeit)."
                 )
             self._update_file_owners(file_owners, fix_results)
             all_results.extend(fix_results)
+            # Nur re-syncen, wenn die Manifest-Änderung tatsächlich bestehen blieb (siehe oben) -
+            # bei einem Rücksetzer entspricht die Umgebung bereits wieder dem installierten Stand.
+            if not restored_manifests:
+                await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
             summary_lines.append(f"- 🛠️ Versuch {attempt}: {len(report.failures)} echte Testfehler → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt.")
 
             if attempt == MAX_VERIFICATION_ITERATIONS:
@@ -2493,9 +2553,10 @@ class VerificationMixin:
                     summary_lines.append(f"- ♿ ⚠️ Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße: {top}")
 
         # Bugfix (Analysebericht 2026-09-13, HyperionSentinel-Lauf): budget_aborted konnte bis
-        # hierhin auch dann noch True werden, wenn die Kern-Testsuite über den Resilienz-Puffer
-        # (confirmation_buffer_used oben) bereits erfolgreich bestanden hatte (verification_ok
-        # == True) - eine NACHGELAGERTE, rein optionale Prüfung (Docker-Build, Vollständigkeits-
+        # hierhin auch dann noch True werden, wenn die Kern-Testsuite trotz erreichtem Budget
+        # über den weiterhin kostenlos ausgeführten Bestätigungs-Testlauf (siehe oben) bereits
+        # erfolgreich bestanden hatte (verification_ok == True) - eine NACHGELAGERTE, rein
+        # optionale Prüfung (Docker-Build, Vollständigkeits-
         # Check, Lastentest, ...) traf danach erneut auf dasselbe (weiterhin überschrittene)
         # Token-Limit und setzte budget_aborted = True, obwohl am eigentlichen Ergebnis nichts
         # mehr abzubrechen war. Real beobachtet: `run_closed` meldete `budget_aborted: true`

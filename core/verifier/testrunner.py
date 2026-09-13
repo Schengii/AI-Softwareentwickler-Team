@@ -210,7 +210,8 @@ class TestRunnerMixin:
         pytest_check = DockerSandbox.run_python(["python", "-c", "import pytest"], self.project_dir, 120.0)
         if pytest_check.exit_code == 0:
             return DockerSandbox.run_python(
-                ["python", "-m", "pytest", "-q", "--tb=short", "."], self.project_dir, timeout_seconds,
+                ["python", "-m", "pytest", "-q", "--tb=short", "-o", "asyncio_mode=auto", "."],
+                self.project_dir, timeout_seconds,
             )
         return DockerSandbox.run_python(
             ["python", "-m", "unittest", "discover", "-s", ".", "-p", "test_*.py"], self.project_dir, timeout_seconds,
@@ -220,7 +221,7 @@ class TestRunnerMixin:
         pytest_check = CodeSandbox.run_command([python_exe, "-c", "import pytest"], cwd=self.project_dir, timeout_seconds=10.0)
         if pytest_check.exit_code == 0:
             return CodeSandbox.run_command(
-                [python_exe, "-m", "pytest", "-q", "--tb=short", str(self.project_dir)],
+                [python_exe, "-m", "pytest", "-q", "--tb=short", "-o", "asyncio_mode=auto", str(self.project_dir)],
                 cwd=self.project_dir, timeout_seconds=timeout_seconds,
             )
         return CodeSandbox.run_command(

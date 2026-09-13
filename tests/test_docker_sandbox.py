@@ -174,7 +174,10 @@ class TestRoutingWhenSandboxIsActive(_TempProjectMixin, unittest.TestCase):
             report = ProjectVerifier(self.project).run_tests()
 
         self.assertTrue(report.passed)
-        self.assertEqual(run_python.call_args_list[1].args[0], ["python", "-m", "pytest", "-q", "--tb=short", "."])
+        self.assertEqual(
+            run_python.call_args_list[1].args[0],
+            ["python", "-m", "pytest", "-q", "--tb=short", "-o", "asyncio_mode=auto", "."],
+        )
         host_run.assert_not_called()
 
     def test_frontend_build_runs_in_container_and_reports_missing_install(self):

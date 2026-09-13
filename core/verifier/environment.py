@@ -164,32 +164,45 @@ class EnvironmentMixin:
         auf den bereits bestehenden `import pytest`-Check/unittest-Fallback zurückfallen, statt
         den gesamten Lauf zu blockieren.
         """
+        # Team-Optimierung (Bericht `ki_team_schwachstellen_und_fehleranalyse_aethermesh_
+        # 20260913.md`, Schwachstelle 1): `pytest-asyncio` wird neben `pytest` ebenfalls
+        # sichergestellt, weil generierter Code bei FastAPI/asyncio-Projekten praktisch
+        # immer `async def test_...`-Funktionen enthält. Ohne das Plugin werden solche Tests
+        # von pytest stillschweigend übersprungen ("async def functions are not natively
+        # supported"), was reflexartig zu `verification_ok: false` führt, obwohl der Code
+        # fehlerfrei ist. Die Aktivierung selbst (`asyncio_mode=auto`) erfolgt zusätzlich als
+        # CLI-Flag in core/verifier/testrunner.py, damit sie auch ohne agentengenerierte
+        # pytest.ini greift.
         if DockerSandbox.is_active():
             sandbox_result = DockerSandbox.run_python(
-                ["sh", "-c", "python -c 'import pytest' 2>/dev/null && exit 0; pip install -q pytest && echo AI_TEAM_PYTEST_INSTALLED"],
+                [
+                    "sh", "-c",
+                    "python -c 'import pytest, pytest_asyncio' 2>/dev/null && exit 0; "
+                    "pip install -q pytest pytest-asyncio && echo AI_TEAM_PYTEST_INSTALLED",
+                ],
                 self.project_dir, timeout_seconds,
             )
             if sandbox_result.exit_code == 0 and "AI_TEAM_PYTEST_INSTALLED" not in sandbox_result.stdout:
                 return ""
             status = "✅" if sandbox_result.exit_code == 0 else "⚠️"
             return (
-                f"{status} `pytest` fehlte in der Umgebung (nicht in requirements.txt/"
+                f"{status} `pytest`/`pytest-asyncio` fehlten in der Umgebung (nicht in requirements.txt/"
                 f"requirements-dev.txt) - im Docker-Sandbox-Volume nachinstalliert (exit_code={sandbox_result.exit_code})"
             )
 
         target_python = self._venv_python() if self._venv_python().exists() else Path(sys.executable)
         check = CodeSandbox.run_command(
-            [str(target_python), "-c", "import pytest"], cwd=self.project_dir, timeout_seconds=10.0,
+            [str(target_python), "-c", "import pytest, pytest_asyncio"], cwd=self.project_dir, timeout_seconds=10.0,
         )
         if check.exit_code == 0:
             return ""
         install_result = CodeSandbox.run_command(
-            [str(target_python), "-m", "pip", "install", "-q", "pytest"],
+            [str(target_python), "-m", "pip", "install", "-q", "pytest", "pytest-asyncio"],
             cwd=self.project_dir, timeout_seconds=timeout_seconds,
         )
         status = "✅" if install_result.exit_code == 0 else "⚠️"
         return (
-            f"{status} `pytest` fehlte in der Umgebung (nicht in requirements.txt/"
+            f"{status} `pytest`/`pytest-asyncio` fehlten in der Umgebung (nicht in requirements.txt/"
             f"requirements-dev.txt) - nachinstalliert (exit_code={install_result.exit_code})"
         )
 

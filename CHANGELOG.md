@@ -7,6 +7,52 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 pytest-asyncio-Unterstützung, Environment-Re-Sync und Budget-Fix nach dem AetherMesh-Lauf
+
+Analysebericht `ki_team_schwachstellen_und_fehleranalyse_aethermesh_20260913.md`: das Team
+lieferte für AetherMesh funktional einwandfreien Code und 9 korrekte Tests, der Verifizierungs-
+Run scheiterte trotzdem (`verification_ok: false`) - an vier Framework-Schwachstellen, nicht am
+generierten Code.
+
+- **`core/verifier/environment.py` (`_ensure_pytest_available`):** installiert neben `pytest`
+  jetzt immer auch `pytest-asyncio` im venv bzw. im Docker-Sandbox-Volume, sowohl im
+  Verfügbarkeits-Check (`import pytest, pytest_asyncio`) als auch beim Nachinstallieren.
+- **`core/verifier/testrunner.py`:** beide `pytest`-Aufrufe (lokal und im Docker-Sandbox) bekommen
+  standardmäßig `-o asyncio_mode=auto` mit - `async def test_...`-Funktionen laufen dadurch auch
+  ohne agentengenerierte `pytest.ini` sofort, statt stillschweigend übersprungen zu werden
+  ("async def functions are not natively supported").
+- **`agents/orchestrator/verification.py` (Environment-Re-Sync):** neue Methode
+  `_resync_environment_if_dependencies_changed()` prüft nach jedem Fix-Auftrag (Haupt-Fix-Dispatch,
+  Eskalation an Fachbereichsleiter, Modell-Eskalation, Testsuite-Nachbeauftragung), ob ein
+  Fix-Agent eine Dependency-Datei (`requirements.txt`, `requirements-dev.txt`, `package.json`,
+  `pyproject.toml`, `Pipfile`, `poetry.lock`) verändert hat, und ruft in diesem Fall vor dem
+  nächsten Testlauf erneut `verifier.ensure_environment()` auf - ein vom Tester frisch
+  eingetragenes Paket (z. B. `pytest-asyncio`) landet dadurch tatsächlich im venv, statt beim
+  Re-Test unbemerkt zu fehlen. Wird ein reiner Strukturfehler-Fix per
+  `restore_dependency_manifests()` zurückgesetzt, entfällt der Re-Sync (die Umgebung entspricht
+  bereits wieder dem installierten Stand).
+- **`agents/orchestrator/verification.py` (Budget blockiert keinen kostenlosen Testlauf mehr):**
+  der bisherige Resilienz-Puffer (`_run_budget_within_confirmation_buffer`, einmalig +10%) brach
+  bei knapp darüber liegender Tokenüberschreitung weiterhin VOR dem eigentlichen Testlauf ab -
+  real beobachtet bei AetherMesh: der Tester-Fix (`pytest.ini`) lag bereits korrekt im
+  Dateisystem, doch der bestätigende `pytest`-Lauf (kostet 0 LLM-Tokens) wurde nie ausgeführt,
+  das Projekt fälschlich als gescheitert gewertet. Das Budget gate wandert jetzt hinter den
+  Testlauf: `_run_budget_exceeded()`/`_project_budget_exceeded()` blockieren ab sofort nur noch
+  NEUE, tokenkostende Fix-Agent-Aufträge (Haupt-Dispatch, Testsuite-Nachbeauftragung), niemals den
+  reinen Bestätigungs-Testlauf selbst.
+- **`agents/team_directives.py` (`ARCHITECT_CONTRACT_DIRECTIVE`, `TESTER_CONTRACT_DIRECTIVE`):**
+  neue gemeinsame Regel `_PYTEST_ASYNCIO_CONFIG_RULE` weist architect und tester an, bei
+  `asyncio`/FastAPI/asynchronen Tests immer eine `pytest.ini` (`asyncio_mode = auto`,
+  `pythonpath = .`) anzulegen - reproduzierbar auch außerhalb der jetzt selbst gehärteten
+  Verifikations-Sandbox.
+
+Verifikation: `tests/test_verifier.py` und `tests/test_docker_sandbox.py` auf die neuen
+`pytest`/`pytest-asyncio`-Kommandos angepasst, volle Testsuite weiterhin grün (1969 passed, 4
+vorbestehende, umgebungsabhängige Fehlschläge zur Modell-Tier-Auswahl - unabhängig von dieser
+Änderung), `ruff check` fehlerfrei.
+
+---
+
 ## 🟢 Preflight zeigt jetzt auch, WANN nicht erreichbare Modelle zurückgesetzt werden
 
 Direkte Nutzer-Nachfrage zum vorherigen Preflight-Feature: die Ampel allein sagte nur "gerade

@@ -147,7 +147,7 @@ class TestProjectVerifier(unittest.TestCase):
 
         def _fake_run(cmd, **kwargs):
             calls.append(cmd)
-            if "import pytest" in cmd:
+            if any("import pytest" in part for part in cmd):
                 return ExecutionResult(exit_code=1, stdout="", stderr="ModuleNotFoundError", duration_seconds=0.01)
             return ExecutionResult(exit_code=0, stdout="Successfully installed pytest", stderr="", duration_seconds=0.5)
 
@@ -158,6 +158,9 @@ class TestProjectVerifier(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertIn("pip", calls[1])
         self.assertIn("pytest", calls[1])
+        # Schwachstelle 1 (Analysebericht 20260913): pytest-asyncio wird IMMER zusammen mit
+        # pytest installiert, damit async def test_...-Funktionen out-of-the-box laufen.
+        self.assertIn("pytest-asyncio", calls[1])
 
     def test_docker_build_skipped_without_dockerfile(self):
         verifier = ProjectVerifier(self.project_dir)

@@ -23,6 +23,24 @@ _SETTINGS_RULE = """- Pydantic-Settings (`BaseSettings`): JEDES Feld hat einen l
   und die Testsuite müssen OHNE `.env` und ohne gesetzte Umgebungsvariablen starten –
   Produktionswerte kommen ausschließlich aus der Umgebung."""
 
+# Team-Optimierung (Analysebericht `ki_team_schwachstellen_und_fehleranalyse_aethermesh_
+# 20260913.md`, Schwachstelle 4): das Framework installiert `pytest-asyncio` inzwischen selbst
+# und aktiviert `asyncio_mode=auto` als CLI-Default (core/verifier/environment.py,
+# core/verifier/testrunner.py) - eine vom Team selbst angelegte pytest.ini bleibt trotzdem
+# sinnvoll, weil sie die Konfiguration auch außerhalb der Verifikations-Sandbox (z. B. bei einem
+# manuellen `pytest`-Aufruf im ausgelieferten Projekt) reproduzierbar macht und `pythonpath = .`
+# lokale Importe (`from app... import ...`) ohne zusätzliches `PYTHONPATH`-Setup absichert.
+_PYTEST_ASYNCIO_CONFIG_RULE = """- Nutzt das Projekt `asyncio`, FastAPI oder asynchrone Tests (`async def test_...`), legst du
+  IMMER eine `pytest.ini` im Projekt-Root mit genau diesem Inhalt an (per write_file):
+  ```ini
+  [pytest]
+  asyncio_mode = auto
+  pythonpath = .
+  ```
+  Ohne `asyncio_mode = auto` überspringt pytest jede asynchrone Testfunktion stillschweigend
+  ("async def functions are not natively supported") - der generierte Code bleibt dann komplett
+  ungeprüft, selbst wenn er fehlerfrei ist."""
+
 ARCHITECT_CONTRACT_DIRECTIVE = f"""
 ## 📜 Contract First – verbindlicher Modul-Schnittstellen-Vertrag
 Bevor implementiert wird, legst du die öffentliche Python-Schnittstelle JEDES Moduls fest, das von
@@ -39,6 +57,8 @@ mehr als einer Datei oder mehr als einem Agenten genutzt wird:
 4. Plane genau eine zentrale Settings-Klasse ein:
 {_SETTINGS_RULE}
 5. Änderst du eine Schnittstelle, aktualisierst du `{INTERFACE_CONTRACT_FILE}` im selben Schritt.
+6. Tooling-Konfiguration für Tests:
+{_PYTEST_ASYNCIO_CONFIG_RULE}
 """
 
 _ASYNC_EVENT_LOOP_DIRECTIVE = """
@@ -101,6 +121,7 @@ TESTER_CONTRACT_DIRECTIVE = f"""
   und verlassen sich nie auf eine vorhandene `.env`.
 - Direkt nach dem Schreiben führst du `run_tests` aus; Collection-Fehler (ImportError/SyntaxError)
   behebst du vor allem anderen.
+{_PYTEST_ASYNCIO_CONFIG_RULE}
 """
 
 FRONTEND_CONTRACT_DIRECTIVE = """

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="de" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="IncidentPulse - Echtzeit-Dashboard für Systemüberwachung und Incident-Management">
+  <title>IncidentPulse - Live Incident Management</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <header class="app-header" role="banner">
+    <div class="header-container">
+      <div class="brand">
+        <span class="logo-icon" aria-hidden="true">⚡</span>
+        <h1 class="brand-title">Incident<span>Pulse</span></h1>
+        <span class="system-badge live" id="live-indicator" role="status" aria-label="Live-Verbindungsstatus: Aktiv">
+          <span class="pulse-dot"></span> LIVE
+        </span>
+      </div>
+
+      <nav class="header-actions" aria-label="Hauptaktionen">
+        <button id="btn-new-incident" class="btn btn-primary" aria-haspopup="dialog">
+          <span aria-hidden="true">+</span> Neuer Incident
+        </button>
+        <button id="theme-toggle" class="btn btn-icon" aria-label="Farbschema wechseln">
+          <span id="theme-icon" aria-hidden="true">🌙</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <div id="notification-area" class="notification-area" aria-live="assertive" aria-atomic="true"></div>
+
+  <main class="main-content" id="main-content" role="main">
+    <section class="metrics-grid" aria-label="Incident Metriken Übersicht">
+      <div class="metric-card">
+        <div class="metric-header">
+          <span class="metric-label">Aktive Incidents</span>
+          <span class="metric-icon" aria-hidden="true">🔥</span>
+        </div>
+        <div class="metric-value" id="metric-active-incidents">0</div>
+      </div>
+      <!-- Weitere Karten ohne tabindex="0" -->
+    </section>
+    <!-- ... Rest der Struktur ... -->
+  </main>
+
+  <dialog id="modal-incident-detail" class="modal" aria-labelledby="detail-title">
+    <div class="modal-box">
+      <header class="modal-header">
+        <h2 id="detail-title">Incident Details</h2>
+        <button id="btn-close-detail" class="btn-close" aria-label="Detailansicht schließen">&times;</button>
+      </header>
+      <div class="modal-body">
+        <!-- Inhalt -->
+      </div>
+    </div>
+  </dialog>
+</body>
+</html>

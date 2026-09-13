@@ -1,0 +1,22 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/services/sse_manager.py": {
+      "SSEManager": "class",
+      "sse_manager": "instance"
+    },
+    "app/services/incident_service.py": {
+      "IncidentService": "class"
+    },
+    "app/core/circuit_breaker.py": {
+      "CircuitBreaker": "class"
+    },
+    "app/db/database.py": {
+      "get_db": "function",
+      "Base": "class"
+    }
+  }
+}

@@ -3,6 +3,7 @@ agents/frontend_agent.py – Frontend-Entwickler Agent
 """
 
 from agents.base_agent import BaseAgent
+from agents.team_directives import FRONTEND_CONTRACT_DIRECTIVE
 
 
 class FrontendAgent(BaseAgent):
@@ -67,4 +68,4 @@ Ausgabe-Format:
 - Verwende Markdown-Codeblöcke mit der richtigen Sprache
 - Antworte auf Deutsch
 
-Du bist ein aktives Teammitglied und lieferst immer vollständige, professionelle Ergebnisse."""
+Du bist ein aktives Teammitglied und lieferst immer vollständige, professionelle Ergebnisse.""" + FRONTEND_CONTRACT_DIRECTIVE

@@ -1,0 +1,24 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/core/security.py": {
+      "verify_signature": "function",
+      "verify_nonce_and_timestamp": "function",
+      "mask_pii": "function"
+    },
+    "app/services/rate_limiter.py": {
+      "RateLimiter": "class"
+    },
+    "app/services/ml_scorer.py": {
+      "MLScorer": "class"
+    },
+    "app/models/schemas.py": {
+      "RateLimitResponse": "class",
+      "AnalyzeRequest": "class",
+      "AnalyzeResponse": "class"
+    }
+  }
+}

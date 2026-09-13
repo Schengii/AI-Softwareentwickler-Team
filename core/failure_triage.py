@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Protocol, TypeVar
 
-from core.verifier.models import VENV_DIRNAME
+from core.verifier.models import VENV_DIRNAME, find_toplevel_event_loop_calls
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,7 @@ KIND_MISSING_LOCAL_MODULE = "missing_local_module"
 KIND_TEST_IMPORT_PATH = "test_import_path"
 KIND_SETTINGS_DEFAULTS = "settings_defaults"
 KIND_ASYNC_SYNC_MISMATCH = "async_sync_mismatch"
+KIND_EVENT_LOOP_IMPORT_ERROR = "event_loop_import_error"
 
 MANIFEST_GUARD_NOTE = (
     "⛔ Strukturfehler im Code: Ändere KEINE Dependency-Manifeste (requirements*.txt, Pipfile) – "
@@ -595,6 +596,54 @@ def _triage_async_sync_mismatch(message: str, root: Path | None, known: Collecti
     )
 
 
+# Realer Fund (ChronosLedger/AegisMesh, 2026-09-13): `resilience_guard` rief in einem
+# CircuitBreaker `asyncio.get_event_loop()` auf Modulebene bzw. im synchronen `__init__` auf, um
+# eine Cooldown-/TTL-Uhr zu starten. In Python 3.10+ existiert beim Import durch pytest noch kein
+# laufender Event-Loop -> `RuntimeError: There is no current event loop in thread 'MainThread'`
+# schon in der Collection-Phase. Der Fehler wurde bisher als generischer Laufzeitfehler an den
+# letzten Schreiber von app/main.py (meist frontend oder qa_lead) geroutet statt an den Autor des
+# betroffenen Moduls.
+_MODULE_LEVEL_RUNTIME_ERROR_RE = re.compile(
+    r"RuntimeError: There is no current event loop in thread ['\"]?MainThread['\"]?"
+    r"|RuntimeError: There is no current event loop"
+    r"|DeprecationWarning: There is no current event loop",
+    re.IGNORECASE,
+)
+
+
+def _triage_event_loop_import_error(message: str, root: Path | None, known: Collection[str]) -> StructuralTriage | None:
+    if not _MODULE_LEVEL_RUNTIME_ERROR_RE.search(message):
+        return None
+    culprit: str | None = None
+    if root is not None:
+        for rel in sorted(known):
+            if not rel.endswith(".py") or is_test_file(rel):
+                continue
+            try:
+                text = (root / rel).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if find_toplevel_event_loop_calls(text):
+                culprit = rel
+                break
+    return StructuralTriage(
+        kind=KIND_EVENT_LOOP_IMPORT_ERROR,
+        # Bewusst der reale Datei-Owner (z. B. resilience_guard oder backend) statt eines festen
+        # Fallbacks - so landet der Fix garantiert NICHT bei unbeteiligten Rollen wie frontend
+        # oder qa_lead, die dieses Modul nie geschrieben haben.
+        responsible_file=culprit,
+        fallback_agent="backend",
+        diagnosis=(
+            "⚠️ KONKRETE URSACHE: `asyncio.get_event_loop()` wird auf Modulebene oder im "
+            "synchronen `__init__` aufgerufen - dort läuft beim Import durch pytest noch kein "
+            "Event-Loop. Verwende `time.monotonic()` statt `asyncio.get_event_loop().time()` und "
+            "initialisiere keine Async-Objekte beim Import."
+            + (f" Betroffene Datei: `{culprit}`." if culprit else "")
+            + f" {MANIFEST_GUARD_NOTE}"
+        ),
+    )
+
+
 def triage_structural_failure(
     message: str,
     files: Iterable[str],
@@ -608,6 +657,7 @@ def triage_structural_failure(
     rel_files = [rel for f in files if (rel := _to_project_rel(f, root, known))]
     return (
         _triage_syntax(message, root, known, rel_files)
+        or _triage_event_loop_import_error(message, root, known)
         or _triage_async_sync_mismatch(message, root, known)
         or _triage_settings(message, root, known)
         or _triage_import_name(message, root, known, rel_files)

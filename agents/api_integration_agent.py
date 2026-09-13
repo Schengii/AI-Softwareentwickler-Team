@@ -6,6 +6,7 @@ Webhooks, OAuth2 Flow, GraphQL Schemas und Drittanbieter-Integrationen (Stripe, 
 """
 
 from agents.base_agent import BaseAgent
+from agents.team_directives import PYTHON_CODE_CONTRACT_DIRECTIVE
 
 
 class ApiIntegrationAgent(BaseAgent):
@@ -57,4 +58,5 @@ Dein Standard-Ausgabeformat:
 # cURL Befehle für die wichtigsten Endpunkte inkl. Error-Cases
 ```
 
-Antworte auf Deutsch. Liefere stets sofort einsatzbereiten, exakt typisierten und fehlerfreien Code/Spezifikationen."""
+Antworte auf Deutsch. Liefere stets sofort einsatzbereiten, exakt typisierten und fehlerfreien Code/Spezifikationen.
+""" + PYTHON_CODE_CONTRACT_DIRECTIVE

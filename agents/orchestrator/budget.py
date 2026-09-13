@@ -52,6 +52,27 @@ class BudgetMixin:
         return cls._tokens_used_since(start_tokens) >= MAX_RUN_TOKENS
 
     @classmethod
+    def _run_budget_within_confirmation_buffer(cls, start_tokens: int, buffer_ratio: float = 0.10) -> bool:
+        """
+        Resilienz-Puffer für die LETZTE Testlauf-Bestätigung (Team-Optimierung, siehe
+        agents/orchestrator/verification.py._run_verification_loop): MAX_RUN_TOKENS<=0 deaktiviert
+        das harte Budget ohnehin (siehe _run_budget_exceeded), dann ist kein Puffer nötig.
+        True, wenn das harte Lauf-Budget zwar bereits überschritten ist, die Überschreitung aber
+        UNTER `buffer_ratio` (Standard 10%) liegt. Gedacht NUR für den allerletzten Testlauf, der
+        bereits angewandte Fixes bestätigt (kein neuer Fixversuch mehr nötig) - ein knapp
+        verfehltes Budget soll dann nicht einen tatsächlich grünen Lauf kurz vor Schluss als
+        "nicht verifiziert" beenden. Der Aufrufer stellt sicher, dass dieser Puffer höchstens
+        EINMAL pro Lauf greift, damit daraus kein schleichendes, wiederholt genutztes Extra-Budget
+        wird.
+        """
+        if MAX_RUN_TOKENS <= 0:
+            return False
+        used = cls._tokens_used_since(start_tokens)
+        if used < MAX_RUN_TOKENS:
+            return False
+        return used <= MAX_RUN_TOKENS * (1.0 + buffer_ratio)
+
+    @classmethod
     def _generation_budget_exceeded(cls, start_tokens: int) -> bool:
         """
         Wie `_run_budget_exceeded`, aber für die Code-GENERIERUNGSPHASE

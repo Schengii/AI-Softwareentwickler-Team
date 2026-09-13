@@ -37,6 +37,7 @@ from agents.orchestrator.failure_diagnosis import (
     _issue_signature,
     _no_progress,
     _prior_run_context,
+    _record_instance_attribute_learning,
     _record_verification_learning,
     _route_failure_owners,
 )
@@ -1562,14 +1563,30 @@ class VerificationMixin:
             )
             summary_lines.extend(smoke_gate_summary)
 
+        # Resilienz-Puffer (Team-Optimierung, Analysebericht 2026-09-13): höchstens EINMAL pro
+        # Lauf genutzt, damit ein knapp (<10%) überschrittenes MAX_RUN_TOKENS nicht die letzte,
+        # bereits fällige Testlauf-Bestätigung hart abbricht - siehe
+        # BudgetMixin._run_budget_within_confirmation_buffer.
+        confirmation_buffer_used = False
         for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
             if run_start_tokens is not None and (
                 self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
             ):
-                budget_aborted = True
-                notify("  🚫 [bold red]Budget erreicht[/bold red] – weitere Verifikations-/Fixversuche werden übersprungen.")
-                summary_lines.append(f"- 🚫 {self._budget_exceeded_label(run_start_tokens)} erreicht – Verifikation nach Versuch {attempt - 1} abgebrochen.")
-                break
+                if (
+                    not confirmation_buffer_used
+                    and not self._project_budget_exceeded(run_start_tokens)
+                    and self._run_budget_within_confirmation_buffer(run_start_tokens)
+                ):
+                    confirmation_buffer_used = True
+                    notify(
+                        "  🧭 [dim]Lauf-Budget knapp (< 10%) überschritten – letzter Testlauf zur "
+                        "Bestätigung der Testsuite wird trotzdem noch ausgeführt.[/dim]"
+                    )
+                else:
+                    budget_aborted = True
+                    notify("  🚫 [bold red]Budget erreicht[/bold red] – weitere Verifikations-/Fixversuche werden übersprungen.")
+                    summary_lines.append(f"- 🚫 {self._budget_exceeded_label(run_start_tokens)} erreicht – Verifikation nach Versuch {attempt - 1} abgebrochen.")
+                    break
             if cancel_requested and cancel_requested():
                 manually_cancelled = True
                 notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – weitere Verifikations-/Fixversuche werden übersprungen.")
@@ -1860,6 +1877,7 @@ class VerificationMixin:
                     triage is None or triage.kind == KIND_MISSING_SYMBOL
                 ):
                     _record_verification_learning(failure.message)
+                _record_instance_attribute_learning(failure.message)
                 owners = _route_failure_owners(
                     failure.message, failure.files, file_owners, self._agents, tester_participated,
                     project_dir=project_dir,
@@ -1892,6 +1910,7 @@ class VerificationMixin:
                     ),
                     context="",
                     project_dir=project_dir,
+                    max_tool_iterations=8,
                 ))
 
             notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix:[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())} (nicht blind alle Dev-Agenten)...")
@@ -1912,6 +1931,37 @@ class VerificationMixin:
             summary_lines.append(f"- 🛠️ Versuch {attempt}: {len(report.failures)} echte Testfehler → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt.")
 
             if attempt == MAX_VERIFICATION_ITERATIONS:
+                # Fehleranalyse ki_team_fehleranalyse_zusammenfassung.md: die Schleife oben ruft
+                # _run_tests_logged() NUR am ANFANG jedes Versuchs auf (Zeile "erstlauf") - im
+                # LETZTEN erlaubten Versuch verbraucht der `range()` danach keinen weiteren
+                # Schleifendurchlauf mehr, der Fix des letzten Versuchs wurde also NIE gegen die
+                # echte Testsuite geprüft, bevor unten das Ticket eröffnet und der Lauf als
+                # fehlgeschlagen gewertet wurde - selbst wenn der Fix tatsächlich griff. Eine
+                # einzelne zusätzliche Abschlussprüfung schließt genau diese Lücke, bevor endgültig
+                # aufgegeben wird.
+                if any(r.files_written for r in fix_results):
+                    notify("  🔍 [yellow]Abschlussprüfung nach letztem Fixversuch:[/yellow] prüft, ob der Fix tatsächlich griff...")
+                    post_fix_report = await self._run_tests_logged(verifier, "abschluss")
+                    if post_fix_report.passed:
+                        report = post_fix_report
+                        self.last_verification_ok = True
+                        verification_ok = True
+                        notify(f"  🎉 [bold green]Abschlussprüfung nach Fix erfolgreich: Testsuite ist vollständig grün![/bold green] ({report.duration_seconds:.1f}s).")
+                        summary_lines.append("- 🎉 Abschlussprüfung nach letztem Fix erfolgreich: Testsuite ist grün.")
+                        if had_prior_test_ticket and test_ticket_id:
+                            try:
+                                upsert_ticket(
+                                    ticket_id=test_ticket_id,
+                                    title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                                    source="orchestrator", status="done", project_slug=self.last_project_slug,
+                                    detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
+                                )
+                                notify("  🎫 [dim]Ticket für vorherigen Testfehlschlag als gelöst geschlossen.[/dim]")
+                            except Exception as e:
+                                notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
+                        break
+                    report = post_fix_report
+
                 notify("  ⚠️ [yellow]Maximale Verifikations-Iterationen erreicht – letzter Stand wird übernommen.[/yellow]")
                 summary_lines.append(f"- ⚠️ Nach {MAX_VERIFICATION_ITERATIONS} Versuchen nicht vollständig grün – letzter Stand wurde übernommen.")
                 # Realer Fund (Team-Retrospektive, omnichat-Projekt): bisher wurde ein nach

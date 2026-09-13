@@ -6,6 +6,7 @@ Caching-Layer (Redis), Data Warehousing und Datenmodellierung für Analytics.
 """
 
 from agents.base_agent import BaseAgent
+from agents.team_directives import PYTHON_CODE_CONTRACT_DIRECTIVE
 
 
 class DataEngineerAgent(BaseAgent):
@@ -54,4 +55,5 @@ Dein Standard-Ausgabeformat:
 ### 4. Monitoring & Data Reliability
 - [Metriken für Durchsatz, Latenz, Queue-Lag und Datenverlust-Prävention]
 
-Antworte auf Deutsch. Schreibe hochperformanten, fehlertoleranten und produktionsbereiten Python-Code."""
+Antworte auf Deutsch. Schreibe hochperformanten, fehlertoleranten und produktionsbereiten Python-Code.
+""" + PYTHON_CODE_CONTRACT_DIRECTIVE

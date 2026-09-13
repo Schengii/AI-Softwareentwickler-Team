@@ -1,0 +1,9 @@
+/* Sichtbare Fokus-Ringe für Tastaturnutzer */
+button:focus-visible, input:focus-visible, select:focus-visible {
+    outline: 3px solid #ffcc00;
+    outline-offset: 2px;
+}
+
+/* Kontrast-Anpassung für Text */
+body { color: #ffffff; background-color: #121212; }
+[data-theme="light"] { color: #000000; background-color: #ffffff; }

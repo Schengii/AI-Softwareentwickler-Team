@@ -53,6 +53,33 @@ BACKEND_CONTRACT_DIRECTIVE = f"""
 {_SETTINGS_RULE}
 """
 
+_ASYNC_EVENT_LOOP_DIRECTIVE = """
+## ⏱️ Async & Event-Loop Direktive (VERBINDLICH)
+- `asyncio.get_event_loop()` ist auf Modulebene und im synchronen `__init__` VERBOTEN. In Python
+  3.10+ existiert dort noch kein laufender Event-Loop – der Aufruf wirft beim Import durch pytest
+  sofort `RuntimeError: There is no current event loop in thread 'MainThread'` und lässt die
+  gesamte Testsuite schon in der Collection-Phase scheitern.
+- Für Zeitmessungen, Cooldowns, TTLs und Timeouts (Circuit Breaker, Rate Limiter, Caches) wird
+  STANDARDMÄSSIG `time.monotonic()` verwendet, NIEMALS `loop.time()`/`asyncio.get_event_loop().time()`.
+- Globale Singletons (z. B. CircuitBreaker-Instanzen, HTTP-Clients wie `httpx.AsyncClient`) werden
+  NIEMALS ungeschützt auf Modulebene instanziiert. Sie entstehen ausschließlich im FastAPI-Lifespan
+  (`@asynccontextmanager async def lifespan(...)`) oder in einer asynchronen Factory-Methode
+  (`async def get_instance(cls) -> "X"`), niemals beim Import.
+"""
+
+PYTHON_CODE_CONTRACT_DIRECTIVE = f"""
+## 📜 Contract First – verbindlich für alle Python-Code schreibenden Agenten
+- Prüfe IMMER ZUERST `{INTERFACE_CONTRACT_FILE}` (per read_file/search_code), bevor du neue Dateien,
+  Klassen oder Schnittstellen erstellst. Existiert der Vertrag, implementierst du jedes dort
+  genannte Symbol exakt mit Name, Art (class/function/instance/constant) und Modulpfad.
+- Weiche NIEMALS von den dort definierten Dateipfaden und Typen ab. Brauchst du eine Abweichung,
+  änderst du Vertrag UND Code im selben Schritt – nie nur den Code.
+- Musst du eine neue Hilfsdatei/ein neues Modul anlegen, das NICHT im Vertrag steht, dokumentierst
+  du dies explizit im Task-Output (Dateipfad + Zweck) und hältst dich an den Standardpfad
+  `app/<modul>/...`.
+{_SETTINGS_RULE}
+{_ASYNC_EVENT_LOOP_DIRECTIVE}"""
+
 TESTER_CONTRACT_DIRECTIVE = f"""
 ## 📜 Contract First – Tests gegen die echte Schnittstelle
 - Speichere JEDE Testdatei SOFORT per `write_file("tests/test_<name>.py", ...)`/`edit_file` –
@@ -65,12 +92,26 @@ TESTER_CONTRACT_DIRECTIVE = f"""
 - Nimm nie an, dass eine Methode als freie Funktion existiert: Definiert das Modul
   `class EncryptionService` mit `encrypt()`, testest du `EncryptionService(...).encrypt(...)` bzw. die
   vereinbarte Instanz – nicht `from app.core.encryption import encrypt`.
+- Raten von Keyword-Argumenten oder Methodensignaturen ist VERBOTEN. Bevor du eine Methode einer
+  neu erstellten Klasse aufrufst oder assertierst, MUSST du die Methodendefinition via `read_file`
+  oder `find_symbol_definition` prüfen, um TypeErrors durch falsch geratene Parameter zu verhindern.
 - Weicht der Produktivcode vom Vertrag ab, passt du den Test NICHT an den Fehler an, sondern nennst
   die Abweichung (Datei + Symbol) in deiner Antwort.
 - Tests setzen benötigte Settings über `monkeypatch.setenv(...)` bzw. `app.dependency_overrides`
   und verlassen sich nie auf eine vorhandene `.env`.
 - Direkt nach dem Schreiben führst du `run_tests` aus; Collection-Fehler (ImportError/SyntaxError)
   behebst du vor allem anderen.
+"""
+
+FRONTEND_CONTRACT_DIRECTIVE = """
+## 📜 Contract First – Web-Assets sofort physisch speichern
+- Speichere JEDES Web-Asset (HTML, CSS, JS) SOFORT als erste Aktion per `write_file("static/<datei>", ...)`
+  – gib niemals riesige Codeblöcke im Antworttext aus, um das 8.192-Token-Ausgabelimit von Gemini
+  Flash nicht zu überschreiten. Realer Fund (OmniQueue-Lauf, siehe TESTER_CONTRACT_DIRECTIVE): eine
+  komplette Datei, nur im Fließtext statt per Werkzeug gespeichert, wertete das Hard Delivery Gate
+  als kompletten Fehlschlag – die eigentlich fertige Arbeit fehlte danach ganz im Projekt.
+- Erst NACH dem `write_file`-Aufruf erklärst du wichtige Entscheidungen kurz in Prosa, nie als
+  Ersatz für die physische Datei.
 """
 
 FIX_LOOP_DIRECTIVE = f"""

@@ -9,6 +9,7 @@ Check-Mixins (core/verifier/environment.py, testrunner.py, security.py, lint.py,
 coverage.py, runtime.py).
 """
 
+import ast
 import re
 import sys
 from dataclasses import dataclass, field
@@ -18,6 +19,61 @@ VENV_DIRNAME = ".ai_team_venv"
 # Verzeichnisse, die weder als Python- noch als Node-Testquelle zählen – Build-/Umgebungs-
 # Artefakte, keine vom Team geschriebenen Projektdateien.
 _IGNORED_DIRS = {VENV_DIRNAME, ".venv", "venv", "__pycache__", "node_modules", ".git"}
+
+
+def _is_get_event_loop_call(node: ast.AST) -> bool:
+    """True für `asyncio.get_event_loop(...)` bzw. `get_event_loop(...)` (nach `from asyncio
+    import get_event_loop`)."""
+    if not isinstance(node, ast.Call):
+        return False
+    f = node.func
+    if isinstance(f, ast.Attribute):
+        return f.attr == "get_event_loop" and isinstance(f.value, ast.Name) and f.value.id == "asyncio"
+    return isinstance(f, ast.Name) and f.id == "get_event_loop"
+
+
+def find_toplevel_event_loop_calls(source: str) -> list[int]:
+    """Zeilennummern von `asyncio.get_event_loop()`-Aufrufen AUSSERHALB einer `async def`-Funktion
+    (Modulebene, synchrones `__init__`, jede andere synchrone Funktion) – dort existiert beim
+    Import durch pytest noch kein laufender Event-Loop, der Aufruf wirft sofort
+    `RuntimeError: There is no current event loop in thread 'MainThread'`. Geteilt zwischen
+    core/failure_triage.py (Laufzeit-Triage eines bereits aufgetretenen Fehlers) und
+    core/verifier/completeness.py._scan_for_toplevel_event_loop() (statischer Vorab-Check, bevor
+    pytest daran scheitert). Ein leeres Ergebnis heißt: keine Fundstelle ODER die Datei ist kein
+    gültiges Python (Syntaxfehler werden an anderer Stelle behandelt)."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return []
+
+    lines: list[int] = []
+    func_stack: list[ast.AST] = []
+
+    class _Visitor(ast.NodeVisitor):
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            func_stack.append(node)
+            self.generic_visit(node)
+            func_stack.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            func_stack.append(node)
+            self.generic_visit(node)
+            func_stack.pop()
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            func_stack.append(node)
+            self.generic_visit(node)
+            func_stack.pop()
+
+        def visit_Call(self, node: ast.Call) -> None:
+            if _is_get_event_loop_call(node) and not any(
+                isinstance(f, ast.AsyncFunctionDef) for f in func_stack
+            ):
+                lines.append(node.lineno)
+            self.generic_visit(node)
+
+    _Visitor().visit(tree)
+    return lines
 
 # Best-effort-Erkennung fehlgeschlagener npm-Tests: Jest/Vitest melden fehlgeschlagene
 # Testdateien als "FAIL <pfad>" bzw. mit "✕"/"×" vor dem Testnamen. Da es kein einheitliches

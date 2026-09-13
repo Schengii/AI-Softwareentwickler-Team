@@ -22,7 +22,7 @@ hier entscheiden dabei WAS als Ursache benannt wird und WER dafür zuständig is
 
 import re
 from collections.abc import Callable, Collection, Iterable
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TypeVar
 
 from core.backlog_store import get_ticket
@@ -83,6 +83,14 @@ _ROUTE_NOT_FOUND_RE = re.compile(
 _MODULE_ATTRIBUTE_ERROR_RE = re.compile(
     r"AttributeError: module ['\"]([\w.]+)['\"] has no attribute ['\"](\w+)['\"]"
 )
+# ki_team_fehleranalyse_zusammenfassung.md, Befund 2 (chronos_ledger-Lauf 20260912_181917):
+# `detector.record_metric(...)` schlug mit `AttributeError: 'AnomalyDetector' object has no
+# attribute 'record_metric'` fehl. Python stürzt an der AUFRUFSTELLE ab (hier tests/test_ledger.py),
+# nicht an der Klassendefinition (app/services/anomaly_detector.py) - _route_failure_owners()
+# wies den Fehler deshalb bisher AUSSCHLIESSLICH dem tester zu, der eigentliche Autor der Klasse
+# (hier: ml) wurde nie informiert. Bewusst getrennt von _DICT_ATTRIBUTE_ERROR_RE oben: ein rohes
+# dict statt eines Pydantic-Modells ist ein anderes, spezifisches Fehlerbild mit eigener Diagnose.
+_INSTANCE_ATTRIBUTE_ERROR_RE = re.compile(r"AttributeError:\s*'(\w+)' object has no attribute '(\w+)'")
 # Agenten, die ein Dependency-Manifest fachlich pflegen dürfen (siehe _dependency_fix_owner).
 _DEPENDENCY_FIX_AGENT_IDS = ("backend", "refactoring")
 
@@ -119,6 +127,17 @@ def _diagnose_runtime_failure(message: str) -> str | None:
             f"Service/Endpoint gibt ein rohes `dict` zurück statt einer Instanz des deklarierten "
             f"Pydantic-Modells. Instanziiere das Modell explizit (z. B. `return UserOut(**data)` "
             f"statt `return data`), statt ein dict weiterzureichen."
+        )
+    m = _INSTANCE_ATTRIBUTE_ERROR_RE.search(message)
+    if m and m.group(1) != "dict":
+        cls, attr = m.group(1), m.group(2)
+        return (
+            f"⚠️ KONKRETE URSACHE: `AttributeError: '{cls}' object has no attribute '{attr}'` – "
+            f"die Methode/das Attribut `{attr}` existiert nicht auf der Klasse `{cls}`. Prüfe "
+            f"ZUERST die tatsächliche Klassendefinition von `{cls}`: ENTWEDER ergänzt der Autor "
+            f"dieser Klasse `{attr}` dort wirklich, ODER der Aufruf wird an eine bereits "
+            f"vorhandene Methode der Klasse angepasst - ändere NICHT nur die aufrufende Stelle "
+            "(z.B. einen Test), ohne die Klassendefinition selbst geprüft zu haben."
         )
     if "404" in message:
         m = _DUPLICATE_URL_PREFIX_RE.search(message)
@@ -199,6 +218,34 @@ def _route_not_found_owner(file_owners: dict[str, str], available_agents: Collec
     return None
 
 
+def _class_definition_owner(
+    class_name: str,
+    file_owners: dict[str, str],
+    available_agents: Collection[str],
+    project_dir: str | None,
+) -> str | None:
+    """Owner der Datei, die `class {class_name}` tatsächlich definiert - für eine
+    `AttributeError: '{class_name}' object has no attribute ...` auf einer Instanz, bei der der
+    Traceback nur die AUFRUFENDE Stelle zeigt (siehe _INSTANCE_ATTRIBUTE_ERROR_RE-Docstring
+    oben), nicht die Klassendefinition selbst. Durchsucht deterministisch NUR die bekannten
+    Projektdateien (file_owners) nach einer `class`-Definitionszeile - kein LLM-Aufruf, kein
+    voller Dateisystem-Scan. None, wenn kein bekannter Agent die Klasse definiert."""
+    if project_dir is None:
+        return None
+    pattern = re.compile(rf"^\s*class\s+{re.escape(class_name)}\b", re.MULTILINE)
+    root = Path(project_dir)
+    for rel, owner in file_owners.items():
+        if not rel.endswith(".py") or owner not in available_agents:
+            continue
+        try:
+            content = (root / rel).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if pattern.search(content):
+            return owner
+    return None
+
+
 def _route_failure_owners(
     message: str,
     files: Iterable[str],
@@ -272,6 +319,15 @@ def _route_failure_owners(
         owners = {route_owner}
     elif _dependency_error_module(message, file_owners, project_dir) and (dep_owner := _dependency_fix_owner(file_owners, available_agents)):
         owners = {dep_owner}
+    elif (
+        (im := _INSTANCE_ATTRIBUTE_ERROR_RE.search(message))
+        and im.group(1) != "dict"
+        and (class_owner := _class_definition_owner(im.group(1), file_owners, available_agents, project_dir))
+    ):
+        # Befund 2: der Traceback zeigt oft nur die aufrufende Stelle (z.B. einen Test) -
+        # ergänzt den tatsächlichen Autor der Klasse, statt ihn dem tester-Fallback zu
+        # überlassen bzw. ganz zu übergehen.
+        owners.add(class_owner)
     elif "tester" in owners and any(
         not _is_test_file(f) and file_owners.get(f) not in (None, "tester") for f in files
     ):
@@ -344,6 +400,29 @@ def _record_verification_learning(message: str, agent_id: str = "backend") -> No
             agent_id,
             f"Prüfe vor Abschluss, dass alle in Routern importierten Hilfsfunktionen "
             f"(z. B. {name}) im Modul {module} tatsächlich definiert und exportiert sind.",
+        )
+    except Exception:
+        pass
+
+
+def _record_instance_attribute_learning(message: str, agent_id: str = "tester") -> None:
+    """Analog zu _record_verification_learning() oben, aber für die `AttributeError: '<Klasse>'
+    object has no attribute '<Methode>'`-Fehlerklasse (siehe _INSTANCE_ATTRIBUTE_ERROR_RE).
+    Realer Fund (chronos_ledger, Lauf 20260912_181917): `tester` rief `record_metric` auf
+    `AnomalyDetector` auf, obwohl die Klasse dort nur `check_anomaly` bereitstellt - dieselbe
+    Verwechslung wäre ohne Lernregel in künftigen Läufen erneut passiert. Rein regelbasiert,
+    kein LLM-Aufruf; ein Speicherfehler darf die Fix-Schleife nie zum Absturz bringen."""
+    m = _INSTANCE_ATTRIBUTE_ERROR_RE.search(message)
+    if m is None or m.group(1) == "dict":
+        return
+    cls, attr = m.group(1), m.group(2)
+    try:
+        agent_knowledge_base.add_learning(
+            agent_id,
+            f"Prüfe vor dem Aufruf einer Hilfsmethode wie {attr}() auf einer Instanz von "
+            f"{cls} stets die tatsächliche Klassendefinition - existiert die Methode dort "
+            "nicht, nutze die vorhandene primäre Schnittstelle der Klasse, statt eine "
+            "nicht existierende Methode aufzurufen.",
         )
     except Exception:
         pass

@@ -9,6 +9,13 @@ Spezialisiert auf:
 """
 
 from agents.base_agent import BaseAgent
+from agents.team_directives import PYTHON_CODE_CONTRACT_DIRECTIVE
+
+_SECURE_RANDOM_DIRECTIVE = """
+## 🔒 Secure Random & Bandit-Compliance für Jitter/Backoff
+Verwende für Jitter und Backoff entweder `secrets.SystemRandom().uniform(...)` oder annotiere die
+Zeile explizit mit `# nosec B311`, damit Bandit-Security-Scans ohne Warnung durchlaufen.
+"""
 
 
 class ResilienceGuardAgent(BaseAgent):
@@ -34,6 +41,11 @@ Deine Kernkompetenzen:
 - Health-Checks, Liveness/Readiness-Probes und Dead-Letter-Queues (DLQ)
 - Strikte Timeout-Vorgaben für I/O- und Netzwerkoperationen
 
+⚠️ Besonders für dich als Autor von Circuit Breakern, Rate Limitern und globalen Singletons gilt
+verbindlich die Async & Event-Loop Direktive (siehe unten): `time.monotonic()` statt
+`asyncio.get_event_loop().time()`, kein `get_event_loop()` auf Modulebene/im synchronen `__init__`,
+Singletons nur im FastAPI-Lifespan oder in async Factory-Methoden.
+
 Dein Standard-Ausgabeformat:
 
 ## 🛡️ Resilience & Fault-Tolerance Audit & Implementation
@@ -58,4 +70,5 @@ Dein Standard-Ausgabeformat:
 - [ ] Retry-Limit mit Backoff & Jitter aktiv
 - [ ] Graceful Degradation bei DB- oder API-Ausfall sichergestellt
 
-Antworte auf Deutsch. Robust, ausfallsicher, methodisch fundiert und direkt produktiv einsetzbar."""
+Antworte auf Deutsch. Robust, ausfallsicher, methodisch fundiert und direkt produktiv einsetzbar.
+""" + PYTHON_CODE_CONTRACT_DIRECTIVE + _SECURE_RANDOM_DIRECTIVE

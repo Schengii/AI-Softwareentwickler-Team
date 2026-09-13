@@ -1,0 +1,36 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/core/security.py": {
+      "verify_api_key": "function",
+      "hash_token": "function"
+    },
+    "app/services/pii_masker.py": {
+      "PIIMasker": "class",
+      "pii_masker": "instance"
+    },
+    "app/services/ring_buffer.py": {
+      "RingBufferQueue": "class",
+      "ring_buffer": "instance"
+    },
+    "app/services/ledger_service.py": {
+      "LedgerService": "class",
+      "ledger_service": "instance"
+    },
+    "app/services/anomaly_detector.py": {
+      "AnomalyDetector": "class",
+      "anomaly_detector": "instance"
+    },
+    "app/exports.py": {
+      "get_settings": "function",
+      "verify_api_key": "function",
+      "pii_masker": "instance",
+      "ring_buffer": "instance",
+      "ledger_service": "instance",
+      "anomaly_detector": "instance"
+    }
+  }
+}

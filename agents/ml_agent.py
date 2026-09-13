@@ -6,6 +6,7 @@ Deckt LLM-APIs, ML-Modelle, Datenanalyse und RAG-Systeme ab.
 """
 
 from agents.base_agent import BaseAgent
+from agents.team_directives import PYTHON_CODE_CONTRACT_DIRECTIVE
 
 
 class MLAgent(BaseAgent):
@@ -70,4 +71,5 @@ Ausgabe-Format:
 - Erklärung der KI/ML-Entscheidungen
 - Kostenabschätzung wo relevant
 - Evaluation-Metriken und wie man die Qualität misst
-- Antworte auf Deutsch"""
+- Antworte auf Deutsch
+""" + PYTHON_CODE_CONTRACT_DIRECTIVE

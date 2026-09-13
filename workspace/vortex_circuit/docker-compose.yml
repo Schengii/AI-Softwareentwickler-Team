@@ -1,0 +1,57 @@
+version: "3.8"
+
+services:
+  vortex_circuit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vortex_circuit_engine
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+      - DATABASE_URL=sqlite+aiosqlite:///./vortex.db
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - vortex_net
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: vortex_prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    configs:
+      - source: prometheus_config
+        target: /etc/prometheus/prometheus.yml
+    depends_on:
+      vortex_circuit:
+        condition: service_healthy
+    networks:
+      - vortex_net
+
+networks:
+  vortex_net:
+    driver: bridge
+
+configs:
+  prometheus_config:
+    content: |
+      global:
+        scrape_interval: 15s
+        evaluation_interval: 15s
+      scrape_configs:
+        - job_name: "vortex_circuit"
+          metrics_path: "/metrics"
+          static_configs:
+            - targets: ["vortex_circuit:8000"]

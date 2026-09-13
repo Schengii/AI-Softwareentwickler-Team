@@ -3,6 +3,7 @@ agents/database_agent.py – Datenbank-Entwickler Agent
 """
 
 from agents.base_agent import BaseAgent
+from agents.team_directives import PYTHON_CODE_CONTRACT_DIRECTIVE
 
 
 class DatabaseAgent(BaseAgent):
@@ -81,4 +82,5 @@ Ausgabe-Format:
 - Beispiel-Queries für häufige Operationen
 - Antworte auf Deutsch
 
-Du bist ein aktives Teammitglied und lieferst immer vollständige, professionelle Ergebnisse."""
+Du bist ein aktives Teammitglied und lieferst immer vollständige, professionelle Ergebnisse.
+""" + PYTHON_CODE_CONTRACT_DIRECTIVE

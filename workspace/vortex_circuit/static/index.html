@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="de" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vortex Circuit // Engine Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    .skip-link { position: absolute; top: -40px; left: 0; background: #000; color: #fff; padding: 8px; z-index: 1000; }
+    .skip-link:focus { top: 0; }
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Zum Hauptinhalt springen</a>
+
+  <div class="app-container">
+    <header class="top-nav">
+      <div class="brand">
+        <div class="logo-badge">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>VORTEX CIRCUIT</h1>
+          <span class="subtext">Resilient Circuit-Breaker & Event-Outbox Engine</span>
+        </div>
+      </div>
+
+      <div class="nav-actions">
+        <div class="live-indicator" id="connection-status" role="status" aria-live="polite">
+          <span class="pulsing-dot"></span>
+          <span class="status-label">SYS_ONLINE</span>
+        </div>
+        <button id="refresh-btn" class="btn btn-secondary" title="Metriken manuell aktualisieren">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+          <span>Aktualisieren</span>
+        </button>
+      </div>
+    </header>
+
+    <main id="main-content" class="dashboard-grid">
+      <section class="metric-cards-row">
+        <div class="card metric-card" id="card-breaker-state" aria-live="assertive">
+          <div class="card-header">
+            <span class="card-label">Circuit State</span>
+            <span class="chip chip-state" id="state-badge">CLOSED</span>
+          </div>
+          <div class="metric-value" id="current-state-text">CLOSED</div>
+          <div class="metric-footer">
+            <span>Consecutive Fails: <strong id="consecutive-failures">0</strong></span>
+            <span id="cooldown-timer">Cooldown: --</span>
+          </div>
+        </div>
+
+        <div class="card metric-card">
+          <div class="card-header">
+            <span class="card-label">System Health Score</span>
+            <span class="chip chip-accent" id="health-tier">OPTIMAL</span>
+          </div>
+          <div class="metric-value text-accent" id="health-score-value">99.8<span class="unit">%</span></div>
+          <div class="metric-footer">
+            <span>Adaptive Risk: <strong id="risk-score">Low</strong></span>
+            <span>Prediction: <strong id="prediction-status">Stable</strong></span>
+          </div>
+        </div>
+
+        <div class="card metric-card">
+          <div class="card-header">
+            <span class="card-label">Error Rate (Window)</span>
+            <span class="chip chip-muted">Rolling 60s</span>
+          </div>
+          <div class="metric-value" id="failure-rate-value">0.0<span class="unit">%</span></div>
+          <div class="metric-footer">
+            <span>Threshold: <strong id="failure-threshold">50.0%</strong></span>
+            <span>Total Calls: <strong id="total-calls-count">0</strong></span>
+          </div>
+        </div>
+
+        <div class="card metric-card">
+          <div class="card-header">
+            <span class="card-label">Outbox / DLQ Buffer</span>
+            <span class="chip chip-warning" id="dlq-badge">0 in DLQ</span>
+          </div>
+          <div class="metric-value" id="outbox-pending-value">0 <span class="unit">pending</span></div>
+          <div class="metric-footer">
+            <span>Delivered: <strong id="outbox-delivered-count">0</strong></span>
+            <span>Failed: <strong id="outbox-failed-count">0</strong></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="dashboard-panels">
+        <div class="card panel">
+          <div class="panel-header">
+            <h2>Microservice Call Simulator</h2>
+            <span class="badge-sub">POST /api/v1/circuit-breaker/trigger-call</span>
+          </div>
+          <div class="panel-body">
+            <form id="trigger-call-form" class="control-form">
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="service-target">Ziel-Service:</label>
+                  <input type="text" id="service-target" name="service" class="input-control" value="payment-service" required>
+                </div>
+                <div class="form-group">
+                  <label for="action-type">Simuliertes Verhalten:</label>
+                  <select id="action-type" name="behavior" class="input-control">
+                    <option value="success">Success (HTTP 200 OK)</option>
+                    <option value="timeout">Timeout (5000ms Delay)</option>
+                    <option value="server_error">External Fault (HTTP 500)</option>
+                    <option value="bad_gateway">Gateway Error (HTTP 502)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group flex-fill">
+                  <label for="payload-data">Event-Payload (JSON):</label>
+                  <textarea id="payload-data" class="input-control font-mono" rows="3">{"transaction_id": "tx-889102", "amount": 149.50, "currency": "EUR"}</textarea>
+                </div>
+              </div>
+
+              <div class="form-actions">
+                <button type="submit" id="btn-dispatch" class="btn btn-primary">Aufruf Durchführen</button>
+                <button type="button" id="btn-spam-fail" class="btn btn-danger-outline" title="Simuliert 5 Fehler in Folge um Breaker zu öffnen">5x Fehlerserie erzwingen</button>
+              </div>
+            </form>
+
+            <div id="trigger-result" class="result-banner hidden" role="status" aria-live="polite">
+              <div class="result-head">
+                <span class="result-code" id="result-status-code">200 OK</span>
+                <span class="result-duration font-mono" id="result-latency">24ms</span>
+              </div>
+              <pre class="result-json font-mono" id="result-body"></pre>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

@@ -1,1 +1,0 @@
-{"timestamp": "2026-09-12T15:25:48.274698+00:00", "event": "budget_or_cancel_aborted", "detail": "Lauf-Budget (`MAX_RUN_TOKENS=350,000`) wurde bereits während der Fachbereichs-Phasen oder der Governance-Fix-Schleife erreicht"}

@@ -1,1 +1,0 @@
-"""HookSentinel Application Package."""

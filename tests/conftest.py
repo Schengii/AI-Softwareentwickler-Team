@@ -50,6 +50,21 @@ vollen Suite-Lauf fehl (`1 failed, 1343 passed`), isoliert lief er sauber durch 
 strukturelle Lösung wie beim Rate-Limiter oben (zentral statt einzeln, deckt auch künftige,
 noch ungeschriebene Tests ab) schließt die Lücke unabhängig davon, welcher konkrete Test den
 Zustand hinterlässt.
+
+Dieselbe Fehlerklasse noch einmal, echt beobachtet im PRODUKTIVEN Obsidian-Vault (Fund
+2026-09-13): core/adr.write_adr() ruft intern IMMER auch export_adr_to_obsidian(project_dir, ...)
+auf, OHNE dabei vault_path durchzureichen - export_adr_to_obsidian() fällt dann mangels
+explizitem Pfad auf config.OBSIDIAN_VAULT_PATH zurück, das standardmäßig auf den echten,
+produktiven Vault zeigt. tests/test_adr.py testet write_adr() direkt (nicht nur den bereits
+isoliert getesteten export_adr_to_obsidian()-Pfad in tests/test_adr_obsidian_export.py) und
+verwendet dafür u.a. per tempfile.mkdtemp() erzeugte Projektordner sowie fest benannte
+Test-Projektordner ("adr_test_proj", "demo_project", "my_project", "gov_fix_test_proj") -
+jeder einzelne Testlauf schrieb dadurch echte "ADR - <Projektordnername> - <Titel>.md"-Dateien
+mit reinem Platzhalterinhalt ("K"/"E"/"K" bzw. "Kontext"/"Entscheidung"/"Konsequenzen") in
+03 Resources/Permanent Notes/ des echten Vaults - über 40 solcher Dateien mussten von dort
+manuell entfernt werden. Dieselbe strukturelle Lösung wie oben: config.OBSIDIAN_VAULT_PATH
+wird für JEDEN Test zentral auf ein Wegwerfverzeichnis umgeleitet, statt jeden betroffenen und
+künftigen ADR-Test einzeln um einen expliziten vault_path zu ergänzen.
 """
 
 import pytest
@@ -117,6 +132,21 @@ def _reset_gemini_key_pool():
     lf._gemini_clients_by_key.clear()
     lf._gemini_exhausted_keys.clear()
     lf._gemini_active_key_index = 0
+
+
+@pytest.fixture(scope="session")
+def _obsidian_vault_sandbox(tmp_path_factory):
+    return tmp_path_factory.mktemp("obsidian_vault")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_obsidian_adr_export(_obsidian_vault_sandbox, monkeypatch):
+    """Leitet den Obsidian-Vault-Pfad für JEDEN Test in ein Wegwerfverzeichnis um. write_adr()
+    (core/adr.py) exportiert intern immer auch nach Obsidian und fällt dabei ohne explizit
+    übergebenen vault_path auf config.OBSIDIAN_VAULT_PATH zurück - ohne diese Umleitung landen
+    ADR-Tests mit echten (oder tempfile.mkdtemp()-generierten) Projektordnern als Seiteneffekt
+    im echten, produktiven Vault (siehe Modul-Docstring oben)."""
+    monkeypatch.setattr("config.OBSIDIAN_VAULT_PATH", str(_obsidian_vault_sandbox))
 
 
 @pytest.fixture(autouse=True, scope="session")

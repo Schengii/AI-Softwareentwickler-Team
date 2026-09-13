@@ -16,6 +16,20 @@ if sys.platform == "win32":
 from interface.cli import CLIInterface
 
 
+def _normalize_cli_path_arg(raw: str) -> str:
+    """Bereinigt einen roh aus `sys.argv` gelesenen Pfad-Parameter (z. B. `--project`).
+
+    Entfernt führende/nachgestellte Whitespaces sowie umschließende Anführungszeichen
+    (einfach oder doppelt) - auch mehrfach verschachtelt, falls die Shell oder ein
+    generiertes Kommando die Quotes nicht selbst entfernt hat (z. B. `'"workspace/ecochef"'`
+    oder `""workspace/ecochef""`). Team-Goal (20260913, Aufgabe 2).
+    """
+    wert = raw.strip()
+    while len(wert) >= 2 and wert[0] == wert[-1] and wert[0] in ("'", '"'):
+        wert = wert[1:-1].strip()
+    return wert
+
+
 def main():
     """Startet das KI-Softwareentwickler-Team.
 
@@ -299,9 +313,15 @@ def main():
                 pass
 
         project_dir = None
-        if "--project" in sys.argv:
+        # Team-Goal (20260913, Aufgabe 2): Nutzer geben den Projektpfad manchmal versehentlich
+        # ohne führende Dashes ein (`project "workspace/ecochef"` statt `--project ...`) oder mit
+        # Anführungszeichen, die die Shell nicht entfernt hat (z. B. bei verschachtelten Quotes
+        # in generierten Kommandos). Beides würde sonst zu einem nicht existierenden Pfad wie
+        # `workspace/"workspace/ecochef"` führen.
+        proj_flag = "--project" if "--project" in sys.argv else ("project" if "project" in sys.argv else None)
+        if proj_flag is not None:
             try:
-                proj_arg = sys.argv[sys.argv.index("--project") + 1]
+                proj_arg = _normalize_cli_path_arg(sys.argv[sys.argv.index(proj_flag) + 1])
                 p = Path(proj_arg)
                 # Wenn ein absoluter oder bereits existierender Pfad übergeben wird, nimm ihn direkt;
                 # andernfalls suche in WORKSPACE_DIR.

@@ -5,6 +5,7 @@
     "moduleResolution": "node",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "strict": true,
+    "allowJs": true,
     "noImplicitAny": true,
     "strictNullChecks": true,
     "experimentalDecorators": true,

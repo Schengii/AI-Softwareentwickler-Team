@@ -24,8 +24,13 @@ export class RecipeView extends LitElement {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      const items = await storageService.getPantryItems();
-      this.recipe = await geminiService.generateRecipe({ availableIngredients: items });
+      const items = storageService.getPantryItems();
+      const availableIngredients = items.map((item) => ({
+        name: item.name,
+        amount: item.quantity,
+        unit: item.unit
+      }));
+      this.recipe = await geminiService.generateRecipe({ availableIngredients });
     } catch (e) {
       this.errorMessage = 'Rezept konnte nicht generiert werden. Bitte Vorräte prüfen.';
     } finally {
@@ -43,12 +48,12 @@ export class RecipeView extends LitElement {
         ${this.errorMessage ? html`<p class="error" role="alert">${this.errorMessage}</p>` : ''}
         ${this.recipe ? html`
           <div style="margin-top: 1.5rem;">
-            <h3>${this.recipe.title} <span class="badge badge-eco-${this.recipe.ecoScore.toLowerCase()}">Eco-Score ${this.recipe.ecoScore}</span></h3>
+            <h3>${this.recipe.title} <span class="badge badge-eco-${this.recipe.ecoScoreGrade.toLowerCase()}">Eco-Score ${this.recipe.ecoScoreGrade.toUpperCase()}</span></h3>
             <p>${this.recipe.description}</p>
             <h4>Zutaten:</h4>
-            <ul>${this.recipe.ingredients.map(i => html`<li>${i}</li>`)}</ul>
+            <ul>${this.recipe.ingredients.map(i => html`<li>${i.amount} ${i.unit} ${i.name}</li>`)}</ul>
             <h4>Schritte:</h4>
-            <ol>${this.recipe.steps.map(s => html`<li>${s}</li>`)}</ol>
+            <ol>${this.recipe.steps.map(s => html`<li>${s.instruction}</li>`)}</ol>
           </div>
         ` : ''}
       </div>

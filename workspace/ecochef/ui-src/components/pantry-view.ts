@@ -176,9 +176,9 @@ export class PantryView extends LitElement {
     this.loadPantryItems();
   }
 
-  private async loadPantryItems(): Promise<void> {
+  private loadPantryItems(): void {
     try {
-      this.items = await storageService.getPantryItems();
+      this.items = storageService.getPantryItems();
     } catch {
       this.errorMessage = 'Fehler beim Laden der Vorräte.';
     }
@@ -199,8 +199,8 @@ export class PantryView extends LitElement {
     try {
       const product = await barcodeService.getProductByBarcode(code);
       const pantryItem = barcodeService.toPantryItem(product, 1, 'Stück');
-      await storageService.savePantryItem(pantryItem);
-      await this.loadPantryItems();
+      storageService.addPantryItem(pantryItem);
+      this.loadPantryItems();
       this.barcodeInput = '';
       this.successMessage = `„${product.name}“ wurde zum Vorrat hinzugefügt!`;
     } catch (err: unknown) {
@@ -232,8 +232,8 @@ export class PantryView extends LitElement {
     };
 
     try {
-      await storageService.savePantryItem(newItem);
-      await this.loadPantryItems();
+      storageService.addPantryItem(newItem);
+      this.loadPantryItems();
       this.manualName = '';
       this.manualQuantity = 1;
       this.successMessage = `„${name}“ hinzugefügt!`;
@@ -242,10 +242,10 @@ export class PantryView extends LitElement {
     }
   }
 
-  private async handleDeleteItem(id: string): Promise<void> {
+  private handleDeleteItem(id: string): void {
     try {
-      await storageService.deletePantryItem(id);
-      await this.loadPantryItems();
+      storageService.removePantryItem(id);
+      this.loadPantryItems();
     } catch {
       this.errorMessage = 'Fehler beim Löschen der Zutat.';
     }

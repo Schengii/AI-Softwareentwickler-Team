@@ -107,6 +107,15 @@ _ENTRYPOINT_CANDIDATES = (
     "main.py", "app.py", "run.py", "server.py", "wsgi.py", "asgi.py",
     "app/main.py", "app/app.py", "src/main.py", "backend/main.py", "backend/app.py",
     "backend/app/main.py",
+    # Team-Goal (20260913, Aufgabe 1): Web-/Hybrid-Einstiegspunkte (Lit/React/Vue/Cordova/...) -
+    # ein reines Frontend- oder Hybrid-Mobile-Projekt hat nie eine Python-Serverdatei, ist aber
+    # trotzdem fertig, wenn eines dieser Files existiert.
+    "index.html", "ui-src/main.ts", "src/main.ts", "src/main.tsx", "src/index.ts",
+    "src/index.js", "src/App.tsx", "src/App.jsx",
+)
+_WEB_ENTRYPOINT_CANDIDATES = (
+    "index.html", "ui-src/main.ts", "src/main.ts", "src/main.tsx", "src/index.ts",
+    "src/index.js", "src/App.tsx", "src/App.jsx",
 )
 _BACKEND_HINT_KEYWORDS = (
     "api", "backend", "server", "endpoint", "rest", "gateway", "service",
@@ -114,6 +123,12 @@ _BACKEND_HINT_KEYWORDS = (
 )
 _BACKEND_HINT_DEP_MARKERS = ("fastapi", "flask", "django", "uvicorn", "starlette", "aiohttp")
 _BACKEND_HINT_JS_MARKERS = ("express", "fastify", "koa", "nestjs", "@nestjs/core")
+_FRONTEND_ONLY_DEP_MARKERS = ("lit", "react", "vue", "svelte")
+_PYTHON_BACKEND_FILE_CANDIDATES = (
+    "main.py", "app.py", "run.py", "server.py", "wsgi.py", "asgi.py",
+    "app/main.py", "app/app.py", "src/main.py", "backend/main.py", "backend/app.py",
+    "backend/app/main.py",
+)
 
 
 # Team-Goal (20260913, Aufgabe 1): leichtgewichtige Kandidatenliste für die PROAKTIVE
@@ -194,6 +209,35 @@ def _requires_backend_entrypoint(project_dir: Path, user_request: str = "") -> b
     der Auftrag selbst danach klingt (API, Backend, Gateway, ...) oder weil bereits ein
     Web-Framework als Abhängigkeit deklariert wurde.
     """
+    pkg_json = project_dir / "package.json"
+    pkg_inhalt = ""
+    if pkg_json.is_file():
+        try:
+            pkg_inhalt = pkg_json.read_text(encoding="utf-8", errors="ignore").lower()
+        except OSError:
+            pkg_inhalt = ""
+    hat_js_backend_marker = any(marker in pkg_inhalt for marker in _BACKEND_HINT_JS_MARKERS)
+
+    # Team-Goal (20260913, Aufgabe 1): Realer Fund (ecochef) - ein Projekt mit rein
+    # clientseitigen Frontend-Dependencies (Lit/React/Vue/Svelte), OHNE Node-Backend-Marker und
+    # OHNE Python-Backend-Dateien, braucht keinen Server-Einstiegspunkt, solange ein
+    # Web-Einstiegspunkt (index.html/main.ts/...) existiert - selbst wenn der Auftragstext oder
+    # ein Dateiname Wörter wie "service" oder "api" enthält (z.B. "storage.service.ts" bei
+    # EcoChef, die den generischen `_BACKEND_HINT_KEYWORDS`-Check unten sonst fälschlich
+    # ausgelöst hätten). Diese Erkennung MUSS vor dem Keyword-Check laufen, da genau dieser
+    # Check das Problem war.
+    if pkg_inhalt and not hat_js_backend_marker and any(
+        marker in pkg_inhalt for marker in _FRONTEND_ONLY_DEP_MARKERS
+    ):
+        hat_python_backend = any(
+            (project_dir / rel).is_file() for rel in _PYTHON_BACKEND_FILE_CANDIDATES
+        )
+        hat_web_entrypoint = any(
+            (project_dir / rel).is_file() for rel in _WEB_ENTRYPOINT_CANDIDATES
+        )
+        if not hat_python_backend and hat_web_entrypoint:
+            return False
+
     if any(kw in user_request.lower() for kw in _BACKEND_HINT_KEYWORDS):
         return True
     for name in ("requirements.txt", "pyproject.toml"):
@@ -205,14 +249,8 @@ def _requires_backend_entrypoint(project_dir: Path, user_request: str = "") -> b
                 continue
             if any(marker in inhalt for marker in _BACKEND_HINT_DEP_MARKERS):
                 return True
-    pkg_json = project_dir / "package.json"
-    if pkg_json.is_file():
-        try:
-            inhalt = pkg_json.read_text(encoding="utf-8", errors="ignore").lower()
-        except OSError:
-            inhalt = ""
-        if any(marker in inhalt for marker in _BACKEND_HINT_JS_MARKERS):
-            return True
+    if hat_js_backend_marker:
+        return True
     return False
 
 

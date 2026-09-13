@@ -301,8 +301,14 @@ def main():
         project_dir = None
         if "--project" in sys.argv:
             try:
-                proj_name = sys.argv[sys.argv.index("--project") + 1]
-                project_dir = str(Path(WORKSPACE_DIR) / proj_name)
+                proj_arg = sys.argv[sys.argv.index("--project") + 1]
+                p = Path(proj_arg)
+                # Wenn ein absoluter oder bereits existierender Pfad übergeben wird, nimm ihn direkt;
+                # andernfalls suche in WORKSPACE_DIR.
+                if p.is_absolute() or p.exists():
+                    project_dir = str(p.resolve())
+                else:
+                    project_dir = str((Path(WORKSPACE_DIR) / proj_arg).resolve())
             except IndexError:
                 pass
 

@@ -7,81 +7,72 @@
 - `workspace/toggleforge` (DoD-Logikfehler & Playwright-Assets)
 - `workspace/omniqueue` (35 Agenten, 920k Tokens, `is_done: true`, `verification_ok: true`)
 - `workspace/chronos_ledger` (30 Agenten, 918k Tokens, 6/6 Tests grün nach Fix)
-- `workspace/aegis_mesh` (Lauf `20260912_185935_aegis_mesh.jsonl`: 30 Agent-Calls, 949.291 Tokens, **15 von 15 Tests grün auf Festplatte**)
+- `workspace/aegis_mesh` (30 Agenten, 949k Tokens, 15/15 Tests grün, Post-Fix-Abschlussprüfung aufgedeckt)
+- `workspace/vortex_circuit` (Lauf `20260912_193536_vortex_circuit.jsonl`: 30 Agent-Calls, 957.146 Tokens, **`is_done: true`, `verification_ok: true`, 0 Failed Agent Calls**)
 
 ---
 
 ## 🎯 1. Management Summary & Erfolgsbilanz
 
-Der jüngste Testlauf von **AegisMesh** (Zero-Trust Token-Bucket Gateway mit ML-Anomalieerkennung) beweist die enorme Durchschlagskraft des **Gemini-Pro-Upgrades**:
-1. **Pro-Modelle glänzen in der Praxis:**
-   - `architect` (`gemini-pro-latest`): Erstellte 2 fundierte ADRs (Token-Bucket vs. Sliding-Window, Redis vs. In-Memory Ring-Buffer).
-   - `ml` (`gemini-pro-latest`): Entwickelte einen vollständigen `MLScorer` mit Exponential Moving Average und Z-Score-Schwellwerten.
-   - `security` (`gemini-pro-latest`): Implementierte Timing-Safe HMAC-SHA256, Nonce-Replay-Cache und Rate-Limiting-Middleware fehlerfrei.
-2. **Der 8-Iterationen-Fix greift:** In Seq 22 nutzte `tester` 7 Tool-Aufrufe (`max_tool_iterations=8`), um `app/core/config.py` gezielt zu reparieren (`BURST_CAPACITY`).
-3. **100 % Grüne Testsuite:** Auf der Festplatte bestehen aktuell **15 von 15 Tests in 0.76s** (`pytest tests/test_aegis_core.py`)!
+Der jüngste Lauf von **VortexCircuit** markiert einen **historischen Meilenstein** in der Evolution deines KI-Teams:
+1. **Vollständiger Erfolg ab Werk:** Das Projekt schloss **vollständig autonom mit `is_done: true`, `blocking: []` und `verification_ok: true` ab**. Es gab **0 fehlerhafte Agenten-Aufrufe** (`failed_agent_calls: 0`)!
+2. **Frontend-Direktive greift sofort:** `frontend` speicherte `static/index.html` und `static/style.css` direkt über `write_file` (kein Token-Cap-Abbruch mehr wie bei AegisMesh).
+3. **Post-Fix-Abschlussprüfung bewährt sich:** Als `tester` in Seq 21 die Test-Aufrufe reparierte, löste die neu eingebaute Abschlussprüfung sofort Versuch 2 aus: **10 von 10 Tests liefen in 0.87s grün**, die Verifikation sprang auf Grün und schloss das Projekt fehlerfrei ab!
+4. **Pro-Modelle harmonieren:** `architect`, `security`, `ml` und `code_reviewer` lieferten State-of-the-Art Code (2 ADRs, Outbox-Pattern, HMAC-SHA256, Z-Score Failure Predictor).
 
-**Der Kernbefund des Laufs:** Obwohl der Code und die Tests **vollständig fehlerfrei und grün sind**, schloss der Orchestrator den Lauf mit `is_done: false` ab. Die Ursache ist ein **struktureller Logikfehler am Schleifenende der Verifikation**, der einen erfolgreichen letzten Fix nicht mehr gegenprüft!
+Trotz des vollständigen Erfolgs traten im Detail **3 vermeidbare Reibungspunkte** auf, die durch gezielte Direktiven-Härtungen künftig eliminiert werden können.
 
 ---
 
-## 🔍 2. Detaillierte Root-Cause-Analyse der aufgetretenen Fehler
+## 🔍 2. Detaillierte Root-Cause-Analyse der aufgetretenen Reibungspunkte
 
-### 🚨 Befund 1 (Kritisch): Fehlender Abschluss-Testcheck nach dem letzten Fixversuch (`verification.py`)
+### 🚨 Befund 1: Modulpfad-Drift bei Entwicklern ohne Contract-Direktive (Seq 12 & 16)
 * **Problem:**  
-  In Seq 22 wurde `tester` beauftragt, den Fehler `AttributeError: 'Settings' object has no attribute 'BURST_CAPACITY'` zu beheben. `tester` las die Datei und editierte `app/core/config.py` erfolgreich. Unmittelbar danach endete der Lauf jedoch mit `is_done: false, blocking: ["tests_pass"]`.
-* **Ursache in [`agents/orchestrator/verification.py:1566-1920`](file:///c:/Users/sche-/Desktop/Programmieren%20Projekte/AI-Softwareentwickler-Team/agents/orchestrator/verification.py#L1566-L1920):**  
-  1. `MAX_VERIFICATION_ITERATIONS` ist standardmäßig auf `2` gesetzt.
-  2. Zu Beginn von Versuch 2 lief `report = await self._run_tests_logged(verifier, "erstlauf")`. Dieser schlug fehl (14 passed, 1 failed).
-  3. Daraufhin wurden `fix_tasks` ausgeführt (`tester` reparierte die Datei).
-  4. Am Ende von Versuch 2 greift sofort die Abbruchbedingung:
-     ```python
-     if attempt == MAX_VERIFICATION_ITERATIONS:
-         summary_lines.append(f"- ⚠️ Nach {MAX_VERIFICATION_ITERATIONS} Versuchen nicht vollständig grün...")
-         break
-     ```
-  5. **Die Schleife bricht ab, OHNE Pytest erneut auszuführen!** Die Variable `report` enthält weiterhin das alte Ergebnis von VOR dem Fix. Der finale DoD-Check wertet das Projekt als nicht bestanden, obwohl die Testsuite auf Festplatte zu **100 % grün** ist!
-* **Lösung:**  
-  1. Wenn im letzten Versuch `fix_tasks` Dateien geändert haben (`r.files_written`), MUSS zwingend ein finaler Validierungs-Testlauf ausgeführt werden:
-     ```python
-     report = await self._run_tests_logged(verifier, "abschluss")
-     if report.passed:
-         notify("  🎉 [bold green]Abschlussprüfung nach Fix erfolgreich bestanden![/bold green]")
-     ```
-  2. `MAX_VERIFICATION_ITERATIONS` in `config.py` standardmäßig von `2` auf `3` anheben, damit bei einer Kette (1. Dependency-Fix -> 2. Code-Fix -> 3. Abschluss-Check) genügend Runden vorhanden sind.
-
----
-
-### 🚨 Befund 2: Frontend-Token-Exhaustion vor `write_file` (Seq 5)
-* **Problem:**  
-  In Seq 5 scheiterte `frontend` mit:  
-  `Hard Delivery Gate: Agent hat trotz Korrektur-Hinweis keine einzige Datei über write_file/edit_file gespeichert - der Tokenverbrauch ist verpufft.`  
-  `completion_tokens: 8198` (maximales Gemini-Flash-Limit erreicht!).
+  `architect` hatte in `interface_contract.json` den Modulpfad `app/core/circuit_breaker.py` festgelegt. `resilience_guard` legte die Datei jedoch unter `app/circuit_breaker/breaker.py` an. `ml` legte `app/ml/predictor.py` an, das im Vertrag gar nicht erwähnt war. In Seq 16 und 19 musste `security` die Imports in `app/main.py` nachträglich korrigieren.
 * **Ursache:**  
-  Der Frontend-Agent versuchte, ein vollständiges HTML/CSS/JS-Dashboard als Markdown-Codeblock im Fließtext auszugeben. Bei 8.192 Tokens lief der Antwortpuffer voll, die Generierung brach mitten im Text ab und der eigentliche Werkzeugaufruf `write_file("static/index.html", ...)` wurde nie erreicht!
+  Bisher war `BACKEND_CONTRACT_DIRECTIVE` ausschließlich an `backend` angehängt. Andere Agenten, die ebenfalls Python-Produktivcode schreiben (`resilience_guard`, `ml`, `security`, `database`, `api_integration`), hatten diese Direktive **nicht** in ihrem System-Prompt und lasen `interface_contract.json` daher nicht verbindlich vor dem Schreiben.
 * **Lösung:**  
-  Ergänzung einer `FRONTEND_CONTRACT_DIRECTIVE` in [`agents/team_directives.py`](file:///c:/Users/sche-/Desktop/Programmieren%20Projekte/AI-Softwareentwickler-Team/agents/team_directives.py) analog zu `TESTER_CONTRACT_DIRECTIVE`:
-  *"Speichere JEDES Web-Asset (HTML, CSS, JS) SOFORT als erste Aktion per `write_file('static/<datei>', ...)` – gib niemals riesige Codeblöcke im Antworttext aus, um das 8.192-Token-Limit nicht zu überschreiten."*
+  Die Vertrags-Direktive zu einer allgemeinen `PYTHON_CODE_CONTRACT_DIRECTIVE` erweitern und an **alle** Python-Code schreibenden Rollen anhängen:
+  *"Lies vor dem ersten Schreiben `interface_contract.json`. Halte dich strikt an die vorgegebenen Modulpfade und exportierten Symbole. Weiche niemals eigenmächtig von vereinbarten Modulpfaden ab."*
 
 ---
 
-### 🚨 Befund 3: Vorab-Import-Check bei `pydantic`-Modulen (Seq 19)
-* **Problem:**  
-  Beim ersten Pytest-Lauf in Seq 19 scheiterte die Test-Collection sofort mit `ModuleNotFoundError: No module named 'pydantic'`.
+### 🚨 Befund 2: Parameter-Raten beim Tester (Seq 21: TypeError)
+* **Traceback:**
+  ```python
+  tests/test_vortex_engine.py:286: in test_ml_scoring_predictor
+      score = predictor.predict_failure_probability(..., latency_ms=...)
+  E   TypeError: FailurePredictor.predict_failure_probability() got an unexpected keyword argument 'latency_ms'
+  ```
 * **Ursache:**  
-  Obwohl `pydantic` in `requirements.txt` stand, war es im venv des Projektordners noch nicht geladen. Das verbrauchte den kompletten Versuch 1 der Verifikation als reinen Dependency-Fix-Zyklus.
+  `tester` nahm an, dass `predict_failure_probability` einen Parameter `latency_ms` besitzt (in Wirklichkeit nimmt die Methode nur `recent_failure_rate` und `trend`). Obwohl `tester` den Fehler in Seq 21 sofort selbst reparierte, kostete das Raten einen kompletten Verifikations-Durchlauf.
 * **Lösung:**  
-  Im Pre-Flight Check sicherstellen, dass Standard-Frameworks wie `pydantic` und `fastapi` vor dem ersten Testlauf im venv verifiziert werden.
+  In `agents/team_directives.py` (`TESTER_CONTRACT_DIRECTIVE`) explizit verankern:
+  *"Lies vor dem Aufruf von Klassenmethoden in Tests stets die tatsächliche Methodensignatur per `read_file` oder `find_symbol_definition`. Rate NIEMALS Parameter-Namen oder Schlüsselwortargumente."*
+
+---
+
+### 🚨 Befund 3: Bandit B311 Krypto-Warnung bei Backoff-Jitter (Seq 25)
+* **Finding:**
+  ```text
+  app/circuit_breaker/breaker.py:234 [B311/LOW]: Standard pseudo-random number generator (random.uniform) used
+  ```
+* **Ursache:**  
+  Für den exponentiellen Backoff mit Jitter nutzte `resilience_guard` `import random; random.uniform(...)`. Das SAST-Sicherheitswerkzeug `bandit` stuft `random` als unsicher für kryptographische Kontexte ein (False Positive, da Jitter unkritisch ist, erzeugt aber unschöne Warnungen im Bericht).
+* **Lösung:**  
+  Für Jitter im System-Prompt von `resilience_guard_agent.py` empfehlen:
+  `secrets.SystemRandom().uniform(...)` oder explizites `# nosec B311` am Zeilenende.
 
 ---
 
 ## 🛠️ 3. Konkrete Optimierungen & Umsetzungsplan für Claude
 
-1. **Post-Fix Abschlussprüfung in `agents/orchestrator/verification.py`:**  
-   Nach der Ausführung von `fix_tasks` am Schleifenende: Wenn Dateien modifiziert wurden, einen erneuten `_run_tests_logged(verifier, "abschluss")`-Check ausführen und bei Erfolg `report.passed = True` setzen.
-2. **`MAX_VERIFICATION_ITERATIONS` von 2 auf 3 erhöhen (`config.py:451`):**  
-   Gibt dem Auto-Fix-Mechanismus ausreichend Puffer für mehrstufige Korrekturen.
-3. **`FRONTEND_CONTRACT_DIRECTIVE` in `agents/team_directives.py` etablieren:**  
-   Verhindert das Ausbluten von Tokens bei großen HTML/CSS/JS-Dateien und erzwingt den direkten `write_file`-Aufruf.
-4. **Persistentes Learning in `memory/agent_learnings.json` für `frontend`:**  
-   `"Speichere HTML- und Dashboard-Dateien stets sofort per write_file in static/ statt sie im Antworttext auszugeben."`
+1. **`PYTHON_CODE_CONTRACT_DIRECTIVE` für alle Coder ([`agents/team_directives.py`](file:///c:/Users/sche-/Desktop/Programmieren%20Projekte/AI-Softwareentwickler-Team/agents/team_directives.py)):**  
+   Die Vertragsdirektive an `resilience_guard_agent.py`, `ml_agent.py`, `security_agent.py`, `database_agent.py` und `api_integration_agent.py` anbinden.
+2. **Signatur-Prüfpflicht in `TESTER_CONTRACT_DIRECTIVE`:**  
+   Verhindert Keyword-Argument-Raten bei Tests.
+3. **Bandit-Jitter-Empfehlung in `resilience_guard_agent.py`:**  
+   Vermeidet B311-Warnungen.
+4. **Persistente Learnings in `memory/agent_learnings.json`:**  
+   - `tester`: *"Lies vor dem Testen von Klassenmethoden stets die exakte Methodensignatur in der Quelldatei, um TypeError (unexpected keyword argument) zu vermeiden."*
+   - `resilience_guard`: *"Prüfe vor dem Anlegen von Resilienz-Klassen stets interface_contract.json, um Modulpfade mit dem Architekten abzugleichen."*

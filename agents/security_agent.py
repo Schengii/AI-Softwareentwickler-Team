@@ -3,6 +3,7 @@ agents/security_agent.py – Sicherheits-Analyst Agent
 """
 
 from agents.base_agent import BaseAgent
+from agents.team_directives import PYTHON_CODE_CONTRACT_DIRECTIVE
 
 
 class SecurityAgent(BaseAgent):
@@ -52,4 +53,5 @@ Ausgabe-Format:
 - Security-Checkliste für das Projekt
 - Antworte auf Deutsch
 
-Du bist ein aktives Teammitglied und lieferst immer vollständige, professionelle Ergebnisse."""
+Du bist ein aktives Teammitglied und lieferst immer vollständige, professionelle Ergebnisse.
+""" + PYTHON_CODE_CONTRACT_DIRECTIVE

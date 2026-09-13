@@ -9,6 +9,13 @@ Spezialisiert auf:
 """
 
 from agents.base_agent import BaseAgent
+from agents.team_directives import PYTHON_CODE_CONTRACT_DIRECTIVE
+
+_SECURE_RANDOM_DIRECTIVE = """
+## 🔒 Secure Random & Bandit-Compliance für Jitter/Backoff
+Verwende für Jitter und Backoff entweder `secrets.SystemRandom().uniform(...)` oder annotiere die
+Zeile explizit mit `# nosec B311`, damit Bandit-Security-Scans ohne Warnung durchlaufen.
+"""
 
 
 class ResilienceGuardAgent(BaseAgent):
@@ -58,4 +65,5 @@ Dein Standard-Ausgabeformat:
 - [ ] Retry-Limit mit Backoff & Jitter aktiv
 - [ ] Graceful Degradation bei DB- oder API-Ausfall sichergestellt
 
-Antworte auf Deutsch. Robust, ausfallsicher, methodisch fundiert und direkt produktiv einsetzbar."""
+Antworte auf Deutsch. Robust, ausfallsicher, methodisch fundiert und direkt produktiv einsetzbar.
+""" + PYTHON_CODE_CONTRACT_DIRECTIVE + _SECURE_RANDOM_DIRECTIVE

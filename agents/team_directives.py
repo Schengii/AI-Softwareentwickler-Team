@@ -53,6 +53,19 @@ BACKEND_CONTRACT_DIRECTIVE = f"""
 {_SETTINGS_RULE}
 """
 
+PYTHON_CODE_CONTRACT_DIRECTIVE = f"""
+## 📜 Contract First – verbindlich für alle Python-Code schreibenden Agenten
+- Prüfe IMMER ZUERST `{INTERFACE_CONTRACT_FILE}` (per read_file/search_code), bevor du neue Dateien,
+  Klassen oder Schnittstellen erstellst. Existiert der Vertrag, implementierst du jedes dort
+  genannte Symbol exakt mit Name, Art (class/function/instance/constant) und Modulpfad.
+- Weiche NIEMALS von den dort definierten Dateipfaden und Typen ab. Brauchst du eine Abweichung,
+  änderst du Vertrag UND Code im selben Schritt – nie nur den Code.
+- Musst du eine neue Hilfsdatei/ein neues Modul anlegen, das NICHT im Vertrag steht, dokumentierst
+  du dies explizit im Task-Output (Dateipfad + Zweck) und hältst dich an den Standardpfad
+  `app/<modul>/...`.
+{_SETTINGS_RULE}
+"""
+
 TESTER_CONTRACT_DIRECTIVE = f"""
 ## 📜 Contract First – Tests gegen die echte Schnittstelle
 - Speichere JEDE Testdatei SOFORT per `write_file("tests/test_<name>.py", ...)`/`edit_file` –
@@ -65,6 +78,9 @@ TESTER_CONTRACT_DIRECTIVE = f"""
 - Nimm nie an, dass eine Methode als freie Funktion existiert: Definiert das Modul
   `class EncryptionService` mit `encrypt()`, testest du `EncryptionService(...).encrypt(...)` bzw. die
   vereinbarte Instanz – nicht `from app.core.encryption import encrypt`.
+- Raten von Keyword-Argumenten oder Methodensignaturen ist VERBOTEN. Bevor du eine Methode einer
+  neu erstellten Klasse aufrufst oder assertierst, MUSST du die Methodendefinition via `read_file`
+  oder `find_symbol_definition` prüfen, um TypeErrors durch falsch geratene Parameter zu verhindern.
 - Weicht der Produktivcode vom Vertrag ab, passt du den Test NICHT an den Fehler an, sondern nennst
   die Abweichung (Datei + Symbol) in deiner Antwort.
 - Tests setzen benötigte Settings über `monkeypatch.setenv(...)` bzw. `app.dependency_overrides`

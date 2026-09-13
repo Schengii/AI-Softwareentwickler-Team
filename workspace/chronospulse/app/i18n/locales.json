@@ -1,0 +1,32 @@
+{
+  "de": {
+    "dashboard": {
+      "title": "ChronosPulse Dashboard",
+      "metrics": "Metriken",
+      "anomalies": "Anomalien",
+      "live_stream": "Live-Stream",
+      "timestamp": "Zeitstempel",
+      "value": "Wert"
+    },
+    "status": {
+      "ok": "System läuft",
+      "warning": "Warnung",
+      "critical": "Kritisch"
+    }
+  },
+  "en": {
+    "dashboard": {
+      "title": "ChronosPulse Dashboard",
+      "metrics": "Metrics",
+      "anomalies": "Anomalies",
+      "live_stream": "Live Stream",
+      "timestamp": "Timestamp",
+      "value": "Value"
+    },
+    "status": {
+      "ok": "System operational",
+      "warning": "Warning",
+      "critical": "Critical"
+    }
+  }
+}

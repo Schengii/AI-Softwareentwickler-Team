@@ -1,0 +1,25 @@
+/* Sichtbare Fokus-Ringe für Tastaturnutzer */
+:focus-visible {
+  outline: 3px solid #005a9c;
+  outline-offset: 2px;
+}
+
+/* Skip-Link für Tastaturnutzer */
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: #000;
+  color: #fff;
+  padding: 8px;
+  z-index: 100;
+}
+.skip-link:focus {
+  top: 0;
+}
+
+/* Dunkles Theme Kontrast-Vorgabe (>= 4.5:1) */
+body {
+  background-color: #121212;
+  color: #e0e0e0;
+}

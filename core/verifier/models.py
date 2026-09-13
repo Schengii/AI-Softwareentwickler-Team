@@ -442,6 +442,15 @@ _STUB_MARKER_RE = re.compile(
     r"|for\s+demo(nstration)?\s+purposes"
     r"|placeholder\s+(implementation|for|value)"
     r"|in\s+(einer\s+)?echten\s+implementierung\s+w[üu]rde"
+    # Neunter realer Fund (ChronosPulse-Analyse, 20260913): `app/utils/resilience.py` bestand
+    # nur aus 5 Kommentarzeilen ("# Auszug aus app/utils/resilience.py" gefolgt von einer
+    # Stichpunktliste, WAS die Datei enthalten sollte) statt der eigentlichen
+    # CircuitBreaker-/ExponentialBackoff-Klassen - ein Entwurfs-/Auszugs-Marker, den keiner der
+    # bisherigen Marker erkannte, weil er kein "hier würde"/"simuliert"/"not implemented"
+    # enthält, sondern wie eine harmlose Datei-Kopfzeile aussieht.
+    r"|auszug\s+aus\b"
+    r"|implementierungsbeispiel\b"
+    r"|implementation\s+example\b"
     # Achter realer Fund (mockforge-Projekt, Team-Retrospektive 2026-09-05): ein Agent ersetzte
     # den kompletten Funktionskörper von ProxyMiddleware.dispatch() durch elidierte
     # Kommentarzeilen ("# ... (Imports)", "# ... (Request-Handling)") statt echten Code -
@@ -459,6 +468,24 @@ _STUB_MARKER_RE = re.compile(
 # die auch der echte Lint-/SAST-Check abdeckt (Python/JS/TS immer relevant, Go/Rust/Ruby/Java
 # als verbreitete Backend-Sprachen des Frameworks, siehe agents/backend_agent.py).
 _STUB_SCAN_EXTENSIONS = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".rb", ".java"}
+
+# Kommentar-Präfix je Dateiendung für _comment_only_stub_files() (completeness.py) - dieselben
+# Sprachen wie _STUB_SCAN_EXTENSIONS oben. Block-Kommentare (/* ... */) werden bewusst nicht
+# erkannt, um die Heuristik einfach zu halten (eine einzelne Zeile reicht als Marker).
+_LINE_COMMENT_PREFIX_BY_EXTENSION: dict[str, str] = {
+    ".py": "#", ".rb": "#",
+    ".js": "//", ".jsx": "//", ".ts": "//", ".tsx": "//", ".go": "//", ".rs": "//", ".java": "//",
+}
+
+# Zehnter realer Fund (ChronosPulse-Analyse, 20260913, Empfehlung 3): Dateien wie das oben
+# beschriebene `app/utils/resilience.py` bestehen NUR aus wenigen Kommentarzeilen (kein
+# einziges echtes Code-Statement) - ein struktureller Stub, den kein Text-Marker allein
+# zuverlässig erfasst (ein Kommentar mit "Auszug aus" fängt nur die eine konkret beobachtete
+# Formulierung ab). `_comment_only_stub_files()` in completeness.py meldet jede nicht-leere
+# Quelldatei, die AUSSCHLIESSLICH aus Kommentar-/Leerzeilen besteht und dabei unter dieser
+# Zeilenschwelle bleibt - eine wirklich leere Datei (z.B. ein bewusst leeres `__init__.py`)
+# bleibt unauffällig, weil sie gar keine Kommentarzeile enthält.
+_COMMENT_ONLY_STUB_MAX_LINES = 10
 
 # README-Installationsbefehle, die typischerweise auf eine konkrete Datei verweisen, die dann
 # auch wirklich existieren muss (z.B. "pip install -r requirements.txt", "psql -f schema.sql")

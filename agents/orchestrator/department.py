@@ -144,13 +144,29 @@ class DepartmentMixin:
             if run_start_tokens is not None and (
                 self._generation_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
             ):
-                budget_aborted = True
-                notify(
-                    f"🚫 [bold red]{self._budget_exceeded_label(run_start_tokens)} erreicht:[/bold red] "
-                    f"{self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf verbraucht – "
-                    f"überspringe verbleibende Fachbereiche ab '{phase_label}' und liefere die bisherigen "
-                    "Ergebnisse aus (Rest-Budget bleibt für die Verifikation reserviert)."
-                )
+                # "Verification Reserve Paradox"-Fix (ChronosPulse-Analyse, 20260913): NUR ein
+                # echter Hard-Abort (volles Lauf-Budget ODER Projekt-Budget erschöpft) darf
+                # budget_aborted=True setzen - siehe _generation_reserve_is_hard_abort-Docstring
+                # (budget.py). Reicht nur die Generierungsreserve, stoppt zwar diese
+                # Fachbereichs-Phase JETZT, die nachfolgende Verifikation läuft aber regulär mit
+                # dem verbleibenden Rest-Budget weiter.
+                if self._generation_reserve_is_hard_abort(run_start_tokens):
+                    budget_aborted = True
+                    notify(
+                        f"🚫 [bold red]{self._budget_exceeded_label(run_start_tokens)} erreicht:[/bold red] "
+                        f"{self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf verbraucht – "
+                        f"überspringe verbleibende Fachbereiche ab '{phase_label}' und liefere die bisherigen "
+                        "Ergebnisse aus."
+                    )
+                else:
+                    self._generation_budget_reached_this_run = True
+                    notify(
+                        f"⏸️ [bold yellow]Generierungsreserve erreicht:[/bold yellow] "
+                        f"{self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf verbraucht – "
+                        f"überspringe verbleibende Fachbereiche ab '{phase_label}', die Code-Generierung endet "
+                        "hier. Die anschließende Verifikation läuft regulär mit dem verbleibenden Rest-Budget "
+                        "weiter (kein Lauf-Abbruch)."
+                    )
                 break
             if cancel_requested and cancel_requested():
                 manually_cancelled = True
@@ -286,13 +302,25 @@ class DepartmentMixin:
                     if run_start_tokens is not None and (
                         self._generation_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
                     ):
-                        budget_aborted = True
-                        notify(
-                            f"🚫 [bold red]{self._budget_exceeded_label(run_start_tokens)} erreicht:[/bold red] "
-                            f"{self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf verbraucht – "
-                            f"überspringe verbleibende Mitglieder in '{phase_label}' und liefere die bisherigen "
-                            "Ergebnisse aus (Rest-Budget bleibt für die Verifikation reserviert)."
-                        )
+                        # Dieselbe Unterscheidung wie am Phasenkopf oben (siehe dortiger
+                        # Kommentar zum "Verification Reserve Paradox"-Fix).
+                        if self._generation_reserve_is_hard_abort(run_start_tokens):
+                            budget_aborted = True
+                            notify(
+                                f"🚫 [bold red]{self._budget_exceeded_label(run_start_tokens)} erreicht:[/bold red] "
+                                f"{self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf verbraucht – "
+                                f"überspringe verbleibende Mitglieder in '{phase_label}' und liefere die "
+                                "bisherigen Ergebnisse aus."
+                            )
+                        else:
+                            self._generation_budget_reached_this_run = True
+                            notify(
+                                f"⏸️ [bold yellow]Generierungsreserve erreicht:[/bold yellow] "
+                                f"{self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf verbraucht – "
+                                f"überspringe verbleibende Mitglieder in '{phase_label}'. Die anschließende "
+                                "Verifikation läuft regulär mit dem verbleibenden Rest-Budget weiter (kein "
+                                "Lauf-Abbruch)."
+                            )
                         break
 
             all_results.extend(member_results)
@@ -302,13 +330,19 @@ class DepartmentMixin:
             running_context = (running_context + self._format_results_for_review(member_results)[:2000])[-3000:]
 
             # ── Echte Konsolidierung durch den Teamleiter ──
-            # "and not budget_aborted and not provider_exhausted_abort": wurde das Budget gerade
-            # eben MITTEN in der sequenziellen Mitglieder-Schleife oben überschritten ODER hat der
-            # Fast-Circuit-Breaker (PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT) gerade ausgelöst, spart
-            # der zusätzliche Konsolidierungs-Aufruf hier den letzten möglichen Tokenverbrauch
-            # dieser Phase ein - konsistent mit dem äußeren Phasenkopf, der ab der NÄCHSTEN
-            # Iteration ohnehin komplett überspringt.
-            if ENABLE_DEPARTMENT_LEAD_EXECUTION and not skip_lead_layer and not budget_aborted and not provider_exhausted_abort:
+            # "and not budget_aborted and not provider_exhausted_abort und nicht
+            # _generation_budget_reached_this_run": wurde das Budget (oder die Generierungs-
+            # reserve, siehe _generation_reserve_is_hard_abort) gerade eben MITTEN in der
+            # sequenziellen Mitglieder-Schleife oben überschritten ODER hat der Fast-Circuit-
+            # Breaker (PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT) gerade ausgelöst, spart der
+            # zusätzliche Konsolidierungs-Aufruf hier den letzten möglichen Tokenverbrauch dieser
+            # Phase ein - konsistent mit dem äußeren Phasenkopf, der ab der NÄCHSTEN Iteration
+            # ohnehin komplett überspringt. Die Reserve selbst bleibt davon unberührt für die
+            # nachfolgende Verifikation erhalten (kein budget_aborted).
+            if (
+                ENABLE_DEPARTMENT_LEAD_EXECUTION and not skip_lead_layer and not budget_aborted
+                and not provider_exhausted_abort and not getattr(self, "_generation_budget_reached_this_run", False)
+            ):
                 consolidation = await self._run_department_consolidation(lead, member_results, project_dir)
                 all_results.append(consolidation)
                 if _register_result_for_breaker(consolidation, is_lead=True):

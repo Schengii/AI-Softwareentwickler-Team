@@ -1259,6 +1259,82 @@ class TestCompletenessCheck(unittest.TestCase):
             report = verifier.check_completeness()
             self.assertTrue(report.passed)
 
+    # ── ChronosPulse-Analyse (20260913), Empfehlung 3: Pseudocode-/Auszugs-Stubs ──
+
+    def test_detects_auszug_aus_marker(self):
+        """Realer Fund: `app/utils/resilience.py` bestand nur aus einem "# Auszug aus..."-
+        Kommentar statt der eigentlichen CircuitBreaker-/ExponentialBackoff-Implementierung."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "resilience.py").write_text(
+                "# Auszug aus app/utils/resilience.py\n"
+                "# - CircuitBreaker: Statusverwaltung (CLOSED, OPEN, HALF_OPEN)\n"
+                "# - ExponentialBackoff: Full-Jitter mit secrets.SystemRandom()\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.attempted)
+            self.assertFalse(report.passed)
+            messages = " ".join(i.message for i in report.issues)
+            self.assertIn("Auszug", messages)
+
+    def test_detects_implementierungsbeispiel_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "auth.py").write_text(
+                "def check_permission(user, resource) -> bool:\n"
+                "    # Implementierungsbeispiel - echte RBAC-Prüfung folgt\n"
+                "    return True\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+
+    def test_comment_only_file_flagged_as_stub(self):
+        """Strukturelle Gegenprobe zum Text-Marker oben: eine Datei, die NUR aus Kommentaren
+        besteht (kein Code-Statement), muss auch OHNE einen bekannten Marker-Text erkannt
+        werden - die exakte real beobachtete resilience.py hatte 5 Zeilen reinen Kommentar."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "resilience.py").write_text(
+                "# CircuitBreaker verwaltet CLOSED/OPEN/HALF_OPEN-Status\n"
+                "# ExponentialBackoff nutzt Full-Jitter\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.attempted)
+            self.assertFalse(report.passed)
+            self.assertTrue(
+                any("Kommentarzeile" in i.message for i in report.issues),
+                report.issues,
+            )
+
+    def test_comment_only_file_above_line_threshold_not_flagged(self):
+        """Über der Zeilenschwelle (_COMMENT_ONLY_STUB_MAX_LINES) handelt es sich eher um eine
+        legitime, ausführlich dokumentierte Datei als um einen kurzen Stub-Auszug."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            comment_lines = "\n".join(f"# Zeile {i} der Dokumentation" for i in range(1, 15))
+            (project_dir / "notes.py").write_text(comment_lines + "\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_empty_init_file_not_flagged(self):
+        """Ein bewusst leeres `__init__.py` als reiner Package-Marker ist kein Stub."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "__init__.py").write_text("", encoding="utf-8")
+            (project_dir / "app.py").write_text(
+                "def real_function() -> int:\n    return 42\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -106,6 +106,18 @@ class TestAgentSystem(unittest.TestCase):
         self.assertIn("Dev Lead", info)
         self.assertIn("Content & Doc Lead", info)
 
+    def test_security_agent_prompt_requires_write_file(self):
+        """
+        ChronosPulse-Analyse (20260913): `security` steht in CODE_WRITING_AGENT_IDS
+        (agents/base_agent.py) - das Hard Delivery Gate verlangt zwingend einen Datei-
+        Schreibvorgang. Der System-Prompt muss deshalb explizit `write_file` in
+        `docs/SECURITY_AUDIT.md` vorschreiben, sonst scheitert der Agent (real beobachtet:
+        147.9s und 56.171 Tokens verbrannt, weil der Report nur als Text geliefert wurde).
+        """
+        prompt = SecurityAgent().system_prompt
+        self.assertIn("write_file", prompt)
+        self.assertIn("docs/SECURITY_AUDIT.md", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

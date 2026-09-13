@@ -13,7 +13,7 @@ import unittest
 
 import config
 from agents.orchestrator import Orchestrator
-from core.llm_factory import is_same_model
+from core.llm_factory import LLMFactory, is_same_model
 
 
 class TestOrchestratorModelEscalation(unittest.TestCase):
@@ -42,7 +42,17 @@ class TestOrchestratorModelEscalation(unittest.TestCase):
         # security/code_reviewer/refactoring/agent_trainer laufen bereits standardmäßig auf
         # HEAVY_MODEL (config.AGENT_MODELS) - _escalate_agent_models() darf sie nicht anfassen
         # (kein unnötiger Client-Neubau).
+        #
+        # Realer Fund (Team-Optimierung, 20260913): ein lokaler `.env`-Override wie
+        # `SECURITY_MODEL=gemini-pro-latest` (bewusste Pro-Modell-Wahl für qualitätskritische
+        # Rollen) lässt `security` schon VOR jeder Eskalation von HEAVY_MODEL abweichen - der
+        # Test prüft dann faktisch das Verhalten bei EINEM abweichenden statt bereits-heavy
+        # Agenten und schlägt in genau dieser lokalen Konfiguration fehl. Der Client wird
+        # deshalb hier deterministisch auf HEAVY_MODEL gesetzt, statt sich auf die per `.env`
+        # veränderliche AGENT_MODELS-Zuordnung zu verlassen - der eigentliche Prüfgegenstand
+        # (kein unnötiger Client-Neubau für einen bereits korrekten Agenten) bleibt unverändert.
         orchestrator = Orchestrator()
+        orchestrator._agents["security"]._llm = LLMFactory.create_for_model(config.HEAVY_MODEL)
         already_heavy = orchestrator._agents["security"]._llm
         orchestrator._escalate_agent_models()
         self.assertIs(orchestrator._agents["security"]._llm, already_heavy)

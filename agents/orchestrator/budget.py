@@ -91,6 +91,32 @@ class BudgetMixin:
         generation_ceiling = MAX_RUN_TOKENS * (1.0 - reserve_ratio)
         return cls._tokens_used_since(start_tokens) >= generation_ceiling
 
+    def _generation_reserve_is_hard_abort(self, start_tokens: int) -> bool:
+        """
+        Team-Optimierung (ChronosPulse-Analyse, 20260913, "Verification Reserve Paradox"):
+        `_generation_budget_exceeded()` allein darf NIE einen ganzen Lauf abbrechen - ihr
+        einziger Zweck ist, die Code-GENERIERUNGSPHASE rechtzeitig zu stoppen, damit die
+        reservierten VERIFICATION_TOKEN_RESERVE_RATIO-Tokens (config.py) tatsächlich noch für
+        die Verifikations-/Fix-Phase da sind (siehe _generation_budget_exceeded-Docstring).
+        Vorher setzte agents/orchestrator/department.py beim Erreichen dieser Reserve
+        fälschlich `budget_aborted=True` für den GESAMTEN Lauf - das übersprang in
+        agents/orchestrator/__init__.py (`elif budget_aborted or manually_cancelled:`) exakt
+        die Verifikation, für die die Reserve eigens geschaffen wurde (real beobachtet,
+        ChronosPulse-Lauf: 852.222 von 1.000.000 Tokens verbraucht, ~150.000 Tokens Reserve
+        ungenutzt verpufft, `verification_ok` nie ausgewertet).
+
+        Ein echter, harter Lauf-Abbruch ist NUR gerechtfertigt, wenn zusätzlich zur
+        Generierungsreserve auch (a) das volle harte Lauf-Budget (`_run_budget_exceeded()`,
+        MAX_RUN_TOKENS OHNE Reserve-Abzug) ODER (b) das separate Pro-Projekt-Kostenbudget
+        (`_project_budget_exceeded()`, `/constitution`, das keine eigene Reserve kennt)
+        tatsächlich erschöpft ist. Der Aufrufer (department.py) bricht die Fachbereichs-Phase
+        in JEDEM Fall ab, sobald hier ODER `_generation_budget_exceeded()` True liefert -
+        dieser Wert entscheidet nur, OB er dabei zusätzlich `budget_aborted=True` für den
+        gesamten restlichen Lauf setzen darf (True) oder nur `generation_budget_reached=True`
+        (False, Verifikation läuft danach regulär mit dem verbleibenden Rest-Budget weiter).
+        """
+        return self._run_budget_exceeded(start_tokens) or self._project_budget_exceeded(start_tokens)
+
     def _project_budget_exceeded(self, start_tokens: int) -> bool:
         """
         Pro-Projekt-Kostenbudget (`/constitution` `max_project_tokens`) – unabhängig vom

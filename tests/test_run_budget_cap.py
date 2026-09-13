@@ -161,6 +161,65 @@ class TestRunBudgetCap(unittest.TestCase):
         # erwartet, nicht zwei.
         self.assertEqual(result_agent_ids.count("governance_lead"), 1)
 
+    # ── "Verification Reserve Paradox"-Fix (ChronosPulse-Analyse, 20260913) ──
+
+    def test_generation_reserve_alone_does_not_abort_the_run(self):
+        """
+        Realer Fund: die Code-Generierungsphase stoppte bei Erreichen der
+        VERIFICATION_TOKEN_RESERVE_RATIO-Reserve korrekt VOR dem vollen MAX_RUN_TOKENS, setzte
+        dabei aber fälschlich budget_aborted=True für den GESAMTEN Lauf - das übersprang in
+        agents/orchestrator/__init__.py die Verifikation komplett, obwohl noch Reserve-Budget
+        übrig war. budget_aborted darf hier False bleiben; nur das neue
+        _generation_budget_reached_this_run-Flag (das die nachfolgende Verifikation NICHT
+        überspringen darf) wird gesetzt.
+        """
+        agent_tasks = [
+            AgentTask(task_id="t1", agent_id="product_owner", description="Scope"),
+            AgentTask(task_id="t2", agent_id="ui_ux", description="UI"),
+            AgentTask(task_id="t3", agent_id="backend", description="API"),
+            AgentTask(task_id="t4", agent_id="documentation", description="Doku"),
+            AgentTask(task_id="t5", agent_id="tester", description="Tests"),
+            AgentTask(task_id="t6", agent_id="compliance", description="DSGVO-Check"),
+        ]
+        # Dieselbe Aufgaben-/Token-Konstellation wie test_hierarchy_stops_before_later_phases_
+        # once_budget_exceeded oben (Phase 1 verbraucht 15.000 Tokens > 8.000-Ceiling), NUR
+        # dass MAX_RUN_TOKENS hier so hoch liegt (100.000), dass die Reserve-Ceiling (via
+        # Ratio 0.92) bei genau denselben 8.000 Tokens greift, das VOLLE Lauf-Budget aber bei
+        # weitem nicht erreicht wird.
+        with patch.object(orch_budget_module, "MAX_RUN_TOKENS", 100_000), \
+             patch.object(orch_budget_module, "VERIFICATION_TOKEN_RESERVE_RATIO", 0.92):
+            results, _fo, budget_aborted, _cancelled = asyncio.run(self.orchestrator._run_department_hierarchy(
+                user_request="Baue eine Todo-App", task_summary="Todo-App", agent_tasks=agent_tasks,
+                project_dir=".", run_start_tokens=0, notify=lambda msg: None,
+            ))
+
+        self.assertFalse(budget_aborted, "Nur die Generierungsreserve wurde erreicht - kein Grund für einen Lauf-Abbruch.")
+        self.assertTrue(self.orchestrator._generation_budget_reached_this_run)
+        result_agent_ids = [r.agent_id for r in results]
+        self.assertIn("planning_lead", result_agent_ids)
+        self.assertIn("product_owner", result_agent_ids)
+        # Alle nachfolgenden Phasen (2-6) wurden NICHT mehr gestartet - die Generierungsphase
+        # endet hier, unabhängig davon, dass kein Lauf-Abbruch (budget_aborted) vorliegt.
+        for skipped_id in ("ui_ux", "backend", "documentation", "tester", "compliance", "governance_lead"):
+            self.assertNotIn(skipped_id, result_agent_ids)
+
+    def test_full_run_budget_still_hard_aborts_even_past_generation_reserve(self):
+        """Gegen-Test: ist zusätzlich zur Generierungsreserve auch das VOLLE Lauf-Budget
+        erschöpft, bleibt budget_aborted=True - die Unterscheidung darf einen echten
+        Budget-Erschöpfungs-Abbruch nicht verhindern."""
+        agent_tasks = [
+            AgentTask(task_id="t1", agent_id="product_owner", description="Scope"),
+            AgentTask(task_id="t2", agent_id="ui_ux", description="UI"),
+        ]
+        with patch.object(orch_budget_module, "MAX_RUN_TOKENS", 8000), \
+             patch.object(orch_budget_module, "VERIFICATION_TOKEN_RESERVE_RATIO", 0.15):
+            results, _fo, budget_aborted, _cancelled = asyncio.run(self.orchestrator._run_department_hierarchy(
+                user_request="Baue eine Todo-App", task_summary="Todo-App", agent_tasks=agent_tasks,
+                project_dir=".", run_start_tokens=0, notify=lambda msg: None,
+            ))
+
+        self.assertTrue(budget_aborted)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -53,5 +53,19 @@ Ausgabe-Format:
 - Security-Checkliste für das Projekt
 - Antworte auf Deutsch
 
+WICHTIG - Speicherpflicht (kein reiner Antworttext!): Ein Security-Report, der nur im
+Antworttext steht, zählt NICHT als erledigte Aufgabe - das System verlangt von dir zwingend
+eine echte Datei (siehe CODE_WRITING_AGENT_IDS in agents/base_agent.py). Speichere deshalb
+IMMER:
+1. Deinen vollständigen Audit-Bericht per `write_file` in `docs/SECURITY_AUDIT.md` (Findings,
+   Schweregrade, Code-Fixes, Checkliste - das komplette Ausgabe-Format oben als Markdown).
+2. Zusätzlich jede konkrete Security-Middleware/-Fix-Implementierung (z.B. Auth-Checks, Rate-
+   Limiting, Input-Validation-Helfer) als echten, lauffähigen Code per `write_file`/`edit_file`
+   in `app/core/security.py` (oder direkt in der betroffenen Datei, wenn es sich um einen
+   punktuellen Fix in bestehendem Code handelt).
+Ruf `write_file` für docs/SECURITY_AUDIT.md IMMER auf, auch wenn keine kritischen Findings
+vorliegen ("Keine kritischen Befunde" ist dann der Inhalt) - ein Audit ohne gespeicherte Datei
+gilt als nicht durchgeführt.
+
 Du bist ein aktives Teammitglied und lieferst immer vollständige, professionelle Ergebnisse.
 """ + PYTHON_CODE_CONTRACT_DIRECTIVE

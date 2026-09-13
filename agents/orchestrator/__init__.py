@@ -299,6 +299,14 @@ class Orchestrator(
         # existierte das Attribut dann bis zum ersten Setzen gar nicht.
         self._provider_exhausted_this_run: bool = False
         self._provider_breaker_tripped: bool = False
+        # "Verification Reserve Paradox"-Fix (ChronosPulse-Analyse, 20260913): True, wenn
+        # agents/orchestrator/department.py die Code-Generierungsphase NUR wegen der
+        # VERIFICATION_TOKEN_RESERVE_RATIO-Reserve (config.py) gestoppt hat, NICHT wegen des
+        # vollen Lauf- oder Projekt-Budgets (siehe budget.py._generation_reserve_is_hard_abort).
+        # Anders als _provider_breaker_tripped/budget_aborted darf dieses Flag NICHT dazu
+        # führen, dass die nachfolgende Verifikation übersprungen wird - genau dafür wurde die
+        # Reserve ja freigehalten (siehe process() weiter unten).
+        self._generation_budget_reached_this_run: bool = False
         # Ergebnis der maschinenlesbaren Fertigstellungs-Pruefung des letzten Laufs
         # (core/definition_of_done.py) - von interface/ und evals/ als belastbare Quelle
         # nutzbar, statt den Zustand aus Berichtstext zu raten.
@@ -694,6 +702,9 @@ class Orchestrator(
         # Circuit Breaker je Lauf zurücksetzen (agents/orchestrator/dispatch.py setzt ihn,
         # wenn eine Welle überwiegend an Kontingenten/fehlenden Schlüsseln scheitert).
         self._provider_breaker_tripped = False
+        # Ebenfalls pro Lauf zurückgesetzt (siehe __init__) - sonst würde ein früherer Lauf, der
+        # die Generierungsreserve erreichte, fälschlich auch diesen neuen Lauf markieren.
+        self._generation_budget_reached_this_run = False
 
         # Pro-Projekt-Kostenbudget (siehe __init__): MAX_RUN_TOKENS begrenzt nur DIESEN einen
         # Lauf - ein Projekt mit vielen aufeinanderfolgenden Läufen (z.B. für einen externen

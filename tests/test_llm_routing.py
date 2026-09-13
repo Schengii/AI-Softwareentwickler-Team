@@ -76,6 +76,7 @@ class TestLLMRouting(unittest.TestCase):
     @patch("core.llm_factory.GROQ_API_KEY", "")
     @patch("core.llm_factory.OPENROUTER_API_KEY", "")
     @patch("core.llm_factory.DEEPSEEK_API_KEY", "")
+    @patch("core.llm_factory.GEMINI_API_KEYS", ["fake-single-test-key"])
     @patch("core.llm_factory.asyncio.sleep")
     @patch("core.llm_factory._gemini_client")
     def test_daily_quota_error_gets_long_cooldown_not_short_default(
@@ -89,6 +90,15 @@ class TestLLMRouting(unittest.TestCase):
         ein kurzes Minutenlimit. Vor diesem Fix bekam JEDES 429 denselben generischen 60s-
         Cooldown - jeder weitere Agent im selben Lauf versuchte das für Stunden erschöpfte Modell
         trotzdem sofort wieder erneut.
+
+        `core.llm_factory.GEMINI_API_KEYS` bewusst auf EINEN einzelnen Fake-Key gepatcht statt
+        sich auf die echte, lokal in `.env` hinterlegte Umgebung zu verlassen (Team-
+        Optimierung, 20260913): ein realer Key-POOL (mehrere kommagetrennte GEMINI_API_KEY-
+        Werte, z.B. für höheren Gratis-Durchsatz) lässt `generate_with_usage()` zunächst auf
+        den NÄCHSTEN Key in der Kette ausweichen (`_mark_gemini_key_exhausted()` findet dann
+        `has_next_gemini_key=True`), statt das Modell nach GENAU einem 429 sofort als
+        erschöpft zu markieren - der Test prüft aber gezielt das "alle Keys erschöpft"-
+        Verhalten, das einen einzelnen Key voraussetzt.
         """
         from core.llm_factory import DAILY_QUOTA_COOLDOWN_SECONDS
         from core.token_guard import token_guard as real_token_guard

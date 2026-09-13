@@ -31,6 +31,7 @@ from pathlib import Path
 
 from core.verifier.models import (
     _API_CALL_MARKER_RE,
+    _COMMENT_ONLY_STUB_MAX_LINES,
     _COMPONENT_FILENAME_RE,
     _COMPONENT_TAKES_PROPS_RE,
     _CORS_ALLOW_CREDENTIALS_RE,
@@ -51,6 +52,7 @@ from core.verifier.models import (
     _JS_WRITE_ROUTE_CALL_RE,
     _JSX_RETURN_RE,
     _KNOWN_PACKAGE_NAMES,
+    _LINE_COMMENT_PREFIX_BY_EXTENSION,
     _LOCAL_DIR_THIRDPARTY_NAME_COLLISIONS,
     _MANIFEST_FILENAMES,
     _PY_IMPORT_RE,
@@ -113,6 +115,7 @@ class CompletenessMixin:
                 continue
             rel = str(f.relative_to(self.project_dir)).replace("\\", "/")
             issues.extend(self._scan_text_for_stubs(rel, text))
+            issues.extend(self._comment_only_stub_files(rel, f.suffix, text))
             if f.suffix == ".py":
                 issues.extend(self._scan_write_routes_missing_io(rel, text))
                 py_import_names.update(self._collect_third_party_imports(text))
@@ -201,6 +204,37 @@ class CompletenessMixin:
                     message=f"Platzhalter-/Stub-Hinweis im Code: „{line.strip()[:150]}“",
                 ))
         return found
+
+    def _comment_only_stub_files(self, rel: str, suffix: str, text: str) -> list[CompletenessIssue]:
+        """
+        Team-Optimierung (ChronosPulse-Analyse, 20260913, Empfehlung 3): erkennt Dateien, die
+        NUR aus Kommentar-/Leerzeilen bestehen - kein einziges echtes Code-Statement - und dabei
+        unter _COMMENT_ONLY_STUB_MAX_LINES Zeilen bleiben (realer Fund: `app/utils/
+        resilience.py`, 5 Zeilen reiner Kommentar-Auszug statt der CircuitBreaker-/
+        ExponentialBackoff-Implementierung, siehe _STUB_MARKER_RE für die begleitende
+        "Auszug aus..."-Text-Heuristik). Rein strukturell (zählt Zeilen, kein Text-Match) -
+        fängt deshalb auch Formulierungen ab, die kein bekannter Marker-Text enthalten.
+
+        Eine wirklich leere Datei (z.B. ein bewusst leeres `__init__.py` als reiner
+        Package-Marker) bleibt unauffällig: ohne jede Kommentarzeile gibt es nichts zu melden.
+        """
+        prefix = _LINE_COMMENT_PREFIX_BY_EXTENSION.get(suffix)
+        if not prefix:
+            return []
+        non_blank_lines = [line for line in text.splitlines() if line.strip()]
+        if not non_blank_lines or len(non_blank_lines) > _COMMENT_ONLY_STUB_MAX_LINES:
+            return []
+        if not all(line.strip().startswith(prefix) for line in non_blank_lines):
+            return []
+        return [CompletenessIssue(
+            file_path=rel,
+            line_number=1,
+            message=(
+                f"Datei besteht ausschließlich aus {len(non_blank_lines)} Kommentarzeile(n), "
+                "kein einziges echtes Code-Statement - vermutlich ein Entwurf/Auszug statt der "
+                "tatsächlichen Implementierung."
+            ),
+        )]
 
     def _scan_write_routes_missing_io(self, rel: str, text: str) -> list[CompletenessIssue]:
         """Findet schreibende Routen-Handler (POST/PUT/PATCH/DELETE) ohne erkennbaren I/O-

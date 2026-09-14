@@ -1,0 +1,21 @@
+{
+  "modules": {
+    "app/core/settings.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/core/auth.py": {
+      "verify_tenant": "function",
+      "verify_api_key": "function"
+    },
+    "app/services/evaluation.py": {
+      "EvaluationEngine": "class"
+    },
+    "app/services/cache.py": {
+      "CacheManager": "class"
+    },
+    "app/services/canary.py": {
+      "CanaryMonitor": "class"
+    }
+  }
+}

@@ -1,0 +1,11 @@
+/* Sichtbare Fokus-Ringe für Tastaturnutzer */
+:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+
+/* Kontrast-Sicherung für Dark Mode */
+.dark {
+  background-color: #0f172a;
+  color: #f8fafc;
+}

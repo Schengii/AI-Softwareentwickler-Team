@@ -41,7 +41,7 @@ class ReportingMixin:
                 file_owners[rel_path] = res.agent_id
 
     @staticmethod
-    def _infer_owner_from_path(file_path: str) -> str | None:
+    def _infer_owner_from_path(file_path: str, message: str = "") -> str | None:
         """
         Fallback-Owner-Ermittlung für Vollständigkeits-Funde, wenn `file_owners` keinen
         Eintrag für den Pfad hat - realer Fund: eine bereits VOR dem aktuellen Lauf
@@ -51,8 +51,31 @@ class ReportingMixin:
         diesen Fallback bricht die Vollständigkeits-Fixschleife dann mit "keinem Agenten
         eindeutig zuordenbar" ab, obwohl der zuständige Spezialist anhand des Pfads klar
         erkennbar ist. Reine Pfad-/Namens-Heuristik, kein Dateiinhalt nötig.
+
+        Team-Optimierung (NexusForge-Lauf, Schwachstelle 2): PROJEKTWEITE Vollständigkeits-
+        Funde aus core/verifier/completeness.py (z.B. `_missing_async_test_dependencies()`,
+        `_missing_dependency_manifest()`) melden `file_path="."`, weil sie sich auf kein
+        einzelnes Modul, sondern das gesamte Projekt beziehen (fehlendes `pytest-asyncio` im
+        Dependency-Manifest, fehlende README-Datei, ...). Für so einen generischen Pfad greift
+        KEINE der Pfad-Heuristiken oben (kein "frontend/", kein ".py", keine Endung) - bisher
+        lieferte diese Funktion dafür `None`, wodurch der Fund in verification.py als "keinem
+        Agenten eindeutig zuordenbar" verworfen wurde, obwohl die FEHLERMELDUNG selbst den
+        zuständigen Bereich klar erkennen lässt. Ein generischer Pfad wird deshalb zusätzlich
+        anhand der (optional übergebenen) Fehlermeldung geroutet, mit `dev_lead` als
+        generischem Auffangnetz statt eines Abbruchs - der Teamleiter kann eine projektweite
+        Angelegenheit immer an den passenden Spezialisten weiterreichen.
         """
-        lowered = file_path.replace("\\", "/").lower()
+        lowered = (file_path or "").replace("\\", "/").lower()
+        if lowered in (".", ""):
+            msg_lowered = message.lower()
+            if "readme" in msg_lowered:
+                return "readme"
+            if any(
+                term in msg_lowered
+                for term in ("dependency-manifest", "requirements", "pipfile", "pyproject.toml", "package.json", "pytest-asyncio", "pytest-plugin")
+            ):
+                return "backend"
+            return "dev_lead"
         if (
             "frontend/" in lowered
             or lowered.endswith((".tsx", ".jsx", ".vue", ".html", ".css"))

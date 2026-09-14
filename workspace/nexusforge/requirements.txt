@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+sqlalchemy
+aiosqlite
+greenlet
+pydantic
+pydantic-settings
+pyjwt
+passlib
+bcrypt<4.1
+python-multipart
+mmh3
+locust
+pytest
+pytest-cov
+httpx

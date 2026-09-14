@@ -2427,7 +2427,7 @@ class VerificationMixin:
                 for issue in completeness_report.issues:
                     owner = file_owners.get(issue.file_path)
                     if not owner:
-                        owner = self._infer_owner_from_path(issue.file_path)
+                        owner = self._infer_owner_from_path(issue.file_path, issue.message)
                     if owner and owner in self._agents:
                         agents_to_fix.setdefault(owner, []).append(issue)
 

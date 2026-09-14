@@ -8,6 +8,7 @@ auf der alle anderen Check-Mixins (testrunner, security, lint, coverage, runtime
 """
 
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -16,6 +17,13 @@ from core.code_sandbox import CodeSandbox, ExecutionResult
 from core.docker_sandbox import DockerSandbox
 from core.manifest_guard import describe_toxic_dependencies, sanitize_requirements_file
 from core.verifier.models import _IGNORED_DIRS, VENV_DIRNAME
+
+# Team-Optimierung (NexusForge-Lauf, Schwachstelle 3): dieselbe Token-Grenze wie
+# core/verifier/completeness.py._manifest_has_package() - erkennt "pytest-asyncio"/"anyio" auch
+# als "pytest_asyncio" (Unterstrich statt Bindestrich) oder mit angehängtem Versions-Spezifizierer
+# (z.B. "pytest-asyncio==0.21.0"), ohne z.B. "pytest-asyncioX" oder "not-anyio-related" fälschlich
+# als bereits vorhanden zu werten.
+_ASYNC_TEST_DEPENDENCY_TOKEN_RE = re.compile(r"(?<![a-z0-9.-])(pytest-asyncio|anyio)(?![a-z0-9.-])")
 
 
 class EnvironmentMixin:
@@ -68,7 +76,22 @@ class EnvironmentMixin:
         pytest_ini_log = self._ensure_pytest_ini()
         if pytest_ini_log:
             logs.append(pytest_ini_log)
-        for node_dir in self._find_node_projects():
+        async_manifest_log = self._ensure_async_test_manifest_entry()
+        if async_manifest_log:
+            logs.append(async_manifest_log)
+        # Team-Optimierung (NexusForge-Lauf, Schwachstelle 1): vormals wurde
+        # _ensure_node_environment() ausschließlich für _find_node_projects() (Projekte mit
+        # "test"-Skript) aufgerufen. Ein reines Frontend (z.B. Vite/React) mit nur einem
+        # "build"-Skript (_find_node_build_projects()) erhielt dadurch VOR dem Build kein
+        # `npm install`/`npm ci` - RuntimeMixin.check_frontend_build() scheiterte dann mit
+        # "keine node_modules erzeugt", obwohl das Projekt selbst fehlerfrei war. Die
+        # Vereinigungsmenge (dedupliziert über den Verzeichnispfad) beider Suchen stellt sicher,
+        # dass jedes Node-Projekt mit Build- ODER Test-Skript seine Abhängigkeiten vorab erhält.
+        node_dirs = list(self._find_node_projects())
+        for node_dir in self._find_node_build_projects():
+            if node_dir not in node_dirs:
+                node_dirs.append(node_dir)
+        for node_dir in node_dirs:
             logs.append(self._ensure_node_environment(node_dir, timeout_seconds))
         if self._has_rust_project():
             logs.append(self._ensure_rust_environment(timeout_seconds))
@@ -239,6 +262,44 @@ class EnvironmentMixin:
         except OSError as e:
             return f"⚠️ Konnte pytest.ini nicht deterministisch anlegen: {e}"
         return "✅ pytest.ini (asyncio_mode=auto, pythonpath=.) deterministisch angelegt - Projekt enthaelt async-Tests, aber keine eigene pytest.ini."
+
+    # Team-Optimierung (NexusForge-Lauf, Schwachstelle 3): _ensure_pytest_available()/
+    # _ensure_pytest_ini() oben sichern nur die LAUFZEIT-Umgebung der eigenen Sandbox ab, wenn
+    # async-Tests existieren - requirements.txt selbst bleibt dabei unverändert. Der
+    # nachgelagerte core/verifier/completeness.py._missing_async_test_dependencies()-Check prüft
+    # aber ausschließlich das MANIFEST (statisch, unabhängig von der Sandbox-Installation), findet
+    # dort weder `pytest-asyncio` noch `anyio` und meldet `verification_ok: false`, obwohl die
+    # Tests in der Sandbox längst grün liefen. Analog zum bestehenden Sanitizer für toxische
+    # Abhängigkeiten (core/manifest_guard.sanitize_requirements_file()) wird `pytest-asyncio`
+    # deshalb deterministisch an requirements.txt angehängt, statt auf den Agenten zu hoffen - nur
+    # wenn requirements.txt bereits existiert (sonst gäbe es kein Manifest, das completeness.py
+    # überhaupt prüft - das fehlende Manifest selbst meldet bereits _missing_dependency_manifest())
+    # und weder `pytest-asyncio` noch `anyio` schon gelistet sind.
+    def _ensure_async_test_manifest_entry(self) -> str:
+        requirements_txt = self.project_dir / "requirements.txt"
+        if not requirements_txt.exists():
+            return ""
+        if not any(
+            "async def test_" in src or "pytest.mark.asyncio" in src
+            for src in self._read_python_test_sources()
+        ):
+            return ""
+        try:
+            content = requirements_txt.read_text(encoding="utf-8", errors="ignore")
+        except OSError as e:
+            return f"⚠️ Konnte requirements.txt nicht auf pytest-asyncio/anyio prüfen: {e}"
+        if _ASYNC_TEST_DEPENDENCY_TOKEN_RE.search(content.lower().replace("_", "-")):
+            return ""
+        separator = "" if (not content or content.endswith("\n")) else "\n"
+        try:
+            requirements_txt.write_text(content + separator + "pytest-asyncio\n", encoding="utf-8")
+        except OSError as e:
+            return f"⚠️ Konnte `pytest-asyncio` nicht deterministisch in requirements.txt eintragen: {e}"
+        return (
+            "✅ `pytest-asyncio` deterministisch an requirements.txt angehängt - Projekt enthält "
+            "async-Tests, aber weder `pytest-asyncio` noch `anyio` waren im Dependency-Manifest "
+            "gelistet."
+        )
 
     def _read_python_test_sources(self) -> list[str]:
         sources: list[str] = []

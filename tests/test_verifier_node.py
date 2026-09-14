@@ -194,6 +194,58 @@ class TestNodeInstallCommandSelection(unittest.TestCase):
         self.assertIn("npm", report.reason_skipped)
 
 
+class TestNodeBuildOnlyProjectEnvironment(unittest.TestCase):
+    """
+    Team-Optimierung (NexusForge-Lauf, Schwachstelle 1): ensure_environment() rief
+    _ensure_node_environment() bisher AUSSCHLIESSLICH für _find_node_projects() (Projekte mit
+    "test"-Skript) auf. Ein reines Frontend (Vite/React) mit nur einem "build"-Skript, aber
+    ohne "test"-Skript, erhielt dadurch VOR dem Build kein `npm install`/`npm ci` -
+    RuntimeMixin.check_frontend_build() scheiterte anschließend mit "keine node_modules
+    erzeugt", obwohl das Projekt selbst fehlerfrei war.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_dir = Path(self.temp_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _write_build_only_project(self) -> None:
+        (self.project_dir / "package.json").write_text(
+            json.dumps({"name": "frontend", "private": True, "scripts": {"build": "vite build"}}),
+            encoding="utf-8",
+        )
+
+    @patch("core.verifier.CodeSandbox.run_command")
+    def test_ensure_environment_installs_npm_dependencies_for_build_only_project(self, mock_run):
+        self._write_build_only_project()
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="", stderr="", duration_seconds=0.1)
+
+        verifier = ProjectVerifier(self.project_dir)
+        result = verifier.ensure_environment()
+
+        mock_run.assert_called_once()
+        self.assertEqual(mock_run.call_args[0][0][:2], ["npm", "install"])
+        self.assertIn("npm install", result)
+
+    @patch("core.verifier.CodeSandbox.run_command")
+    def test_project_with_both_test_and_build_script_is_only_installed_once(self, mock_run):
+        # Ein package.json mit BEIDEN Skripten (test UND build) taucht in beiden Suchen
+        # (_find_node_projects()/_find_node_build_projects()) auf - die Vereinigungsmenge muss
+        # dedupliziert sein, sonst würde `npm install` für dasselbe Verzeichnis doppelt laufen.
+        (self.project_dir / "package.json").write_text(
+            json.dumps({"name": "app", "scripts": {"test": "node test.js", "build": "vite build"}}),
+            encoding="utf-8",
+        )
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="", stderr="", duration_seconds=0.1)
+
+        verifier = ProjectVerifier(self.project_dir)
+        verifier.ensure_environment()
+
+        mock_run.assert_called_once()
+
+
 class TestParseNodeFailures(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()

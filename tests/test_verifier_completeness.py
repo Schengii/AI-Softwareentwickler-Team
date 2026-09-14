@@ -716,6 +716,67 @@ class TestCompletenessCheck(unittest.TestCase):
             report = verifier.check_completeness()
             self.assertTrue(report.passed)
 
+    def test_ensure_environment_deterministically_scaffolds_pytest_asyncio_in_manifest(self):
+        # Team-Optimierung (NexusForge-Lauf, Schwachstelle 3): ensure_environment() sicherte
+        # bisher nur die SANDBOX-Laufzeit ab (pip install pytest-asyncio) - requirements.txt
+        # selbst blieb unverändert, wodurch der obige _missing_async_test_dependencies()-Fund
+        # weiterhin auftrat, obwohl die Tests in der Sandbox längst grün liefen. Nach
+        # ensure_environment() muss `pytest-asyncio` deshalb auch physisch im Manifest stehen,
+        # UND der anschließende check_completeness()-Lauf muss dadurch grün werden.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "main.py").write_text(
+                "from fastapi import FastAPI\napp = FastAPI()\n", encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text(
+                "fastapi\npytest\nhttpx\n", encoding="utf-8",
+            )
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_app.py").write_text(
+                "import pytest\n\n"
+                "@pytest.mark.asyncio\n"
+                "async def test_x():\n    assert True\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            verifier._ensure_async_test_manifest_entry()
+
+            manifest = (project_dir / "requirements.txt").read_text(encoding="utf-8")
+            self.assertIn("pytest-asyncio", manifest)
+            # Bereits vorhandene Einträge dürfen nicht verloren gehen.
+            self.assertIn("fastapi", manifest)
+
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
+    def test_ensure_async_test_manifest_entry_skips_when_anyio_already_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "requirements.txt").write_text("fastapi\nanyio\n", encoding="utf-8")
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_app.py").write_text(
+                "async def test_x():\n    assert True\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            log = verifier._ensure_async_test_manifest_entry()
+
+            self.assertEqual(log, "")
+            manifest = (project_dir / "requirements.txt").read_text(encoding="utf-8")
+            self.assertNotIn("pytest-asyncio", manifest)
+
+    def test_ensure_async_test_manifest_entry_noop_without_requirements_txt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_app.py").write_text(
+                "async def test_x():\n    assert True\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            log = verifier._ensure_async_test_manifest_entry()
+
+            self.assertEqual(log, "")
+            self.assertFalse((project_dir / "requirements.txt").exists())
+
     def test_sync_test_without_asyncio_mark_not_flagged(self):
         with tempfile.TemporaryDirectory() as tmp:
             project_dir = Path(tmp)

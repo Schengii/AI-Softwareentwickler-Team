@@ -157,7 +157,11 @@ jobs:
           # 1. Projekte mit eigenem tsconfig.json prüfen (z.B. ecochef)
           for cfg in workspace/*/tsconfig.json workspace/*/*/tsconfig.json; do
             [ -f "$cfg" ] || continue
+            dir=$(dirname "$cfg")
             echo "::group::tsc ($cfg)"
+            if [ -f "$dir/package.json" ]; then
+              (cd "$dir" && npm ci)
+            fi
             set +e
             output=$(npx --yes -p typescript@5.6.3 tsc -p "$cfg" --noEmit --pretty false --skipLibCheck 2>&1)
             set -e

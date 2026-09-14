@@ -45,6 +45,7 @@ unverändert nutzbar – siehe Re-Exports unten.
 import asyncio
 import logging
 import time
+import traceback
 import uuid
 from collections.abc import Callable
 from difflib import SequenceMatcher
@@ -384,20 +385,66 @@ class Orchestrator(
                 user_request, status_callback, forced_project_dir, plan_confirmation_callback, cancel_requested,
             )
         except BaseException as exc:
-            self._close_unfinished_run_log(f"exception:{type(exc).__name__}")
+            # Gesamtsystem-Analyse (Framework-Analyse 2026-09-14, "verlorene Tracebacks"): bis
+            # hierhin wurde nur der EXCEPTION-KLASSENNAME persistiert (f"exception:{type(exc)
+            # .__name__}"), z.B. "exception:TypeError" - real beobachtet an drei aufeinander-
+            # folgenden ecochef-Läufen (20260913_{124114,140359,163546}), die alle mit demselben
+            # bloßen "TypeError" abbrachen. Ohne Zeile, Modul oder Nachricht war der Fehler aus
+            # den Logs allein NICHT diagnostizierbar - das Projekt blieb unfertig liegen.
+            # interface/cli.py hatte dieselbe Lücke an anderer Stelle (dort: ein blocked-Ticket
+            # mit nur str(e)) bereits einmal erkannt und behoben (dortiger Kommentar: "Ohne den
+            # [Traceback] ist nachträglich nicht mehr rekonstruierbar, WELCHE Zeile den Fehler
+            # auslöste"), aber nie auf DIESEN - strukturell identischen - Handler übertragen.
+            # Jetzt wird der volle Traceback (gedeckelt wie dort: die letzten 1000 Zeichen, denn
+            # dort stehen die eigentliche Fehlermeldung und die tiefsten Stack-Frames) sowohl im
+            # Lauf-Log selbst (für die automatisierte Root-Cause-Analyse, siehe
+            # core/root_cause_analyst.py) als auch als eigenes, NICHT-autonomes Backlog-Ticket
+            # festgehalten - ein Crash hat potenziell eine Framework-Ursache, kein Ticket, das
+            # core/backlog_worker.py von sich aus als Programmierauftrag umsetzen sollte (siehe
+            # dortige _AUTONOMOUS_SOURCES, "orchestrator_crash" ist bewusst nicht enthalten).
+            tb = traceback.format_exc()[-1000:]
+            self._close_unfinished_run_log(f"exception:{type(exc).__name__}", traceback_text=tb)
+            self._record_crash_ticket(exc, tb)
             raise
         finally:
             self._close_unfinished_run_log("returned_without_close")
 
-    def _close_unfinished_run_log(self, reason: str) -> None:
+    def _close_unfinished_run_log(self, reason: str, *, traceback_text: str = "") -> None:
         """Schließt ein noch offenes Lauf-Log als abgebrochen - No-Op, wenn bereits geschlossen."""
         run_logger = self._run_logger
         if run_logger is None or run_logger.closed:
             return
         try:
-            run_logger.close(verification_ok=False, aborted=True, abort_reason=reason)
+            close_fields: dict = {"verification_ok": False, "aborted": True, "abort_reason": reason}
+            if traceback_text:
+                close_fields["traceback"] = traceback_text
+            run_logger.close(**close_fields)
         except Exception as e:
             logging.getLogger(__name__).warning("Lauf-Log konnte nicht abgeschlossen werden: %s", e)
+
+    def _record_crash_ticket(self, exc: BaseException, tb: str) -> None:
+        """Legt bei einem unbehandelten Absturz von process() ein Backlog-Ticket mit vollem
+        (gedecktem) Traceback an - best-effort, ein Fehler hier darf den ohnehin bereits
+        laufenden Absturz-Pfad nicht zusätzlich verschlimmern (siehe process()-Docstring/
+        Kommentar oben)."""
+        try:
+            slug = self.last_project_slug or "unbekannt"
+            # Eine stabile, vom konkreten Zeitstempel unabhängige ticket_id (Exception-Klasse +
+            # Projekt-Slug) dedupliziert wiederholte Abstürze DERSELBEN Ursache zu einem Ticket,
+            # statt bei jedem der drei ecochef-Läufe ein neues, gleich lautendes anzulegen -
+            # dieselbe Update-statt-Neuanlage-Logik wie bei den "recurring-failure-"-Tickets in
+            # agents/orchestrator/verification.py.
+            ticket_id = f"orchestrator-crash-{type(exc).__name__}-{slug}"
+            upsert_ticket(
+                ticket_id=ticket_id,
+                title=f"Orchestrator-Absturz ({type(exc).__name__}) bei {slug}",
+                source="orchestrator_crash",
+                status="blocked",
+                project_slug=slug,
+                detail=f"{exc}\n\n{tb}"[:1200],
+            )
+        except Exception as e:
+            logging.getLogger(__name__).warning("Absturz-Ticket konnte nicht angelegt werden: %s", e)
 
     async def _process_impl(
         self,
@@ -1248,6 +1295,26 @@ class Orchestrator(
                 verification_ok=verification_ok,
                 verification_summary=verification_summary,
                 definition_of_done=self.last_definition_of_done,
+            )
+            # Gesamtsystem-Analyse 2026-09-14, Punkt 3.1: zusätzlich zum obigen (immer
+            # laufenden, aber werkzeuglosen) Trainer-Aufruf bei einem echten Warnsignal eine
+            # Tiefenanalyse MIT echtem Tool-Zugriff auslösen (core/root_cause_analyst.py) -
+            # schließt die Lücke, die bisher nur manuelle Analyse-Sitzungen füllten.
+            await self._maybe_run_root_cause_analysis(
+                user_request=user_request,
+                verification_ok=verification_ok,
+                verification_summary=verification_summary,
+                files_written=geschriebene_dateien,
+                project_dir=project_dir,
+                notify=notify,
+            )
+            # Gesamtsystem-Analyse 2026-09-14, Punkt 3.2: nur bei tatsächlich bestandener
+            # Verifikation - siehe _maybe_harvest_reusable_components-Docstring.
+            self._maybe_harvest_reusable_components(
+                verification_ok=verification_ok,
+                project_dir=project_dir,
+                project_slug=self.last_project_slug,
+                notify=notify,
             )
 
         stats_table = self._build_metrics_summary(

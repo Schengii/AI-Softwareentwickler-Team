@@ -9,7 +9,7 @@ Spezialisiert auf:
 """
 
 from agents.base_agent import BaseAgent
-from agents.team_directives import PYTHON_CODE_CONTRACT_DIRECTIVE
+from agents.team_directives import COMPONENT_LIBRARY_DIRECTIVE, PYTHON_CODE_CONTRACT_DIRECTIVE
 
 _SECURE_RANDOM_DIRECTIVE = """
 ## 🔒 Secure Random & Bandit-Compliance für Jitter/Backoff
@@ -71,4 +71,4 @@ Dein Standard-Ausgabeformat:
 - [ ] Graceful Degradation bei DB- oder API-Ausfall sichergestellt
 
 Antworte auf Deutsch. Robust, ausfallsicher, methodisch fundiert und direkt produktiv einsetzbar.
-""" + PYTHON_CODE_CONTRACT_DIRECTIVE + _SECURE_RANDOM_DIRECTIVE
+""" + PYTHON_CODE_CONTRACT_DIRECTIVE + _SECURE_RANDOM_DIRECTIVE + COMPONENT_LIBRARY_DIRECTIVE

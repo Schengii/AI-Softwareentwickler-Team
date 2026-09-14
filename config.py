@@ -890,6 +890,22 @@ ENABLE_AUTO_MODEL_TUNING: bool = os.getenv("ENABLE_AUTO_MODEL_TUNING", "false").
 AUTO_TUNED_MODELS_FILE: str = os.path.join(MEMORY_DIR, "auto_tuned_models.json")
 
 # ──────────────────────────────────────────
+# Automatisierter Root-Cause-Analyst (core/root_cause_analyst.py)
+# ──────────────────────────────────────────
+# Gesamtsystem-Analyse 2026-09-14, Punkt 3.1: die Tiefenanalysen, die zu den wichtigsten
+# Framework-Fixes geführt haben (Verification Reserve Paradox, Ghost-Frontend, falsches
+# Fehler-Routing), entstanden bisher AUSSCHLIESSLICH in manuellen Analyse-Sitzungen - der
+# automatisch laufende Retrospektive-/Trainer-Schritt bekommt nur gekürzte Prosa-Auszüge OHNE
+# Tool-Zugriff. Anders als ENABLE_AUTO_MODEL_TUNING oben ist dies standardmäßig AN: der
+# Root-Cause-Analyst ändert selbst NIE automatisch Code (core/root_cause_analyst.py legt nur
+# Vorschlags-Tickets mit source="root_cause_analysis" an, NICHT in core/backlog_worker.py.
+# _AUTONOMOUS_SOURCES enthalten - dieselbe Vorsicht wie core/roadmap_advisor.py), das Risiko
+# einer überraschenden Verhaltensänderung besteht hier also nicht - nur ein zusätzlicher,
+# gezielt getriggerter LLM-Aufruf bei echten Warnsignalen (core/root_cause_analyst.should_
+# trigger()), dessen Tokenkosten Nutzer per .env dennoch abschalten können.
+ENABLE_ROOT_CAUSE_ANALYST: bool = os.getenv("ENABLE_ROOT_CAUSE_ANALYST", "true").strip().lower() in ("true", "1", "yes")
+
+# ──────────────────────────────────────────
 # Obsidian Vault & Gedächtnis-Synchronisation (core/obsidian_sync.py)
 # ──────────────────────────────────────────
 OBSIDIAN_VAULT_PATH: str = os.getenv("OBSIDIAN_VAULT_PATH", r"C:\Users\sche-\Desktop\Obsidian")

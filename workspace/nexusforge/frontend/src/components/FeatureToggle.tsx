@@ -31,3 +31,5 @@ export const FeatureToggle: React.FC<FeatureToggleProps> = ({ label, checked, on
     </div>
   );
 };
+
+export default FeatureToggle;

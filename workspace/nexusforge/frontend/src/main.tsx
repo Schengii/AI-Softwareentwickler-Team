@@ -11,7 +11,7 @@ const App: React.FC = () => {
         <p className="text-slate-400 text-sm mt-1">Feature Flag & Canary Management</p>
       </header>
       <main className="max-w-6xl mx-auto">
-        <FeatureToggle />
+        <FeatureToggle label="Canary Deployment Flag" checked={true} onChange={() => {}} />
       </main>
     </div>
   );

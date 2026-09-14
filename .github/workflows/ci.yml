@@ -119,7 +119,7 @@ jobs:
             if [ "$has_test" = "1" ]; then
               found_any=1
               echo "::group::npm test ($dir)"
-              (cd "$dir" && npm ci && npm test)
+              (cd "$dir" && { [ -f package-lock.json ] && npm ci || npm install --prefer-offline --no-audit; } && npm test)
               echo "::endgroup::"
             fi
           done
@@ -160,7 +160,7 @@ jobs:
             dir=$(dirname "$cfg")
             echo "::group::tsc ($cfg)"
             if [ -f "$dir/package.json" ]; then
-              (cd "$dir" && npm ci)
+              (cd "$dir" && { [ -f package-lock.json ] && npm ci || npm install --prefer-offline --no-audit; })
             fi
             set +e
             output=$(npx --yes -p typescript@5.6.3 tsc -p "$cfg" --noEmit --pretty false --skipLibCheck 2>&1)

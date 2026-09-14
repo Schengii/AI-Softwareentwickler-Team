@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DevPulse — Entwickler-Aktivitäts- & Fokus-Dashboard</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <div class="bg-glow glow-1"></div>
+  <div class="bg-glow glow-2"></div>
+  <div class="bg-glow glow-3"></div>
+
+  <div class="app-layout">
+    <aside class="sidebar glass-panel">
+      <div class="brand">
+        <div class="brand-logo" aria-hidden="true">⚡</div>
+        <div class="brand-text">
+          <h1>DevPulse</h1>
+          <span>Activity Tracker</span>
+        </div>
+      </div>
+
+      <nav class="nav-menu" role="tablist" aria-label="Hauptnavigation">
+        <button class="nav-item active" role="tab" aria-selected="true" aria-controls="tab-dashboard" data-tab="dashboard">
+          Dashboard & Timer
+        </button>
+        <button class="nav-item" role="tab" aria-selected="false" aria-controls="tab-sessions" data-tab="sessions">
+          Sitzungs-Historie
+        </button>
+        <button class="nav-item" role="tab" aria-selected="false" aria-controls="tab-git" data-tab="git">
+          Git-Aktivitäts-Log
+        </button>
+        <button class="nav-item" role="tab" aria-selected="false" aria-controls="tab-projects" data-tab="projects">
+          Projekte
+        </button>
+        <button class="nav-item" role="tab" aria-selected="false" aria-controls="tab-export" data-tab="export">
+          Export & Backup
+        </button>
+      </nav>
+
+      <div class="sidebar-status">
+        <div class="status-indicator">
+          <span class="status-dot online" aria-hidden="true"></span>
+          <span id="backend-status-text">Verbunden</span>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+      <section id="tab-dashboard" role="tabpanel" aria-labelledby="tab-dashboard-label" class="tab-pane active">
+        <!-- ... Inhalt ... -->
+        <div class="timer-display-wrap">
+          <div class="timer-circle">
+            <div class="timer-time" id="timer-display" aria-label="Aktuelle Fokuszeit">25:00</div>
+            <div class="timer-state-label" id="timer-mode-label" aria-live="off">Bereit</div>
+          </div>
+        </div>
+        <!-- ... Formulare ... -->
+      </section>
+    </main>
+  </div>
+</body>
+</html>

@@ -356,7 +356,20 @@ def _route_failure_owners(
         # Befund 2: der Traceback zeigt oft nur die aufrufende Stelle (z.B. einen Test) -
         # ergänzt den tatsächlichen Autor der Klasse, statt ihn dem tester-Fallback zu
         # überlassen bzw. ganz zu übergehen.
+        #
+        # Schwachstelle 1 (ki_team_schwachstellen_und_fehleranalyse_devpulse_20260914.md,
+        # DevPulse-Lauf 20260914_082830): das reine `owners.add(class_owner)` oben ließ den
+        # tester zusätzlich in owners ({tester, database}) - der Eskalationspfad adressierte
+        # danach weiterhin primär den tester, der sein (korrektes) Test-Assertion zu Recht
+        # nicht ungültig machte, das fremde Repository (session_repo.py) aber fachlich nicht
+        # ergänzen konnte. Der Fix-Loop drehte sich deshalb 31 Agenten-Aufrufe/997k Tokens
+        # lang im Kreis, ohne dass der tatsächliche Autor der Klasse (database) je GEZIELT
+        # (ohne den ablehnenden tester) beauftragt wurde. Der echte Klassen-Autor ersetzt
+        # den tester deshalb vollständig - außer er IST der tester selbst (z.B. eine reine
+        # Test-Hilfsklasse in conftest.py), dann bleibt er zuständig.
         owners.add(class_owner)
+        if class_owner != "tester":
+            owners.discard("tester")
     elif "tester" in owners and any(
         not _is_test_file(f) and file_owners.get(f) not in (None, "tester") for f in files
     ):

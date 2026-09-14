@@ -191,7 +191,13 @@ class TestInstanceAttributeErrorRouting(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
 
-    def test_class_owner_is_added_alongside_tester(self):
+    def test_class_owner_replaces_tester(self):
+        # Schwachstelle 1 (ki_team_schwachstellen_und_fehleranalyse_devpulse_20260914.md,
+        # DevPulse-Lauf 20260914_082830): `AttributeError: 'SessionRepository' object has no
+        # attribute 'get_by_id'` landete bisher bei {tester, database} - der tester lehnte
+        # den Fix seines fremden, aber korrekten Tests zu Recht ab und der eigentliche Autor
+        # der Klasse wurde nie GEZIELT (ohne den ablehnenden tester) beauftragt, wodurch der
+        # Fix-Loop sich im Kreis drehte. Der Klassen-Autor muss den tester hier ersetzen.
         self._write(
             "app/services/anomaly_detector.py",
             "class AnomalyDetector:\n    def check_anomaly(self, metric):\n        return False, 0.0\n",
@@ -205,7 +211,26 @@ class TestInstanceAttributeErrorRouting(unittest.TestCase):
         result = _route_failure_owners(
             message, ["tests/test_ledger.py"], owners, {"ml", "tester"}, True, project_dir=str(self.root),
         )
-        self.assertEqual(result, {"tester", "ml"})
+        self.assertEqual(result, {"ml"})
+
+    def test_class_owner_that_is_the_tester_itself_stays(self):
+        # Gegenprobe: definiert der tester die Klasse selbst (z.B. eine Test-Hilfsklasse in
+        # conftest.py), gibt es keinen anderen Autor, der ihn ersetzen könnte - er bleibt
+        # zuständig statt dass owners am Ende leer wäre.
+        self._write(
+            "tests/conftest.py",
+            "class FakeClock:\n    def now(self):\n        return 0\n",
+        )
+        owners = {"tests/conftest.py": "tester", "tests/test_ledger.py": "tester"}
+        message = (
+            "tests/test_ledger.py:10: in test_uses_fake_clock\n"
+            "    clock.advance(5)\n"
+            "E   AttributeError: 'FakeClock' object has no attribute 'advance'"
+        )
+        result = _route_failure_owners(
+            message, ["tests/test_ledger.py"], owners, {"tester"}, True, project_dir=str(self.root),
+        )
+        self.assertEqual(result, {"tester"})
 
     def test_dict_attribute_error_is_not_treated_as_class_lookup(self):
         # Bleibt vom bereits existierenden dict-spezifischen Routing (-> backend) unberührt.

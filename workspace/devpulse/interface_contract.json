@@ -1,0 +1,24 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/db/database.py": {
+      "get_db": "function",
+      "Base": "constant"
+    },
+    "app/repositories/session_repo.py": {
+      "SessionRepository": "class"
+    },
+    "app/repositories/project_repo.py": {
+      "ProjectRepository": "class"
+    },
+    "app/services/stats_service.py": {
+      "StatsService": "class"
+    },
+    "app/services/export_service.py": {
+      "ExportService": "class"
+    }
+  }
+}

@@ -153,28 +153,52 @@ jobs:
       - name: tsc --noEmit über alle workspace/-.ts(x)-Dateien (Typ-Umgebungsrauschen bewusst ignoriert)
         shell: bash
         run: |
-          files=$(git ls-files 'workspace/*.ts' 'workspace/*.tsx')
-          if [ -z "$files" ]; then
-            echo "Keine workspace/-TypeScript-Dateien gefunden - nichts zu tun."
-            exit 0
-          fi
-          set +e
-          output=$(npx --yes -p typescript@5.6.3 tsc --noEmit --pretty false \
-            --experimentalDecorators --useDefineForClassFields false \
-            --lib es2022,dom,dom.iterable \
-            --jsx react-jsx --esModuleInterop --skipLibCheck \
-            --moduleResolution node --target es2020 --module esnext $files 2>&1)
           set -e
-          echo "$output"
-          # TS2307 = "Cannot find module" (node_modules nicht committet)
-          # TS2582/TS2304/TS2503/TS2708/TS2694 = globale Test-Runner-/Jest-Definitionen (@types/jest / describe / it / expect / jest.fn)
-          real_errors=$(echo "$output" | grep -E "error TS" \
-            | grep -v "error TS2307:" \
-            | grep -vE "error TS(2503|2582|2304|2708|2694):" || true)
-          if [ -n "$real_errors" ]; then
-            echo "::error::Echte TypeScript-Fehler gefunden (Umgebungs-/Typrauschen bewusst ignoriert):"
-            echo "$real_errors"
-            exit 1
+          # 1. Projekte mit eigenem tsconfig.json prüfen (z.B. ecochef)
+          for cfg in workspace/*/tsconfig.json workspace/*/*/tsconfig.json; do
+            [ -f "$cfg" ] || continue
+            echo "::group::tsc ($cfg)"
+            set +e
+            output=$(npx --yes -p typescript@5.6.3 tsc -p "$cfg" --noEmit --pretty false --skipLibCheck 2>&1)
+            set -e
+            echo "$output"
+            real_errors=$(echo "$output" | grep -E "error TS" \
+              | grep -v "error TS2307:" \
+              | grep -vE "error TS(2503|2582|2304|2708|2694):" || true)
+            if [ -n "$real_errors" ]; then
+              echo "::error::Echte TypeScript-Fehler in $cfg gefunden:"
+              echo "$real_errors"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
+
+          # 2. Standalone-Fragmente ohne eigenes tsconfig.json prüfen
+          standalone_files=""
+          for f in $(git ls-files 'workspace/*.ts' 'workspace/*.tsx'); do
+            dir=$(dirname "$f")
+            if [ ! -f "$dir/tsconfig.json" ] && [ ! -f "$dir/../tsconfig.json" ] && [ ! -f "$dir/../../tsconfig.json" ]; then
+              standalone_files="$standalone_files $f"
+            fi
+          done
+
+          if [ -n "$standalone_files" ]; then
+            echo "::group::tsc standalone files ($standalone_files)"
+            set +e
+            output=$(npx --yes -p typescript@5.6.3 tsc --noEmit --pretty false \
+              --jsx react-jsx --esModuleInterop --skipLibCheck \
+              --moduleResolution node --target es2020 --module esnext $standalone_files 2>&1)
+            set -e
+            echo "$output"
+            real_errors=$(echo "$output" | grep -E "error TS" \
+              | grep -v "error TS2307:" \
+              | grep -vE "error TS(2503|2582|2304|2708|2694):" || true)
+            if [ -n "$real_errors" ]; then
+              echo "::error::Echte TypeScript-Fehler in Standalone-Dateien gefunden:"
+              echo "$real_errors"
+              exit 1
+            fi
+            echo "::endgroup::"
           fi
 
   workspace-python-check:

@@ -43,8 +43,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from config import BASE_DIR, MEMORY_DIR
-from core.backlog_store import upsert_ticket
+from core.backlog_store import list_tickets, upsert_ticket
 from core.message_bus import AgentTask
+from core.notifier import notify_external
 from core.team_memory import record_lesson
 
 TICKET_SOURCE = "root_cause_analysis"
@@ -112,6 +113,23 @@ MAX_EVIDENCE_CHARS_PER_LOG = 12_000
 # etwas großzügiger, weil ein Root-Cause-Befund Titel, Ursache UND Empfehlung in einem Detail
 # trägt.
 MAX_FINDING_DETAIL_CHARS = 1500
+# Großzügigerer Deckel, wenn zusätzlich ein Regressionstest-Vorschlag (Python-Code, siehe
+# _TASK_PROMPT) im Detail steht - der einfache MAX_FINDING_DETAIL_CHARS-Deckel würde einen
+# eingebetteten Testfall sonst mitten im Code abschneiden und ein syntaktisch kaputtes Fragment
+# im Ticket hinterlassen (schlimmer als gar kein Testvorschlag).
+MAX_FINDING_DETAIL_CHARS_WITH_TEST = 4000
+
+# Team-Optimierung (Folgeanalyse 2026-09-14, Empfehlung 3 "teamweite Eskalation"): ein einzelnes
+# Framework-Ticket pro Projekt (siehe _ticket_id_for()) zeigt nicht, wenn DIESELBE Schwachstelle
+# an MEHREREN, voneinander UNABHÄNGIGEN Projekten auftritt - genau das ist aber das stärkste
+# Signal, dass eine Prompt-Regel allein nicht reicht und ein deterministischer Check im
+# Framework selbst nötig ist (dieselbe Erkenntnis wie agents/agent_trainer_agent.py's
+# "deterministischer Check-Vorschlag"-Grenze). Kleiner als core/optimization_advisor.py's
+# MIN_TEAMWIDE_LESSON_RECURRENCE (dort 5, für einfache Team-Lektionen mit viel Rauschen): ein
+# Root-Cause-Befund ist bereits durch eine echte Tiefenanalyse mit Tool-Zugriff gestützt, kein
+# bloßes Freitext-Lernsignal - 3 UNABHÄNGIGE Projekte, die denselben Framework-Bug treffen, sind
+# dafür schon ein hinreichend starkes, seltenes Signal.
+MIN_CROSS_PROJECT_RECURRENCE = 3
 
 # Folgeanalyse 2026-09-14 ("kritischer Befund 1"): die ursprüngliche Version verlangte ZWISCHEN
 # den vier Feldern (Kategorie/Titel/Root Cause/Empfehlung) exakt EINEN Zeilenumbruch, keinen
@@ -131,18 +149,43 @@ _BEFUND_HEADER_RE = re.compile(r"#{2,4}\s*Befund\s*\d+\s*", re.IGNORECASE)
 # KEIN Zeilenumbruch davor) - verhindert, dass "Empfehlung" o.Ä. zufällig MITTEN in einem Satz
 # (z.B. innerhalb des Root-Cause-Fließtexts) fälschlich als neues Feld erkannt wird.
 _FIELD_LABEL_RE = re.compile(
-    r"^[ \t]*\**\s*(Kategorie|Titel|Root\s*Cause|Empfehlung)\s*\**\s*:?\s*\**",
+    # "(?:-Vorschlag)?" deckt sowohl "Regressionstest:" als auch das im Prompt tatsächlich
+    # verlangte "Regressionstest-Vorschlag:" ab - ohne diesen Zusatz endete der Label-Treffer
+    # bereits nach "Regressionstest" und "-Vorschlag:**" landete fälschlich IM Feldinhalt.
+    r"^[ \t]*\**\s*(Kategorie|Titel|Root\s*Cause|Empfehlung|Regressionstest(?:-Vorschlag)?)\s*\**\s*:?\s*\**",
     re.IGNORECASE | re.MULTILINE,
 )
-_FIELD_KEY_MAP = {"kategorie": "category", "titel": "title", "rootcause": "root_cause", "empfehlung": "recommendation"}
+_FIELD_KEY_MAP = {
+    "kategorie": "category", "titel": "title", "rootcause": "root_cause", "empfehlung": "recommendation",
+    "regressionstest": "regression_test",
+    # Normalisierung entfernt nur \s+ (siehe _parse_fields), NICHT den Bindestrich - "Regressions-
+    # test-Vorschlag" normalisiert deshalb zu "regressionstest-vorschlag", ein eigener Schlüssel.
+    "regressionstest-vorschlag": "regression_test",
+}
 _NORMALIZE_TITLE_RE = re.compile(r"[^a-z0-9]+")
+
+
+_CODE_FENCE_RE = re.compile(r"^```(?:python)?\s*\n(.*?)\n?```\s*$", re.DOTALL)
+
+
+def _strip_code_fence(text: str) -> str:
+    """Entfernt einen umschließenden ```-Codeblock, falls vorhanden - Modelle setzen
+    Python-Code trotz Anweisung, nur den rohen Code zu liefern, oft trotzdem in einen
+    Markdown-Codefence."""
+    stripped = text.strip()
+    m = _CODE_FENCE_RE.match(stripped)
+    return m.group(1) if m else stripped
 
 
 def _parse_fields(block: str) -> dict[str, str]:
     """Lokalisiert jedes bekannte Feld-Label im Block (Reihenfolge/Leerzeilen egal) und
     übernimmt den Text bis zum NÄCHSTEN Label (oder Blockende) als Feldinhalt. Ein doppelt
     vorkommendes Label behält den ERSTEN Treffer (ein Modell, das ausversehen "Empfehlung"
-    zweimal schreibt, soll nicht den ursprünglichen Inhalt stillschweigend überschreiben)."""
+    zweimal schreibt, soll nicht den ursprünglichen Inhalt stillschweigend überschreiben).
+
+    "regression_test" behält bewusst die ROHE Formatierung (Zeilenumbrüche/Einrückung) - anders
+    als die übrigen (Prosa-)Felder, die auf eine Zeile zusammengefasst werden, wäre Python-Code
+    ohne seine Einrückung nicht mehr lauffähig."""
     matches = list(_FIELD_LABEL_RE.finditer(block))
     fields: dict[str, str] = {}
     for i, m in enumerate(matches):
@@ -150,7 +193,8 @@ def _parse_fields(block: str) -> dict[str, str]:
         if not key or key in fields:
             continue
         end = matches[i + 1].start() if i + 1 < len(matches) else len(block)
-        fields[key] = " ".join(block[m.end():end].split())
+        raw = block[m.end():end]
+        fields[key] = raw.strip() if key == "regression_test" else " ".join(raw.split())
     return fields
 
 _TASK_PROMPT = """Du bist der Root-Cause-Analyst des Teams (siehe agents/agent_trainer_agent.py-
@@ -177,6 +221,12 @@ Format, jeder Befund als eigener Block, keine Abweichung (wird maschinell gepars
 **Root Cause:** Ein bis drei Sätze, WARUM der Fehler wirklich passiert ist (nicht nur was).
 **Empfehlung:** Ein bis drei Sätze, was konkret geändert werden sollte (Datei/Funktion nennen,
 wenn bekannt).
+**Regressionstest-Vorschlag:** NUR bei Kategorie "framework" UND NUR wenn du dir wirklich sicher
+bist, wie ein Test aussehen müsste: ein minimaler, lauffähiger pytest-Testfall (Python-Code) im
+Stil der bestehenden tests/test_*.py-Dateien, der den Fehler REPRODUZIERT (also mit dem aktuell
+fehlerhaften Framework-Code fehlschlägt) und nach einem korrekten Fix bestehen würde. Lass diese
+Zeile KOMPLETT WEG (nicht einmal das Label), wenn du dir nicht sicher bist oder die Kategorie
+"projekt" ist - ein erfundener/falscher Test ist schädlicher als gar keiner.
 
 ### Befund 2
 (usw., nur so viele Befunde wie tatsächlich durch echte Evidenz gestützt sind - lieber ein
@@ -292,7 +342,11 @@ def extract_findings(report_text: str) -> list[dict[str, str]]:
     wird stillschweigend übersprungen (dieselbe Toleranz wie core/roadmap_advisor.py._parse_
     proposals gegenüber frei formuliertem LLM-Text), statt die ganze Analyse zu verwerfen.
     Fehlt "Kategorie" (Modell hat das Label ausgelassen), gilt der Befund sicherheitshalber als
-    "projekt" (niedrigere Priorität in record_findings_as_tickets()) statt als "framework"."""
+    "projekt" (niedrigere Priorität in record_findings_as_tickets()) statt als "framework".
+
+    "regression_test" ist bewusst OPTIONAL (leerer String, wenn das Modell die Zeile wie im
+    Prompt angewiesen ausgelassen hat) - siehe _TASK_PROMPT: ein erfundener Test wäre
+    schädlicher als gar keiner, das Feld soll deshalb nicht erzwungen werden."""
     findings = []
     for block in _BEFUND_HEADER_RE.split(report_text)[1:]:  # [0] ist die Einleitung vor "### Befund 1"
         fields = _parse_fields(block)
@@ -306,6 +360,7 @@ def extract_findings(report_text: str) -> list[dict[str, str]]:
             "title": title,
             "root_cause": root_cause,
             "recommendation": recommendation,
+            "regression_test": _strip_code_fence(fields.get("regression_test", "")),
         })
     return findings
 
@@ -319,18 +374,101 @@ def _ticket_id_for(project_slug: str, title: str) -> str:
     return f"root-cause-{project_slug}-{normalized}"
 
 
+def _teamwide_ticket_id_for(title: str) -> str:
+    normalized = _NORMALIZE_TITLE_RE.sub("-", title.lower()).strip("-")[:60] or "befund"
+    return f"root-cause-teamwide-{normalized}"
+
+
+def _affected_projects_for_title(title: str) -> set[str]:
+    """Alle project_slugs, an denen bereits ein Root-Cause-Ticket mit demselben normalisierten
+    Titel existiert - rekonstruiert den erwarteten _ticket_id_for()-Wert je Ticket statt frei
+    nach dem Titel zu suchen, um Wort-Teiltreffer (z.B. ein Titel, der Substring eines anderen
+    ist) sicher auszuschließen."""
+    normalized = _NORMALIZE_TITLE_RE.sub("-", title.lower()).strip("-")[:60] or "befund"
+    projects: set[str] = set()
+    for ticket in list_tickets():
+        if ticket.source != TICKET_SOURCE or not ticket.project_slug:
+            continue
+        if ticket.id == f"root-cause-{ticket.project_slug}-{normalized}":
+            projects.add(ticket.project_slug)
+    return projects
+
+
+def _escalate_if_teamwide_pattern(
+    title: str, root_cause: str, recommendation: str, current_project_slug: str, previously_known_projects: set[str],
+) -> str | None:
+    """Legt ein teamweites Sammel-Ticket an UND benachrichtigt extern (core/notifier.py,
+    No-op ohne konfigurierten Webhook), wenn `current_project_slug` das MIN_CROSS_PROJECT_
+    RECURRENCE-te UNABHÄNGIGE Projekt ist, das denselben Framework-Befund trifft. `previously_
+    known_projects` MUSS vor dem eigenen upsert_ticket() des aktuellen Projekts ermittelt worden
+    sein (siehe Aufrufer) - so wird zuverlässig unterschieden zwischen "dieses Projekt hatte den
+    Fund schon einmal" (kein neuer Eskalations-Grund, dasselbe Ticket wird nur aufgefrischt) und
+    "ein GENUIN NEUES Projekt ist gerade hinzugekommen" (löst höchstens EINMAL pro neu
+    hinzukommendem Projekt eine Benachrichtigung aus, kein Spam bei jedem erneuten Lauf
+    desselben bereits bekannten Projekts).
+
+    Bewusst NUR eine zusätzliche Sichtbarkeits-Maßnahme (Sammel-Ticket + Notification), KEINE
+    automatische Code-Änderung - dieselbe Zurückhaltung wie der Rest dieses Moduls."""
+    if current_project_slug in previously_known_projects:
+        return None
+    total_projects = previously_known_projects | {current_project_slug}
+    if len(total_projects) < MIN_CROSS_PROJECT_RECURRENCE:
+        return None
+
+    ticket_id = _teamwide_ticket_id_for(title)
+    projects_list = ", ".join(sorted(total_projects))
+    detail = (
+        f"Root Cause: {root_cause}\n\nEmpfehlung: {recommendation}\n\n"
+        f"Betroffene Projekte ({len(total_projects)}): {projects_list}"
+    )[:MAX_FINDING_DETAIL_CHARS]
+    try:
+        upsert_ticket(
+            ticket_id=ticket_id,
+            title=f"🔁 Team-weit wiederkehrend ({len(total_projects)} Projekte): {title}",
+            source=TICKET_SOURCE,
+            status="blocked",
+            priority=1,
+            detail=detail,
+        )
+    except Exception:
+        return None
+    try:
+        notify_external(
+            "Team-weit wiederkehrender Root-Cause-Befund",
+            f"'{title}' trat jetzt an {len(total_projects)} unabhängigen Projekten auf ({projects_list}) - "
+            "vermutlich reicht eine Prompt-Regel allein nicht, ein deterministischer Check könnte nötig sein.",
+        )
+    except Exception:
+        pass
+    return ticket_id
+
+
 def record_findings_as_tickets(project_slug: str, findings: list[dict[str, str]]) -> list[str]:
     """Legt für jeden Befund ein eigenes, NICHT-autonomes Ticket an (source=TICKET_SOURCE - siehe
     core/backlog_worker.py._AUTONOMOUS_SOURCES: ein Framework- oder Projekt-Root-Cause-Befund ist
     ein Vorschlag, den ein Mensch reviewen soll, kein Auftrag, den --work-backlog selbstständig
     umsetzen darf) UND spiegelt ihn zusätzlich als Team-Lektion (core/team_memory.py), damit er
-    auch OHNE das Dashboard/Backlog-Board künftigen Agenten-Prompts direkt mitgegeben wird."""
+    auch OHNE das Dashboard/Backlog-Board künftigen Agenten-Prompts direkt mitgegeben wird.
+
+    Framework-Befunde werden zusätzlich auf teamweite Wiederkehr geprüft (siehe
+    _escalate_if_teamwide_pattern()) und - falls vorhanden - um einen Regressionstest-Vorschlag
+    im Detail ergänzt (siehe MAX_FINDING_DETAIL_CHARS_WITH_TEST)."""
     ticket_ids: list[str] = []
     for finding in findings:
         title, category = finding["title"], finding["category"]
-        detail = (
-            f"[{category}] Root Cause: {finding['root_cause']}\n\nEmpfehlung: {finding['recommendation']}"
-        )[:MAX_FINDING_DETAIL_CHARS]
+        regression_test = finding.get("regression_test", "")
+        detail = f"[{category}] Root Cause: {finding['root_cause']}\n\nEmpfehlung: {finding['recommendation']}"
+        if regression_test:
+            detail += f"\n\nRegressionstest-Vorschlag:\n```python\n{regression_test}\n```"
+            detail = detail[:MAX_FINDING_DETAIL_CHARS_WITH_TEST]
+        else:
+            detail = detail[:MAX_FINDING_DETAIL_CHARS]
+
+        # VOR dem eigenen upsert_ticket() ermittelt - siehe _escalate_if_teamwide_pattern()-
+        # Docstring, sonst würde dieses Projekt sich selbst fälschlich als "bereits bekannt"
+        # zählen und eine echte Neuzugang-Eskalation verpassen.
+        previously_known_projects = _affected_projects_for_title(title) if category == "framework" else set()
+
         ticket_id = _ticket_id_for(project_slug, title)
         try:
             upsert_ticket(
@@ -348,11 +486,40 @@ def record_findings_as_tickets(project_slug: str, findings: list[dict[str, str]]
             # dasselbe Best-effort-Prinzip wie core/optimization_advisor.py.record_unused_
             # agent_tickets().
             continue
+
+        if category == "framework":
+            _escalate_if_teamwide_pattern(
+                title, finding["root_cause"], finding["recommendation"], project_slug, previously_known_projects,
+            )
+
         try:
             record_lesson(project_slug, "root_cause_analysis", f"{title}: {finding['root_cause']}")
         except Exception:
             pass
     return ticket_ids
+
+
+@dataclass
+class RootCauseActionRate:
+    """Kennzahl, WIE VIELE Root-Cause-Tickets tatsächlich bearbeitet (status='done') wurden -
+    Folgeanalyse 2026-09-14, Empfehlung 2: ohne diese Sichtbarkeit lässt sich nicht beurteilen,
+    ob der Lern-Kreislauf wirklich schließt oder nur Tickets produziert, die liegen bleiben."""
+    total: int
+    done: int
+    open: int
+
+    @property
+    def action_rate_pct(self) -> float:
+        return round(100.0 * self.done / self.total, 1) if self.total else 0.0
+
+
+def get_action_rate() -> RootCauseActionRate:
+    """Zählt ALLE jemals angelegten Root-Cause-Tickets (nicht auf ein Projekt beschränkt) nach
+    Status - für CLI-/Dashboard-Anzeigen, ob die Team-Selbstoptimierung tatsächlich zu
+    gemergten Fixes führt."""
+    tickets = [t for t in list_tickets() if t.source == TICKET_SOURCE]
+    done = sum(1 for t in tickets if t.status == "done")
+    return RootCauseActionRate(total=len(tickets), done=done, open=len(tickets) - done)
 
 
 @dataclass

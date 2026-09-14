@@ -252,6 +252,135 @@ class TestRecordFindingsAsTickets(unittest.TestCase):
         all_root_cause_tickets = [t for t in list_tickets() if t.source == TICKET_SOURCE]
         self.assertEqual(len(all_root_cause_tickets), 2)
 
+    def test_regression_test_is_embedded_in_ticket_detail_when_present(self):
+        """Folgeanalyse 2026-09-14, Empfehlung 1: ein Regressionstest-Vorschlag soll direkt im
+        Ticket sichtbar sein, nicht nur in der rohen LLM-Antwort verschwinden."""
+        response = """### Befund 1
+**Kategorie:** framework
+**Titel:** Fehlender Cooldown
+**Root Cause:** Kein Kostenschutz vorhanden.
+**Empfehlung:** Cooldown ergänzen.
+**Regressionstest-Vorschlag:**
+```python
+def test_cooldown_blocks_second_call():
+    assert True
+```
+"""
+        findings = extract_findings(response)
+        ticket_ids = record_findings_as_tickets("meinprojekt", findings)
+        ticket = get_ticket(ticket_ids[0])
+        self.assertIn("Regressionstest-Vorschlag", ticket.detail)
+        self.assertIn("def test_cooldown_blocks_second_call", ticket.detail)
+
+    def test_no_regression_test_section_when_model_omitted_it(self):
+        findings = extract_findings(_WELL_FORMED_RESPONSE)
+        ticket_ids = record_findings_as_tickets("meinprojekt", findings)
+        ticket = get_ticket(ticket_ids[0])
+        self.assertNotIn("Regressionstest-Vorschlag", ticket.detail)
+
+
+class TestTeamwideEscalation(unittest.TestCase):
+    """Folgeanalyse 2026-09-14, Empfehlung 3: dieselbe Framework-Schwachstelle an mehreren
+    UNABHÄNGIGEN Projekten ist ein stärkeres Signal als ein einzelnes Projekt-Ticket."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self._patcher = patch.object(backlog_store_module, "BACKLOG_FILE", Path(self.temp_dir) / "backlog.json")
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+        self._lessons_patcher = patch.object(team_memory_module, "TEAM_MEMORY_FILE", Path(self.temp_dir) / "team_lessons.jsonl")
+        self._lessons_patcher.start()
+        self.addCleanup(self._lessons_patcher.stop)
+        self._notify_patcher = patch.object(root_cause_analyst_module, "notify_external")
+        self.mock_notify = self._notify_patcher.start()
+        self.addCleanup(self._notify_patcher.stop)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _framework_finding(self, title="Fehlendes Async-Setup"):
+        return [{
+            "category": "framework", "title": title,
+            "root_cause": "Immer derselbe strukturelle Grund.", "recommendation": "Immer dieselbe Empfehlung.",
+            "regression_test": "",
+        }]
+
+    def test_no_escalation_below_threshold(self):
+        record_findings_as_tickets("projekt_a", self._framework_finding())
+        record_findings_as_tickets("projekt_b", self._framework_finding())
+
+        self.assertIsNone(get_ticket("root-cause-teamwide-fehlendes-async-setup"))
+        self.mock_notify.assert_not_called()
+
+    def test_escalates_and_notifies_at_third_independent_project(self):
+        record_findings_as_tickets("projekt_a", self._framework_finding())
+        record_findings_as_tickets("projekt_b", self._framework_finding())
+        record_findings_as_tickets("projekt_c", self._framework_finding())
+
+        teamwide = get_ticket("root-cause-teamwide-fehlendes-async-setup")
+        self.assertIsNotNone(teamwide)
+        self.assertIn("projekt_a", teamwide.detail)
+        self.assertIn("projekt_b", teamwide.detail)
+        self.assertIn("projekt_c", teamwide.detail)
+        self.assertIn("3", teamwide.title)
+        self.mock_notify.assert_called_once()
+
+    def test_repeated_run_of_same_project_does_not_renotify(self):
+        """Ein wiederholter Lauf DESSELBEN bereits bekannten Projekts darf nicht bei jedem Mal
+        erneut eskalieren/benachrichtigen - nur ein GENUIN NEUES Projekt löst das aus."""
+        record_findings_as_tickets("projekt_a", self._framework_finding())
+        record_findings_as_tickets("projekt_b", self._framework_finding())
+        record_findings_as_tickets("projekt_c", self._framework_finding())
+        self.mock_notify.assert_called_once()
+
+        record_findings_as_tickets("projekt_a", self._framework_finding())  # erneuter Lauf, kein neues Projekt
+        self.mock_notify.assert_called_once()  # weiterhin nur EIN Aufruf
+
+    def test_fourth_independent_project_does_not_renotify_but_updates_ticket(self):
+        for slug in ("projekt_a", "projekt_b", "projekt_c"):
+            record_findings_as_tickets(slug, self._framework_finding())
+        self.mock_notify.assert_called_once()
+
+        record_findings_as_tickets("projekt_d", self._framework_finding())
+        self.assertEqual(self.mock_notify.call_count, 2)
+        teamwide = get_ticket("root-cause-teamwide-fehlendes-async-setup")
+        self.assertIn("projekt_d", teamwide.detail)
+
+    def test_project_scoped_ticket_is_never_autonomous(self):
+        self.assertNotIn(TICKET_SOURCE, _AUTONOMOUS_SOURCES)
+
+
+class TestActionRate(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self._patcher = patch.object(backlog_store_module, "BACKLOG_FILE", Path(self.temp_dir) / "backlog.json")
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_empty_backlog_returns_zero_rate(self):
+        rate = root_cause_analyst_module.get_action_rate()
+        self.assertEqual(rate.total, 0)
+        self.assertEqual(rate.action_rate_pct, 0.0)
+
+    def test_counts_done_vs_open_across_projects(self):
+        from core.backlog_store import upsert_ticket
+
+        upsert_ticket("root-cause-a-x", "X", TICKET_SOURCE, "done", project_slug="a")
+        upsert_ticket("root-cause-b-y", "Y", TICKET_SOURCE, "blocked", project_slug="b")
+        upsert_ticket("root-cause-c-z", "Z", TICKET_SOURCE, "todo", project_slug="c")
+        upsert_ticket("unrelated-ticket", "Unrelated", "cli", "done")  # andere Quelle, muss ignoriert werden
+
+        rate = root_cause_analyst_module.get_action_rate()
+        self.assertEqual(rate.total, 3)
+        self.assertEqual(rate.done, 1)
+        self.assertEqual(rate.open, 2)
+        self.assertAlmostEqual(rate.action_rate_pct, 33.3, places=1)
+
 
 class TestRunAnalysisEndToEnd(unittest.TestCase):
     def setUp(self):

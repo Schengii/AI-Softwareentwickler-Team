@@ -7,6 +7,48 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Oszillations-Fund im Ziel-Loop, Regressionstest-Vorschläge, teamweite Eskalation, Action-Rate
+
+Direkte Nutzeranfrage nach weiteren Verbesserungen für "fehlerfrei, professionell, selbst
+lernend, im Loop bis zum Projektziel arbeitend": eine Bestandsaufnahme ergab, dass
+`core/goal_loop.py` (`/goal`, `/autoloop`) das "im Loop bis zum Ziel arbeiten" bereits
+vollständig abdeckt - dabei aber eine tatsächlich ausgeführte Prüfung einen echten,
+verifizierten Bug in dessen Stagnationserkennung aufdeckte, sowie drei Erweiterungen, um den
+"lernt aus Fehlern, damit sie nicht wiederkehren"-Kreislauf zu stärken.
+
+- **`core/goal_loop.py` (Oszillations-Bug in der Stagnationserkennung):** verglich bisher nur
+  ZWEI UNMITTELBAR AUFEINANDERFOLGENDE Iterationen auf denselben Fehler. Ein real zu erwartendes
+  Muster - der Fix für Fehler A bricht Fehler B, der Fix für B bricht wieder A - wurde dadurch
+  NIE erkannt (aufeinanderfolgende Iterationen unterscheiden sich bei einer Oszillation immer).
+  Tatsächlich ausgeführter Repro vor dem Fix bestätigte: ein A-B-A-B-A-Muster lief alle 5
+  Iterationen durch. `seen_failure_signatures` (normalisierter Fehler -> Iteration, in der er
+  zuerst auftrat) ersetzt den einzelnen `previous_failure_detail`-Skalar - der bisherige
+  Konsekutiv-Fall wird dadurch automatisch zum Spezialfall (`first_seen_at == iteration - 1`).
+- **`core/root_cause_analyst.py` (Regressionstest-Vorschlag):** der Analyse-Prompt fragt bei
+  Framework-Befunden jetzt optional nach einem minimalen, lauffähigen pytest-Testfall, der den
+  Fehler reproduziert - wird direkt (mit erhaltener Einrückung, siehe `_parse_fields()`) im
+  Ticket-Detail eingebettet, statt nur als Prosa-Empfehlung. Bewusst optional: das Modell lässt
+  das Feld komplett weg, wenn es sich nicht sicher ist (ein erfundener Test wäre schädlicher als
+  keiner).
+- **`core/root_cause_analyst.py` (teamweite Eskalation):** `_escalate_if_teamwide_pattern()`
+  legt ein zusätzliches Sammel-Ticket an UND benachrichtigt extern (`core/notifier.py`), sobald
+  derselbe Framework-Befund an `MIN_CROSS_PROJECT_RECURRENCE` (3) UNABHÄNGIGEN Projekten
+  auftritt - ein stärkeres Signal als ein einzelnes Projekt-Ticket, dass eine Prompt-Regel
+  allein nicht reicht. Idempotent: nur ein GENUIN NEUES Projekt löst eine erneute
+  Benachrichtigung aus, ein wiederholter Lauf eines bereits bekannten Projekts nicht.
+- **`core/root_cause_analyst.py` (Action-Rate) + `interface/web_dashboard.py`:** neue
+  `get_action_rate()` zählt alle Root-Cause-Tickets nach Status (`done` vs. offen) - ohne diese
+  Sichtbarkeit ließ sich nicht beurteilen, ob der Lern-Kreislauf wirklich schließt oder nur
+  Tickets produziert, die liegen bleiben. Im Dashboard direkt über dem "Vorschläge, die auf
+  Freigabe warten"-Bereich sichtbar ("X von Y Root-Cause-Befunden bereits umgesetzt").
+
+Verifikation: neuer Regressionstest in `tests/test_goal_loop.py` (inkl. Gegenprobe, dass die
+alte Logik das Oszillationsmuster tatsächlich übersehen hätte), 9 neue Tests in `tests/test_
+root_cause_analyst.py`, 2 neue in `tests/test_dashboard_proposal_board.py`, volle Testsuite und
+`ruff check` weiterhin grün.
+
+---
+
 ## 🟢 Folgeanalyse der eigenen Selbstlern-Module: kritischer Parser-Bug, Kostenschutz, atomare Schreibvorgänge
 
 Analysebericht `ki_team_schwachstellen_und_fehleranalyse_GESAMTSYSTEM_20260914_teil2.md`: eine

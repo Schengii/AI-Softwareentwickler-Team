@@ -507,6 +507,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     normalen Arbeits-Tickets im Kanban-Board unten zu verschwinden. Ein Mensch entscheidet, ob ein Vorschlag sinnvoll
     ist, und stellt ihn dann regulär als Aufgabe.
   </p>
+  <p id="proposalActionRate" style="color: var(--text-muted); font-size: 12.5px; margin-bottom: 10px;"></p>
   <div class="grid" id="proposalBoard" style="margin-bottom: 28px;"><p style="color: var(--text-muted);">Lade Vorschläge…</p></div>
 
   <h2 style="color: var(--text-white); font-size: 18px; margin-bottom: 16px;">🎫 Backlog / Kanban-Board</h2>
@@ -774,6 +775,20 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     }
 
     function renderProposalBoard(allTickets) {
+      // Folgeanalyse 2026-09-14, Empfehlung 2 ("Sichtbarkeit, ob Root-Cause-Tickets bearbeitet
+      // werden"): core/root_cause_analyst.py.get_action_rate() liefert dieselbe Kennzahl
+      // serverseitig für CLI/Skripte - hier client-seitig aus denselben, bereits geladenen
+      // Ticket-Daten berechnet, um keinen zusätzlichen API-Aufruf zu brauchen.
+      const rcTickets = allTickets.filter(t => t.source === 'root_cause_analysis');
+      const rateEl = document.getElementById('proposalActionRate');
+      if (rcTickets.length) {
+        const doneCount = rcTickets.filter(t => t.status === 'done').length;
+        const pct = Math.round((doneCount / rcTickets.length) * 1000) / 10;
+        rateEl.textContent = `🔬 Root-Cause-Befunde: ${doneCount} von ${rcTickets.length} bereits umgesetzt (${pct}%).`;
+      } else {
+        rateEl.textContent = '';
+      }
+
       const container = document.getElementById('proposalBoard');
       const proposals = allTickets.filter(t => PROPOSAL_TICKET_SOURCES.includes(t.source) && t.status !== 'done');
       if (!proposals.length) {

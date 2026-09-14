@@ -46,6 +46,13 @@ class TestProposalBoardSourcesInSync(unittest.TestCase):
         self.assertIn("renderProposalBoard", HTML_DASHBOARD)
         self.assertIn("!PROPOSAL_TICKET_SOURCES.includes(t.source)", HTML_DASHBOARD)
 
+    def test_action_rate_element_and_computation_present(self):
+        """Folgeanalyse 2026-09-14, Empfehlung 2: Sichtbarkeit, wie viele Root-Cause-Befunde
+        tatsächlich umgesetzt wurden - core/root_cause_analyst.py.get_action_rate() ist das
+        serverseitige Pendant für CLI/Skripte."""
+        self.assertIn('id="proposalActionRate"', HTML_DASHBOARD)
+        self.assertIn("t.source === 'root_cause_analysis'", HTML_DASHBOARD)
+
 
 if __name__ == "__main__":
     unittest.main()

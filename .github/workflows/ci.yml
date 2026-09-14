@@ -167,10 +167,10 @@ jobs:
           set -e
           echo "$output"
           # TS2307 = "Cannot find module" (node_modules nicht committet)
-          # TS2582/TS2304/TS2708/TS2694 in Testdateien = globale Test-Runner-Definitionen (@types/jest / describe / it / expect)
+          # TS2582/TS2304/TS2503/TS2708/TS2694 = globale Test-Runner-/Jest-Definitionen (@types/jest / describe / it / expect / jest.fn)
           real_errors=$(echo "$output" | grep -E "error TS" \
             | grep -v "error TS2307:" \
-            | grep -vE "error TS(2582|2304|2708|2694):" || true)
+            | grep -vE "error TS(2503|2582|2304|2708|2694):" || true)
           if [ -n "$real_errors" ]; then
             echo "::error::Echte TypeScript-Fehler gefunden (Umgebungs-/Typrauschen bewusst ignoriert):"
             echo "$real_errors"

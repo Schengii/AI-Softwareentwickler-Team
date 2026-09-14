@@ -8,7 +8,7 @@ import {
   updateBallPosition,
   gameStep
 } from './gameLogic';
-import { GameState, Ball, Paddle } from './types';
+import { Ball, Paddle } from './types';
 
 describe('Pong Spiellogik (gameLogic.ts)', () => {
   describe('createInitialState', () => {

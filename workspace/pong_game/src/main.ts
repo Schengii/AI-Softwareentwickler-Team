@@ -34,8 +34,8 @@ class Paddle implements PaddleType {
 }
 
 class Ball implements BallType {
-  x: number;
-  y: number;
+  x: number = 0;
+  y: number = 0;
   radius = 8;
   dx = 4;
   dy = 4;

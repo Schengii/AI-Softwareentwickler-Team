@@ -7,6 +7,161 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Oszillations-Fund im Ziel-Loop, Regressionstest-Vorschläge, teamweite Eskalation, Action-Rate
+
+Direkte Nutzeranfrage nach weiteren Verbesserungen für "fehlerfrei, professionell, selbst
+lernend, im Loop bis zum Projektziel arbeitend": eine Bestandsaufnahme ergab, dass
+`core/goal_loop.py` (`/goal`, `/autoloop`) das "im Loop bis zum Ziel arbeiten" bereits
+vollständig abdeckt - dabei aber eine tatsächlich ausgeführte Prüfung einen echten,
+verifizierten Bug in dessen Stagnationserkennung aufdeckte, sowie drei Erweiterungen, um den
+"lernt aus Fehlern, damit sie nicht wiederkehren"-Kreislauf zu stärken.
+
+- **`core/goal_loop.py` (Oszillations-Bug in der Stagnationserkennung):** verglich bisher nur
+  ZWEI UNMITTELBAR AUFEINANDERFOLGENDE Iterationen auf denselben Fehler. Ein real zu erwartendes
+  Muster - der Fix für Fehler A bricht Fehler B, der Fix für B bricht wieder A - wurde dadurch
+  NIE erkannt (aufeinanderfolgende Iterationen unterscheiden sich bei einer Oszillation immer).
+  Tatsächlich ausgeführter Repro vor dem Fix bestätigte: ein A-B-A-B-A-Muster lief alle 5
+  Iterationen durch. `seen_failure_signatures` (normalisierter Fehler -> Iteration, in der er
+  zuerst auftrat) ersetzt den einzelnen `previous_failure_detail`-Skalar - der bisherige
+  Konsekutiv-Fall wird dadurch automatisch zum Spezialfall (`first_seen_at == iteration - 1`).
+- **`core/root_cause_analyst.py` (Regressionstest-Vorschlag):** der Analyse-Prompt fragt bei
+  Framework-Befunden jetzt optional nach einem minimalen, lauffähigen pytest-Testfall, der den
+  Fehler reproduziert - wird direkt (mit erhaltener Einrückung, siehe `_parse_fields()`) im
+  Ticket-Detail eingebettet, statt nur als Prosa-Empfehlung. Bewusst optional: das Modell lässt
+  das Feld komplett weg, wenn es sich nicht sicher ist (ein erfundener Test wäre schädlicher als
+  keiner).
+- **`core/root_cause_analyst.py` (teamweite Eskalation):** `_escalate_if_teamwide_pattern()`
+  legt ein zusätzliches Sammel-Ticket an UND benachrichtigt extern (`core/notifier.py`), sobald
+  derselbe Framework-Befund an `MIN_CROSS_PROJECT_RECURRENCE` (3) UNABHÄNGIGEN Projekten
+  auftritt - ein stärkeres Signal als ein einzelnes Projekt-Ticket, dass eine Prompt-Regel
+  allein nicht reicht. Idempotent: nur ein GENUIN NEUES Projekt löst eine erneute
+  Benachrichtigung aus, ein wiederholter Lauf eines bereits bekannten Projekts nicht.
+- **`core/root_cause_analyst.py` (Action-Rate) + `interface/web_dashboard.py`:** neue
+  `get_action_rate()` zählt alle Root-Cause-Tickets nach Status (`done` vs. offen) - ohne diese
+  Sichtbarkeit ließ sich nicht beurteilen, ob der Lern-Kreislauf wirklich schließt oder nur
+  Tickets produziert, die liegen bleiben. Im Dashboard direkt über dem "Vorschläge, die auf
+  Freigabe warten"-Bereich sichtbar ("X von Y Root-Cause-Befunden bereits umgesetzt").
+
+Verifikation: neuer Regressionstest in `tests/test_goal_loop.py` (inkl. Gegenprobe, dass die
+alte Logik das Oszillationsmuster tatsächlich übersehen hätte), 9 neue Tests in `tests/test_
+root_cause_analyst.py`, 2 neue in `tests/test_dashboard_proposal_board.py`, volle Testsuite und
+`ruff check` weiterhin grün.
+
+---
+
+## 🟢 Folgeanalyse der eigenen Selbstlern-Module: kritischer Parser-Bug, Kostenschutz, atomare Schreibvorgänge
+
+Analysebericht `ki_team_schwachstellen_und_fehleranalyse_GESAMTSYSTEM_20260914_teil2.md`: eine
+kritische Selbstprüfung der eben erst gebauten `core/root_cause_analyst.py`/`core/component_
+library.py`-Module (tatsächlich ausgeführt, nicht nur gelesen) deckte vier Probleme auf, die
+das jeweilige Feature in der Praxis stark eingeschränkt oder gefährdet hätten.
+
+- **`core/root_cause_analyst.py` (kritisch - `extract_findings()` erkannte 0 statt N Befunde):**
+  Die ursprüngliche Version verlangte zwischen den Feldern Kategorie/Titel/Root Cause/
+  Empfehlung exakt EINEN Zeilenumbruch - ein tatsächlich ausgeführter Test mit einer
+  realistischeren, Leerzeilen-durchsetzten LLM-Antwort (Standard-Markdown-Stil für fett
+  hervorgehobene Label) ergab **0 statt der erwarteten Befunde**. Neue `_BEFUND_HEADER_RE`/
+  `_FIELD_LABEL_RE`/`_parse_fields()`: zerlegt den Bericht zunächst in Blöcke je "### Befund N",
+  lokalisiert danach INNERHALB eines Blocks die Position jedes Feld-Labels (beliebige
+  Reihenfolge, beliebig viele Leerzeilen dazwischen, am Zeilenanfang verankert gegen
+  Wortkollisionen im Fließtext) und übernimmt den Text zwischen zwei Label-Positionen als
+  Feldinhalt - übernimmt damit den bereits im selben Projekt bewährten Grundgedanken von
+  `core/roadmap_advisor.py._PROPOSAL_RE` (zeilenweise statt ein einziger starrer Block-Regex).
+- **`core/root_cause_analyst.py` (Kostenschutz):** `should_trigger()` löste bisher bei JEDEM
+  einzelnen Lauf mit `not verification_ok and files_written > 0` erneut aus - ein chronisch
+  scheiterndes Projekt (real beobachtet: drei ecochef-Läufe an einem Nachmittag) hätte den
+  vollen, werkzeugbasierten LLM-Aufruf bei jedem Versuch erneut ausgelöst. Neuer, in
+  `run_analysis()` verankerter Cooldown (`ROOT_CAUSE_ANALYSIS_COOLDOWN_SECONDS`, 6 Stunden,
+  persistiert in `memory/root_cause_analysis_state.json`, pro `project_slug`) begrenzt
+  wiederholte Analysen desselben Projekts, ohne `should_trigger()` selbst (bewusst pur/
+  zustandslos) mit I/O zu belasten.
+- **`core/component_library.py` (atomare Schreibvorgänge):** `_save_manifest()` schrieb bisher
+  direkt per `write_text()` auf `manifest.json` - exakt das Muster, das in `core/backlog_
+  store.py._save_raw()` bereits einmal zu einem ECHTEN, dokumentierten Datenverlust-Vorfall
+  geführt hat. Da `interface/web_dashboard.py` standardmäßig `DASHBOARD_MAX_CONCURRENT_JOBS=2`
+  unterstützt und `harvest_from_project()` nach jedem erfolgreich verifizierten Lauf aufgerufen
+  wird, ist "zwei Projekte ernten gleichzeitig" real erreichbar. Übernimmt jetzt dieselbe Lösung
+  wie dort: Temp-Datei im selben Verzeichnis + `os.replace()` (atomar, mit Windows-
+  `PermissionError`-Retry) - durch einen Nebenläufigkeits-Stresstest (analog `tests/test_
+  backlog_store.py`) verifiziert, inklusive Gegenprobe, dass derselbe Test die alte,
+  unsichere Implementierung tatsächlich als Regression erkannt hätte.
+- **`core/component_library.py` (Erkennungsheuristik):** `_PATTERNS` erkannte nur
+  `(?:export\s+)?class` - tatsächlich ausgeführte Tests bestätigten, dass die gängigen
+  TypeScript-Konventionen `export default class` und `export abstract class` dabei NICHT
+  erkannt wurden. Neuer `_EXPORT_PREFIX` deckt beliebige Kombinationen aus `default`/`abstract`
+  ab. Zusätzlich sammelt neues `_leading_decorators()` vorangehende Decorator-Zeilen
+  (`@dataclass`, `@Injectable()`) ein, die `_extract_block()` bisher beim Ernten abgeschnitten
+  hatte, obwohl sie verhaltensrelevant sein können.
+
+Verifikation: 12 neue/erweiterte Tests in `tests/test_root_cause_analyst.py` (u.a. Leerzeilen-,
+Reihenfolge- und Wortkollisions-Fälle, Cooldown-Verhalten inkl. Ablauf), 5 neue Tests in
+`tests/test_component_library.py` (u.a. der Nebenläufigkeits-Stresstest samt Gegenprobe gegen
+die alte Implementierung), volle Testsuite und `ruff check` weiterhin grün.
+
+---
+
+## 🟢 Automatisierter Root-Cause-Analyst, Komponenten-Bibliothek und Absturz-Diagnose nach der Gesamtsystem-Analyse
+
+Analysebericht `ki_team_schwachstellen_und_fehleranalyse_GESAMTSYSTEM_20260914.md`: eine
+Bestandsaufnahme des gesamten Frameworks (nicht nur eines Einzellaufs) ergab, dass die
+Tiefenanalysen, die zu den wichtigsten bisherigen Fixes führten, ausschließlich in MANUELLEN
+Analyse-Sitzungen entstanden - der automatisch laufende Retrospektive-/Trainer-Schritt bekommt
+nur einen stark gekürzten Prosa-Auszug ohne Tool-Zugriff. Zwei bisher undokumentierte Funde kamen
+hinzu: verlorene Tracebacks bei Orchestrator-Abstürzen (`workspace/ecochef` brach dreimal mit
+demselben bloßen `"exception:TypeError"` ab) und eine fehlende projektübergreifende
+Wiederverwendung von Standard-Infrastruktur (Circuit Breaker, Rate-Limiter, JWT-Auth). Die
+Analyse bestätigte zugleich, dass zwei ihrer ursprünglichen Befunde (`budget_aborted` nach
+bestandener Verifikation, der ecochef-`TypeError`-Absturz selbst) bereits durch vorherige
+Fixes (siehe die HyperionSentinel-Fixes unten sowie `_run_verification_loop()`s Außenhülle)
+abgedeckt waren - hier verifiziert statt erneut implementiert.
+
+- **`agents/orchestrator/__init__.py` (verlorene Tracebacks bei Abstürzen):** der zentrale
+  `except BaseException`-Handler in `process()` persistierte bisher nur den Exception-
+  KLASSENNAMEN (`f"exception:{type(exc).__name__}"`) im Lauf-Log - ohne Zeile, Modul oder
+  Nachricht war ein Absturz aus den Logs allein nicht diagnostizierbar. Persistiert jetzt
+  zusätzlich `traceback.format_exc()[-1000:]` (dieselbe Deckelung wie das bereits bestehende
+  `interface/cli.py`-Pendant) im Lauf-Log UND legt über die neue Methode `_record_crash_ticket()`
+  ein eigenes, NICHT-autonomes Backlog-Ticket (`source="orchestrator_crash"`, stabile ID aus
+  Exception-Klasse + Projekt-Slug - wiederholte Abstürze derselben Ursache aktualisieren dasselbe
+  Ticket statt zu duplizieren) mit vollem Traceback an.
+- **`core/root_cause_analyst.py` (neu):** automatisierter Root-Cause-Analyst. `should_trigger()`
+  entscheidet rein deterministisch (kein LLM-Aufruf), ob sich eine Tiefenanalyse lohnt (echter
+  Absturz, Verifikation gescheitert trotz geschriebener Dateien, oder ein wiederkehrendes
+  Fehlermuster). `run_analysis()` gibt dem `agent_trainer`-Agenten dafür `project_dir=BASE_DIR`
+  (Framework- UND Projekt-Code gleichermaßen lesbar) mit `tools_read_only=True` sowie die vollen,
+  gedeckelten Rohdaten des Laufs (Lauf-Log, Verifikations-Log) - ein echter Unterschied zum
+  bestehenden Trainer-Aufruf, der weder Tool-Zugriff noch die rohen Logs bekommt. Extrahierte
+  Befunde landen als eigene, NICHT-autonome Tickets (`source="root_cause_analysis"`) und als
+  Team-Lektion (`core/team_memory.py`). Wird nach jedem Lauf best-effort über
+  `agents/orchestrator/retrospective.py._maybe_run_root_cause_analysis()` aufgerufen, per
+  `config.ENABLE_ROOT_CAUSE_ANALYST` (Standard AN) abschaltbar.
+- **`core/component_library.py` (neu, "Wiederverwendung statt Neuerfindung"):** übernimmt nach
+  einem ERFOLGREICH VERIFIZIERTEN Lauf (`verification_ok=True`) wiederkehrende Infrastruktur-
+  Bausteine (Circuit Breaker, Rate-Limiter, Retry/Backoff, JWT-Auth-Middleware, Repository-
+  Basisklassen) per Namens-Heuristik in eine projektübergreifende Bibliothek
+  (`memory/component_library/`) - `_is_stub()` verwirft dabei bewusst genau die Sorte Fund, die
+  im `chronospulse`-Lauf zum 5-zeiligen Kommentar-Stub statt eines echten `CircuitBreaker` führte
+  (zu wenige echte Codezeilen oder ein "Auszug aus..."-Hinweis). Neues, rein lesendes Werkzeug
+  `search_component_library` (`core/agent_toolbox.py`) liefert einen Treffer-Code direkt inline
+  (kein Pfad - die Bibliothek liegt außerhalb von `project_dir`, `_resolve()`s Directory-
+  Traversal-Schutz würde einen Pfadzugriff sonst ablehnen). Neue Prompt-Regel
+  `COMPONENT_LIBRARY_DIRECTIVE` (`agents/team_directives.py`) für backend/database/security/
+  resilience_guard weist an, vor einer Neuimplementierung zuerst dort nachzuschauen.
+- **`interface/web_dashboard.py` (Vorschlags-Tickets gebündelt statt im Rauschen verloren):**
+  neuer Bereich "🧠 Vorschläge, die auf Freigabe warten" bündelt Tickets aus
+  `root_cause_analysis`/`product_owner_proposal`/`optimization_advisor` (alle drei bewusst NICHT
+  in `core/backlog_worker.py._AUTONOMOUS_SOURCES`) sortiert nach Priorität, statt sie zwischen
+  normalen Arbeits-Tickets im Kanban-Board zu verstecken (ein `"blocked"`-Root-Cause-Befund sah
+  dort bisher wie ein echter Governance-Blocker aus). Diese drei Quellen werden im regulären
+  Kanban-Board darunter jetzt ausgeschlossen, um Duplikate zu vermeiden.
+
+Verifikation: neue Tests `tests/test_orchestrator_crash_traceback.py`,
+`tests/test_root_cause_analyst.py`, `tests/test_component_library.py`,
+`tests/test_agent_toolbox_component_library.py`, `tests/test_dashboard_proposal_board.py` (alle
+grün), volle Testsuite und `ruff check` ebenfalls grün.
+
+---
+
 ## 🟢 pytest-asyncio-Unterstützung, Environment-Re-Sync und Budget-Fix nach dem AetherMesh-Lauf
 
 Analysebericht `ki_team_schwachstellen_und_fehleranalyse_aethermesh_20260913.md`: das Team

@@ -499,8 +499,19 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     <div id="cloudDeployStatus" style="margin-top: 10px; font-size: 13px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; white-space: pre-wrap;"></div>
   </div>
 
+  <h2 style="color: var(--text-white); font-size: 18px; margin-bottom: 16px;">🧠 Vorschläge, die auf Freigabe warten</h2>
+  <p style="color: var(--text-muted); font-size: 12.5px; margin-bottom: 14px; margin-top: -12px;">
+    Gesamtsystem-Analyse 2026-09-14, Punkt 3.4: Root-Cause-Befunde (core/root_cause_analyst.py), Roadmap-Vorschläge
+    (core/roadmap_advisor.py) und Modell-/Team-Optimierungsvorschläge (core/optimization_advisor.py) legen bewusst
+    NICHT-autonome Tickets an (core/backlog_worker.py setzt sie nie selbstständig um) – gebündelt hier, statt zwischen
+    normalen Arbeits-Tickets im Kanban-Board unten zu verschwinden. Ein Mensch entscheidet, ob ein Vorschlag sinnvoll
+    ist, und stellt ihn dann regulär als Aufgabe.
+  </p>
+  <p id="proposalActionRate" style="color: var(--text-muted); font-size: 12.5px; margin-bottom: 10px;"></p>
+  <div class="grid" id="proposalBoard" style="margin-bottom: 28px;"><p style="color: var(--text-muted);">Lade Vorschläge…</p></div>
+
   <h2 style="color: var(--text-white); font-size: 18px; margin-bottom: 16px;">🎫 Backlog / Kanban-Board</h2>
-  <p style="color: var(--text-muted); font-size: 12.5px; margin-bottom: 14px; margin-top: -12px;">Alle Tickets über CLI, Dashboard und autonome GitHub-Issue-Läufe hinweg (core/backlog_store.py) – persistent, überlebt einen Neustart.</p>
+  <p style="color: var(--text-muted); font-size: 12.5px; margin-bottom: 14px; margin-top: -12px;">Alle Tickets über CLI, Dashboard und autonome GitHub-Issue-Läufe hinweg (core/backlog_store.py) – persistent, überlebt einen Neustart. Vorschlags-Tickets (siehe oben) werden hier bewusst nicht doppelt angezeigt.</p>
   <div class="kanban" id="kanbanBoard"><p style="color: var(--text-muted);">Lade Backlog…</p></div>
 
   <h2 style="color: var(--text-white); font-size: 18px; margin-bottom: 16px;">📈 Observability & Trends</h2>
@@ -719,6 +730,18 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       ['blocked', '🚧 Blockiert'], ['cancelled', '⏹️ Abgebrochen'], ['done', '✅ Fertig'],
     ];
 
+    // Gesamtsystem-Analyse 2026-09-14, Punkt 3.4: dieselben drei source-Werte, unter denen
+    // core/root_cause_analyst.py (TICKET_SOURCE), core/roadmap_advisor.py
+    // (PROPOSAL_TICKET_SOURCE) und core/optimization_advisor.py ihre NICHT-autonomen
+    // Vorschlags-Tickets anlegen (core/backlog_worker.py._AUTONOMOUS_SOURCES enthält keinen
+    // davon) - müssen bei einer Änderung dort manuell synchron gehalten werden, dieselbe
+    // Kopplung wie KANBAN_COLUMNS oben zu core/backlog_store.py.STATUSES.
+    const PROPOSAL_TICKET_SOURCES = ['root_cause_analysis', 'product_owner_proposal', 'optimization_advisor'];
+    const PROPOSAL_SOURCE_LABELS = {
+      root_cause_analysis: '🔬 Root-Cause-Befund', product_owner_proposal: '🧭 Roadmap-Vorschlag',
+      optimization_advisor: '📊 Optimierungsvorschlag',
+    };
+
     function escapeHtml(s) {
       const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
       return (s || '').replace(/[&<>"']/g, c => map[c]);
@@ -728,10 +751,17 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       const res = await fetch('/api/backlog');
       if (!res.ok) return;
       const data = await res.json();
+      renderProposalBoard(data.tickets);
+
       const board = document.getElementById('kanbanBoard');
       board.innerHTML = '';
+      // Vorschlags-Tickets erscheinen ausschließlich oben im Freigabe-Bereich (siehe
+      // renderProposalBoard) - hier ausgeschlossen, damit dasselbe Ticket nicht doppelt und an
+      // zwei Stellen mit potenziell widersprüchlicher Bedeutung ("blocked" liest sich im
+      // Kanban wie ein Governance-Blocker, ist bei einem Vorschlag aber nur "noch nicht
+      // freigegeben") auftaucht.
       for (const [status, label] of KANBAN_COLUMNS) {
-        const tickets = data.tickets.filter(t => t.status === status);
+        const tickets = data.tickets.filter(t => t.status === status && !PROPOSAL_TICKET_SOURCES.includes(t.source));
         const col = document.createElement('div');
         col.className = 'kanban-col';
         const cards = tickets.slice(0, 8).map(t => `
@@ -742,6 +772,41 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         col.innerHTML = `<h4>${label} (${tickets.length})</h4>${cards}`;
         board.appendChild(col);
       }
+    }
+
+    function renderProposalBoard(allTickets) {
+      // Folgeanalyse 2026-09-14, Empfehlung 2 ("Sichtbarkeit, ob Root-Cause-Tickets bearbeitet
+      // werden"): core/root_cause_analyst.py.get_action_rate() liefert dieselbe Kennzahl
+      // serverseitig für CLI/Skripte - hier client-seitig aus denselben, bereits geladenen
+      // Ticket-Daten berechnet, um keinen zusätzlichen API-Aufruf zu brauchen.
+      const rcTickets = allTickets.filter(t => t.source === 'root_cause_analysis');
+      const rateEl = document.getElementById('proposalActionRate');
+      if (rcTickets.length) {
+        const doneCount = rcTickets.filter(t => t.status === 'done').length;
+        const pct = Math.round((doneCount / rcTickets.length) * 1000) / 10;
+        rateEl.textContent = `🔬 Root-Cause-Befunde: ${doneCount} von ${rcTickets.length} bereits umgesetzt (${pct}%).`;
+      } else {
+        rateEl.textContent = '';
+      }
+
+      const container = document.getElementById('proposalBoard');
+      const proposals = allTickets.filter(t => PROPOSAL_TICKET_SOURCES.includes(t.source) && t.status !== 'done');
+      if (!proposals.length) {
+        container.innerHTML = '<p style="color: var(--text-muted);">Aktuell keine offenen Vorschläge.</p>';
+        return;
+      }
+      // Höchste Priorität zuerst (1 = hoch) - ein Framework-Root-Cause-Befund (priority=1,
+      // siehe core/root_cause_analyst.py) soll vor einem niedrig priorisierten Roadmap-
+      // Vorschlag (priority=3) stehen, unabhängig von der Aktualisierungsreihenfolge.
+      proposals.sort((a, b) => (a.priority || 2) - (b.priority || 2));
+      container.innerHTML = proposals.slice(0, 12).map(t => `
+        <div class="card" style="padding: 14px;">
+          <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">
+            ${escapeHtml(PROPOSAL_SOURCE_LABELS[t.source] || t.source)} · ${escapeHtml(t.project_slug || 'team-weit')}
+          </div>
+          <div class="ticket-title" style="margin-bottom: 6px;">${escapeHtml(t.title)}</div>
+          <div class="ticket-meta">${escapeHtml((t.detail || '').slice(0, 220))}</div>
+        </div>`).join('');
     }
 
     async function loadObservability() {

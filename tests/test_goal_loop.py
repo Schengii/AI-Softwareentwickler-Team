@@ -251,6 +251,51 @@ async def test_goal_loop_no_stagnation_when_failures_are_structurally_different(
 
 
 @pytest.mark.anyio
+async def test_goal_loop_stagnation_detects_oscillating_non_consecutive_failure(tmp_path):
+    """
+    Folgeanalyse 2026-09-14 ("Oszillations-Fund"): der Fix für Fehler A bricht Fehler B, der
+    Fix für B bricht wieder A - ein real zu erwartendes Muster, das die bisherige, rein
+    konsekutive Stagnationserkennung NIE erkannte (aufeinanderfolgende Iterationen unterscheiden
+    sich bei einer Oszillation immer). Tatsächlich ausgeführter Repro vor diesem Fix bestätigte:
+    das Muster A-B-A-B-A lief alle 5 Iterationen durch, ohne dass die Erkennung je ansprach.
+    Fehler A taucht hier in Iteration 3 zum ZWEITEN Mal auf (zuerst in Iteration 1, NICHT der
+    unmittelbaren Vorrunde Iteration 2) - muss trotzdem als Stagnation erkannt werden.
+    """
+    mock_orchestrator = MagicMock()
+    mock_orchestrator.process = AsyncMock(return_value="Weiterer Versuch.")
+    mock_orchestrator.last_task_summary = "Fix-Versuch"
+    mock_orchestrator.get_workspace_manager = MagicMock()
+
+    runner = GoalLoopRunner(orchestrator=mock_orchestrator)
+
+    failures = [
+        {"verification_ok": False, "failure_detail": "AssertionError in test_auth.py:10"},
+        {"verification_ok": False, "failure_detail": "ImportError: fehlt Modul httpx"},
+        {"verification_ok": False, "failure_detail": "AssertionError in test_auth.py:15"},  # = Iteration 1, nur Zeilennummer anders
+        {"verification_ok": False, "failure_detail": "ImportError: fehlt Modul httpx"},
+        {"verification_ok": False, "failure_detail": "AssertionError in test_auth.py:22"},
+    ]
+    eval_result = {"goal_reached": False, "reason": "weiter", "next_prompt": "nochmal versuchen"}
+
+    with patch("core.goal_loop.read_status", side_effect=lambda project_dir: [failures.pop(0)]), \
+         patch.object(runner, "_evaluate_and_synthesize_next_step", new_callable=AsyncMock) as mock_eval:
+        mock_eval.return_value = eval_result
+
+        res = await runner.run(
+            goal="Baue eine Auth-API",
+            project_dir=str(tmp_path / "auth_api"),
+            max_iterations=5,
+        )
+
+        assert res.total_iterations == 3  # Abbruch bei der Wiederkehr von Fehler A, nicht erst nach 5
+        assert res.success is False
+        assert "stagnier" in res.final_message.lower()
+        # Genau EIN next_prompt/Fix-Zyklus für Fehler B wurde probiert, kein zweiter -
+        # bestätigt, dass der Loop wirklich früh abbrach statt sich weiterzudrehen.
+        assert mock_orchestrator.process.call_count == 3
+
+
+@pytest.mark.anyio
 async def test_goal_loop_cumulative_token_budget_aborts(tmp_path, monkeypatch):
     """
     GOAL_LOOP_MAX_TOTAL_TOKENS begrenzt den Gesamtverbrauch ÜBER ALLE Iterationen hinweg -

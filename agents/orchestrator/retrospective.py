@@ -6,8 +6,10 @@ persistent, damit alle Agenten aus vergangenen Fehlern/Läufen lernen).
 
 import json
 import re
+from collections.abc import Callable
 
 from core.message_bus import AgentResult, AgentTask
+from core.project_status import has_repeated_failure
 from core.team_memory import record_lesson
 
 # Team-Optimierung (Retrospektive 2026-09-07): agents/agent_trainer_agent.py wird angewiesen,
@@ -150,6 +152,91 @@ class RetrospectiveMixin:
             self._extract_and_store_check_suggestions(trainer_result.content)
 
         return trainer_result
+
+    async def _maybe_run_root_cause_analysis(
+        self,
+        user_request: str,
+        verification_ok: bool,
+        verification_summary: str,
+        files_written: int,
+        project_dir: str,
+        notify: Callable[[str], None],
+    ) -> None:
+        """Gesamtsystem-Analyse 2026-09-14, Punkt 3.1 "Automatisierter Root-Cause-Analyst": der
+        obige Trainer-Aufruf (_run_agent_trainer_self_optimization) läuft zwar automatisch nach
+        JEDEM Lauf, aber OHNE project_dir/allow_tools an seiner AgentTask - er bekommt nur einen
+        gekürzten Prosa-Auszug, nie echten Zugriff auf die rohen Logs oder den tatsächlichen
+        Code. Genau DIESE Lücke schließt core/root_cause_analyst.py: bei einem echten
+        Warnsignal (should_trigger()) bekommt ein eigener, zusätzlicher Aufruf des
+        agent_trainer-Agenten read-only Werkzeugzugriff auf das GESAMTE Repository
+        (project_dir=BASE_DIR - sowohl den generierten Projekt-Code als auch den Framework-Code
+        selbst, siehe dortiger Docstring) und die vollen (gedeckelten) Rohdaten des Laufs.
+
+        Best-effort und komplett additiv wie core/roadmap_advisor.py/core/optimization_
+        advisor.py: ein Fehler hier darf einen sonst erfolgreichen Lauf NIE nachträglich
+        kippen, und ENABLE_ROOT_CAUSE_ANALYST (config.py, standardmäßig AN, da rein
+        vorschlagend - siehe dortiger Docstring) erlaubt ein Abschalten ohne Codeänderung."""
+        import config
+        from core.root_cause_analyst import run_analysis, should_trigger
+
+        if not config.ENABLE_ROOT_CAUSE_ANALYST:
+            return
+
+        trigger = should_trigger(
+            verification_ok=verification_ok,
+            files_written=files_written,
+            recurring_signature_seen_before=has_repeated_failure(project_dir),
+        )
+        if not trigger.should_run:
+            return
+
+        run_logger = getattr(self, "_run_logger", None)
+        notify(f"  🔬 [bold cyan]Root-Cause-Analyse[/bold cyan] wird ausgelöst ({trigger.reason})...")
+        try:
+            report = await run_analysis(
+                self,
+                project_slug=getattr(self, "last_project_slug", "") or "project",
+                user_request=user_request,
+                verification_summary=verification_summary,
+                run_log_path=getattr(run_logger, "run_log_path", None),
+                verification_log_path=getattr(run_logger, "verification_log_path", None),
+            )
+        except Exception as e:
+            notify(f"  ⚠️ [dim yellow]Root-Cause-Analyse fehlgeschlagen: {e}[/dim yellow]")
+            return
+
+        if report.ok:
+            notify(
+                f"  🔬 [bold green]Root-Cause-Analyse abgeschlossen:[/bold green] "
+                f"{len(report.findings)} Befund(e) als Ticket(s) festgehalten: {', '.join(report.ticket_ids)}"
+            )
+        else:
+            notify(f"  ⚠️ [dim yellow]Root-Cause-Analyse ohne verwertbaren Befund: {report.error}[/dim yellow]")
+
+    @staticmethod
+    def _maybe_harvest_reusable_components(
+        verification_ok: bool, project_dir: str, project_slug: str, notify: Callable[[str], None],
+    ) -> None:
+        """Gesamtsystem-Analyse 2026-09-14, Punkt 3.2: übernimmt wiederkehrende Infrastruktur-
+        Bausteine (Circuit Breaker, Rate-Limiter, ...) aus einem ERFOLGREICH VERIFIZIERTEN
+        Projekt in die projektübergreifende Bibliothek (core/component_library.py), damit
+        künftige Projekte sie über das search_component_library-Werkzeug wiederverwenden können,
+        statt dieselben Bausteine (und dieselben Bugklassen darin) immer wieder neu zu
+        erfinden. Bewusst NUR bei verification_ok=True: core/component_library.py.harvest_
+        from_project()/_is_stub() filtert zwar bereits offensichtliche Stubs heraus, aber
+        "verifiziert" bleibt die stärkste verfügbare Qualitätsschranke - ein Baustein aus einem
+        gescheiterten Lauf soll nicht in die Bibliothek gelangen, selbst wenn er zufällig lang
+        genug aussieht. Rein additiv/best-effort wie jeder andere Post-Run-Schritt hier."""
+        if not verification_ok:
+            return
+        try:
+            from core.component_library import harvest_from_project
+
+            added = harvest_from_project(project_dir, project_slug)
+            if added:
+                notify(f"  📦 [dim cyan]{len(added)} wiederverwendbare Baustein(e) in die Komponenten-Bibliothek übernommen.[/dim cyan]")
+        except Exception as e:
+            notify(f"  ⚠️ [dim yellow]Komponenten-Bibliothek konnte nicht aktualisiert werden: {e}[/dim yellow]")
 
     @staticmethod
     def _extract_and_store_check_suggestions(report_text: str) -> None:

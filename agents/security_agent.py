@@ -3,7 +3,7 @@ agents/security_agent.py – Sicherheits-Analyst Agent
 """
 
 from agents.base_agent import BaseAgent
-from agents.team_directives import PYTHON_CODE_CONTRACT_DIRECTIVE
+from agents.team_directives import COMPONENT_LIBRARY_DIRECTIVE, PYTHON_CODE_CONTRACT_DIRECTIVE
 
 
 class SecurityAgent(BaseAgent):
@@ -68,4 +68,4 @@ vorliegen ("Keine kritischen Befunde" ist dann der Inhalt) - ein Audit ohne gesp
 gilt als nicht durchgeführt.
 
 Du bist ein aktives Teammitglied und lieferst immer vollständige, professionelle Ergebnisse.
-""" + PYTHON_CODE_CONTRACT_DIRECTIVE
+""" + PYTHON_CODE_CONTRACT_DIRECTIVE + COMPONENT_LIBRARY_DIRECTIVE

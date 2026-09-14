@@ -713,6 +713,45 @@ der beiden gerade bindend war.
   Modellzuweisung hat neben der reinen Erfolgsquote weitere Faktoren (Kosten, Rate-Limits,
   bewusste Provider-Präferenzen), die das Modul nicht kennt. Jederzeit auch ohne neuen Lauf
   über `/optimize` abrufbar.
+- **Autonomer Ziel-Loop** (`core/goal_loop.py`, `/goal [max_runden] <Ziel>` bzw. `/autoloop`):
+  arbeitet in aufeinanderfolgenden Iterationen weiter, bis das Gesamtziel erreicht UND die
+  Verifikation grün ist oder `max_runden` erreicht wird – nach jeder Runde bewertet eine
+  KI-Synthese (mit deterministischem Heuristik-Fallback) den Zwischenstand und formuliert
+  automatisch den nächsten präzisen Folgeauftrag. Stagnationserkennung bricht ab, sobald
+  dieselbe strukturelle Fehler-Signatur ERNEUT auftritt – auch dann, wenn sie nicht in der
+  unmittelbaren Vorrunde, sondern zyklisch oszillierend wiederkehrt (Fix für Fehler A bricht
+  Fehler B, Fix für B bricht wieder A) –, statt weitere Iterationen ergebnislos zu verbrennen.
+  Zusätzlich durch ein kumulatives Token-Budget über den gesamten Loop (`GOAL_LOOP_MAX_TOTAL_
+  TOKENS`) sowie kooperative Abbruch-/Nutzerabbruch-Behandlung abgesichert.
+- **Automatisierter Root-Cause-Analyst** (`core/root_cause_analyst.py`): Der immer laufende
+  Retrospektive-/Trainer-Schritt bekommt nur einen stark gekürzten Prosa-Auszug OHNE
+  Tool-Zugriff – für Funde, die echte Logs und echten Code nebeneinander lesen müssen (z. B. ein
+  Widerspruch zwischen Budget-Reserve-Logik und Verifikations-Abbruch), reichte das nicht. Bei
+  einem echten Warnsignal (Absturz, Verifikation trotz geschriebener Dateien gescheitert, ein
+  wiederkehrendes Fehlermuster) bekommt der `agent_trainer`-Agent zusätzlich echten,
+  schreibgeschützten Werkzeugzugriff auf das GESAMTE Repository (Framework- UND Projekt-Code
+  gleichermaßen) sowie die vollen Rohdaten des Laufs vorgelegt und formuliert strukturierte
+  Befunde, die als eigene, **nicht-autonome** Backlog-Tickets landen – Framework-Änderungen
+  verdienen ein menschliches Review, `--work-backlog` setzt sie nie selbstständig um. Per
+  `ENABLE_ROOT_CAUSE_ANALYST` (Standard AN) abschaltbar. Bei Framework-Befunden liefert die
+  Analyse optional einen minimalen, direkt lauffähigen Regressionstest-Vorschlag gleich mit.
+  Tritt derselbe Framework-Befund an mehreren unabhängigen Projekten auf, eskaliert ein
+  zusätzliches teamweites Sammel-Ticket samt externer Benachrichtigung. `get_action_rate()`
+  (im Dashboard über dem Vorschlags-Bereich sichtbar) zeigt, wie viele dieser Befunde tatsächlich
+  zu einem gemergten Fix führten statt liegenzubleiben.
+- **Cross-Projekt-Komponenten-Bibliothek** (`core/component_library.py`): Jedes Projekt erfand
+  bisher Standard-Infrastruktur (Circuit Breaker, Rate-Limiter, Retry/Backoff,
+  JWT-Auth-Middleware, Repository-Basisklassen) komplett neu – mit dem Risiko, dieselbe
+  Bugklasse erneut einzuführen. Nach einem erfolgreich verifizierten Lauf übernimmt das Team
+  echte (keine Stub-)Implementierungen solcher Bausteine mit Provenienz in eine
+  projektübergreifende Bibliothek (`memory/component_library/`); das neue, rein lesende Werkzeug
+  `search_component_library` liefert einen Treffer als Vorlage direkt inline, bevor ein Agent
+  denselben Baustein von Grund auf neu schreibt.
+- **Vollständige Absturz-Diagnose** (`agents/orchestrator/__init__.py`): Ein unbehandelter
+  Absturz während eines Laufs persistiert jetzt den vollen (gedeckelten) Traceback im Lauf-Log
+  und legt automatisch ein Backlog-Ticket dafür an – vorher ging nur der bloße
+  Exception-Klassenname ins Log, wodurch ein Absturz nachträglich nicht mehr diagnostizierbar
+  war.
 
 ---
 

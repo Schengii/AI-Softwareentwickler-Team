@@ -222,6 +222,23 @@ FRONTEND_CONTRACT_DIRECTIVE = f"""
   Ersatz für die physische Datei.
 {EXTERNAL_API_SDK_SYNC_DIRECTIVE}"""
 
+# Team-Optimierung (Gesamtsystem-Analyse 2026-09-14, Punkt 3.2 "Wiederverwendung statt
+# Neuerfindung"): core/component_library.py sammelt bereits verifizierte Implementierungen
+# wiederkehrender Infrastruktur-Bausteine aus FRÜHEREN Projekten - ohne diesen Hinweis im
+# Prompt weiß kein Agent, dass das neue search_component_library-Werkzeug existiert. Genau
+# dieser Baustein-Typ (CircuitBreaker) blieb im chronospulse-Lauf ein 5-zeiliger Kommentar-Stub
+# statt einer echten Implementierung (siehe core/component_library.py-Moduldocstring).
+COMPONENT_LIBRARY_DIRECTIVE = """
+## 📦 Komponenten-Bibliothek: nicht neu erfinden, was schon verifiziert existiert
+Bevor du Standard-Infrastruktur (Circuit Breaker, Rate-Limiter, Retry/Backoff, JWT-Auth-
+Middleware, Repository-Basisklassen) komplett neu implementierst, rufe IMMER zuerst
+`search_component_library` mit einem passenden Suchbegriff auf. Ein Treffer liefert bereits
+verifizierten, aus einem früheren Projekt stammenden Code als Vorlage - passe ihn an die
+konkreten Anforderungen DIESES Projekts an (Namen, Settings, Fehlerbehandlung), statt ihn
+unverändert zu kopieren oder ihn zu ignorieren. Findet sich kein passender Baustein, implementierst
+du regulär selbst - aber vollständig und lauffähig, NIEMALS als Kommentar-Stub oder Auszug.
+"""
+
 FIX_LOOP_DIRECTIVE = f"""
 ## 🧭 Fix-Loop-Disziplin: Ursache vor Symptom
 Klassifiziere einen Testfehler, BEVOR du etwas änderst:

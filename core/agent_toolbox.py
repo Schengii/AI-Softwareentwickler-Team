@@ -149,6 +149,29 @@ TOOL_SPECS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "search_component_library",
+        "description": (
+            "Durchsucht die PROJEKTÜBERGREIFENDE Bibliothek bereits verifizierter, "
+            "wiederverwendbarer Infrastruktur-Bausteine (Circuit Breaker, Rate-Limiter, "
+            "Retry/Backoff, JWT-Auth-Middleware, Repository-Basisklassen) aus FRÜHEREN, "
+            "erfolgreich getesteten Projekten. Nutze dies VOR der Implementierung von "
+            "Standard-Infrastruktur, um sie nicht fehleranfällig neu zu erfinden - ein Treffer "
+            "liefert den vollständigen Code direkt mit, den du als Vorlage (an dieses Projekt "
+            "angepasst) übernehmen kannst."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Suchbegriff, z.B. 'circuit breaker' oder 'JWT auth middleware'"},
+                "category": {
+                    "type": "string",
+                    "description": "Optional: 'circuit_breaker'|'rate_limiter'|'retry_backoff'|'jwt_auth'|'repository_base' zur Eingrenzung",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "run_command",
         "description": (
             "Führt ein Terminal-Kommando im Projektverzeichnis aus (Timeout 60s). Nur eine begrenzte, sichere "
@@ -244,6 +267,10 @@ READ_ONLY_TOOL_NAMES = {
     # _tool_ask_human_for_clarification) - auch ein NUR-LESE-Agent (z.B. eine reine Review-
     # Rolle) muss auf eine echte Blockade hinweisen können, nicht nur schreibende Rollen.
     "ask_human_for_clarification",
+    # search_component_library liest ausschließlich memory/component_library/ (außerhalb von
+    # project_dir, siehe _tool_search_component_library) - unabhängig vom Nur-Lese-Modus des
+    # AKTUELLEN Projekts genauso ungefährlich wie search_code.
+    "search_component_library",
 }
 
 
@@ -836,6 +863,41 @@ class AgentToolbox:
         if not results:
             return {"results": [], "note": "Keine relevanten Treffer (oder noch keine durchsuchbaren Dateien im Projekt)."}
         return {"results": [{"file": r["file"], "line_start": r["line_start"], "chunk": r["chunk"][:1500]} for r in results]}
+
+    async def _tool_search_component_library(self, query: str, category: str = "") -> dict:
+        """Sucht in der PROJEKTÜBERGREIFENDEN Bibliothek (memory/component_library/, außerhalb
+        von self.project_dir) statt im aktuellen Projekt - siehe core/component_library.py für
+        die vollständige Begründung (Gesamtsystem-Analyse 2026-09-14, Punkt 3.2).
+
+        Liefert den vollständigen (gedeckelten) Code direkt im Ergebnis mit, statt nur einen
+        Pfad zu nennen: _resolve() beschränkt read_file/write_file/edit_file strikt auf
+        self.project_dir (Sicherheitsgrenze, siehe dort) - ein snippet_file unter
+        memory/component_library/ liegt AUSSERHALB davon und wäre über den regulären
+        read_file-Aufruf gar nicht erreichbar."""
+        from core.component_library import get_snippet_content
+        from core.component_library import search as search_library
+
+        results = search_library(query, category=category)
+        if not results:
+            return {
+                "results": [],
+                "note": "Kein passender Baustein in der Bibliothek gefunden - implementiere regulär selbst.",
+            }
+        return {
+            # max_chars=1500 je Treffer - dieselbe Obergrenze wie das bereits bestehende
+            # search_code-Werkzeug (chunk[:1500]) direkt darüber, damit ein voller
+            # 5-Treffer-Ergebnissatz den Werkzeug-Loop-Kontext nicht übermäßig aufbläht (siehe
+            # MAX_TOOL_RESULT_CHARS-Docstring oben).
+            "results": [
+                {
+                    "category": r["category"], "class_name": r["class_name"],
+                    "source_project": r["source_project"],
+                    "code": get_snippet_content(r["id"], max_chars=1500),
+                }
+                for r in results
+            ],
+            "hinweis": "Als Vorlage verwendbar - an die konkreten Anforderungen dieses Projekts anpassen, nicht blind kopieren.",
+        }
 
     # ── Ausführungs-Werkzeuge ────────────────────────────────────────
 

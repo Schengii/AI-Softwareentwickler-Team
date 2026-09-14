@@ -177,7 +177,20 @@ class GoalLoopRunner:
         stagnated = False
         crashed = False
         loop_start_tokens = token_guard.get_summary()["grand_total_tokens"]
-        previous_failure_detail: str | None = None
+        # Folgeanalyse 2026-09-14 ("Oszillations-Fund"): ein einzelner previous_failure_detail-
+        # Skalar erkannte nur zwei UNMITTELBAR AUFEINANDERFOLGENDE identische Fehler. Ein real
+        # zu erwartendes Muster - der Fix für Fehler A bricht Fehler B, der Fix für B bricht
+        # wieder A - wird dadurch NIE erkannt, weil sich aufeinanderfolgende Iterationen dabei
+        # immer unterscheiden. Tatsächlich ausgeführter Repro bestätigte: ein A-B-A-B-A-Muster
+        # lief alle 5 Iterationen durch, ohne dass die Stagnationserkennung je ansprach. Ein
+        # normalisierter Fehler, der SCHON EINMAL an einer früheren Iteration auftrat (nicht nur
+        # an der unmittelbar vorherigen), ist ebenso ein Stagnations-Signal - seen_failure_
+        # signatures ersetzt deshalb den einzelnen Skalar durch eine Historie ALLER bisher
+        # gesehenen Fehler-Signaturen dieses Loop-Durchlaufs (normalisierter Fehler -> Iteration,
+        # in der er zuerst auftrat), wodurch der bisherige Konsekutiv-Fall automatisch ein
+        # Spezialfall wird (first_seen_at == iteration - 1), ohne zwei getrennte Prüfungen zu
+        # brauchen.
+        seen_failure_signatures: dict[str, int] = {}
 
         ticket_id = new_ticket_id("goal")
         upsert_ticket(
@@ -262,24 +275,27 @@ class GoalLoopRunner:
                 emit(f"🎉 [bold green]Ziel vollständig erreicht in Iteration {iteration}![/bold green] ({evaluation_reason})")
                 break
 
-            # Stagnations-Erkennung: liefert die Verifikation zwei Iterationen in Folge denselben
-            # STRUKTURELLEN Fehler (nach Normalisierung, siehe _normalize_failure_detail() oben),
-            # dreht sich der Loop im Kreis (ein Bug, den das Team offenbar nicht selbst löst) -
-            # weitere Runden verbrennen nur Tokens ohne Fortschritt.
+            # Stagnations-Erkennung: liefert die Verifikation denselben STRUKTURELLEN Fehler
+            # (nach Normalisierung, siehe _normalize_failure_detail() oben) wie eine BELIEBIGE
+            # frühere Iteration - nicht nur die unmittelbar vorherige, siehe seen_failure_
+            # signatures-Docstring oben (Oszillations-Fund) - dreht sich der Loop im Kreis (ein
+            # Bug, den das Team offenbar nicht selbst löst) - weitere Runden verbrennen nur
+            # Tokens ohne Fortschritt.
             normalized_failure = _normalize_failure_detail(failure_detail) if failure_detail else None
-            if (
-                not verification_ok
-                and normalized_failure
-                and previous_failure_detail is not None
-                and normalized_failure == previous_failure_detail
-            ):
-                emit(
-                    "🛑 [bold red]Stagnation erkannt:[/bold red] strukturell derselbe Verifikationsfehler wie in der "
-                    f"Vorrunde ({failure_detail[:100]}) – breche ab, statt Iterationen zu verschwenden."
-                )
-                stagnated = True
-                break
-            previous_failure_detail = normalized_failure
+            if not verification_ok and normalized_failure:
+                first_seen_at = seen_failure_signatures.get(normalized_failure)
+                if first_seen_at is not None:
+                    if first_seen_at == iteration - 1:
+                        kind_note = "wie in der Vorrunde"
+                    else:
+                        kind_note = f"wie bereits in Iteration {first_seen_at} (zyklisch wiederkehrend, kein echter Fortschritt dazwischen)"
+                    emit(
+                        f"🛑 [bold red]Stagnation erkannt:[/bold red] strukturell derselbe Verifikationsfehler {kind_note} "
+                        f"({failure_detail[:100]}) – breche ab, statt Iterationen zu verschwenden."
+                    )
+                    stagnated = True
+                    break
+                seen_failure_signatures[normalized_failure] = iteration
 
             # Kumulatives Token-Budget über alle bisherigen Iterationen dieses Loops.
             if GOAL_LOOP_MAX_TOTAL_TOKENS > 0:

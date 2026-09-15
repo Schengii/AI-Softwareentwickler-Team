@@ -19,6 +19,7 @@ Traversal), und run_command ist auf eine Sicherheits-Whitelist begrenzt.
 
 import ast
 import fnmatch
+import logging
 import os
 import shlex
 import sys
@@ -238,6 +239,25 @@ TOOL_SPECS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "ask_teammate",
+        "description": (
+            "Stellt einem Teamkollegen (anderer Agent) eine konkrete fachliche Frage und liefert seine Antwort "
+            "direkt zurück - z.B. frontend an backend: 'Wie heißt die WebSocket-Route und welches JSON-Format "
+            "sendet sie?', tester an database: 'Welche Pflichtfelder hat das Modell Webhook?'. Nutze es, BEVOR "
+            "du eine Schnittstelle rätst, die ein anderer liefert. Kurz und präzise fragen; pro Aufgabe nur "
+            "wenige Fragen möglich. Rollen u.a.: architect, backend, frontend, database, api_integration, "
+            "devops, tester, security, ui_ux."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Rolle des Kollegen, z.B. 'backend'"},
+                "question": {"type": "string", "description": "Konkrete Frage mit Bezug (Datei, Route, Symbol)"},
+            },
+            "required": ["agent_id", "question"],
+        },
+    },
+    {
         "name": "find_symbol_definition",
         "description": "Findet die exakte AST-Definition (Klasse, Funktion, Methode) eines Code-Symbols im gesamten Projektverzeichnis.",
         "parameters": {
@@ -359,6 +379,9 @@ class AgentToolbox:
     def tool_specs(self) -> list[dict[str, Any]]:
         if self.read_only:
             return [t for t in TOOL_SPECS if t["name"] in READ_ONLY_TOOL_NAMES or t["name"] == "run_tests"]
+        from config import ENABLE_ASK_TEAMMATE
+        if not ENABLE_ASK_TEAMMATE:
+            return [t for t in TOOL_SPECS if t["name"] != "ask_teammate"]
         return TOOL_SPECS
 
     def _normalize_relative_path(self, clean: str) -> str:
@@ -523,6 +546,48 @@ class AgentToolbox:
             "Zeichen ('\\\\n', '\\\\\"') statt als echte Escape-Sequenzen im Inhalt gelandet sind."
         )
 
+    def _local_module_exists(self, dotted: str) -> bool | None:
+        """True/False für ein Projektmodul, None wenn der Import kein lokales Modul betrifft."""
+        parts = [p for p in dotted.split(".") if p]
+        if not parts:
+            return None
+        for root in (self.project_dir, self.project_dir / "src"):
+            top = root / parts[0]
+            if not (top.is_dir() or top.with_suffix(".py").is_file()):
+                continue
+            module = root.joinpath(*parts)
+            return module.with_suffix(".py").is_file() or (module / "__init__.py").is_file() or module.is_dir()
+        return None
+
+    def _reject_if_premature_reexport(self, clean_rel: str, content: str) -> str | None:
+        """Lehnt `__init__.py`-Re-Exporte aus noch nicht existierenden Projektmodulen ab.
+
+        Analyse 2026-09-15 (nexus_resilience_gateway): der security-Agent schrieb Importe aus
+        `app/core/security.py` in `app/core/__init__.py`, bevor die Datei existierte - jedes
+        `import app.core` brach danach mit ImportError, mehrere Reparaturrunden folgten.
+        """
+        if not clean_rel.endswith("__init__.py"):
+            return None
+        try:
+            tree = ast.parse(content or "")
+        except SyntaxError:
+            return None
+        from core.write_guard import _resolve_import_module
+        missing: list[str] = []
+        for node in tree.body:
+            if not isinstance(node, ast.ImportFrom) or not node.module:
+                continue
+            dotted = _resolve_import_module(clean_rel, node)
+            if dotted and self._local_module_exists(dotted) is False:
+                missing.append(dotted)
+        if not missing:
+            return None
+        return (
+            f"'{clean_rel}' re-exportiert aus Modul(en), die noch nicht existieren: {', '.join(sorted(set(missing)))}. "
+            "Ein Paket-`__init__.py` mit fehlendem Import bricht JEDEN Import des Pakets. Lege zuerst das "
+            "Zielmodul an (oder frage den zuständigen Kollegen per ask_teammate) und ergänze den Re-Export danach."
+        )
+
     def _check_test_import_phantoms(self, path: str, content: str) -> str | None:
         """Gibt eine Warnung zurück (kein Schreibschutz), wenn eine gerade geschriebene Testdatei
         ein Symbol aus einem lokalen Projektmodul importiert, das dort laut echtem Code gar nicht
@@ -640,10 +705,26 @@ class AgentToolbox:
     def _remember_content(self, target: Path, content: str) -> None:
         self._seen_digests[self._digest_key(target)] = content_digest(content)
 
-    def _remember_write(self, target: Path, clean_rel: str, content: str) -> None:
+    def _remember_write(self, target: Path, clean_rel: str, content: str) -> str | None:
+        """Merkt sich den Schreibvorgang und meldet zurück, falls die Datei einer anderen Rolle gehört."""
         self._remember_content(target, content)
         file_versions.record_write(target, self.agent_id)
         self.files_written.add(clean_rel)
+        from config import ENABLE_TEAM_BOARD
+        if not ENABLE_TEAM_BOARD:
+            return None
+        try:
+            from core.team_board import claim_file
+            owner = claim_file(self.project_dir, clean_rel, self.agent_id)
+        except Exception as e:  # noqa: BLE001 - Board ist Kommunikationshilfe, kein Schreibblocker
+            logging.getLogger(__name__).warning("Datei-Owner für %s nicht registrierbar: %r", clean_rel, e)
+            return None
+        if owner:
+            return (
+                f"Hinweis: '{clean_rel}' gehört `{owner}`. Deine Änderung ist auf dem Team-Board vermerkt - "
+                f"begründe sie in deiner Übergabe oder kläre sie per ask_teammate mit `{owner}`."
+            )
+        return None
 
     def _reject_if_stale(self, target: Path, clean_rel: str, current: str) -> str | None:
         """Ein vollständiges Überschreiben ist nur erlaubt, wenn dieser Agent den AKTUELLEN Stand
@@ -703,7 +784,11 @@ class AgentToolbox:
 
         target = self._resolve(path)
         clean_rel = self._relative(target)
-        rejection = check_path_plausible(clean_rel) or check_write_scope(self.agent_id, clean_rel)
+        rejection = (
+            check_path_plausible(clean_rel)
+            or check_write_scope(self.agent_id, clean_rel)
+            or self._reject_if_premature_reexport(clean_rel, new_content)
+        )
         if rejection:
             return {"error": rejection}
         merge_note = None
@@ -720,10 +805,10 @@ class AgentToolbox:
                 )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(new_content, encoding="utf-8")
-        self._remember_write(target, clean_rel, new_content)
+        ownership_note = self._remember_write(target, clean_rel, new_content)
         result = {"path": clean_rel, "bytes_written": len(new_content.encode("utf-8")), "status": "ok"}
         phantom_note = self._check_test_import_phantoms(clean_rel, new_content)
-        warning = " ".join(w for w in (sanitize_note, merge_note, phantom_note) if w)
+        warning = " ".join(w for w in (sanitize_note, merge_note, phantom_note, ownership_note) if w)
         if warning:
             result["warning"] = warning
         return result
@@ -795,15 +880,17 @@ class AgentToolbox:
             return {"error": rejection}
         updated, sanitize_note = self._sanitize_toxic_dependencies(path, updated)
         clean_rel = self._relative(target)
-        rejection = check_contract_preserved(self.project_dir, clean_rel, current, updated)
+        rejection = self._reject_if_premature_reexport(clean_rel, updated) or check_contract_preserved(
+            self.project_dir, clean_rel, current, updated,
+        )
         if rejection:
             return {"error": rejection}
 
         target.write_text(updated, encoding="utf-8")
-        self._remember_write(target, clean_rel, updated)
+        ownership_note = self._remember_write(target, clean_rel, updated)
         result = {"path": clean_rel, "status": "ok"}
         phantom_note = self._check_test_import_phantoms(clean_rel, updated)
-        warning = " ".join(w for w in (sanitize_note, phantom_note) if w)
+        warning = " ".join(w for w in (sanitize_note, phantom_note, ownership_note) if w)
         if warning:
             result["warning"] = warning
         return result
@@ -974,6 +1061,35 @@ class AgentToolbox:
                 "erledigt ist und was durch diese Frage offen bleibt."
             ),
         }
+
+    async def _tool_ask_teammate(self, agent_id: str, question: str) -> dict:
+        from config import ENABLE_ASK_TEAMMATE, TEAMMATE_QUESTIONS_PER_AGENT, TEAMMATE_QUESTIONS_PER_RUN
+        from core import team_board
+
+        if not ENABLE_ASK_TEAMMATE:
+            return {"error": "ask_teammate ist deaktiviert (ENABLE_ASK_TEAMMATE=false)."}
+        target = (agent_id or "").strip()
+        text = (question or "").strip()
+        if not target or not text:
+            return {"error": "'agent_id' und 'question' dürfen nicht leer sein."}
+        if target == self.agent_id:
+            return {"error": "Du kannst dir nicht selbst eine Frage stellen."}
+        responder = team_board.get_teammate_responder(self.project_dir)
+        if responder is None:
+            return {"error": "In diesem Kontext ist kein Team erreichbar – entscheide selbst und dokumentiere die Annahme."}
+        if team_board.count_questions(self.project_dir) >= TEAMMATE_QUESTIONS_PER_RUN:
+            return {"error": f"Fragen-Limit für diesen Lauf erreicht ({TEAMMATE_QUESTIONS_PER_RUN}) – entscheide selbst."}
+        if team_board.count_questions(self.project_dir, asker=self.agent_id) >= TEAMMATE_QUESTIONS_PER_AGENT:
+            return {"error": f"Du hast bereits {TEAMMATE_QUESTIONS_PER_AGENT} Fragen gestellt – arbeite mit den Antworten weiter."}
+        try:
+            answer = await responder(self.agent_id, target, text[:1000], str(self.project_dir))
+        except Exception as e:  # noqa: BLE001 - eine gescheiterte Rückfrage darf die Aufgabe nicht abbrechen
+            logging.getLogger(__name__).warning("ask_teammate %s -> %s fehlgeschlagen: %r", self.agent_id, target, e)
+            answer = f"Keine Antwort von `{target}` ({e})."
+        team_board.record_question(
+            self.project_dir, team_board.TeammateQuestion(asker=self.agent_id, target=target, question=text[:1000], answer=answer),
+        )
+        return {"status": "answered", "from": target, "answer": answer}
 
     # ── Dokumentations-Werkzeug ──────────────────────────────────────
 

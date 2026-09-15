@@ -118,7 +118,10 @@ def check_handoff(project_dir: str | Path, files_written: list[str] | set[str]) 
             continue
         if issue.file_path.replace("\\", "/") not in written:
             continue
-        if _references_planned_module(issue.message, planned - written):
+        # Ein Paket-`__init__.py` mit Import auf ein noch fehlendes Modul bricht jeden Import des
+        # Pakets - das ist nie "Kollege noch nicht fertig", sondern ein zu früher Re-Export.
+        is_package_init = issue.file_path.replace("\\", "/").endswith("__init__.py")
+        if not is_package_init and _references_planned_module(issue.message, planned - written):
             continue
         report.issues.append(f"{issue.file_path}:{issue.line_number} – {issue.message}")
     return report

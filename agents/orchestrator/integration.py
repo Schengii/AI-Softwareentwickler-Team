@@ -21,11 +21,13 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 
+from config import ENABLE_TEAM_BOARD
 from core.decision_log import log_decision
 from core.dependency_manifest import add_requirement, manifest_for_package, package_from_finding
 from core.message_bus import AgentResult, AgentTask
 from core.pre_flight_check import run_pre_flight_check
 from core.project_scaffold import ScaffoldReport, apply_scaffold, ensure_package_inits, is_safe_project_dir
+from core.team_board import unmet_requirements
 from core.verification_outcome import VerificationOutcome
 from core.verifier import ProjectVerifier
 
@@ -77,6 +79,7 @@ class IntegrationMixin:
         lines: list[str] = []
         if not is_safe_project_dir(project_dir):
             return lines
+        lines.extend(await self._check_team_board_requirements(project_dir, notify))
         try:
             report = await asyncio.to_thread(run_pre_flight_check, project_dir)
         except Exception as e:  # noqa: BLE001 - Checkpoint ist Frühwarnung, kein Blocker
@@ -161,6 +164,26 @@ class IntegrationMixin:
         log_decision(project_dir, "integration_checkpoint", f"{len(blocking)} Befund(e) → {status}")
         self._trace_event("integration_checkpoint", passed=not remaining, issues=len(blocking), remaining=len(remaining))
         return lines
+
+    async def _check_team_board_requirements(self, project_dir: str, notify: Callable[[str], None]) -> list[str]:
+        """Gleicht die `requires`-Angaben der Übergaben mit dem echten Projektstand ab (core/team_board.py).
+
+        Ein unerfüllter Bedarf ("frontend braucht `GET /api/metrics`") ist genau das Missverständnis
+        zwischen Kollegen, das sonst erst im Browser-Check oder gar nicht auffällt.
+        """
+        if not ENABLE_TEAM_BOARD:
+            return []
+        try:
+            unmet = await asyncio.to_thread(unmet_requirements, project_dir)
+        except Exception as e:  # noqa: BLE001 - Abgleich ist Frühwarnung, kein Blocker
+            logger.warning("Team-Board-Abgleich fehlgeschlagen: %r", e)
+            return []
+        self._trace_event("team_board_requirements", unmet=len(unmet))
+        if not unmet:
+            return []
+        shown = "; ".join(f"{agent}: {req}" for agent, req in unmet[:6])
+        notify(f"  🤝 [bold yellow]Team-Board – unerfüllter Bedarf:[/bold yellow] {shown}")
+        return [f"- 🤝 Team-Board: {len(unmet)} unerfüllte Anforderung(en) zwischen Kollegen – {shown}"]
 
     async def _run_review_after_verification(
         self,

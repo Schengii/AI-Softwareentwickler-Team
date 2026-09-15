@@ -987,6 +987,16 @@ def _env_flag(name: str, default: bool) -> bool:
 TRAINER_HIGH_USAGE_TOKENS_PER_CALL: int = int(os.getenv("TRAINER_HIGH_USAGE_TOKENS_PER_CALL", "150000"))
 TRAINER_MAX_TOOL_ITERATIONS: int = int(os.getenv("TRAINER_MAX_TOOL_ITERATIONS", "3"))
 
+# Team-Board (core/team_board.py): Übergabe-Notizen, Datei-Owner, Schnittstellen-Status und Fragen
+# zwischen Agenten statt 3000 Zeichen gekürztem Ergebnistext.
+ENABLE_TEAM_BOARD: bool = _env_flag("ENABLE_TEAM_BOARD", True)
+TEAM_BOARD_PROMPT_CHARS: int = int(os.getenv("TEAM_BOARD_PROMPT_CHARS", "3500"))
+# ask_teammate: ein Agent fragt einen Kollegen (kurzer Nur-Lese-Aufruf des Kollegen).
+ENABLE_ASK_TEAMMATE: bool = _env_flag("ENABLE_ASK_TEAMMATE", True)
+TEAMMATE_QUESTIONS_PER_RUN: int = int(os.getenv("TEAMMATE_QUESTIONS_PER_RUN", "8"))
+TEAMMATE_QUESTIONS_PER_AGENT: int = int(os.getenv("TEAMMATE_QUESTIONS_PER_AGENT", "2"))
+TEAMMATE_ANSWER_TOOL_ITERATIONS: int = int(os.getenv("TEAMMATE_ANSWER_TOOL_ITERATIONS", "2"))
+
 # ──────────────────────────────────────────
 # Obsidian Vault & Gedächtnis-Synchronisation (core/obsidian_sync.py)
 # ──────────────────────────────────────────

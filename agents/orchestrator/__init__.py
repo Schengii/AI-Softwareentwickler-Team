@@ -48,6 +48,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable
+from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -80,6 +81,7 @@ from agents.orchestrator.dispatch import DispatchMixin
 from agents.orchestrator.integration import IntegrationMixin
 from agents.orchestrator.reporting import ReportingMixin
 from agents.orchestrator.retrospective import RetrospectiveMixin
+from agents.orchestrator.team_communication import TeamCommunicationMixin
 from agents.orchestrator.verification import VerificationMixin
 from agents.performance_agent import PerformanceAgent
 from agents.product_owner_agent import ProductOwnerAgent
@@ -169,6 +171,7 @@ class Orchestrator(
     BudgetMixin,
     RetrospectiveMixin,
     ReportingMixin,
+    TeamCommunicationMixin,
 ):
     """
     Hauptagent, der die 6 Fachbereichs-Teamleiter und deren 33 Spezialisten koordiniert.
@@ -414,6 +417,7 @@ class Orchestrator(
             self._record_crash_ticket(exc, tb)
             raise
         finally:
+            self._stop_team_board()
             self._close_unfinished_run_log("returned_without_close")
 
     def _close_unfinished_run_log(self, reason: str, *, traceback_text: str = "") -> None:
@@ -680,6 +684,11 @@ class Orchestrator(
         except Exception as e:
             logging.getLogger(__name__).warning("Lauf-Log konnte nicht angelegt werden – Lauf ohne Protokoll: %r", e)
             self._run_logger = None
+
+        # Team-Board für diesen Lauf (core/team_board.py): Übergaben, Datei-Owner, Fragen im Team.
+        self._start_team_board(
+            project_dir, getattr(self._run_logger, "stamp", None) or datetime.now().strftime("%Y%m%d_%H%M%S"),
+        )
 
         # Realer Fund (vier separate Läufe an praktisch derselben Aufgabe, alle mit
         # verification_ok=false): der rein informative Duplikat-Hinweis oben wird beim

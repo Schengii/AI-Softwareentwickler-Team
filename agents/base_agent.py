@@ -233,6 +233,8 @@ class BaseAgent(ABC):
                     needs_human_input=bool(toolbox and toolbox.clarification_requests),
                     clarification_questions=list(toolbox.clarification_requests) if toolbox else [],
                 )
+            if toolbox is not None and not task.tools_read_only and toolbox.files_written:
+                self._record_team_handoff(task, toolbox, response.text)
             return AgentResult(
                 task_id=task.task_id,
                 agent_id=self.agent_id,
@@ -372,6 +374,10 @@ class BaseAgent(ABC):
                 "(ggf. unter anderem Dateinamen) existiert. Erweitere/nutze bestehenden Code statt "
                 "eine zweite, parallele Implementierung derselben Sache anzulegen."
             )
+
+        board_view = self._team_board_view(task)
+        if board_view:
+            initial_prompt += "\n\n" + board_view
 
         turns: list[AgentMessage] = [AgentMessage(role="user", text=initial_prompt)]
 
@@ -718,6 +724,35 @@ class BaseAgent(ABC):
         assert response is not None
         return response, total_prompt_tokens, total_completion_tokens, hard_delivery_gate_failed
 
+    def _team_board_view(self, task: AgentTask) -> str:
+        """Aktuelle Team-Board-Sicht (core/team_board.py) für den Start dieser Aufgabe."""
+        from config import ENABLE_TEAM_BOARD, TEAM_BOARD_PROMPT_CHARS
+        if not ENABLE_TEAM_BOARD or not task.project_dir:
+            return ""
+        try:
+            from core.team_board import format_for_agent
+            return format_for_agent(task.project_dir, self.agent_id, max_chars=TEAM_BOARD_PROMPT_CHARS)
+        except Exception as e:  # noqa: BLE001 - Board-Sicht ist Zusatzkontext, nie ein Blocker
+            logging.getLogger(__name__).warning("Team-Board-Sicht für %s nicht verfügbar: %r", self.agent_id, e)
+            return ""
+
+    def _record_team_handoff(self, task: AgentTask, toolbox: AgentToolbox, response_text: str) -> None:
+        """Legt die Übergabe-Notiz auf das Team-Board: Dateien, gelieferte Symbole/Routen, Bedarf, Offenes."""
+        from config import ENABLE_TEAM_BOARD
+        if not ENABLE_TEAM_BOARD or not task.project_dir:
+            return
+        try:
+            from core.team_board import Handoff, derive_provides, parse_handoff_note, record_handoff
+            files = sorted(toolbox.files_written)
+            note = parse_handoff_note(response_text) or {}
+            provides = list(note.get("provides", [])) + derive_provides(task.project_dir, files)
+            record_handoff(task.project_dir, Handoff(
+                agent_id=self.agent_id, task_id=task.task_id, files=files, provides=provides,
+                requires=list(note.get("requires", [])), open_issues=list(note.get("open_issues", [])),
+            ))
+        except Exception as e:  # noqa: BLE001 - Übergabe-Notiz darf ein Ergebnis nie gefährden
+            logging.getLogger(__name__).warning("Übergabe-Notiz von %s nicht gespeichert: %r", self.agent_id, e)
+
     async def _run_handoff_check(self, task: AgentTask, toolbox: AgentToolbox):
         """Führt die Übergabe-Prüfung aus - ein interner Fehler darf die Abgabe nie blockieren."""
         try:
@@ -822,6 +857,16 @@ class BaseAgent(ABC):
             "gibt sie dir bei Fehlern zur Korrektur zurück."
             if self.agent_id in HANDOFF_GATE_AGENT_IDS and not read_only else ""
         )
+        team_note = (
+            "\n\n🤝 TEAMARBEIT: Oben im Auftrag steht ggf. ein TEAM-BOARD mit den Übergaben deiner Kollegen, "
+            "Datei-Ownern und dem Stand des Schnittstellen-Vertrags - richte dich danach. Brauchst du eine "
+            "Information, die ein Kollege liefert (Route, Feldname, Signatur), frage ihn per `ask_teammate`, statt "
+            "zu raten. Beende deine finale Antwort mit drei Zeilen für die Übergabe:\n"
+            "provides: <was du lieferst, z.B. `GET /api/metrics` (app/api/metrics.py); `MetricsService`>\n"
+            "requires: <was du von anderen erwartest, mit Datei/Route/`Symbol`, oder: keine>\n"
+            "open_issues: <was offen ist, oder: keine>"
+            if self.agent_id in CODE_WRITING_AGENT_IDS and not read_only else ""
+        )
         return f"""{system_prompt}
 
 ## 🛠️ WERKZEUG-NUTZUNG (agentischer Modus)
@@ -845,7 +890,7 @@ Triffst du auf eine ECHTE, für die Aufgabe entscheidende Unklarheit, die nur ei
 statt zu raten und trotzdem etwas möglicherweise Falsches auszuliefern. Ein erfahrener Senior-Entwickler fragt bei
 echter Mehrdeutigkeit nach, statt zu spekulieren. Setze deine Arbeit danach so weit wie möglich fort und fasse in
 deiner finalen Antwort ehrlich zusammen, was bereits erledigt ist und was durch die Rückfrage offen bleibt.
-{write_access_note}{empty_scope_note}{exception_handling_note}{handoff_note}"""
+{write_access_note}{empty_scope_note}{exception_handling_note}{handoff_note}{team_note}"""
 
     def _build_prompt(self, task: AgentTask) -> str:
         """Baut den finalen Prompt token-effizient zusammen mit strikten Sparsamkeits-Regeln."""

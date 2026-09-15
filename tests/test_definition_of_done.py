@@ -42,6 +42,21 @@ class TestKriterien:
         assert "tests_exist" in blockierend
         assert "tests_pass" in blockierend
 
+    def test_frontend_unter_public_index_html_gilt_als_geliefert(self, tmp_path):
+        """
+        Realer Fund (dev_snippet_vault, 2026-09-15): der frontend-Agent lieferte ein
+        vollstaendiges Frontend unter `public/index.html` (uebliche Konvention fuer ein von
+        einem Backend statisch ausgeliefertes Static-Asset) - `missing_frontend_ui` meldete
+        trotzdem faelschlich, kein Frontend sei geliefert worden, weil nur root-level
+        `index.html` als Kandidat bekannt war.
+        """
+        (tmp_path / "public").mkdir()
+        (tmp_path / "public" / "index.html").write_text("<html></html>", encoding="utf-8")
+        dod = _dod(tmp_path, frontend_planned=True)
+        kriterium = next(c for c in dod.criteria if c.key == "missing_frontend_ui")
+        assert kriterium.passed is True
+        assert "missing_frontend_ui" not in [c.key for c in dod.blocking_criteria]
+
     def test_rote_tests_blockieren(self, tmp_path):
         dod = _dod(tmp_path, tests_ran=True, tests_passed=False)
         assert [c.key for c in dod.blocking_criteria] == ["tests_pass"]

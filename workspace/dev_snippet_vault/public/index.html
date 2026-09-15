@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="de" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>dev_snippet_vault - Code & Wissensdatenbank</title>
+  <!-- ... (Rest der Head-Elemente unverändert) ... -->
+</head>
+<body class="bg-dark-base text-gray-100 min-h-screen flex flex-col font-sans">
+
+  <header class="navbar">
+    <div class="container navbar-container">
+      <div class="brand">
+        <i class="fa-solid fa-code-merge brand-icon" aria-hidden="true"></i>
+        <div class="brand-text">
+          <span class="brand-title">Snippet<span class="accent">Vault</span></span>
+        </div>
+      </div>
+
+      <div class="search-bar-wrapper">
+        <i class="fa-solid fa-magnifying-glass search-icon" aria-hidden="true"></i>
+        <input 
+          type="search" 
+          id="search-input" 
+          placeholder="Snippets durchsuchen..." 
+          autocomplete="off"
+          aria-label="Volltextsuche in Snippets"
+        >
+        <button id="search-clear-btn" class="search-clear hidden" aria-label="Suche zurücksetzen">
+          <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+        </button>
+      </div>
+
+      <div class="header-actions">
+        <button id="new-snippet-btn" class="btn btn-primary" aria-haspopup="dialog">
+          <i class="fa-solid fa-plus" aria-hidden="true"></i>
+          <span>Neues Snippet</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container main-layout">
+    <!-- ... (Sidebar unverändert) ... -->
+    
+    <section class="content-area" aria-labelledby="content-heading">
+      <h2 id="content-heading" class="sr-only">Snippet-Liste</h2>
+      
+      <!-- Dynamische Updates für Screenreader -->
+      <div id="live-announcer" class="sr-only" aria-live="polite"></div>
+
+      <div class="content-toolbar">
+        <div class="active-filters" id="active-filter-chips" aria-live="polite">
+          <span class="filter-indicator" id="filter-indicator-text">Alle Snippets</span>
+        </div>
+        <!-- ... (Sortierung) ... -->
+      </div>
+
+      <div id="snippet-grid" class="snippet-grid" role="list">
+        <!-- Snippets werden hier mit role="listitem" eingefügt -->
+      </div>
+    </main>
+  </main>
+
+  <!-- Modal: Snippet Erstellen / Bearbeiten -->
+  <div id="snippet-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h2 id="modal-title" class="modal-title">Neues Snippet erstellen</h2>
+        <button id="modal-close-btn" class="modal-close" aria-label="Dialog schließen">&times;</button>
+      </div>
+      <!-- ... (Formular-Inhalte) ... -->
+    </div>
+  </div>
+</body>
+</html>

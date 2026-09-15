@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+sqlalchemy
+aiosqlite
+pydantic
+pydantic-settings
+pytest
+pytest-asyncio
+httpx
+greenlet
+pytest-cov
+bleach>=6.1.0
+starlette
+locust

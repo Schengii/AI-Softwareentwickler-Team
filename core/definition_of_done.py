@@ -112,10 +112,16 @@ _ENTRYPOINT_CANDIDATES = (
     # trotzdem fertig, wenn eines dieser Files existiert.
     "index.html", "ui-src/main.ts", "src/main.ts", "src/main.tsx", "src/index.ts",
     "src/index.js", "src/App.tsx", "src/App.jsx",
+    # Realer Fund (dev_snippet_vault, 2026-09-15): der frontend-Agent lieferte ein vollständiges,
+    # servierbares Frontend unter `public/index.html` (übliche Konvention für ein von einem
+    # Python-Backend statisch ausgeliefertes Static-Asset) - diese Liste kannte nur root-level
+    # `index.html` und meldete `missing_frontend_ui` trotz tatsächlich gelieferter UI.
+    "public/index.html", "static/index.html",
 )
 _WEB_ENTRYPOINT_CANDIDATES = (
     "index.html", "ui-src/main.ts", "src/main.ts", "src/main.tsx", "src/index.ts",
     "src/index.js", "src/App.tsx", "src/App.jsx",
+    "public/index.html", "static/index.html",
 )
 _BACKEND_HINT_KEYWORDS = (
     "api", "backend", "server", "endpoint", "rest", "gateway", "service",
@@ -141,7 +147,7 @@ _LIGHTWEIGHT_PY_ENTRYPOINT_CANDIDATES = (
 )
 _LIGHTWEIGHT_WEB_ENTRYPOINT_CANDIDATES = (
     "index.html", "src/main.ts", "src/main.js", "ui-src/main.ts", "src/index.ts", "src/index.js",
-    "server.js", "app.js",
+    "server.js", "app.js", "public/index.html", "static/index.html",
 )
 _ENTRYPOINT_SCAN_IGNORED_DIRS = frozenset({
     ".git", ".venv", "venv", ".ai_team_venv", "node_modules", "__pycache__", "dist", "build",
@@ -190,8 +196,8 @@ def check_entrypoint_exists(project_dir: str | Path) -> tuple[bool, str]:
     return False, (
         "Kein Haupteinstiegspunkt gefunden - es existieren bereits Quelldateien, aber weder "
         "main.py/app/main.py/app.py/src/main.py/__main__.py/wsgi.py/asgi.py (Python) noch "
-        "index.html/src/main.ts/src/main.js/ui-src/main.ts/src/index.ts/src/index.js/server.js/"
-        "app.js (Web/Node)."
+        "index.html/public/index.html/src/main.ts/src/main.js/ui-src/main.ts/src/index.ts/"
+        "src/index.js/server.js/app.js (Web/Node)."
     )
 
 

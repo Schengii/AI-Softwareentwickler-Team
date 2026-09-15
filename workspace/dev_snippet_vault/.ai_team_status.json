@@ -1,0 +1,15 @@
+[
+  {
+    "timestamp": "2026-09-15T11:36:58+00:00",
+    "task_summary": "Code-Snippet-Datenbank mit FastAPI und Dashboard implementiert",
+    "verification_ok": true,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 16,
+    "lint_signature": [
+      "ruff:app/main.py:ASYNC230",
+      "ruff:app/main.py:C414"
+    ],
+    "success_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 📦 Versuch 1: 2 fehlende Paket(e) deterministisch in requirements.txt ergänzt: locust, starlette.\n- 🔍 Pre-Flight-Check, Versuch 1: 7 Problem(e) → gezielt zur Korrektur an security zurückgespielt.\n- 🔍 Pre-Flight-Check: nach 2 Durchlauf/Durchläufen bestanden.\n- 📦 ✅ pip install -r requirements.txt (exit_code=0)\n- ✅ Echte Testsuite bestanden nach 1 Durchlauf/Durchläufen (3.3s).\n- 🐳 ⏭️ Docker-Daemon lokal nicht erreichbar"
+  }
+]

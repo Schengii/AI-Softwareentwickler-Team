@@ -7,6 +7,51 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Team-Analyse 2026-09-15: ehrliche Verifikation, Arbeitsweise wie ein echtes Team, wirksame Selbstoptimierung
+
+Auswertung aller 23 Workspace-Projekte mit Status: 8 (35 %) nicht verifiziert, 3 davon trotzdem
+`is_done=True`; bis zu 20 Pre-Flight-Funde pro Lauf; 11 von 33 Rollen in 100 Läufen nie gewählt.
+
+**P0 – Bugs**
+- `core/pre_flight_check.py` schlug den Importnamen statt des Pakets vor (`jwt` statt `PyJWT`, `yaml`
+  statt `pyyaml`) und akzeptierte alles aus `sys.modules` des Framework-Prozesses als deklariert.
+  Neue einzige Quelle `core/known_pitfalls.py`; `core/verifier/models.py` und `core/manifest_guard.py`
+  nutzen sie.
+- `core/definition_of_done.py`: `deps_installable`/`app_starts`/`secrets_clean`/`lint_clean` wurden nie
+  übergeben und blockierten deshalb nie; kein Build-Kriterium. Neu: `build_passes`, `verification_ok`
+  als Pflichtkriterium, `ui_ok` Pflicht bei beauftragtem Frontend, Secret-Scan über das Projekt.
+- Status per Textsuche (`"Frontend/UI-Check erfolgreich"` kam im Protokoll nie vor) ersetzt durch
+  `core/verification_outcome.py`.
+- Test-/Werkzeugpakete landen in `requirements-dev.txt` (`core/dependency_manifest.manifest_for_package`).
+- Vollständiges Verifikationsprotokoll unter `.ai_team_runs/`, Kürzung im Status nur an Zeilengrenzen.
+- `evals/runner.save_benchmark_result()` band den Historienpfad beim Import - Tests schrieben Fake-Läufe
+  in die echte Benchmark-Historie.
+- Browser-Routing erkannte Chromes Format `status of 500` nicht.
+
+**P1 – Arbeitsweise**
+- Übergabe-Prüfung für Entwickler (`core/handoff_check.py`), höhere Werkzeug-Budgets für Code-Rollen.
+- Projektgerüst (`core/project_scaffold.py`) vor der Entwicklung, Integrations-Checkpoint danach.
+- Test-First: `tester` in der Entwicklungsphase. Planer beauftragt zuerst einen lauffähigen Kern.
+- Review & Governance nach der echten Verifikation, Regressionstest nach Review-Fixes.
+- Verifikation läuft auch nach Budget-Abbruch der Generierung; Budget-Anteile je Fachbereich.
+
+**P2 – Selbstoptimierung**
+- Lektionen mit Lebenszyklus, Wiederholungszähler, Relevanz-Auswahl, Auto-Verknüpfung mit dem Regelwerk, `/lessons`.
+- Regressions-Suite + Eval-Gate + nächtlicher Workflow.
+- Informative Prüfschritte als Pipeline (`agents/orchestrator/verification_checks.py`).
+- Teamleiter nur ab 2 Mitgliedern; `team_lead` und `performance` als Nischenrollen.
+- Modell-A/B-Tests (`core/model_ab_trials.py`).
+- Projektlokaler Lauf-Trace (`core/run_trace.py`) als Evidenz für die Root-Cause-Analyse.
+
+Beim Testen gefunden und behoben: Das Gerüst legte bei `project_dir="."` (Tests) `__init__.py` in fremden
+Workspace-Projekten an → `is_safe_project_dir()` + Beschränkung auf Paket-Roots; Wiederholungs-Ereignisse
+schrieben aus Tests in die versionierte `team_lessons.jsonl` → Test-Isolation in `tests/conftest.py`.
+
+Verifikation: `tests/test_p0_structured_verification.py`, `tests/test_p1_team_workflow.py`,
+`tests/test_p2_self_optimization.py`, volle Testsuite und `ruff check`.
+
+---
+
 ## 🟢 Oszillations-Fund im Ziel-Loop, Regressionstest-Vorschläge, teamweite Eskalation, Action-Rate
 
 Direkte Nutzeranfrage nach weiteren Verbesserungen für "fehlerfrei, professionell, selbst

@@ -801,6 +801,8 @@ python main.py --work-backlog                # EIN Poll-Zyklus über wartende "t
 python main.py --check-deployments           # EIN Poll-Zyklus: Erreichbarkeit aller Cloud-Deployments prüfen
 python main.py --audit-workspace             # EIN Poll-Zyklus: Verifikation aller Workspace-Projekte erneut prüfen
 python main.py --eval [--tasks t1,t2]       # Reproduzierbare Benchmark-Suite ausführen
+python main.py --eval --regression          # Regressions-Suite aus realen Fehlschlägen
+python main.py --eval-gate                  # Jüngsten Lauf gegen Baseline prüfen (Exit 1 bei Regression)
 python main.py --list-evals                 # Alle Benchmark-Aufgaben auflisten
 ```
 
@@ -862,6 +864,7 @@ nicht, ein Mensch prüft die betroffene(n) Datei(en) gezielt nach.
 | `/audit-projekt [projekt]` | Lässt den Projekt-Hygiene-Agenten das Framework (oder ein Projekt) wirklich durchsehen; Löschungen nur nach Bestätigung |
 | `/prune-worktrees` | Räumt verwaiste, vom KI-Team angelegte Git-Isolations-Worktrees auf (bereits gemergte oder seit 7+ Tagen inaktive Worktrees; niemals der aktive Worktree oder ungemergte Änderungen) |
 | `/learnings` | Zeigt alle von den Agenten gelernten Regeln (persistentes Gedächtnis) mit Nummer je Agent an |
+| `/lessons` | Team-Lektionen mit Lebenszyklus anzeigen; `/lessons link` verknüpft mit dem Regelwerk, `/lessons <signatur> <status>` setzt den Status |
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
 | `/constitution [projekt]` | Zeigt/bearbeitet feste Tech-Stack-Präferenzen (Sprache, Framework, Code-Stil, …) für ein Projekt – gilt für jeden künftigen Lauf daran |
 | `/adr [projekt]` | Zeigt die dokumentierten Architecture Decision Records (Begründungen echter Architektur-Entscheidungen) eines Projekts |

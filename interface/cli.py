@@ -136,6 +136,7 @@ HELP_TEXT = """
 | `/audit-projekt [projekt]` | Lässt den Projekt-Hygiene-Agenten das Framework (oder ein Projekt) wirklich durchsehen; Löschungen nur nach Bestätigung |
 | `/prune-worktrees` | Räumt verwaiste, vom KI-Team angelegte Git-Isolations-Worktrees auf (gemergt oder seit 7+ Tagen inaktiv) |
 | `/learnings` | Zeigt alle von den Agenten gelernten Regeln (persistentes Gedächtnis) mit Nummer je Agent an |
+| `/lessons [link oder <signatur> <status>]` | Team-Lektionen mit Lebenszyklus (offen → umgesetzt → verifiziert → archiviert) |
 | `/optimize` | Zeigt datenbasierte Selbstoptimierungs-Vorschläge über alle bisherigen Läufe hinweg (Modellzuweisung, auffällig niedrige Erfolgsquoten, wiederkehrende Lektionen-Kategorien) – rein informativ, keine automatische Änderung |
 | `/apply-tuning <agent_id>` | Übernimmt GEZIELT genau einen der bei `/optimize` angezeigten Modell-Vorschläge für einen einzelnen Agenten – unabhängig von `ENABLE_AUTO_MODEL_TUNING` |
 | `/delete-learning <agent> <nr>` | Entfernt eine einzelne, falsche/überholte gelernte Regel (mit Bestätigung) |
@@ -1129,6 +1130,33 @@ class CLIInterface:
         else:
             console.print(f"⚠️ Löschung von `{project_name}` fehlgeschlagen.", style="yellow")
 
+    def _manage_team_lessons(self, args: list[str]) -> None:
+        """Team-Lektionen mit Lebenszyklus (core/team_memory.py):
+        `/lessons` zeigt die Übersicht, `/lessons link` verknüpft Lektionen mit dem Regelwerk,
+        `/lessons <signatur> <open|implemented|verified|archived> [Notiz]` setzt den Status."""
+        from core.team_memory import (
+            LESSON_STATUSES,
+            auto_link_lessons_to_rules,
+            format_lesson_board,
+            update_lesson_status,
+        )
+
+        if not args:
+            console.print(Markdown(format_lesson_board()))
+            console.print("💡 [dim]`/lessons link` | `/lessons <signatur> <status> [Notiz]`[/dim]")
+            return
+        if args[0] == "link":
+            linked = auto_link_lessons_to_rules()
+            console.print(f"🔗 {len(linked)} Lektion(en) mit dem Regelwerk verknüpft.", style="green" if linked else "dim")
+            return
+        if len(args) < 2 or args[1] not in LESSON_STATUSES:
+            console.print(f"⚠️ Aufruf: `/lessons <signatur> <{'|'.join(LESSON_STATUSES)}> [Notiz]`", style="yellow")
+            return
+        if update_lesson_status(args[0], args[1], " ".join(args[2:])):
+            console.print(f"✅ Lektion `{args[0]}` ist jetzt `{args[1]}`.", style="green")
+        else:
+            console.print(f"⚠️ Keine Lektion mit Signatur `{args[0]}` gefunden (siehe `/lessons`).", style="yellow")
+
     def _show_learnings(self) -> None:
         """
         Zeigt memory/agent_learnings.json (persistentes Gedächtnis) für ALLE Agenten an -
@@ -1806,6 +1834,9 @@ class CLIInterface:
 
         elif cmd in ("/learnings", "/gelernt", "/knowledge"):
             self._show_learnings()
+
+        elif cmd in ("/lessons", "/lektionen"):
+            self._manage_team_lessons(args)
 
         elif cmd in ("/optimize", "/optimierung", "/self-optimize"):
             self._show_optimization_report()

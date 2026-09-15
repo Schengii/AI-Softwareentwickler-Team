@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from config import BASE_DIR
+from core.run_trace import append_trace_event, prune_run_artifacts, trace_path
 
 LOGS_DIR = Path(BASE_DIR) / "logs"
 RUN_LOGS_DIR = LOGS_DIR / "runs"
@@ -78,15 +79,20 @@ class RunLogger:
         logger.log_event("run_finished", verification_ok=False)
     """
 
-    def __init__(self, project_slug: str = "", *, enabled: bool = True) -> None:
+    def __init__(self, project_slug: str = "", *, enabled: bool = True, project_dir: str | Path | None = None) -> None:
         self.project_slug = project_slug or "unbenannt"
         self.started_at = datetime.now(UTC)
         self.enabled = enabled
         self._sequence = 0
         stamp = self.started_at.strftime("%Y%m%d_%H%M%S")
+        self.stamp = stamp
         name = f"{stamp}_{_safe_slug(self.project_slug)}"
         self.run_log_path = RUN_LOGS_DIR / f"{name}.jsonl"
         self.verification_log_path = VERIFICATION_LOGS_DIR / f"{name}.log"
+        # Zusätzlich projektlokal und versioniert (core/run_trace.py) - logs/ ist gitignored und
+        # auf jedem anderen Rechner (CI, Backlog-Worker) nicht verfügbar.
+        self.project_dir = Path(project_dir) if project_dir else None
+        self.project_trace_path = trace_path(self.project_dir, stamp) if self.project_dir else None
         self._verification_started = False
         self.closed = False
         if self.enabled:
@@ -190,6 +196,8 @@ class RunLogger:
             **fields,
         })
         prune_old_logs()
+        if self.project_dir is not None:
+            prune_run_artifacts(self.project_dir)
 
     # ── Interna ───────────────────────────────────────────────────────────────────────────
 
@@ -212,6 +220,8 @@ class RunLogger:
             "project_slug": self.project_slug,
             **payload,
         }
+        if self.project_trace_path is not None:
+            append_trace_event(self.project_trace_path, record)
         try:
             with self.run_log_path.open("a", encoding="utf-8") as fh:
                 # default=str: Ein einzelnes nicht serialisierbares Feld (z.B. ein Path) darf

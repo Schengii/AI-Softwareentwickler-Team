@@ -77,6 +77,7 @@ from agents.orchestrator.budget import BudgetMixin
 from agents.orchestrator.constants import PHASE_ORDER, REVIEW_ONLY_AGENT_IDS, PlanConfirmationCallback, StatusCallback
 from agents.orchestrator.department import DepartmentMixin
 from agents.orchestrator.dispatch import DispatchMixin
+from agents.orchestrator.integration import IntegrationMixin
 from agents.orchestrator.reporting import ReportingMixin
 from agents.orchestrator.retrospective import RetrospectiveMixin
 from agents.orchestrator.verification import VerificationMixin
@@ -98,6 +99,8 @@ from config import (
     AUTO_SAVE_WORKSPACE,
     BASE_DIR,
     CAPACITY_GATE_MODE,
+    ENABLE_REVIEW_AFTER_VERIFICATION,
+    MIN_TEST_COVERAGE,
     ORCHESTRATOR_MODEL,
     PLAN_CONFIRMATION_MIN_TASKS,
 )
@@ -115,6 +118,7 @@ from core.git_isolation import (
     has_uncommitted_changes,
 )
 from core.message_bus import AgentTask
+from core.model_ab_trials import evaluate_trials, start_trials_from_report
 from core.notifier import notify_external
 from core.optimization_advisor import analyze as analyze_optimization_potential
 from core.optimization_advisor import (
@@ -138,9 +142,11 @@ from core.project_status import (
 from core.quota_estimator import QuotaEstimator
 from core.result_aggregator import ResultAggregator
 from core.run_logger import RunLogger
+from core.secret_scanner import scan_directory
 from core.task_manager import TaskManager
-from core.team_memory import format_team_lessons_for_agents, record_lesson
+from core.team_memory import auto_link_lessons_to_rules, format_team_lessons_for_agents, record_lesson
 from core.token_guard import token_guard
+from core.verification_outcome import VerificationOutcome
 from core.workspace import WorkspaceManager
 from memory.conversation_history import ConversationHistory
 from memory.cost_history import record_run_usage
@@ -157,6 +163,7 @@ __all__ = [
 
 class Orchestrator(
     DepartmentMixin,
+    IntegrationMixin,
     VerificationMixin,
     DispatchMixin,
     BudgetMixin,
@@ -658,7 +665,7 @@ class Orchestrator(
         # sprechenden Dateinamen angelegt werden. Rein additiv: Schlägt das Anlegen fehl,
         # schaltet sich der Logger selbst still ab (core/run_logger.py), der Lauf geht weiter.
         try:
-            self._run_logger = RunLogger(project_slug=self.last_project_slug)
+            self._run_logger = RunLogger(project_slug=self.last_project_slug, project_dir=project_dir)
             # Codeversion im Log (core/framework_revision.py): ohne sie ließ sich im Lauf
             # auditlog_sentinel nicht belegen, dass noch alter Code vor der Mindeststufe lief.
             revision = current_revision()
@@ -862,17 +869,34 @@ class Orchestrator(
                 t.context += f"\n\n{design_system_context}"
             if project_history_context:
                 t.context += f"\n\n{project_history_context}"
-            if team_lessons_context:
-                t.context += f"\n\n{team_lessons_context}"
+            # Relevanz je Agent statt einer für alle identischen Liste der neuesten Lektionen
+            # (core/team_memory.rank_lessons_by_relevance): der backend-Agent sieht zuerst
+            # Lektionen zu FastAPI/SQLAlchemy/Auth, der frontend-Agent zu UI/WebSocket.
+            task_lessons_context = format_team_lessons_for_agents(
+                prioritize_slug=project_slug,
+                context=f"{t.agent_id} {t.description} {user_request[:600]}",
+            ) if team_lessons_context else ""
+            if task_lessons_context:
+                t.context += f"\n\n{task_lessons_context}"
             if adr_context:
                 t.context += f"\n\n{adr_context}"
+
+        # Reihenfolge wie in einer echten CI (ENABLE_REVIEW_AFTER_VERIFICATION): Review-/Governance-
+        # Rollen laufen erst NACH der echten Verifikation - vorher bewerteten sie Code, der sich oft
+        # nicht einmal importieren ließ, und verbrauchten das Budget, das danach für Tests fehlte.
+        review_after_verification = ENABLE_REVIEW_AFTER_VERIFICATION
+        governance_member_ids = set(DEPARTMENT_DEFINITIONS["governance_lead"]["members"])
+        deferred_review_tasks = (
+            [t for t in agent_tasks if t.agent_id in governance_member_ids] if review_after_verification else []
+        )
+        hierarchy_tasks = [t for t in agent_tasks if t not in deferred_review_tasks]
 
         # Führe hierarchische Fachbereichs-Ausführung durch
         file_collisions: list[dict] = []
         results, file_owners, budget_aborted, manually_cancelled = await self._run_department_hierarchy(
             user_request=user_request,
             task_summary=task_summary,
-            agent_tasks=agent_tasks,
+            agent_tasks=hierarchy_tasks,
             project_dir=project_dir,
             run_start_tokens=run_start_tokens,
             notify=notify,
@@ -937,14 +961,15 @@ class Orchestrator(
         if budget_aborted or manually_cancelled:
             governance_fix_summary = ""
         else:
-            results, governance_fix_summary, budget_aborted, manually_cancelled = await self._run_governance_fix_loop(
-                project_dir=project_dir,
-                all_results=results,
-                file_owners=file_owners,
-                run_start_tokens=run_start_tokens,
-                notify=notify,
-                cancel_requested=cancel_requested,
-            )
+            if not review_after_verification:
+                results, governance_fix_summary, budget_aborted, manually_cancelled = await self._run_governance_fix_loop(
+                    project_dir=project_dir,
+                    all_results=results,
+                    file_owners=file_owners,
+                    run_start_tokens=run_start_tokens,
+                    notify=notify,
+                    cancel_requested=cancel_requested,
+                )
 
             # Rückfragen, in denen ein Agent NICHT ein echtes fachliches Problem hat, sondern
             # nur fehlende Schreibrechte meldete (siehe core/review_gate.py.
@@ -1018,9 +1043,29 @@ class Orchestrator(
                 f"- 🛑 Übersprungen: {reason}"
             )
             verification_ok = False
+            self.last_verification_outcome = VerificationOutcome(skipped_reason=reason)
             budget_aborted = True  # nutzt die bestehenden Abbruch-Pfade (kein "✅ Fertig!")
             log_decision(project_dir, "provider_exhaustion_breaker_tripped", reason)
             notify(f"🛑 [red]{reason}[/red]")
+        elif budget_aborted and not manually_cancelled and any(r.files_written for r in results):
+            # Budget-Abbruch in der Generierung darf die Verifikation nicht komplett verhindern
+            # (chronospulse: 16 Dateien, Tests liefen nie). Ein Testlauf kostet 0 LLM-Tokens - die
+            # Verifikationsschleife beauftragt bei erschöpftem Budget selbst keine Fix-Agenten
+            # mehr, liefert aber ein ehrliches Ergebnis über den erzeugten Stand.
+            notify("🧪 [yellow]Budget erreicht – führe trotzdem die kostenlose Verifikation (ohne Fix-Agenten) aus.[/yellow]")
+            results, verification_summary, _v_budget_aborted, manually_cancelled, verification_ok = await self._run_verification_loop(
+                project_dir=project_dir,
+                all_results=results,
+                file_owners=file_owners,
+                run_start_tokens=run_start_tokens,
+                notify=notify,
+                cancel_requested=cancel_requested,
+            )
+            verification_summary = verification_summary.rstrip() + (
+                "\n- ℹ️ Die Code-Generierung wurde vorher wegen des Budgets beendet - das Ergebnis bewertet den "
+                "bis dahin erzeugten Stand, Fix-Agenten wurden nicht mehr beauftragt."
+            )
+            log_decision(project_dir, "verification_after_budget_abort", f"verification_ok={verification_ok}")
         elif budget_aborted or manually_cancelled:
             reason = self._budget_or_cancel_reason(
                 budget_aborted, manually_cancelled,
@@ -1032,6 +1077,7 @@ class Orchestrator(
                 f"- 🚫 Übersprungen: {reason}."
             )
             verification_ok = False
+            self.last_verification_outcome = VerificationOutcome(skipped_reason=reason)
             log_decision(project_dir, "budget_or_cancel_aborted", reason)
         else:
             results, verification_summary, budget_aborted, manually_cancelled, verification_ok = await self._run_verification_loop(
@@ -1042,6 +1088,32 @@ class Orchestrator(
                 notify=notify,
                 cancel_requested=cancel_requested,
             )
+        integration_lines = getattr(self, "last_integration_checkpoint_lines", None) or []
+        if integration_lines:
+            verification_summary = verification_summary.rstrip() + "\n" + "\n".join(integration_lines)
+
+        if (
+            review_after_verification
+            and not (budget_aborted or manually_cancelled)
+            and not getattr(self, "_provider_breaker_tripped", False)
+        ):
+            (
+                results, verification_ok, verification_summary, governance_fix_summary,
+                budget_aborted, manually_cancelled,
+            ) = await self._run_review_after_verification(
+                user_request=user_request,
+                task_summary=task_summary,
+                review_tasks=deferred_review_tasks,
+                project_dir=project_dir,
+                results=results,
+                file_owners=file_owners,
+                verification_ok=verification_ok,
+                verification_summary=verification_summary,
+                run_start_tokens=run_start_tokens,
+                notify=notify,
+                cancel_requested=cancel_requested,
+            )
+
         # Von interface/cli.py vor dem Git-Push-Gate abgefragt (siehe _ask_for_git_push) - eine
         # klare Warnung statt eines unbedingten "alles ok", wenn Code committet werden soll,
         # dessen Tests nie bestätigt bestanden haben.
@@ -1212,6 +1284,18 @@ class Orchestrator(
         # ein Fehler hier darf einen sonst erfolgreichen Lauf nicht kippen.
         try:
             # geschriebene_dateien bereits oben (vor der Synthese) berechnet - nicht erneut zählen.
+            # Strukturierte Einzelergebnisse statt Textsuche im Markdown-Protokoll (siehe
+            # core/verification_outcome.py) - der frühere String-Abgleich auf "Frontend/UI-Check
+            # erfolgreich" traf das tatsächliche Protokoll nie.
+            _outcome = getattr(self, "last_verification_outcome", None)
+            if not isinstance(_outcome, VerificationOutcome):
+                _outcome = VerificationOutcome()
+            _secrets_clean: bool | None = None
+            if geschriebene_dateien > 0:
+                try:
+                    _secrets_clean = not scan_directory(project_dir)
+                except Exception:
+                    _secrets_clean = None
             self.last_definition_of_done = build_definition_of_done(
                 project_slug=self.last_project_slug,
                 project_dir=project_dir,
@@ -1224,16 +1308,18 @@ class Orchestrator(
                 # und "nicht bestanden" gemeldet wurde. tests_ran/tests_passed müssen daher direkt
                 # am Testsuite-Treffer im Summary hängen, nicht am Gesamt-verification_ok, das auch
                 # UI-/Asset-Befunde einschließt.
-                tests_ran=verification_ok or "Testsuite bestanden" in (verification_summary or ""),
-                tests_passed=verification_ok or "Testsuite bestanden" in (verification_summary or ""),
-                # Separates, nicht-blockierendes UI-Kriterium (siehe Kommentar in
-                # core/definition_of_done.py bei "ui_ok") statt den UI-Status weiterhin nur
-                # implizit über das kaskadierte verification_ok abzubilden.
-                ui_ok=(
-                    True if "Frontend/UI-Check erfolgreich" in (verification_summary or "")
-                    else False if "Frontend/UI-Check fehlgeschlagen" in (verification_summary or "")
-                    else None
-                ),
+                tests_ran=_outcome.ran("tests"),
+                tests_passed=_outcome.status("tests") is True,
+                deps_installable=_outcome.status("deps_install"),
+                app_starts=_outcome.status("smoke"),
+                secrets_clean=_secrets_clean,
+                lint_clean=_outcome.status("lint"),
+                ui_ok=_outcome.status("browser_ui"),
+                build_passes=_outcome.status("frontend_build"),
+                coverage_percent=getattr(self, "last_coverage_percent", None),
+                min_coverage=float(MIN_TEST_COVERAGE),
+                verification_ok=verification_ok,
+                failed_checks=_outcome.failed_checks,
                 verification_skipped=bool(budget_aborted or manually_cancelled),
                 user_request=user_request,
                 # `/goal`-Auftrag (20260915, Schwachstelle 2): macht das ausschließlich
@@ -1373,6 +1459,18 @@ class Orchestrator(
         # zurück, solange das Flag aus ist (Standard) - dieselbe Zeile läuft für JEDEN Lauf.
         optimization_report = analyze_optimization_potential()
         auto_tuned_agents = apply_auto_tuning(optimization_report)
+        # Modell-Vorschläge als kontrollierte A/B-Tests starten und laufende Tests auswerten
+        # (core/model_ab_trials.py) - statt sie nur als Lektion zu notieren.
+        try:
+            started_trials = start_trials_from_report(optimization_report)
+            trial_outcome = evaluate_trials()
+            if started_trials:
+                notify(f"🧪 [dim]Modell-A/B-Test gestartet für: {', '.join(started_trials)}[/dim]")
+            for label, agents in (("übernommen", trial_outcome["promoted"]), ("verworfen", trial_outcome["rejected"]), ("zurückgenommen", trial_outcome["rolled_back"])):
+                if agents:
+                    notify(f"🧪 [bold]Modell-A/B-Test {label}:[/bold] {', '.join(agents)}")
+        except Exception as e:  # noqa: BLE001 - Selbstoptimierung darf den Lauf nie gefährden
+            logging.getLogger(__name__).warning("Modell-A/B-Tests fehlgeschlagen: %r", e)
         # Punkt 2 der Team-Retrospektive (2026-09-06): schreibt Modell-/Underperformer-Funde in
         # das teamweite Lektionen-Gedächtnis (core/team_memory.py) - bleibt so auch dann
         # wirksam sichtbar, wenn ENABLE_AUTO_MODEL_TUNING (bewusst) aus ist und niemand diesen
@@ -1380,6 +1478,15 @@ class Orchestrator(
         # deterministisch, kein zusätzlicher LLM-Aufruf; record_lesson() dedupliziert bereits
         # intern, ein wiederholter Fund bläht die Historie also nicht auf.
         record_suggestions_as_lessons(optimization_report)
+        # Lektionen, die das zentrale Regelwerk (core/known_pitfalls.py) inzwischen abdeckt, als
+        # umgesetzt markieren - sie belegen dann keine Prompt-Plätze mehr, öffnen sich aber
+        # automatisch wieder, falls der Fehler erneut auftritt.
+        try:
+            linked = auto_link_lessons_to_rules()
+            if linked:
+                notify(f"🧠 [dim]{len(linked)} Team-Lektion(en) als durch das Regelwerk abgedeckt markiert.[/dim]")
+        except Exception as e:  # noqa: BLE001 - Lernpflege darf den Lauf nie gefährden
+            logging.getLogger(__name__).warning("Lektionen-Verknüpfung fehlgeschlagen: %r", e)
         # Team-Optimierung (Fortsetzung der Analyse 2026-09-06): unused_agent-Funde blieben
         # bisher NUR eine Zeile in team_lessons.jsonl (siehe record_suggestions_as_lessons()
         # oben) - dort teilen sie sich mit jeder anderen Kategorie dieselben knappen
@@ -1475,6 +1582,11 @@ class Orchestrator(
                 clarification_questions=self.last_clarification_questions,
                 lint_signature=getattr(self, "last_lint_signature", []),
                 provider_exhausted=bool(getattr(self, "_provider_exhausted_this_run", False)),
+                verification_outcome=(
+                    self.last_verification_outcome.to_dict()
+                    if isinstance(getattr(self, "last_verification_outcome", None), VerificationOutcome) else None
+                ),
+                run_stamp=getattr(self._run_logger, "stamp", None),
             )
         except Exception as e:
             notify(f"⚠️ [dim yellow]Projekt-Historie / State-Checkpoint (save_project_checkpoint) konnte nicht aktualisiert werden: {e}[/dim yellow]")

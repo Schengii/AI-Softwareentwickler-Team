@@ -291,6 +291,9 @@ def build_definition_of_done(
     verification_skipped: bool = False,
     user_request: str = "",
     frontend_planned: bool = False,
+    build_passes: bool | None = None,
+    verification_ok: bool | None = None,
+    failed_checks: list[str] | None = None,
 ) -> DefinitionOfDone:
     """
     Setzt die Einzelsignale eines Laufs zu einer Gesamtaussage zusammen.
@@ -298,6 +301,10 @@ def build_definition_of_done(
     `None` bedeutet durchgängig "für dieses Projekt nicht geprüft/nicht anwendbar" - solche
     Kriterien blockieren bewusst nicht. Das ist der Unterschied zu "geprüft und durchgefallen"
     (False), den der bisherige Prosa-Status nie machen konnte.
+
+    `verification_ok=False` (Gesamtergebnis der Verifikation) blockiert immer, sofern die
+    Verifikation nicht übersprungen wurde - ein Projekt kann nie gleichzeitig "fertig" und
+    "Verifikation fehlgeschlagen" sein. `failed_checks` benennt die gescheiterten Prüfungen.
     """
     pfad = Path(project_dir)
     kriterien: list[Criterion] = []
@@ -383,12 +390,21 @@ def build_definition_of_done(
     # am Testsuite-Treffer im Summary hängen statt am kaskadierten verification_ok). Der UI-Status
     # bekommt hier ein EIGENES, nicht-verpflichtendes Kriterium, damit er sichtbar bleibt, ohne
     # die Backend-Testsuite mit in den Abgrund zu ziehen.
+    # Für ein beauftragtes Frontend ist ein fehlgeschlagener UI-Check ein echter Mangel (die
+    # Oberfläche funktioniert nicht) - nur ohne eingeplanten frontend-Agenten bleibt er ein Hinweis.
     kriterien.append(Criterion(
         key="ui_ok",
         label="Frontend/UI-Check ohne Befund",
         passed=bool(ui_ok),
-        required=False,
+        required=frontend_planned,
         applicable=ui_ok is not None,
+    ))
+    kriterien.append(Criterion(
+        key="build_passes",
+        label="Der Produktions-Build läuft durch",
+        passed=bool(build_passes),
+        applicable=build_passes is not None,
+        detail="" if build_passes is not False else "Frontend-/Produktions-Build fehlgeschlagen",
     ))
     # `/goal`-Auftrag (20260915, Schwachstelle 2): das bisherige `ui_ok`-Kriterium oben ist nur
     # dann `applicable`, wenn der Browser-UI-Check überhaupt LIEF - und der überspringt sich
@@ -438,6 +454,18 @@ def build_definition_of_done(
             else ""
         ),
     ))
+
+    if verification_ok is not None and not verification_skipped:
+        offene_checks = ", ".join(failed_checks or [])
+        kriterien.append(Criterion(
+            key="verification_ok",
+            label="Die Gesamt-Verifikation ist ohne Veto",
+            passed=bool(verification_ok),
+            detail="" if verification_ok else (
+                f"fehlgeschlagene Prüfungen: {offene_checks}" if offene_checks
+                else "mindestens eine Verifikations-Prüfung ist fehlgeschlagen"
+            ),
+        ))
 
     # README als Mindestmaß an Übergabefähigkeit - ein Projekt, das niemand benutzen kann, ist
     # nicht fertig, aber ein fehlendes README blockiert die Auslieferung nicht.

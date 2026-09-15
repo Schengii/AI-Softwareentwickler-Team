@@ -302,6 +302,7 @@ def gather_evidence(
     verification_summary: str = "",
     run_log_path: Path | str | None = None,
     verification_log_path: Path | str | None = None,
+    project_trace_path: Path | str | None = None,
 ) -> str:
     """Baut den Kontext für die Tiefenanalyse aus den ROHEN Artefakten des Laufs - genau das,
     was eine manuelle Analyse-Sitzung liest, statt der stark gekürzten Prosa-Auszüge, die der
@@ -309,6 +310,12 @@ def gather_evidence(
     parts = [f"PROJEKT: {project_slug}\n\nURSPRÜNGLICHE AUFGABE:\n{user_request[:1000]}\n"]
     if verification_summary.strip():
         parts.append(f"\nVERIFIKATIONS-ZUSAMMENFASSUNG:\n{verification_summary.strip()[:3000]}\n")
+    if project_trace_path:
+        from core.run_trace import format_trace_summary, summarize_trace
+
+        trace_text = format_trace_summary(summarize_trace(project_trace_path))
+        if trace_text:
+            parts.append(f"\nLAUF-KENNZAHLEN JE PHASE/AGENT (aus .ai_team_runs/):\n{trace_text}\n")
     run_log_text = _read_capped(run_log_path)
     if run_log_text:
         parts.append(f"\nROHES LAUF-LOG (JSONL, eine Zeile je Ereignis):\n{run_log_text}\n")
@@ -544,6 +551,7 @@ async def run_analysis(
     verification_summary: str = "",
     run_log_path: Path | str | None = None,
     verification_log_path: Path | str | None = None,
+    project_trace_path: Path | str | None = None,
 ) -> RootCauseAnalysisReport:
     """Hauptzugang: baut die Evidenz, lässt den agent_trainer sie MIT echtem read-only
     Tool-Zugriff analysieren und persistiert die extrahierten Befunde als Tickets + Team-
@@ -569,6 +577,7 @@ async def run_analysis(
         project_slug=project_slug, user_request=user_request,
         verification_summary=verification_summary,
         run_log_path=run_log_path, verification_log_path=verification_log_path,
+        project_trace_path=project_trace_path,
     )
     task = build_analysis_task(project_slug, evidence)
     try:

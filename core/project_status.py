@@ -17,6 +17,8 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from core.run_trace import read_run_artifact, write_verification_protocol
+
 STATUS_FILENAME = ".ai_team_status.json"
 STATE_MD_FILENAME = "PROJECT_STATE.md"
 # Ungekürztes Verifikationsprotokoll jedes Laufs, ausschließlich für manuelle Diagnose (siehe
@@ -400,6 +402,8 @@ def save_project_checkpoint(
     clarification_questions: list[str] | None = None,
     lint_signature: list[str] | None = None,
     provider_exhausted: bool = False,
+    verification_outcome: dict | None = None,
+    run_stamp: str | None = None,
 ) -> None:
     """Speichert sowohl .ai_team_status.json als auch die lesbare PROJECT_STATE.md im Projektordner.
 
@@ -421,6 +425,8 @@ def save_project_checkpoint(
         clarification_questions=clarification_questions,
         lint_signature=lint_signature,
         provider_exhausted=provider_exhausted,
+        verification_outcome=verification_outcome,
+        run_stamp=run_stamp,
     )
 
     # 2. Update PROJECT_STATE.md
@@ -452,9 +458,15 @@ def record_run(
     clarification_questions: list[str] | None = None,
     lint_signature: list[str] | None = None,
     provider_exhausted: bool = False,
+    verification_outcome: dict | None = None,
+    run_stamp: str | None = None,
 ) -> None:
     """Fügt diesen Lauf vorne in die Historie ein (neueste zuerst), gedeckelt auf
-    MAX_HISTORY_ENTRIES."""
+    MAX_HISTORY_ENTRIES.
+
+    Das VOLLSTÄNDIGE Verifikationsprotokoll landet zusätzlich unter `.ai_team_runs/`
+    (core/run_trace.py) - `detail_file` verweist darauf, `failed_checks` nennt die
+    gescheiterten Prüfungen strukturiert."""
     history = read_status(project_dir)
     entry = {
         "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -491,7 +503,12 @@ def record_run(
         # ("lief der letzte grüne Lauf wirklich durch Lint/SAST/Coverage/Smoke, oder nur durch
         # nackte Tests?") fehlte dieselbe Information beim Erfolgsfall komplett.
         key = "failure_detail" if not verification_ok else "success_detail"
-        entry[key] = verification_summary.strip()[:MAX_FAILURE_DETAIL_CHARS]
+        entry[key] = truncate_on_line_boundary(verification_summary.strip(), MAX_FAILURE_DETAIL_CHARS)
+        detail_file = write_verification_protocol(project_dir, verification_summary, verification_outcome, stamp=run_stamp)
+        if detail_file:
+            entry["detail_file"] = detail_file
+    if verification_outcome:
+        entry["failed_checks"] = list(verification_outcome.get("failed") or [])
     # Realer Fund: ask_human_for_clarification-Rückfragen (core/agent_toolbox.py) wurden bisher
     # NUR im Chat-Verlauf der jeweiligen Sitzung sichtbar, nie in der projektübergreifenden
     # Historie - ein späterer Lauf (ggf. andere Sitzung) wusste nichts von einer offenen Frage
@@ -516,6 +533,26 @@ def record_run(
         )
     except OSError:
         pass
+
+
+def truncate_on_line_boundary(text: str, max_chars: int) -> str:
+    """Kürzt auf höchstens `max_chars`, aber nur an Zeilengrenzen - ein mitten im Wort
+    abgeschnittenes Protokoll ("zurückgespielt an backend z") ist für Agenten wertlos."""
+    if len(text) <= max_chars:
+        return text
+    marker = "\n… (gekürzt, vollständig in detail_file)"
+    budget = max(0, max_chars - len(marker))
+    cut = text.rfind("\n", 0, budget)
+    head = text[:cut] if cut > 0 else text[:budget]
+    return head.rstrip() + marker
+
+
+def read_full_detail(project_dir: str, entry: dict | None) -> str:
+    """Vollständiges Verifikationsprotokoll eines Status-Eintrags (Fallback: gekürzter Text)."""
+    if not entry:
+        return ""
+    full = read_run_artifact(project_dir, str(entry.get("detail_file") or ""))
+    return full or str(entry.get("failure_detail") or entry.get("success_detail") or "")
 
 
 def count_consecutive_failed_runs(project_dir: str) -> int:

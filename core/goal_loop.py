@@ -29,7 +29,7 @@ from config import (
 from core.backlog_store import new_ticket_id, upsert_ticket
 from core.llm_factory import LLMFactory
 from core.optimization_advisor import get_recent_verification_trend_warning
-from core.project_status import read_status
+from core.project_status import read_full_detail, read_status
 from core.token_guard import token_guard
 
 logger = logging.getLogger(__name__)
@@ -240,7 +240,9 @@ class GoalLoopRunner:
             last_entry = history_entries[0] if history_entries else None
             
             verification_ok = last_entry.get("verification_ok", False) if last_entry else False
-            failure_detail = last_entry.get("failure_detail", "") if last_entry else ""
+            # Volles Protokoll (core/run_trace.py) statt der auf 500 Zeichen gekürzten Fassung -
+            # Stagnations-Erkennung und Fix-Anweisung brauchen die eigentliche Fehlermeldung.
+            failure_detail = (read_full_detail(project_dir, last_entry) if not verification_ok else "") if last_entry else ""
             summary = self._orchestrator.last_task_summary or f"Iteration {iteration} abgeschlossen"
 
             # 3. KI-Bewertung & Synthese des nächsten Schritts

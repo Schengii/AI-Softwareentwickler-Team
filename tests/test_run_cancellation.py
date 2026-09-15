@@ -105,8 +105,10 @@ class TestDepartmentHierarchyCancellation(unittest.TestCase):
         )
         self.assertTrue(cancelled)
         result_agent_ids = [r.agent_id for r in results]
-        self.assertIn("planning_lead", result_agent_ids)  # Phase 1 lief noch komplett durch
-        self.assertNotIn("dev_lead", result_agent_ids)     # Phase 2 wurde übersprungen
+        # Ein-Personen-Fachbereiche laufen ohne Teamleiter (DEPARTMENT_LEAD_MIN_MEMBERS) - die
+        # Fachagenten selbst sind deshalb die Marker.
+        self.assertIn("product_owner", result_agent_ids)  # Phase 1 lief noch komplett durch
+        self.assertNotIn("backend", result_agent_ids)     # Phase 2 wurde übersprungen
 
 
 class TestProcessReportsCancellation(unittest.TestCase):

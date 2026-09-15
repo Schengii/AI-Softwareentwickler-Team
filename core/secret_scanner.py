@@ -148,3 +148,55 @@ def scan_diff(diff_text: str) -> list[SecretFinding]:
             line_no += 1
 
     return findings
+
+
+# Verzeichnisse ohne eigenen Projektcode bzw. mit bewusst unechten Werten (Test-Fixtures).
+_SCAN_SKIP_DIRS = frozenset({
+    ".git", ".venv", "venv", ".ai_team_venv", "node_modules", "__pycache__", "dist", "build",
+    ".pytest_cache", ".ruff_cache", ".mypy_cache", "htmlcov", "tests", "test", "__tests__",
+    ".ai-team-worktrees", ".ai_team_rag", ".ai_team_runs",
+})
+_SCAN_EXTENSIONS = frozenset({
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".yml", ".yaml", ".toml", ".ini", ".cfg",
+    ".go", ".rs", ".java", ".kt", ".rb", ".php", ".sh", ".ps1", ".html", ".vue", ".md",
+})
+# Lokale, per Konvention nicht versionierte Dateien bzw. reine Vorlagen.
+_SCAN_SKIP_FILES = frozenset({".env", ".env.local", ".env.example", ".env.sample", ".env.template"})
+_SCAN_MAX_FILE_BYTES = 512_000
+
+
+def scan_directory(root, max_files: int = 2000) -> list[SecretFinding]:
+    """Durchsucht den aktuellen Dateistand eines Projekts nach möglichen Secrets.
+
+    Ergänzt `scan_diff()` für die Definition of Done: dort zählt nicht nur der nächste Push,
+    sondern ob das ausgelieferte Projekt überhaupt Secrets im Quelltext enthält. Testordner und
+    lokale `.env`-Dateien sind bewusst ausgenommen (Fixtures bzw. nicht versioniert).
+    """
+    from pathlib import Path
+
+    base = Path(root)
+    findings: list[SecretFinding] = []
+    if not base.is_dir():
+        return findings
+    scanned = 0
+    for path in sorted(base.rglob("*")):
+        if scanned >= max_files:
+            break
+        rel_parts = path.relative_to(base).parts
+        if any(part in _SCAN_SKIP_DIRS for part in rel_parts[:-1]):
+            continue
+        if not path.is_file() or path.name in _SCAN_SKIP_FILES or path.suffix.lower() not in _SCAN_EXTENSIONS:
+            continue
+        if path.name.startswith(".ai_team_") or path.name in ("package-lock.json", "poetry.lock"):
+            continue
+        try:
+            if path.stat().st_size > _SCAN_MAX_FILE_BYTES:
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        scanned += 1
+        rel = "/".join(rel_parts)
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            findings.extend(_scan_line(rel, line_number, line))
+    return findings

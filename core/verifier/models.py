@@ -14,6 +14,8 @@ import re
 import sys
 from dataclasses import dataclass, field
 
+from core.known_pitfalls import IMPORT_TO_PACKAGE, normalize_package_name
+
 VENV_DIRNAME = ".ai_team_venv"
 
 # Verzeichnisse, die weder als Python- noch als Node-Testquelle zählen – Build-/Umgebungs-
@@ -607,19 +609,9 @@ _PY_IMPORT_RE = re.compile(r"^\s*(?:import|from)\s+([a-zA-Z0-9_]+)", re.MULTILIN
 # viele Importnamen sind keine 1:1-Entsprechung ihres PyPI-Paketnamens (z.B. `google.cloud.x`) und
 # ein sicherer Treffer ist hier wichtiger als Vollständigkeit - ein Fehlalarm bei einem exotischen
 # Paket wäre schlimmer als ein unentdeckter Fund außerhalb dieser Liste.
+# Einzige Quelle: core/known_pitfalls.py (PEP-503-normalisiert, wie _KNOWN_PACKAGE_NAMES).
 _IMPORT_TO_PACKAGE_NAME: dict[str, str] = {
-    "pytest_asyncio": "pytest-asyncio",
-    "pytest_cov": "pytest-cov",
-    "dotenv": "python-dotenv",
-    "jose": "python-jose",
-    "jwt": "pyjwt",
-    "yaml": "pyyaml",
-    "PIL": "pillow",
-    "cv2": "opencv-python",
-    "bs4": "beautifulsoup4",
-    "dateutil": "python-dateutil",
-    "sklearn": "scikit-learn",
-    "multipart": "python-multipart",
+    name: normalize_package_name(pkg) for name, pkg in IMPORT_TO_PACKAGE.items()
 }
 _KNOWN_PACKAGE_NAMES = frozenset({
     "fastapi", "flask", "django", "uvicorn", "gunicorn",

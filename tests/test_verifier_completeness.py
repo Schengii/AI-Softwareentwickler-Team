@@ -741,8 +741,11 @@ class TestCompletenessCheck(unittest.TestCase):
             verifier = ProjectVerifier(tmp)
             verifier._ensure_async_test_manifest_entry()
 
+            # Test-Plugins gehören in requirements-dev.txt, nicht in die Produktions-Abhängigkeiten.
+            dev_manifest = (project_dir / "requirements-dev.txt").read_text(encoding="utf-8")
+            self.assertIn("pytest-asyncio", dev_manifest)
             manifest = (project_dir / "requirements.txt").read_text(encoding="utf-8")
-            self.assertIn("pytest-asyncio", manifest)
+            self.assertNotIn("pytest-asyncio", manifest)
             # Bereits vorhandene Einträge dürfen nicht verloren gehen.
             self.assertIn("fastapi", manifest)
 

@@ -25,6 +25,14 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from core.known_pitfalls import (
+    HIDDEN_RUNTIME_DEPENDENCIES,
+    IMPORT_TO_PACKAGE,
+    is_test_path,
+    normalize_package_name,
+    package_for_import,
+    provided_import_names,
+)
 from core.verifier.models import _SQLA_ASYNC_ENGINE_RE, _SQLA_SYNC_ENGINE_RE
 
 # Standardbibliothek-Module, die kein requirements.txt-Eintrag brauchen.
@@ -49,56 +57,13 @@ _SKIP_DIRS: frozenset[str] = frozenset({
     "site-packages",
 })
 
-# Bekannte Import-zu-Paket-Mappings (haeufige Faelle wo Importname != Paketname)
+# Importname -> Paketname und versteckte Laufzeit-Abhaengigkeiten kommen aus dem zentralen
+# Regelwerk core/known_pitfalls.py (vorher lokale Kopien, die von core/verifier/models.py
+# abwichen - `import jwt` wurde dadurch als Paket `jwt` statt `PyJWT` vorgeschlagen).
 _IMPORT_TO_PKG: dict[str, str] = {
-    "cv2": "opencv_python",
-    "PIL": "pillow",
-    "sklearn": "scikit_learn",
-    "bs4": "beautifulsoup4",
-    "yaml": "pyyaml",
-    "dotenv": "python_dotenv",
-    "dateutil": "python_dateutil",
-    "attr": "attrs",
-    "jose": "python_jose",
-    "passlib": "passlib",
-    "multipart": "python_multipart",
+    name: normalize_package_name(pkg).replace("-", "_") for name, pkg in IMPORT_TO_PACKAGE.items()
 }
-
-# Team-Optimierung (Retrospektive 2026-09-07, aus 3 team_lessons-Eintraegen destilliert):
-# diese drei Muster sind Laufzeit-Abhaengigkeiten, die eine reine Import-Analyse (oben)
-# NIE findet, weil das Paket selbst nirgends direkt importiert wird - es wird erst
-# TRANSITIV zur Laufzeit von einer Drittanbieter-Bibliothek nachgeladen und faellt dann
-# nicht beim Start, sondern erst beim ECHTEN Aufruf des jeweiligen Codepfads auf:
-#   - SQLAlchemy create_async_engine() braucht "greenlet" (SQLAlchemy importiert es lazy)
-#   - FastAPI OAuth2PasswordRequestForm/Form(...) braucht "python-multipart" zum Parsen
-#     von Formulardaten (FastAPI prueft das nur zur Laufzeit beim ersten Form-Request)
-#   - passlib's CryptContext(schemes=["bcrypt"]) bricht mit bcrypt>=4.1 (bcrypt.__about__
-#     wurde entfernt, passlibs interner Selbsttest schlaegt fehl)
-# Jeweils ein (Signal-Regex im Quelltext, benoetigtes Paket, Meldung) - regex statt AST,
-# weil das Signal (Klassenname/Funktionsaufruf) unabhaengig davon erkannt werden soll, WIE
-# es importiert wurde (from-import, aliasiert, etc.).
-_HIDDEN_RUNTIME_DEPENDENCIES: tuple[tuple[re.Pattern, str, str], ...] = (
-    (
-        re.compile(r"\bcreate_async_engine\s*\("),
-        "greenlet",
-        (
-            "`create_async_engine(...)` wird verwendet, aber SQLAlchemy braucht "
-            "`greenlet` zur Laufzeit dafuer (lazy import, KEIN direkter Code-Import) - "
-            "fehlt es, schlaegt jede DB-Operation mit \"the greenlet library is "
-            "required\" fehl."
-        ),
-    ),
-    (
-        re.compile(r"\bOAuth2PasswordRequestForm\b|\bForm\s*\("),
-        "python_multipart",
-        (
-            "`OAuth2PasswordRequestForm`/`Form(...)` wird verwendet, aber FastAPI "
-            "braucht `python-multipart` zur Laufzeit zum Parsen von Formulardaten - "
-            "fehlt es, schlaegt der Endpunkt erst beim ECHTEN Aufruf fehl (kein "
-            "Fehler beim Start)."
-        ),
-    ),
-)
+_HIDDEN_RUNTIME_DEPENDENCIES = HIDDEN_RUNTIME_DEPENDENCIES
 
 
 def _check_passlib_bcrypt_pin(project_dir: Path, sources_by_file: dict[str, str]) -> PreFlightIssue | None:
@@ -680,14 +645,11 @@ def _run_checks(project_path: Path, report: PreFlightReport) -> None:
         return
 
     known_packages = _parse_requirements(project_path)
-    # Installierte Pakete aus sys.modules als zusaetzliche bekannte Pakete akzeptieren
-    try:
-        for mod_name in list(sys.modules.keys()):
-            top = _get_top_level_import(mod_name).lower().replace("-", "_")
-            if top:
-                known_packages.add(top)
-    except Exception:  # noqa: BLE001
-        pass
+    # Transitiv mitinstallierte Namespaces (z. B. starlette ueber fastapi) gelten als bekannt.
+    # Frueher wurden stattdessen alle Module aus sys.modules des FRAMEWORK-Prozesses akzeptiert -
+    # das Ergebnis hing damit davon ab, was der Framework-Prozess zufaellig schon importiert hatte
+    # (z. B. fastapi ueber das Dashboard), nicht davon, was das Projekt tatsaechlich deklariert.
+    known_packages |= provided_import_names({p.replace("_", "-") for p in known_packages})
 
     # Deduplizierungs-Set: verhindert denselben Befund mehrfach (z.B. 10 Dateien importieren
     # dasselbe fehlende Paket - nur einmal melden, nicht 10 Mal).
@@ -770,6 +732,17 @@ def _run_checks(project_path: Path, report: PreFlightReport) -> None:
                     and top not in known_packages
                 ):
                     key = ("dep", "missing_dependency", canonical)
+                    if key in seen_issues and not is_test_path(rel_path):
+                        # Wurde das Paket bisher nur in Testdateien gesehen, zaehlt die erste
+                        # Nicht-Test-Datei: es ist dann eine Laufzeit-, keine Dev-Abhaengigkeit.
+                        for existing in report.issues:
+                            if (
+                                existing.issue_type == "missing_dependency"
+                                and is_test_path(existing.file)
+                                and existing.message == f"Paket `{top}` wird importiert, fehlt aber in requirements.txt."
+                            ):
+                                existing.file = rel_path
+                                existing.line = imp_line
                     if key not in seen_issues:
                         seen_issues.add(key)
                         report.issues.append(PreFlightIssue(
@@ -780,7 +753,10 @@ def _run_checks(project_path: Path, report: PreFlightReport) -> None:
                                 f"Paket `{top}` wird importiert, "
                                 f"fehlt aber in requirements.txt."
                             ),
-                            suggestion=f"Fuege `{top}` zu requirements.txt hinzu.",
+                            # Der VORSCHLAG nennt das echte PyPI-Paket (z. B. `PyJWT` fuer
+                            # `import jwt`) - der deterministische Auto-Fix in
+                            # agents/orchestrator/verification.py uebernimmt ihn woertlich.
+                            suggestion=f"Fuege `{package_for_import(top)}` zu requirements.txt hinzu.",
                         ))
 
     # Projektweite Muster-Checks fuer bekannte versteckte Laufzeit-Abhaengigkeiten

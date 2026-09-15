@@ -65,6 +65,11 @@ class TestRunBudgetCap(unittest.TestCase):
         guard_patch_budget = patch.object(orch_budget_module, "token_guard", self._fresh_guard)
         guard_patch_budget.start()
         self.addCleanup(guard_patch_budget.stop)
+        # Budget-Mechanik-Test: Teamleiter-Aufrufe dienen hier als Token-Verbraucher und Marker,
+        # deshalb auch für Ein-Personen-Fachbereiche aktiv (Standard: DEPARTMENT_LEAD_MIN_MEMBERS=2).
+        lead_patch = patch("agents.orchestrator.department.DEPARTMENT_LEAD_MIN_MEMBERS", 1)
+        lead_patch.start()
+        self.addCleanup(lead_patch.stop)
 
         self.orchestrator = Orchestrator()
         for agent in list(self.orchestrator._agents.values()) + list(self.orchestrator._dept_leads.values()):

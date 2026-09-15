@@ -13,7 +13,13 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 from core.code_sandbox import CodeSandbox
-from core.task_manager import _DECOMPOSE_EXCLUDED_AGENT_IDS, AVAILABLE_AGENTS, DECOMPOSE_SYSTEM_PROMPT, TaskManager
+from core.task_manager import (
+    _DECOMPOSE_EXCLUDED_AGENT_IDS,
+    AVAILABLE_AGENTS,
+    DECOMPOSE_SYSTEM_PROMPT,
+    TaskManager,
+    _relevant_agent_ids,
+)
 from core.token_guard import TokenGuard
 from core.workspace import WorkspaceManager
 
@@ -61,10 +67,12 @@ class TestCoreModules(unittest.TestCase):
 
         sent_system_prompt = task_manager._llm.generate_json.call_args[0][1]
         self.assertNotIn("__AVAILABLE_AGENT_IDS__", sent_system_prompt)
+        # Nischenrollen, die für diese Anfrage ausgeblendet sind, fehlen bewusst (_relevant_agent_ids).
+        hidden_niche_ids = _relevant_agent_ids("Baue etwas")
         for agent_id in AVAILABLE_AGENTS:
             if agent_id in _DECOMPOSE_EXCLUDED_AGENT_IDS:
                 self.assertNotIn(agent_id, sent_system_prompt)
-            else:
+            elif agent_id not in hidden_niche_ids:
                 self.assertIn(agent_id, sent_system_prompt)
 
     def test_token_guard_recording_and_warnings(self):

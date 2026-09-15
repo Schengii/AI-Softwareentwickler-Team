@@ -13,14 +13,16 @@ Ohne project_dir (z.B. für reine Text-/Synthese-Aufgaben) bleibt der einfache
 Ein-Schuss-Aufruf über generate_with_usage() erhalten.
 """
 
+import asyncio
 import json
 import logging
 import re
 import time
 from abc import ABC, abstractmethod
 
-from config import MAX_AGENT_TOOL_ITERATIONS
+from config import ENABLE_DEVELOPER_HANDOFF_GATE, MAX_AGENT_TOOL_ITERATIONS, MAX_HANDOFF_RETRIES
 from core.agent_toolbox import AgentToolbox
+from core.handoff_check import HANDOFF_GATE_AGENT_IDS, check_handoff
 from core.llm_factory import AgentMessage, GeminiClient, LLMFactory, LLMResponse
 from core.message_bus import AgentResult, AgentTask
 from core.model_capability import min_tier_for_agent, pop_capability_floor, push_capability_floor
@@ -399,6 +401,9 @@ class BaseAgent(ABC):
         # Aufgabe (`write_rescue_grant_used`), damit die Schleife garantiert terminiert.
         hard_limit = max_iterations
         write_rescue_grant_used = False
+        # Übergabe-Prüfung (core/handoff_check.py): wie oft der Agent bereits aufgefordert wurde,
+        # statische Fehler in seinen eigenen Dateien vor der Abgabe zu beheben.
+        handoff_retries_used = 0
 
         iteration = 0
         while iteration < hard_limit:
@@ -610,6 +615,27 @@ class BaseAgent(ABC):
                         ),
                     ))
                     continue
+                elif (
+                    not response.tool_calls
+                    and ENABLE_DEVELOPER_HANDOFF_GATE
+                    and handoff_retries_used < MAX_HANDOFF_RETRIES
+                    and self.agent_id in HANDOFF_GATE_AGENT_IDS
+                    and toolbox.files_written
+                    and not task.tools_read_only
+                    and not toolbox.clarification_requests
+                    and (handoff := await self._run_handoff_check(task, toolbox)) is not None
+                    and not handoff.passed
+                ):
+                    # "Nur grün abgeben": statische Fehler in den EIGENEN Dateien (Syntax, Import
+                    # auf nicht existierendes lokales Modul) behebt der Agent noch innerhalb seiner
+                    # Aufgabe, statt sie als Pre-Flight-Fund an eine spätere Fix-Runde zu vererben.
+                    # Jede Aufforderung gewährt zwei echte Zusatz-Iterationen, begrenzt durch
+                    # MAX_HANDOFF_RETRIES - die Schleife terminiert damit garantiert.
+                    handoff_retries_used += 1
+                    hard_limit = max(hard_limit, iteration + 2)
+                    turns.append(AgentMessage(role="assistant", text=response.text, tool_calls=[]))
+                    turns.append(AgentMessage(role="user", text=handoff.format_for_agent()))
+                    continue
                 gate_retry_exhausted = (
                     self.agent_id in CODE_WRITING_AGENT_IDS
                     and not toolbox.files_written
@@ -691,6 +717,14 @@ class BaseAgent(ABC):
 
         assert response is not None
         return response, total_prompt_tokens, total_completion_tokens, hard_delivery_gate_failed
+
+    async def _run_handoff_check(self, task: AgentTask, toolbox: AgentToolbox):
+        """Führt die Übergabe-Prüfung aus - ein interner Fehler darf die Abgabe nie blockieren."""
+        try:
+            return await asyncio.to_thread(check_handoff, task.project_dir, set(toolbox.files_written))
+        except Exception as e:  # noqa: BLE001 - reine Qualitätshilfe, kein Blocker
+            logger.warning("Übergabe-Prüfung für %s fehlgeschlagen: %r", self.agent_id, e)
+            return None
 
     def _augment_with_tool_instructions(self, system_prompt: str, read_only: bool = False) -> str:
         # Realer Fund aus einem echten Lauf: der architect-Agent wird vom Hauptagenten bei
@@ -781,6 +815,13 @@ class BaseAgent(ABC):
             "bewusst akzeptierten Fund erneut gegen echte neue Funde zu vermischen."
             if self.agent_id in CODE_WRITING_AGENT_IDS else ""
         )
+        handoff_note = (
+            "\n\n✅ ÜBERGABE-REGEL (wie im echten Team): Bevor du abschließt, muss dein Code importierbar sein. "
+            "Existieren Tests für deinen Bereich, führe `run_tests` aus und behebe Fehler in DEINEN Dateien selbst. "
+            "Nach deiner Abschlussantwort prüft das System deine Dateien automatisch (Syntax, lokale Importe) und "
+            "gibt sie dir bei Fehlern zur Korrektur zurück."
+            if self.agent_id in HANDOFF_GATE_AGENT_IDS and not read_only else ""
+        )
         return f"""{system_prompt}
 
 ## 🛠️ WERKZEUG-NUTZUNG (agentischer Modus)
@@ -804,7 +845,7 @@ Triffst du auf eine ECHTE, für die Aufgabe entscheidende Unklarheit, die nur ei
 statt zu raten und trotzdem etwas möglicherweise Falsches auszuliefern. Ein erfahrener Senior-Entwickler fragt bei
 echter Mehrdeutigkeit nach, statt zu spekulieren. Setze deine Arbeit danach so weit wie möglich fort und fasse in
 deiner finalen Antwort ehrlich zusammen, was bereits erledigt ist und was durch die Rückfrage offen bleibt.
-{write_access_note}{empty_scope_note}{exception_handling_note}"""
+{write_access_note}{empty_scope_note}{exception_handling_note}{handoff_note}"""
 
     def _build_prompt(self, task: AgentTask) -> str:
         """Baut den finalen Prompt token-effizient zusammen mit strikten Sparsamkeits-Regeln."""

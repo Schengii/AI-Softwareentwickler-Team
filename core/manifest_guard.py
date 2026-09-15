@@ -30,6 +30,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from core.known_pitfalls import TOXIC_DEPENDENCY_RULES, ToxicDependencyRule  # noqa: F401 - Re-Export
+
 _PYTHON_REQUIREMENTS_MANIFESTS = {
     "requirements.txt", "requirements-dev.txt", "requirements-test.txt", "requirements-prod.txt",
 }
@@ -114,15 +116,6 @@ def detect_corrupted_manifest(rel_path: str, content: str) -> str | None:
 
 
 @dataclass(frozen=True)
-class ToxicDependencyRule:
-    """Ein bekanntes Paket, das einen fremden Import-Namespace überschreibt."""
-
-    legitimate_packages: tuple[str, ...]
-    replacement: str | None
-    reason: str
-
-
-@dataclass(frozen=True)
 class ToxicDependencyFinding:
     """Ein konkreter toxischer Eintrag in einem Requirements-Manifest."""
 
@@ -141,24 +134,7 @@ class ToxicDependencyFinding:
         return f"Zeile {self.line_number}: `{self.line.strip()}` {outcome} – {self.reason}"
 
 
-TOXIC_DEPENDENCY_RULES: dict[str, ToxicDependencyRule] = {
-    "jwt": ToxicDependencyRule(
-        legitimate_packages=("pyjwt",),
-        replacement="PyJWT",
-        reason=(
-            "das veraltete PyPI-Paket `jwt` überschreibt den Namespace von PyJWT "
-            "(`AttributeError: module 'jwt' has no attribute 'encode'`)"
-        ),
-    ),
-    "crypto": ToxicDependencyRule(
-        legitimate_packages=("cryptography", "pycryptodome", "pycryptodomex"),
-        replacement=None,
-        reason=(
-            "das PyPI-Paket `crypto` ist ein unverwandtes CLI-Werkzeug und kollidiert mit dem "
-            "`Crypto`-Namespace von pycryptodome – gemeint ist `cryptography` oder `pycryptodome`"
-        ),
-    ),
-}
+# Regeln leben im zentralen Regelwerk core/known_pitfalls.py (hier re-exportiert).
 
 _REQUIREMENT_NAME_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)")
 

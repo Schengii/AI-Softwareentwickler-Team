@@ -13,10 +13,24 @@ werden so über die Zeit wiederkehrende Regeln, die künftigen Läufen (auch an 
 direkt mitgegeben werden, statt dass jedes Projekt bei null anfängt.
 """
 
+import hashlib
 import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+
+# ── Lebenszyklus (append-only) ──────────────────────────────────────────────────────────────
+# Lektionen wurden bisher nur angehängt - nie als erledigt markiert. Dieselbe Empfehlung
+# ("`jwt` durch PyJWT ersetzen") entstand dadurch an zwei aufeinanderfolgenden Tagen erneut,
+# obwohl sie längst umgesetzt war, und belegte weiter die knappen Prompt-Plätze.
+# Statusänderungen und Wiederholungen werden als eigene Ereigniszeilen angehängt (die
+# Nachvollziehbarkeit des append-only-Logs bleibt erhalten); `read_lesson_index()` fasst sie
+# je Signatur zusammen.
+LESSON_STATUSES = ("open", "implemented", "verified", "archived")
+# Diese Status gelten als abgeschlossen und werden Agenten nicht mehr als Warnung gezeigt.
+CLOSED_LESSON_STATUSES = frozenset({"verified", "archived"})
+_EVENT_STATUS = "lesson_status"
+_EVENT_RECURRENCE = "lesson_recurrence"
 
 TEAM_MEMORY_FILE = Path(__file__).resolve().parent.parent / "memory" / "team_lessons.jsonl"
 MAX_LESSONS_SHOWN = 5
@@ -88,6 +102,13 @@ def record_lesson(project_slug: str, category: str, detail: str) -> None:
     normalized = _normalize(detail)
     for recent in read_team_lessons(limit=_DEDUP_LOOKBACK):
         if recent.get("category") == category and _normalize(recent.get("detail", "")) == normalized:
+            # Wiederholung zählen statt still verwerfen - Häufigkeit ist ein Relevanzsignal,
+            # und eine bereits als erledigt markierte Lektion wird dadurch wieder geöffnet.
+            # Höchstens ein Ereignis je Signatur, Projekt und Tag, damit die Datei nicht wächst,
+            # wenn derselbe Lauf dieselbe Lektion mehrfach meldet.
+            signature = lesson_signature(category, detail)
+            if not _recurrence_recorded_today(signature, project_slug):
+                _append_event({"event": _EVENT_RECURRENCE, "signature": signature, "project_slug": project_slug})
             return
     try:
         TEAM_MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -96,6 +117,7 @@ def record_lesson(project_slug: str, category: str, detail: str) -> None:
             "project_slug": project_slug,
             "category": category,
             "detail": detail,
+            "signature": lesson_signature(category, detail),
         }
         with open(TEAM_MEMORY_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -116,15 +138,20 @@ def read_team_lessons(limit: int = MAX_LESSONS_SHOWN) -> list[dict]:
                 if not line:
                     continue
                 try:
-                    lessons.append(json.loads(line))
+                    record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                # Ereigniszeilen (Status/Wiederholung) sind keine eigenständigen Lektionen.
+                if isinstance(record, dict) and "event" not in record:
+                    lessons.append(record)
     except OSError:
         return []
     return lessons[-limit:][::-1]
 
 
-def format_team_lessons_for_agents(limit: int = MAX_LESSONS_SHOWN, prioritize_slug: str = "") -> str:
+def format_team_lessons_for_agents(
+    limit: int = MAX_LESSONS_SHOWN, prioritize_slug: str = "", context: str = "",
+) -> str:
     """Leerer String, wenn es noch keine Lektionen gibt (kein unnötiger Prompt-Text für den
     Normalfall eines frischen Setups ohne aufgezeichnete Muster).
 
@@ -148,6 +175,16 @@ def format_team_lessons_for_agents(limit: int = MAX_LESSONS_SHOWN, prioritize_sl
     # bewusst großzügiger, aber endlicher Deckel statt limit für die volle Vorauswahl, aus der
     # anschließend sowohl nach project_slug als auch nach Schweregrad ausgewählt wird.
     pool = read_team_lessons(limit=max(limit * 20, 200))
+    # Abgeschlossene Lektionen (verifiziert/archiviert) sind kein Warnsignal mehr.
+    index = read_lesson_index()
+    pool = [
+        entry for entry in pool
+        if index.get(_entry_signature(entry), {}).get("status", "open") not in CLOSED_LESSON_STATUSES
+    ]
+    if context.strip():
+        # Relevanz statt reiner Aktualität: Lektionen, die fachlich zum Auftrag passen (Stack,
+        # Rolle, Dateitypen), kommen zuerst; bei Gleichstand bleibt die Rezenz-Reihenfolge.
+        pool = rank_lessons_by_relevance(pool, context, index)
     if not prioritize_slug:
         candidates = pool
     else:
@@ -187,3 +224,182 @@ def _select_with_severity_reservation(candidates: list[dict], limit: int) -> lis
             break
         selected_indices.add(i)
     return [candidates[i] for i in sorted(selected_indices)]
+
+
+# ── Lebenszyklus & Relevanz ─────────────────────────────────────────────────────────────────
+_TOKEN_RE = re.compile(r"[a-zA-ZäöüÄÖÜß_][\w.-]{2,}")
+_STOPWORDS = frozenset({
+    "der", "die", "das", "und", "oder", "nicht", "mit", "für", "von", "den", "dem", "ein", "eine",
+    "ist", "sind", "wird", "werden", "bei", "auf", "aus", "als", "auch", "noch", "nur", "wenn",
+    "the", "and", "for", "with", "this", "that", "from", "agent", "agents", "projekt", "datei",
+})
+
+
+def lesson_signature(category: str, detail: str) -> str:
+    """Stabile Kennung einer Lektion (Kategorie + normalisierter Kern)."""
+    return hashlib.sha1(f"{category}|{_normalize(detail)}".encode()).hexdigest()[:16]
+
+
+def _entry_signature(entry: dict) -> str:
+    return str(entry.get("signature") or lesson_signature(str(entry.get("category", "")), str(entry.get("detail", ""))))
+
+
+def _append_event(record: dict) -> None:
+    try:
+        TEAM_MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(TEAM_MEMORY_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"timestamp": datetime.now(UTC).isoformat(), **record}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _read_raw_records() -> list[dict]:
+    if not TEAM_MEMORY_FILE.exists():
+        return []
+    records: list[dict] = []
+    try:
+        with open(TEAM_MEMORY_FILE, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict):
+                    records.append(record)
+    except OSError:
+        return []
+    return records
+
+
+def _recurrence_recorded_today(signature: str, project_slug: str) -> bool:
+    today = datetime.now(UTC).date().isoformat()
+    for record in reversed(_read_raw_records()):
+        if not str(record.get("timestamp", "")).startswith(today):
+            if record.get("event") != _EVENT_RECURRENCE:
+                break
+            continue
+        if (
+            record.get("event") == _EVENT_RECURRENCE
+            and record.get("signature") == signature
+            and record.get("project_slug") == project_slug
+        ):
+            return True
+    return False
+
+
+def update_lesson_status(signature: str, status: str, resolution: str = "") -> bool:
+    """Setzt den Status einer Lektion (append-only Ereignis). False bei unbekannter Signatur/Status."""
+    if status not in LESSON_STATUSES:
+        return False
+    if signature not in read_lesson_index():
+        return False
+    _append_event({"event": _EVENT_STATUS, "signature": signature, "status": status, "resolution": resolution[:300]})
+    return True
+
+
+def read_lesson_index() -> dict[str, dict]:
+    """Aggregierte Sicht je Signatur: erste Lektion + occurrences, projects, status, resolution."""
+    index: dict[str, dict] = {}
+    for record in _read_raw_records():
+        event = record.get("event")
+        if event is None:
+            if not str(record.get("detail", "")).strip():
+                continue
+            signature = _entry_signature(record)
+            entry = index.get(signature)
+            if entry is None:
+                index[signature] = {
+                    **record, "signature": signature, "occurrences": 1, "status": "open", "resolution": "",
+                    "last_seen": record.get("timestamp", ""), "projects": sorted({str(record.get("project_slug", ""))}),
+                }
+            else:
+                entry["occurrences"] += 1
+                entry["last_seen"] = record.get("timestamp", entry["last_seen"])
+                entry["projects"] = sorted(set(entry["projects"]) | {str(record.get("project_slug", ""))})
+        elif event == _EVENT_RECURRENCE:
+            entry = index.get(str(record.get("signature")))
+            if entry is not None:
+                entry["occurrences"] += 1
+                entry["last_seen"] = record.get("timestamp", entry["last_seen"])
+                entry["projects"] = sorted(set(entry["projects"]) | {str(record.get("project_slug", ""))})
+                # Ein erneut auftretender Fehler öffnet eine nur "umgesetzte" Lektion wieder -
+                # die Umsetzung hat offenbar nicht gegriffen.
+                if entry["status"] in ("implemented", "verified"):
+                    entry["status"] = "open"
+                    entry["resolution"] = f"wieder aufgetreten nach: {entry['resolution']}".strip()
+        elif event == _EVENT_STATUS:
+            entry = index.get(str(record.get("signature")))
+            if entry is not None and record.get("status") in LESSON_STATUSES:
+                entry["status"] = record["status"]
+                entry["resolution"] = str(record.get("resolution") or "")
+    return index
+
+
+def _tokens(text: str) -> set[str]:
+    return {t.lower().strip(".-") for t in _TOKEN_RE.findall(text or "")} - _STOPWORDS
+
+
+def rank_lessons_by_relevance(lessons: list[dict], context: str, index: dict[str, dict] | None = None) -> list[dict]:
+    """Sortiert Lektionen nach fachlicher Nähe zum Kontext (stabil, Rezenz bleibt Tiebreaker)."""
+    context_tokens = _tokens(context)
+    if not context_tokens:
+        return list(lessons)
+    index = index if index is not None else {}
+
+    def score(item: tuple[int, dict]) -> tuple[float, int]:
+        position, entry = item
+        overlap = len(context_tokens & _tokens(str(entry.get("detail", ""))))
+        occurrences = int(index.get(_entry_signature(entry), {}).get("occurrences", 1))
+        severity = 0.0 if entry.get("category") in _LOW_SEVERITY_CATEGORIES else 1.0
+        return (-(overlap * 3.0 + min(occurrences, 5) * 0.5 + severity), position)
+
+    return [entry for _, entry in sorted(enumerate(lessons), key=score)]
+
+
+def auto_link_lessons_to_rules() -> list[tuple[str, str]]:
+    """Markiert offene Lektionen als "implemented", deren Kern bereits durch eine Regel im
+    zentralen Regelwerk (core/known_pitfalls.PITFALL_CATALOG) abgedeckt ist.
+
+    Rückgabe: Liste (Signatur, rule_id) der neu verknüpften Lektionen. Tritt der Fehler danach
+    erneut auf, öffnet `read_lesson_index()` die Lektion automatisch wieder.
+    """
+    from core.known_pitfalls import PITFALL_CATALOG
+
+    linked: list[tuple[str, str]] = []
+    for signature, entry in read_lesson_index().items():
+        if entry.get("status") != "open":
+            continue
+        detail = str(entry.get("detail", "")).lower()
+        matching = [
+            rule for rule in PITFALL_CATALOG
+            if rule.match_keywords and all(k.lower() in detail for k in rule.match_keywords)
+        ]
+        if not matching:
+            continue
+        # Spezifischste Regel gewinnt (meiste Schlüsselbegriffe), z. B. "Re-Export in __init__.py"
+        # vor der allgemeinen __init__.py-Regel.
+        rule = max(matching, key=lambda r: len(r.match_keywords))
+        if update_lesson_status(signature, "implemented", f"Regel {rule.rule_id} ({rule.enforced_by})"):
+            linked.append((signature, rule.rule_id))
+    return linked
+
+
+def format_lesson_board(limit: int = 30) -> str:
+    """Übersicht für Menschen (CLI/Dashboard): offene Lektionen zuerst, nach Häufigkeit."""
+    index = read_lesson_index()
+    if not index:
+        return "Noch keine Team-Lektionen aufgezeichnet."
+    order = {"open": 0, "implemented": 1, "verified": 2, "archived": 3}
+    entries = sorted(index.values(), key=lambda e: (order.get(e["status"], 9), -e["occurrences"], e.get("last_seen", "")))
+    lines = ["| Status | ×  | Kategorie | Projekte | Lektion | Signatur |", "|---|---|---|---|---|---|"]
+    for e in entries[:limit]:
+        detail = str(e.get("detail", "")).replace("\n", " ").replace("|", "/")[:90]
+        projects = ", ".join(e.get("projects", [])[:3])
+        lines.append(f"| {e['status']} | {e['occurrences']} | {e.get('category', '')} | {projects} | {detail} | `{e['signature']}` |")
+    open_count = sum(1 for e in index.values() if e["status"] == "open")
+    lines.append(f"\n{open_count} von {len(index)} Lektionen offen.")
+    return "\n".join(lines)
+

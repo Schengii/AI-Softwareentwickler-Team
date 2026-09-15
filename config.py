@@ -387,10 +387,24 @@ def get_model_for_agent(agent_id: str) -> str:
     # eine explizite, einzelne Bestätigung soll auch dann wirken, wenn der globale
     # Alles-oder-nichts-Schalter aus bleibt.
     auto_tuned_entry = _read_auto_tuned_entry(agent_id)
-    if auto_tuned_entry and (ENABLE_AUTO_MODEL_TUNING or auto_tuned_entry.get("manual")):
+    # `ab_promoted`: durch einen bestandenen A/B-Test (core/model_ab_trials.py) übernommen - das
+    # ist bereits eine gemessene, keine spekulative Umstellung und gilt deshalb ohne globalen Schalter.
+    if auto_tuned_entry and (
+        ENABLE_AUTO_MODEL_TUNING or auto_tuned_entry.get("manual") or auto_tuned_entry.get("ab_promoted")
+    ):
         model = auto_tuned_entry.get("model", "")
         if model:
             return model
+
+    # 3b. Laufender A/B-Test: ein Anteil der Läufe nutzt das Kandidatenmodell.
+    try:
+        from core.model_ab_trials import trial_model_for_agent
+
+        trial_model = trial_model_for_agent(agent_id)
+    except Exception:  # noqa: BLE001 - optionale Optimierung darf die Modellauflösung nie brechen
+        trial_model = None
+    if trial_model:
+        return trial_model
 
     # 4. Standard-Zuordnung aus AGENT_MODELS oder Fallback
     return AGENT_MODELS.get(agent_id, DEFAULT_AGENT_MODEL)
@@ -425,7 +439,7 @@ AUTO_SAVE_WORKSPACE: bool = os.getenv("AUTO_SAVE_WORKSPACE", "true").lower() in 
 # Agentischer Werkzeug-Loop (echte Tool-Nutzung statt Ein-Schuss-Textgenerierung)
 # ──────────────────────────────────────────
 ENABLE_AGENT_TOOLS: bool = os.getenv("ENABLE_AGENT_TOOLS", "true").lower() in ("true", "1", "yes")
-MAX_AGENT_TOOL_ITERATIONS: int = int(os.getenv("MAX_AGENT_TOOL_ITERATIONS", "6"))
+MAX_AGENT_TOOL_ITERATIONS: int = int(os.getenv("MAX_AGENT_TOOL_ITERATIONS", "12"))
 
 # Nicht jeder Agent braucht dasselbe Iterationsbudget: Jede zusätzliche Iteration sendet
 # die komplette bisherige Konversation (inkl. aller Werkzeug-Ergebnisse) erneut mit – das
@@ -439,8 +453,16 @@ AGENT_MAX_TOOL_ITERATIONS: dict[str, int] = {
     "product_owner": 3, "business_analyst": 3, "web_research": 3, "finops": 3, "team_lead": 3,
     "copywriter": 3, "ui_ux": 3, "accessibility": 3, "i18n": 3, "documentation": 3,
     "readme": 3, "github": 2, "image_generator": 3, "retrospective": 2,
-    # Architektur & technische Spezialisten: schreiben fokussierte Artefakte -> 4 Iterationen
-    "architect": 4, "devops": 4, "security": 4, "resilience_guard": 4, "tester": 4,
+    # Architektur & technische Spezialisten: schreiben fokussierte Artefakte. tester braucht echte
+    # Iteration (lesen, Tests schreiben, run_tests, korrigieren) - mit 4 Iterationen lag seine
+    # Erfolgsquote bei 57% (Team-Lektion low_performing_agent 2026-09-07).
+    "architect": 5, "devops": 6, "security": 6, "resilience_guard": 6, "tester": 12,
+    # Code-Entwickler: schreiben mehrere Dateien UND prüfen sie vor der Abgabe (Übergabe-Regel,
+    # core/handoff_check.py). 6 Iterationen reichten real nicht für 15+ Dateien - Folge waren Code
+    # im Antworttext statt write_file und unvollständige Module. Der Token-Deckel
+    # (MAX_TASK_TOKENS) begrenzt die Kosten zusätzlich.
+    "backend": 14, "database": 10, "frontend": 14, "api_integration": 10, "data_engineer": 10,
+    "ml": 10, "mobile": 12, "performance": 6, "refactoring": 8, "prompt_engineer": 6,
     # Reine Prüf-/Review-Rollen: lesen viel, schreiben nichts -> 3 Iterationen
     "code_reviewer": 3, "compliance": 3, "project_cleaner": 3,
 }
@@ -630,6 +652,46 @@ ENABLE_DEPARTMENT_LEAD_EXECUTION: bool = os.getenv("ENABLE_DEPARTMENT_LEAD_EXECU
 # Fachbereiche mit mehreren Mitgliedern behalten die Teamleiter-Koordination immer, da dort
 # echter Abstimmungsbedarf besteht (z.B. doppelte Parallel-Implementierungen vermeiden).
 ENABLE_TASK_COMPLEXITY_SCALING: bool = os.getenv("ENABLE_TASK_COMPLEXITY_SCALING", "true").lower() in ("true", "1", "yes")
+
+# Teamleiter-Koordination nur, wo sie echten Abstimmungsbedarf gibt: Delegation+Konsolidierung
+# kosten pro Fachbereich zwei LLM-Aufrufe ohne eigenen Code. Fachbereiche mit weniger Mitgliedern
+# als diesem Wert arbeiten direkt (die Aufgabe steht bereits im Plan). 1 = früheres Verhalten.
+DEPARTMENT_LEAD_MIN_MEMBERS: int = int(os.getenv("DEPARTMENT_LEAD_MIN_MEMBERS", "2"))
+
+# ──────────────────────────────────────────
+# Arbeitsweise wie ein echtes Entwicklerteam
+# ──────────────────────────────────────────
+# Übergabe-Regel: Code-Entwickler prüfen ihre Dateien vor der Abgabe (core/handoff_check.py).
+ENABLE_DEVELOPER_HANDOFF_GATE: bool = os.getenv("ENABLE_DEVELOPER_HANDOFF_GATE", "true").lower() in ("true", "1", "yes")
+MAX_HANDOFF_RETRIES: int = int(os.getenv("MAX_HANDOFF_RETRIES", "2"))
+
+# Deterministisches Projektgerüst nach der Planung (core/project_scaffold.py).
+ENABLE_PROJECT_SCAFFOLD: bool = os.getenv("ENABLE_PROJECT_SCAFFOLD", "true").lower() in ("true", "1", "yes")
+
+# Integrations-Checkpoint direkt nach der Entwicklungsphase: Pre-Flight + deterministische
+# Autofixes + eine gezielte Fix-Runde, BEVOR Content/QA/Governance auf kaputtem Code aufbauen.
+ENABLE_INTEGRATION_CHECKPOINT: bool = os.getenv("ENABLE_INTEGRATION_CHECKPOINT", "true").lower() in ("true", "1", "yes")
+
+# Test-First: der tester arbeitet in der Entwicklungsphase parallel zu den Entwicklern gegen
+# Akzeptanzkriterien und interface_contract.json, statt nachträglich in der QA-Phase.
+ENABLE_TEST_FIRST: bool = os.getenv("ENABLE_TEST_FIRST", "true").lower() in ("true", "1", "yes")
+
+# Reihenfolge wie in einer echten CI: erst echte Verifikation (Tests/Build), dann LLM-Review.
+# Review-Funde werden danach behoben und durch einen kurzen Regressionstest bestätigt.
+ENABLE_REVIEW_AFTER_VERIFICATION: bool = os.getenv("ENABLE_REVIEW_AFTER_VERIFICATION", "true").lower() in ("true", "1", "yes")
+
+# Budget-Anteile der Generierungsphase je Fachbereich (Summe <= 1.0). Ein Fachbereich, der seinen
+# Anteil nicht braucht, gibt ihn an die folgenden ab; ein optionaler Fachbereich (Design/Content)
+# wird übersprungen, wenn sonst Entwicklung/QA nicht mehr ihren Mindestanteil erreichen würden.
+PHASE_TOKEN_SHARES: dict[str, float] = {
+    "planning_lead": float(os.getenv("PHASE_SHARE_PLANNING", "0.12")),
+    "design_lead": float(os.getenv("PHASE_SHARE_DESIGN", "0.06")),
+    "dev_lead": float(os.getenv("PHASE_SHARE_DEV", "0.45")),
+    "content_lead": float(os.getenv("PHASE_SHARE_CONTENT", "0.07")),
+    "qa_lead": float(os.getenv("PHASE_SHARE_QA", "0.18")),
+    "governance_lead": float(os.getenv("PHASE_SHARE_GOVERNANCE", "0.12")),
+}
+OPTIONAL_PHASE_IDS: frozenset[str] = frozenset({"design_lead", "content_lead"})
 
 # ──────────────────────────────────────────
 # Hartes Lauf-Budget (echter Abbruch statt nur Reporting)
@@ -888,6 +950,14 @@ WORKSPACE_DIR: str = os.path.join(BASE_DIR, "workspace")
 # gewinnt IMMER, ein Mensch, der bewusst ein Modell festlegt, wird also nie überstimmt.
 ENABLE_AUTO_MODEL_TUNING: bool = os.getenv("ENABLE_AUTO_MODEL_TUNING", "false").strip().lower() in ("true", "1", "yes")
 AUTO_TUNED_MODELS_FILE: str = os.path.join(MEMORY_DIR, "auto_tuned_models.json")
+
+# A/B-Tests für Modellzuweisungen (core/model_ab_trials.py): ein Modell-Vorschlag des
+# Optimization-Advisors wird zunächst nur in MODEL_AB_TRIAL_SHARE der Läufe verwendet und erst nach
+# MODEL_AB_MIN_TRIAL_CALLS echten Aufrufen anhand der Messwerte übernommen oder verworfen.
+ENABLE_MODEL_AB_TRIALS: bool = os.getenv("ENABLE_MODEL_AB_TRIALS", "true").strip().lower() in ("true", "1", "yes")
+MODEL_AB_TRIAL_SHARE: float = float(os.getenv("MODEL_AB_TRIAL_SHARE", "0.2"))
+MODEL_AB_MIN_TRIAL_CALLS: int = int(os.getenv("MODEL_AB_MIN_TRIAL_CALLS", "8"))
+MODEL_AB_TRIALS_FILE: str = os.path.join(MEMORY_DIR, "model_ab_trials.json")
 
 # ──────────────────────────────────────────
 # Automatisierter Root-Cause-Analyst (core/root_cause_analyst.py)

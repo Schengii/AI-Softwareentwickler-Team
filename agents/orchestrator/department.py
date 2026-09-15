@@ -14,8 +14,12 @@ from agents.department_lead_agent import DEPARTMENT_DEFINITIONS, DepartmentLeadA
 from agents.orchestrator.constants import PHASE_ORDER
 from config import (
     CRITICAL_AGENT_IDS,
+    DEPARTMENT_LEAD_MIN_MEMBERS,
     ENABLE_DEPARTMENT_LEAD_EXECUTION,
+    ENABLE_INTEGRATION_CHECKPOINT,
+    ENABLE_PROJECT_SCAFFOLD,
     ENABLE_TASK_COMPLEXITY_SCALING,
+    ENABLE_TEST_FIRST,
     PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT,
 )
 from core.checkpoint import clear_checkpoint, load_checkpoint, save_phase_checkpoint
@@ -23,12 +27,15 @@ from core.definition_of_done import check_entrypoint_exists
 from core.message_bus import AgentResult, AgentTask
 from core.provider_exhaustion import FAILURE_CLASS_PROVIDER_EXHAUSTED
 from core.task_manager import is_micro_task
+from core.token_guard import token_guard
 
 # Team-Goal (20260913, Aufgabe 1): nach welcher Fachbereichs-Phase der statische Einstiegspunkt-
 # Pre-Flight (check_entrypoint_exists) läuft - "dev_lead" ist Phase 3 (Software-Entwicklung,
 # siehe PHASE_ORDER), direkt nach backend/frontend/... aber VOR den teuren Content-/QA-/
 # Governance-Phasen.
 _ENTRYPOINT_PREFLIGHT_PHASE_ID = "dev_lead"
+
+_TEST_FIRST_NOTE = '## 🧪 Test-First (du arbeitest PARALLEL zu den Entwicklern)\nSchreibe die Testsuite jetzt aus den Akzeptanzkriterien und `interface_contract.json` - nicht erst, wenn der Code fertig ist. Teste das vereinbarte Verhalten (Endpunkte, Klassen, Funktionen laut Vertrag), nicht Implementierungsdetails. Existiert Code bereits, führe `run_tests` aus. Scheitert ein Test, weil der Code vom Vertrag abweicht, ist das ein gültiger Befund für die Entwickler - passe den Test NICHT an falsches Verhalten an.'
 
 
 class DepartmentMixin:
@@ -108,6 +115,15 @@ class DepartmentMixin:
         # LLM-Aufruf.
         task_is_micro = ENABLE_TASK_COMPLEXITY_SCALING and is_micro_task(agent_tasks)
 
+        # Test-First: der tester arbeitet in der Entwicklungsphase parallel zu den Entwicklern
+        # (gegen Akzeptanzkriterien + interface_contract.json) statt erst in der QA-Phase auf
+        # bereits fertigem, oft nie getestetem Code - dort lag seine Erfolgsquote bei 57%.
+        dev_member_ids = set(DEPARTMENT_DEFINITIONS["dev_lead"]["members"])
+        test_first_active = (
+            ENABLE_TEST_FIRST and "tester" in task_map and any(a in task_map for a in dev_member_ids)
+        )
+        scaffold_applied = False
+        self.last_integration_checkpoint_lines = []
         # Schneller Circuit Breaker (PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT, config.py): zählt
         # provider_exhausted-Fehlschläge IN FOLGE über die gesamte Fachbereichs-Hierarchie hinweg
         # (nicht nur innerhalb einer einzelnen Phase/Welle) - siehe Konstanten-Docstring für den
@@ -188,10 +204,39 @@ class DepartmentMixin:
                 notify(f"  ⏭️ [dim]{phase_label} bereits per Checkpoint abgeschlossen – übersprungen.[/dim]")
                 continue
 
-            member_ids = DEPARTMENT_DEFINITIONS[dept_id]["members"]
+            member_ids = list(DEPARTMENT_DEFINITIONS[dept_id]["members"])
+            if test_first_active and dept_id == "dev_lead":
+                member_ids.append("tester")
+            elif test_first_active and dept_id == "qa_lead":
+                member_ids = [m for m in member_ids if m != "tester"]
             member_tasks = [task_map[aid] for aid in member_ids if aid in task_map]
             if not member_tasks:
                 continue
+
+            remaining_after_this = [d for d, _, _, _ in PHASE_ORDER if d not in completed_phase_ids and d != dept_id]
+            if run_start_tokens is not None and not self._phase_budget_allows(dept_id, run_start_tokens, remaining_after_this):
+                notify(
+                    f"  ⏭️ [yellow]{phase_label} übersprungen:[/yellow] das verbleibende Generierungsbudget wird "
+                    "für Entwicklung, QA und Review gebraucht (PHASE_TOKEN_SHARES)."
+                )
+                self._trace_event("phase_skipped", phase_id=dept_id, reason="phase_budget")
+                continue
+
+            # Deterministisches Gerüst unmittelbar vor der Entwicklung (core/project_scaffold.py).
+            if dept_id == "dev_lead" and ENABLE_PROJECT_SCAFFOLD and enable_phase_checkpoint and not scaffold_applied and project_dir:
+                scaffold_applied = True
+                scaffold_context = self._apply_project_scaffold(project_dir, user_request, notify).format_for_agents()
+                if scaffold_context:
+                    for task in member_tasks:
+                        task.context += f"\n\n{scaffold_context}"
+            if test_first_active and dept_id == "dev_lead":
+                for task in member_tasks:
+                    if task.agent_id == "tester" and _TEST_FIRST_NOTE not in task.context:
+                        task.context += f"\n\n{_TEST_FIRST_NOTE}"
+
+            phase_start_tokens = token_guard.get_summary()["grand_total_tokens"]
+            phase_start_time = time.monotonic()
+            self._trace_event("phase_started", phase_id=dept_id, agents=[t.agent_id for t in member_tasks])
 
             lead = self._dept_leads[dept_id]
             notify(f"{icon} [bold cyan]{phase_label}[/bold cyan] (Geleitet von: {lead.name})...")
@@ -204,7 +249,12 @@ class DepartmentMixin:
             # kleinen Aufgabe fehlt der Abstimmungsbedarf, den Delegation+Konsolidierung
             # eigentlich rechtfertigt (siehe task_is_micro oben). Fachbereiche mit mehreren
             # Mitgliedern behalten die Teamleiter-Koordination IMMER.
-            skip_lead_layer = task_is_micro and len(member_tasks) == 1
+            # Der Test-First-tester arbeitet gegen den Vertrag und erzeugt keinen zusätzlichen
+            # Koordinationsbedarf - er zählt für die Lead-Entscheidung nicht mit.
+            coordinated_count = sum(
+                1 for t in member_tasks if not (test_first_active and dept_id == "dev_lead" and t.agent_id == "tester")
+            )
+            skip_lead_layer = (task_is_micro and coordinated_count == 1) or coordinated_count < DEPARTMENT_LEAD_MIN_MEMBERS
 
             # ── Echte Delegation durch den Teamleiter ──
             if ENABLE_DEPARTMENT_LEAD_EXECUTION and not skip_lead_layer:
@@ -235,7 +285,7 @@ class DepartmentMixin:
                         "übersprungen.[/yellow]"
                     )
             elif skip_lead_layer:
-                notify(f"  ℹ️ [dim]Kleine Aufgabe, einziges Mitglied – Delegation/Konsolidierung durch {lead.name} übersprungen.[/dim]")
+                notify(f"  ℹ️ [dim]{len(member_tasks)} Mitglied(er) – Delegation/Konsolidierung durch {lead.name} übersprungen (kein Abstimmungsbedarf).[/dim]")
 
             # ── Fachteam arbeitet (parallel oder sequentiell, je nach Phase) ──
             # Realer Fund: bei nur 1-2 Mitgliedern eines eigentlich "parallelen" Fachbereichs
@@ -374,6 +424,20 @@ class DepartmentMixin:
                 and not budget_aborted and not provider_exhausted_abort and not manually_cancelled
             ):
                 await self._run_entrypoint_preflight(project_dir, member_ids, all_results, file_owners, notify)
+                if ENABLE_INTEGRATION_CHECKPOINT and enable_phase_checkpoint:
+                    self.last_integration_checkpoint_lines = await self._run_integration_checkpoint(
+                        project_dir, all_results, file_owners, notify, run_start_tokens=run_start_tokens,
+                    )
+
+            self._trace_event(
+                "phase_finished",
+                phase_id=dept_id,
+                tokens=token_guard.get_summary()["grand_total_tokens"] - phase_start_tokens,
+                successes=sum(1 for r in member_results if r.success),
+                failures=sum(1 for r in member_results if not r.success),
+                duration_seconds=round(time.monotonic() - phase_start_time, 1),
+                files_written=sorted({f for r in member_results for f in (r.files_written or [])}),
+            )
 
             remaining_phase_ids = [d for d, _, _, _ in PHASE_ORDER if d not in completed_phase_ids and d != dept_id]
 

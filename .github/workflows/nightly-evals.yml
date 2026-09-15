@@ -1,0 +1,58 @@
+name: Nightly Regression Evals
+
+# Misst jede Nacht, ob das Team an den aus realen Fehlschlägen abgeleiteten Aufgaben
+# (evals/tasks.py, REGRESSION_TASKS) besser oder schlechter wird. evals/gate.py vergleicht den
+# Lauf mit dem Median der vorherigen Läufe; bei einer Regression schlägt der Job fehl.
+# Die Historie wird zwischen Läufen per Cache weitergegeben (evals/eval_history.json ist gitignored).
+
+concurrency:
+  group: nightly-evals
+  cancel-in-progress: false
+
+on:
+  schedule:
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  regression-evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      NOTIFY_WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK_URL }}
+      PYTHONIOENCODING: utf-8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Benchmark-Historie wiederherstellen
+        uses: actions/cache/restore@v4
+        with:
+          path: evals/eval_history.json
+          key: eval-history-${{ github.run_id }}
+          restore-keys: eval-history-
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Abhängigkeiten installieren
+        run: pip install -r requirements.txt
+
+      - name: Regressions-Suite ausführen
+        run: python main.py --eval --regression
+
+      - name: Benchmark-Historie sichern
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: evals/eval_history.json
+          key: eval-history-${{ github.run_id }}
+
+      - name: Eval-Gate (Regression = Fehlschlag)
+        run: python main.py --eval-gate

@@ -276,7 +276,10 @@ class EnvironmentMixin:
     # überhaupt prüft - das fehlende Manifest selbst meldet bereits _missing_dependency_manifest())
     # und weder `pytest-asyncio` noch `anyio` schon gelistet sind.
     def _ensure_async_test_manifest_entry(self) -> str:
+        # Test-Plugin -> requirements-dev.txt (nicht in die Produktions-Abhängigkeiten); beide
+        # Manifeste zählen bei der Prüfung, ob es bereits gelistet ist.
         requirements_txt = self.project_dir / "requirements.txt"
+        dev_requirements = self.project_dir / "requirements-dev.txt"
         if not requirements_txt.exists():
             return ""
         if not any(
@@ -286,17 +289,18 @@ class EnvironmentMixin:
             return ""
         try:
             content = requirements_txt.read_text(encoding="utf-8", errors="ignore")
+            dev_content = dev_requirements.read_text(encoding="utf-8", errors="ignore") if dev_requirements.exists() else ""
         except OSError as e:
             return f"⚠️ Konnte requirements.txt nicht auf pytest-asyncio/anyio prüfen: {e}"
-        if _ASYNC_TEST_DEPENDENCY_TOKEN_RE.search(content.lower().replace("_", "-")):
+        if _ASYNC_TEST_DEPENDENCY_TOKEN_RE.search((content + "\n" + dev_content).lower().replace("_", "-")):
             return ""
-        separator = "" if (not content or content.endswith("\n")) else "\n"
+        separator = "" if (not dev_content or dev_content.endswith("\n")) else "\n"
         try:
-            requirements_txt.write_text(content + separator + "pytest-asyncio\n", encoding="utf-8")
+            dev_requirements.write_text(dev_content + separator + "pytest-asyncio\n", encoding="utf-8")
         except OSError as e:
-            return f"⚠️ Konnte `pytest-asyncio` nicht deterministisch in requirements.txt eintragen: {e}"
+            return f"⚠️ Konnte `pytest-asyncio` nicht deterministisch in requirements-dev.txt eintragen: {e}"
         return (
-            "✅ `pytest-asyncio` deterministisch an requirements.txt angehängt - Projekt enthält "
+            "✅ `pytest-asyncio` deterministisch an requirements-dev.txt angehängt - Projekt enthält "
             "async-Tests, aber weder `pytest-asyncio` noch `anyio` waren im Dependency-Manifest "
             "gelistet."
         )

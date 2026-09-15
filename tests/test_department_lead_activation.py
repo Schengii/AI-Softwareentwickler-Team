@@ -11,6 +11,7 @@ per LLM-Call ausführen und deren echte Ergebnisse im Gesamtergebnis landen.
 
 import asyncio
 import unittest
+from unittest.mock import patch
 
 from agents.orchestrator import Orchestrator
 from core.message_bus import AgentTask
@@ -81,13 +82,16 @@ class TestDepartmentLeadActivation(unittest.TestCase):
             AgentTask(task_id="t1", agent_id="product_owner", description="Scope"),
             AgentTask(task_id="t2", agent_id="backend", description="API"),
         ]
-        results, file_owners, budget_aborted, _cancelled = asyncio.run(self.orchestrator._run_department_hierarchy(
-            user_request="Baue eine Todo-App",
-            task_summary="Todo-App mit Backend",
-            agent_tasks=agent_tasks,
-            project_dir=".",
-            notify=lambda msg: None,
-        ))
+        # Mechanismus-Test: Lead-Koordination auch für Ein-Personen-Fachbereiche erzwingen
+        # (Standard DEPARTMENT_LEAD_MIN_MEMBERS=2 überspringt sie dort bewusst, siehe unten).
+        with patch("agents.orchestrator.department.DEPARTMENT_LEAD_MIN_MEMBERS", 1):
+            results, file_owners, budget_aborted, _cancelled = asyncio.run(self.orchestrator._run_department_hierarchy(
+                user_request="Baue eine Todo-App",
+                task_summary="Todo-App mit Backend",
+                agent_tasks=agent_tasks,
+                project_dir=".",
+                notify=lambda msg: None,
+            ))
         self.assertFalse(budget_aborted)  # kein MAX_RUN_TOKENS in diesem Test konfiguriert
 
         result_agent_ids = [r.agent_id for r in results]
@@ -101,6 +105,24 @@ class TestDepartmentLeadActivation(unittest.TestCase):
         # Jeder Lead-Aufruf ist ein eigener, gezählter LLM-Call – kein Fake-Text.
         self.assertEqual(len(self.lead_llms["planning_lead"].calls), 2)
         self.assertEqual(len(self.lead_llms["dev_lead"].calls), 2)
+
+    def test_small_departments_skip_lead_coordination_by_default(self):
+        """Fachbereiche mit weniger als DEPARTMENT_LEAD_MIN_MEMBERS Mitgliedern arbeiten direkt:
+        Delegation + Konsolidierung kosten zwei LLM-Aufrufe ohne eigenen Code."""
+        agent_tasks = [
+            AgentTask(task_id="t1", agent_id="product_owner", description="Scope"),
+            AgentTask(task_id="t2", agent_id="backend", description="API"),
+        ]
+        with patch("agents.orchestrator.department.DEPARTMENT_LEAD_MIN_MEMBERS", 3):
+            results, _owners, _aborted, _cancelled = asyncio.run(self.orchestrator._run_department_hierarchy(
+                user_request="Baue eine Todo-App", task_summary="Todo-App", agent_tasks=agent_tasks,
+                project_dir=".", notify=lambda msg: None,
+            ))
+        result_agent_ids = [r.agent_id for r in results]
+        self.assertNotIn("planning_lead", result_agent_ids)
+        self.assertNotIn("dev_lead", result_agent_ids)
+        self.assertIn("backend", result_agent_ids)
+        self.assertEqual(len(self.lead_llms["dev_lead"].calls), 0)
 
 
 if __name__ == "__main__":

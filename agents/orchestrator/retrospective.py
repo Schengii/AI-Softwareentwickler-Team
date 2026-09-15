@@ -200,6 +200,7 @@ class RetrospectiveMixin:
                 verification_summary=verification_summary,
                 run_log_path=getattr(run_logger, "run_log_path", None),
                 verification_log_path=getattr(run_logger, "verification_log_path", None),
+                project_trace_path=getattr(run_logger, "project_trace_path", None),
             )
         except Exception as e:
             notify(f"  ⚠️ [dim yellow]Root-Cause-Analyse fehlgeschlagen: {e}[/dim yellow]")

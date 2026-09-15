@@ -54,6 +54,14 @@ _NICHE_AGENT_TRIGGERS: dict[str, tuple[str, ...]] = {
     "ml": ("machine learning", "ml-", "modelltraining", "neuronale", "klassifikation", "vorhersage", "ki-modell"),
     "data_engineer": ("etl", "datenpipeline", "data warehouse", "datenstrom", "ingest", "airflow"),
     "image_generator": ("bild", "grafik", "logo", "illustration", "icon"),
+    # Team-Verschlankung (Analyse 2026-09-15): `team_lead` überschneidet sich mit planning_lead +
+    # product_owner und wurde kaum gewählt; `performance` lag bei 67% Erfolgsquote und war laut
+    # Optimization-Advisor über 100 Läufe ungenutzt. Beide nur noch bei fachlichem Bedarf.
+    "team_lead": ("teamleiter", "engineering manager", "roadmap", "priorisier", "trade-off", "meilenstein"),
+    "performance": (
+        "performance", "last", "skalier", "latenz", "durchsatz", "hochverfügbar", "rate-limit",
+        "rate limit", "gateway", "benchmark", "concurrent", "gleichzeitig",
+    ),
 }
 
 
@@ -471,6 +479,12 @@ __AVAILABLE_AGENT_IDS__
 Wichtige Regeln:
 - Wähle NUR die zwingend erforderlichen Agenten aus (Token-Sparsamkeit)
 - Halte die Aufgabenbeschreibungen klar und fokussiert
+- Plane INKREMENTELL wie ein echtes Team: die Aufgabe von backend/frontend beginnt mit einem
+  lauffähigen Kern (Einstiegspunkt + ein vollständiger End-to-End-Pfad inkl. Test), erst danach
+  folgen weitere Features. Nenne in der backend-Aufgabe ausdrücklich, welcher Pfad zuerst
+  lauffähig sein muss - ein Budget-Abbruch soll immer einen startbaren Stand hinterlassen
+- Die tester-Aufgabe beschreibt die zu prüfenden Akzeptanzkriterien (Verhalten laut Auftrag und
+  interface_contract.json), damit die Tests parallel zur Implementierung entstehen können
 - code_reviewer bei Code-Generierung einschließen
 - tester einbeziehen, wenn echte Programmlogik entsteht (Funktionen/Klassen mit Verhalten,
   nicht nur Konfiguration/Text) - ausgelieferter Code ohne jeden Test ist nicht Ziel dieses Teams
@@ -493,9 +507,8 @@ Wichtige Regeln:
 - web_research einbeziehen, wenn ein neuer Tech-Stack gewählt wird (unbekannte Package-Versionen),
   Abhängigkeiten sich häufig ändern (FastAPI, Pydantic, Next.js, React) oder aktuelle Docs wichtiger
   sind als das LLM-Wissen - liefert verifizierte requirements.txt-Versionen via Tavily Live-Search
-- performance einbeziehen, sobald eine REST-API mit mehr als 3 Endpunkten entsteht oder ein Service
-  unter gleichzeitiger Last (>10 Nutzer) funktionieren muss - Locust/k6-Lasttests sind das pytest
-  für APIs und kein optionales Extra, sondern Qualitätsnachweis
+- performance (falls in der Liste angeboten) einbeziehen, wenn der Auftrag ausdrücklich Last,
+  Skalierung, Latenz oder Rate-Limiting verlangt - Locust/k6-Lasttests sind dann Qualitätsnachweis
 - accessibility einbeziehen, sobald HTML-Dateien oder React/Vue-Komponenten entstehen - WCAG 2.2
   ARIA-Attribute und Tastaturnavigation gehören genauso zur Fertigstellung wie Tests
 - finops einbeziehen, wenn externe APIs (OpenAI, Stripe, SendGrid) genutzt werden, die Hosting-

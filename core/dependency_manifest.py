@@ -73,6 +73,27 @@ def package_from_finding(text: str) -> str | None:
     return None
 
 
+DEV_MANIFEST_NAME = "requirements-dev.txt"
+
+
+def manifest_for_package(project_dir: Path, package: str, importing_file: str = "") -> Path | None:
+    """Ziel-Manifest für ein fehlendes Paket: Test-/Werkzeugpakete (siehe
+    core/known_pitfalls.DEV_ONLY_PACKAGES) und Pakete, die nur aus Testdateien importiert werden,
+    landen in `requirements-dev.txt` statt in den Produktions-Abhängigkeiten.
+
+    None, wenn das Projekt gar keine `requirements.txt` hat (dann wird nichts angelegt).
+    """
+    from core.known_pitfalls import is_dev_only_package, is_test_path
+
+    primary = primary_python_manifest(project_dir)
+    if primary is None:
+        return None
+    name = requirement_name(package) or package
+    if is_dev_only_package(name) or (importing_file and is_test_path(importing_file)):
+        return Path(project_dir) / DEV_MANIFEST_NAME
+    return primary
+
+
 def primary_python_manifest(project_dir: Path) -> Path | None:
     """requirements.txt im Projekt-Root, falls vorhanden – niemals neu angelegt (ein Projekt mit
     pyproject.toml/Poetry soll nicht still ein zweites Manifest bekommen)."""

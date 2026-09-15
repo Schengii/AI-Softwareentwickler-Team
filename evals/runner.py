@@ -35,6 +35,10 @@ class BenchmarkTaskResult:
     found_files: list[str] = field(default_factory=list)
     error: str = ""
     summary: str = ""
+    # Strukturierte Details für das Regressions-Gate (evals/gate.py): welche Prüfungen scheiterten
+    # und ob die Definition of Done erfüllt war.
+    failed_checks: list[str] = field(default_factory=list)
+    dod_done: bool = False
 
 
 @dataclass
@@ -96,8 +100,14 @@ class BenchmarkSuiteResult:
         return "\n".join(md)
 
 
-def save_benchmark_result(suite_result: BenchmarkSuiteResult, history_path: Path = EVALS_HISTORY_FILE) -> None:
-    """Speichert das Benchmark-Ergebnis in der JSON-Historie."""
+def save_benchmark_result(suite_result: BenchmarkSuiteResult, history_path: Path | None = None) -> None:
+    """Speichert das Benchmark-Ergebnis in der JSON-Historie.
+
+    Der Pfad wird erst beim Aufruf aufgelöst: als Default-Argument (`= EVALS_HISTORY_FILE`) war er
+    bereits beim Import gebunden - ein Test, der `evals.runner.EVALS_HISTORY_FILE` patcht, schrieb
+    dadurch trotzdem Fake-Ergebnisse in die echte Historie und verfälschte das Eval-Gate.
+    """
+    history_path = Path(history_path) if history_path is not None else EVALS_HISTORY_FILE
     history = []
     if history_path.exists():
         try:
@@ -174,6 +184,8 @@ async def run_single_task(
     total_tokens = 0
     error_msg = ""
     result_text = ""
+    failed_checks: list[str] = []
+    dod_done = False
 
     try:
         result_text = await orchestrator.process(task.prompt, status_callback=status_callback)
@@ -188,6 +200,10 @@ async def run_single_task(
         # durchfallen: 50 von 50 aufgezeichneten Läufen "bestanden". Jetzt wird das
         # STRUKTURIERTE Ergebnis des Orchestrators gelesen, nie wieder Report-Prosa geparst.
         verification_ok = bool(getattr(orchestrator, "last_verification_ok", False))
+        outcome = getattr(orchestrator, "last_verification_outcome", None)
+        failed_checks = list(getattr(outcome, "failed_checks", []) or []) if outcome is not None else []
+        dod = getattr(orchestrator, "last_definition_of_done", None)
+        dod_done = bool(getattr(dod, "is_done", False)) if dod is not None else False
         # `total_tokens` wurde zuvor mit 0 initialisiert und NIE zugewiesen - jeder
         # Benchmark-Report wies deshalb 0 Tokens aus (die Kennzahl war tot).
         total_tokens = sum(
@@ -231,6 +247,8 @@ async def run_single_task(
         found_files=found_files,
         error=error_msg,
         summary=result_text[:300] if result_text else error_msg,
+        failed_checks=[str(c) for c in failed_checks],
+        dod_done=dod_done,
     )
 
 

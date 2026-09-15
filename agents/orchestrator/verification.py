@@ -43,6 +43,7 @@ from agents.orchestrator.failure_diagnosis import (
     _record_verification_learning,
     _route_failure_owners,
 )
+from agents.orchestrator.verification_checks import CheckContext, run_informational_checks
 from config import (
     ENABLE_COMPLETENESS_CHECK,
     ENABLE_GOVERNANCE_FIX_LOOP,
@@ -57,7 +58,12 @@ from config import (
 )
 from core.backlog_store import get_ticket, upsert_ticket
 from core.decision_log import log_decision
-from core.dependency_manifest import add_requirement, package_from_finding, primary_python_manifest
+from core.dependency_manifest import (
+    add_requirement,
+    manifest_for_package,
+    package_from_finding,
+    primary_python_manifest,
+)
 from core.failure_triage import (
     KIND_MISSING_SYMBOL,
     blocking_failures_first,
@@ -76,6 +82,7 @@ from core.review_gate import (
     route_findings_to_owners,
 )
 from core.team_memory import record_lesson
+from core.verification_outcome import VerificationOutcome, parse_install_exit_code
 from core.verifier import ProjectVerifier, VerificationReport
 
 # Team-Optimierung (root_cause_analysis, syncwave-Projekt, 2026-09-15): _build_browser_fix_task()
@@ -90,7 +97,11 @@ _BACKEND_CAUSED_BROWSER_ERROR_RE = re.compile(
     r"websocket handshake|'connection' header is missing|"
     r"failed to fetch|networkerror when attempting to fetch|"
     r"err_connection_refused|err_connection_reset|econnrefused|"
-    r"\bhttp 5\d\d\b",
+    r"\bhttp 5\d\d\b|"
+    # Chromes Standardformat ("the server responded with a status of 500") und API-Routen, die
+    # es serverseitig nicht gibt bzw. die Eingaben ablehnen (404/405/422 auf /api/...).
+    r"status of 5\d\d\b|\b5\d\d \((?:internal server error|bad gateway|service unavailable|gateway timeout)\)|"
+    r"/api/\S*\s+(?:404|405|422)\b",
     re.IGNORECASE,
 )
 
@@ -1380,6 +1391,7 @@ class VerificationMixin:
         feststeht, wie weit die Schleife intern schon mutiert hat; `verification_ok=False` macht
         den unvollständigen Verifikationsstatus sichtbar statt ihn zu verschleiern.
         """
+        self.last_verification_outcome = VerificationOutcome()
         try:
             return await self._run_verification_loop_impl(
                 project_dir, all_results, file_owners, notify,
@@ -1422,6 +1434,12 @@ class VerificationMixin:
         budget_aborted = False
         manually_cancelled = False
         verification_ok = False
+        outcome = getattr(self, "last_verification_outcome", None)
+        if not isinstance(outcome, VerificationOutcome):
+            outcome = VerificationOutcome()
+            self.last_verification_outcome = outcome
+        pre_flight_report = None
+        completeness_report = None
         # Bleibt None, wenn die Schleife unten (z.B. MAX_VERIFICATION_ITERATIONS<=0) nie
         # durchläuft - der Coverage-Check danach prüft explizit auf None, statt sich auf eine
         # garantierte Zuweisung zu verlassen.
@@ -1571,24 +1589,29 @@ class VerificationMixin:
             # auditlog_sentinel 2026-09-10, dreimal derselbe Fehlerklasse) wird direkt in
             # requirements.txt eingetragen, OHNE einen LLM-Agenten zu beauftragen - schneller,
             # günstiger und ohne das Risiko einer parallelen Überschreibung des Manifests.
+            # Test-/Werkzeugpakete (pytest, locust, ...) bzw. Pakete, die nur aus Testdateien
+            # importiert werden, landen in requirements-dev.txt (core/dependency_manifest.
+            # manifest_for_package) - sonst blähen sie die Produktions-Abhängigkeiten auf.
             remaining_issues = list(pre_flight_report.issues)
             manifest = primary_python_manifest(project_dir) if project_dir else None
             if manifest is not None:
-                resolved_packages: list[str] = []
+                resolved_by_manifest: dict[str, list[str]] = {}
                 still_open: list[PreFlightIssue] = []
                 for issue in remaining_issues:
                     package = issue.issue_type == "missing_dependency" and package_from_finding(issue.suggestion)
-                    if not package:
+                    target = manifest_for_package(Path(project_dir), package, issue.file) if package else None
+                    if not package or target is None:
                         still_open.append(issue)
                         continue
                     try:
-                        add_requirement(manifest, package)
-                        resolved_packages.append(package)
+                        add_requirement(target, package)
+                        resolved_by_manifest.setdefault(target.name, []).append(package)
                     except (ValueError, OSError):
                         still_open.append(issue)
-                if resolved_packages:
-                    notify(f"  📦 [green]Deterministisch ergänzt:[/green] {', '.join(sorted(set(resolved_packages)))} in requirements.txt (kein LLM-Aufruf nötig).")
-                    summary_lines.append(f"- 📦 Versuch {attempt}: {len(resolved_packages)} fehlende Paket(e) deterministisch in requirements.txt ergänzt: {', '.join(sorted(set(resolved_packages)))}.")
+                for manifest_name, packages in sorted(resolved_by_manifest.items()):
+                    names = ", ".join(sorted(set(packages)))
+                    notify(f"  📦 [green]Deterministisch ergänzt:[/green] {names} in {manifest_name} (kein LLM-Aufruf nötig).")
+                    summary_lines.append(f"- 📦 Versuch {attempt}: {len(packages)} fehlende Paket(e) deterministisch in {manifest_name} ergänzt: {names}.")
                 remaining_issues = still_open
 
             agents_to_fix: dict[str, list[PreFlightIssue]] = {}
@@ -1637,11 +1660,23 @@ class VerificationMixin:
                 notify("  ⚠️ [yellow]Maximale Pre-Flight-Fixversuche erreicht – weiter mit der regulären Testsuite.[/yellow]")
                 summary_lines.append(f"- 🔍 ⚠️ Pre-Flight-Check nach {MAX_VERIFICATION_ITERATIONS} Versuchen weiterhin mit Funden – weiter mit der regulären Testsuite.")
 
+        if pre_flight_report is not None and not pre_flight_report.error:
+            outcome.record(
+                "pre_flight", pre_flight_report.passed,
+                "" if pre_flight_report.passed else f"{len(pre_flight_report.issues)} Fund(e)",
+            )
+
         notify("🧪 [bold cyan]Verifikation:[/bold cyan] Installiere Abhängigkeiten in isolierter Umgebung...")
         install_log = await asyncio.to_thread(verifier.ensure_environment)
         if install_log:
             notify(f"  📦 {install_log.splitlines()[0]}")
             summary_lines.append(f"- 📦 {install_log.splitlines()[0]}")
+        install_exit_code = parse_install_exit_code(install_log or "")
+        outcome.record(
+            "deps_install",
+            None if install_exit_code is None else install_exit_code == 0,
+            f"exit_code={install_exit_code}" if install_exit_code is not None else "",
+        )
 
         # Vorab-Check (statt Vollständigkeits-Check erst NACH der teuren Testsuite/Governance-
         # Schleife, siehe unten): ein fehlendes lokales Python-Modul (z.B. `app/models.py`, das
@@ -2230,6 +2265,17 @@ class VerificationMixin:
                     except Exception as e:
                         notify(f"  ⚠️ [dim yellow]Ticket für ungelösten Testfehler konnte nicht angelegt werden: {e}[/dim yellow]")
 
+        # Strukturiertes Testergebnis (core/verification_outcome.py): verification_ok spiegelt an
+        # dieser Stelle ausschließlich die Kern-Testsuite wider - nachgelagerte Prüfungen setzen es
+        # ggf. später zurück, ohne das Testergebnis selbst zu verfälschen.
+        if report is not None:
+            if report.ran or verification_ok:
+                outcome.record("tests", verification_ok, "" if verification_ok else f"{len(report.failures)} Testfehler")
+            elif not report.passed:
+                outcome.record("tests", False, report.reason_skipped or "")
+            else:
+                outcome.record("tests", None, report.reason_skipped or "keine Tests ausgeführt")
+
         # Echtes Deployment beginnt damit, dass das Projekt sich überhaupt containerisieren
         # lässt: ein generiertes Dockerfile, das nie tatsächlich baut, bringt niemanden näher
         # an ein echtes Ausrollen. Baut NIE `docker run`/einen echten Push/Deploy aus (würde
@@ -2240,6 +2286,7 @@ class VerificationMixin:
         if not (budget_aborted or manually_cancelled):
             docker_report = await asyncio.to_thread(verifier.check_docker_build)
             if docker_report.attempted:
+                outcome.record("docker_build", docker_report.success)
                 if docker_report.success:
                     notify("  🐳 [bold green]Docker-Image baut erfolgreich.[/bold green]")
                     summary_lines.append("- 🐳 Docker-Image baut erfolgreich (echter `docker build`).")
@@ -2268,6 +2315,8 @@ class VerificationMixin:
                     if fb_report.reason_skipped:
                         notify(f"  📦 [dim yellow]Frontend-Build ({fb_report.directory}): {fb_report.reason_skipped}[/dim yellow]")
                     continue
+                if outcome.status("frontend_build") is not False:
+                    outcome.record("frontend_build", fb_report.passed, "" if fb_report.passed else f"{fb_report.directory}: {fb_report.output[:300]}")
                 if fb_report.passed:
                     notify(f"  📦 [bold green]Frontend-Build ({fb_report.directory}) erfolgreich:[/bold green] `npm run build`.")
                     summary_lines.append(f"- 📦 Frontend-Build (`{fb_report.directory}`) erfolgreich (echter `npm run build`).")
@@ -2292,113 +2341,18 @@ class VerificationMixin:
                         self._update_file_owners(file_owners, fix_result)
                         all_results.extend(fix_result)
 
-        # Ersetzt die rein LLM-basierte Einschätzung des security-Agenten zu Abhängigkeits-
-        # Risiken durch einen echten Abgleich gegen eine öffentliche Advisory-Datenbank
-        # (pip-audit/npm audit) – kein Raten mehr, ob eine gepinnte Paketversion bekannte
-        # CVEs hat. Ein technischer Fehlschlag des Scans (Tool fehlt, kein Netzwerk zur
-        # Advisory-Datenbank) ist NIE ein Fehler, nur nicht prüfbar (attempted=False) und
-        # wird deshalb bewusst NICHT als "keine Schwachstellen" ausgegeben.
-        if not (budget_aborted or manually_cancelled):
-            audit_reports = await asyncio.to_thread(verifier.check_dependency_vulnerabilities)
-            for audit in audit_reports:
-                if not audit.attempted:
-                    continue
-                if audit.vulnerable:
-                    top = "; ".join(
-                        f"{v.package} {v.version} ({v.vulnerability_id})" for v in audit.vulnerabilities[:5]
-                    )
-                    if len(audit.vulnerabilities) > 5:
-                        top += f" … und {len(audit.vulnerabilities) - 5} weitere"
-                    notify(f"  🔓 [bold red]{audit.tool}: {len(audit.vulnerabilities)} bekannte Schwachstelle(n) in Abhängigkeiten.[/bold red]")
-                    summary_lines.append(f"- 🔓 ❌ {audit.tool}: {len(audit.vulnerabilities)} bekannte Schwachstelle(n) in Abhängigkeiten: {top}")
-                else:
-                    notify(f"  🔒 [bold green]{audit.tool}: keine bekannten Schwachstellen in Abhängigkeiten.[/bold green]")
-                    summary_lines.append(f"- 🔒 {audit.tool}: keine bekannten Schwachstellen in Abhängigkeiten gefunden.")
-
-        # Ersetzt die rein LLM-basierte Einschätzung des security-Agenten zu Schwachstellen
-        # im SELBST GESCHRIEBENEN Code (Freitext-Vermutungen ohne Datei/Zeile) durch einen
-        # echten statischen Scan (bandit für Python) – dasselbe Prinzip wie beim Dependency-
-        # Audit oben, nur für eigenen Code statt Fremdpakete. Rein informativ wie der
-        # Lint-Check, beeinflusst verification_ok nicht - ein SAST-Fund kann ein False
-        # Positive sein und braucht menschliche Einschätzung, anders als ein roter Test.
-        if not (budget_aborted or manually_cancelled):
-            sast_reports = await asyncio.to_thread(verifier.check_sast)
-            for sast in sast_reports:
-                if not sast.attempted:
-                    continue
-                if sast.vulnerable:
-                    top = "; ".join(
-                        f"{f.file_path}:{f.line_number} [{f.rule}/{f.severity}]" for f in sast.findings[:5]
-                    )
-                    if len(sast.findings) > 5:
-                        top += f" … und {len(sast.findings) - 5} weitere"
-                    notify(f"  🕵️ [bold red]{sast.tool}: {len(sast.findings)} potenzielle Sicherheits-Fund(e) im Code.[/bold red]")
-                    summary_lines.append(f"- 🕵️ ⚠️ {sast.tool}: {len(sast.findings)} potenzielle Sicherheits-Fund(e) im Code: {top}")
-                else:
-                    notify(f"  🕵️ [bold green]{sast.tool}: keine Sicherheits-Funde im Code.[/bold green]")
-                    summary_lines.append(f"- 🕵️ {sast.tool}: keine Sicherheits-Funde im Code (statischer Scan).")
-
-        # Ersetzt die rein LLM-basierte Lizenz-Tabelle des compliance-Agenten ("MIT/AGPL 🔴",
-        # geraten) durch einen echten Scan der tatsächlich installierten Paket-Lizenzen
-        # (pip-licenses). Rein informativ wie Lint/SAST, beeinflusst verification_ok nicht -
-        # ein Copyleft-Fund ist eine rechtliche Einschätzungsfrage (z. B. Nutzung als Library
-        # vs. verlinkt vs. modifiziert), kein automatisch behebbarer Codefehler.
-        if not (budget_aborted or manually_cancelled):
-            license_reports = await asyncio.to_thread(verifier.check_licenses)
-            for lic in license_reports:
-                if not lic.attempted:
-                    continue
-                if lic.has_copyleft_risk:
-                    copyleft_findings = [f for f in lic.findings if f.copyleft]
-                    top = "; ".join(f"{f.package} {f.version} ({f.license})" for f in copyleft_findings[:5])
-                    if len(copyleft_findings) > 5:
-                        top += f" … und {len(copyleft_findings) - 5} weitere"
-                    notify(f"  📜 [bold red]{lic.tool}: {len(copyleft_findings)} Copyleft-Lizenz(en) in Abhängigkeiten (GPL/LGPL/MPL/…).[/bold red]")
-                    summary_lines.append(f"- 📜 ⚠️ {lic.tool}: {len(copyleft_findings)} Copyleft-Lizenz(en) in Abhängigkeiten: {top}")
-                else:
-                    notify(f"  📜 [bold green]{lic.tool}: keine Copyleft-Lizenzen in Abhängigkeiten.[/bold green]")
-                    summary_lines.append(f"- 📜 {lic.tool}: keine Copyleft-Lizenzen in Abhängigkeiten gefunden ({len(lic.findings)} geprüft).")
-
-        # Erstmals überhaupt eine automatische Stil-/Fehlerprüfung für generierten Code -
-        # ruff.toml lief bisher NUR gegen den Framework-Code selbst (workspace/ dort bewusst
-        # ausgeschlossen). Python wird immer geprüft (ruff braucht keine Projekt-Konfiguration),
-        # ESLint/tsc nur, wenn das Projekt sie selbst bereits mitbringt (keine ungefragte
-        # Meinungsänderung an einem Projekt, das sich nie dafür entschieden hat). Rein
-        # informativ, beeinflusst verification_ok nicht - anders als ein Testfehler hat ein
-        # Lint-Fund oft keine unmittelbare Ein-Zeilen-Lösung.
-        # Fingerabdruck aller Lint-Funde dieses Laufs ("tool:datei:regel") - dient
-        # core/project_status.py.has_repeated_lint_finding() dazu, denselben, über mehrere
-        # Läufe unverändert bestehen bleibenden Lint-Fund zu erkennen (siehe Kommentar dort).
-        # self.last_lint_signature statt Erweiterung des Rückgabe-Tupels dieser Methode - hält
-        # bestehende Aufrufer/Tests, die die feste Tupel-Länge erwarten, unverändert.
+        # Informative Prüfschritte (Dependency-Audit, SAST, Lizenzen, Lint) - ausgelagert in
+        # agents/orchestrator/verification_checks.py; beeinflussen verification_ok nicht.
+        # last_lint_signature/last_lint_attempted: siehe core/project_status.has_repeated_lint_finding()
+        # und das automatische Schließen von recurring-lint-Tickets in agents/orchestrator/__init__.py.
         self.last_lint_signature: list[str] = []
-        # Team-Optimierung (Retrospektive, 2026-09-04): agents/orchestrator/__init__.py schließt
-        # ein offenes "recurring-lint-"-Ticket automatisch, sobald ein Lauf KEINE Lint-Funde mehr
-        # meldet (last_lint_signature leer) - das darf aber NICHT greifen, wenn Lint in diesem Lauf
-        # gar nicht erst lief (z.B. `ruff` auf diesem System nicht installiert, oder die Schleife
-        # wegen Budget/Abbruch übersprungen wurde). Ohne dieses Flag würde ein übersprungener Check
-        # fälschlich als "Fund behoben" durchgehen.
         self.last_lint_attempted: bool = False
         if not (budget_aborted or manually_cancelled):
-            lint_reports = await asyncio.to_thread(verifier.check_lint)
-            for lint in lint_reports:
-                if not lint.attempted:
-                    continue
-                self.last_lint_attempted = True
-                self.last_lint_signature.extend(
-                    f"{lint.tool}:{i.file_path}:{i.rule}" for i in lint.issues
-                )
-                if not lint.passed:
-                    top = "; ".join(
-                        f"{i.file_path}:{i.line_number} [{i.rule}]" for i in lint.issues[:5]
-                    )
-                    if len(lint.issues) > 5:
-                        top += f" … und {len(lint.issues) - 5} weitere"
-                    notify(f"  🎨 [bold yellow]{lint.tool}: {len(lint.issues)} Lint-Fund(e).[/bold yellow]")
-                    summary_lines.append(f"- 🎨 ⚠️ {lint.tool}: {len(lint.issues)} Lint-Fund(e): {top}")
-                else:
-                    notify(f"  🎨 [bold green]{lint.tool}: keine Lint-Funde.[/bold green]")
-                    summary_lines.append(f"- 🎨 {lint.tool}: keine Lint-Funde.")
+            check_ctx = await run_informational_checks(
+                CheckContext(verifier=verifier, outcome=outcome, notify=notify, summary_lines=summary_lines)
+            )
+            self.last_lint_signature = check_ctx.lint_signature
+            self.last_lint_attempted = check_ctx.lint_attempted
 
         # Vollständigkeits-Check: erkennt Stub-/Platzhalter-Code (z.B. "Hier würde die
         # Verschlüsselung erfolgen") und im README referenzierte, aber fehlende Dateien (z.B.
@@ -2511,6 +2465,12 @@ class VerificationMixin:
                     notify("  ⚠️ [yellow]Maximale Vollständigkeits-Fixversuche erreicht – letzter Stand wird übernommen.[/yellow]")
                     summary_lines.append(f"- 🧩 ⚠️ Nach {MAX_VERIFICATION_ITERATIONS} Versuchen weiterhin Stub-/Platzhalter-Funde – letzter Stand wurde übernommen.")
 
+        if completeness_report is not None and completeness_report.attempted:
+            outcome.record(
+                "completeness", bool(completeness_report.passed),
+                "" if completeness_report.passed else f"{len(completeness_report.issues)} Fund(e)",
+            )
+
         # Realer Fund bei einer Bestandsaufnahme des eigenen Teams: die Verifikation misst
         # bisher nur Pass/Fail, keine Abdeckung - ein Projekt mit 3 bestandenen Tests bei 500
         # Zeilen ungetestetem Code gilt genauso als "verifiziert" wie eines mit echter
@@ -2520,6 +2480,8 @@ class VerificationMixin:
         if not (budget_aborted or manually_cancelled) and MIN_TEST_COVERAGE > 0 and report is not None and report.ran and report.passed:
             coverage_report = await asyncio.to_thread(verifier.check_coverage)
             if coverage_report.attempted:
+                self.last_coverage_percent = coverage_report.percent
+                outcome.record("coverage", coverage_report.percent >= MIN_TEST_COVERAGE, f"{coverage_report.percent}%")
                 if coverage_report.percent >= MIN_TEST_COVERAGE:
                     notify(f"  📊 [bold green]Testabdeckung: {coverage_report.percent}%[/bold green] (Schwelle: {MIN_TEST_COVERAGE}%).")
                     summary_lines.append(f"- 📊 Testabdeckung: {coverage_report.percent}% (Schwelle von {MIN_TEST_COVERAGE}% erreicht).")
@@ -2580,6 +2542,7 @@ class VerificationMixin:
             budget_aborted = budget_aborted or sb_aborted
             manually_cancelled = manually_cancelled or sb_cancelled
             if smoke_report.attempted:
+                outcome.record("smoke", bool(smoke_report.passed), "" if smoke_report.passed else (smoke_report.output or "")[:300])
                 if smoke_report.passed:
                     code_info = f" (HTTP {smoke_report.status_code})" if smoke_report.status_code else ""
                     notify(f"  🚀 [bold green]Runtime-Smoke-Test erfolgreich:[/bold green] `{smoke_report.entrypoint}` [{smoke_report.app_type}]{code_info}.")
@@ -2643,6 +2606,7 @@ class VerificationMixin:
             budget_aborted = budget_aborted or lb_aborted
             manually_cancelled = manually_cancelled or lb_cancelled
             if perf_report.attempted:
+                outcome.record("load_test", bool(perf_report.passed))
                 stats = f"{perf_report.total_requests} Requests, {perf_report.failed_requests} fehlgeschlagen"
                 # isinstance() statt "is not None": ein Test, der ProjectVerifier komplett mockt,
                 # aber check_load_test() nicht explizit auf ein PerfCheckReport setzt (wie bei
@@ -2718,6 +2682,13 @@ class VerificationMixin:
             budget_aborted = budget_aborted or br_aborted
             manually_cancelled = manually_cancelled or br_cancelled
             if browser_report.attempted:
+                outcome.record(
+                    "browser_ui",
+                    bool(browser_report.passed),
+                    "" if browser_report.passed else "; ".join(
+                        browser_report.missing_assets + browser_report.console_errors
+                    )[:300],
+                )
                 if browser_report.passed:
                     if browser_report.engine == "playwright":
                         notify(f"  🌐 [bold green]Frontend/UI-Check erfolgreich:[/bold green] `{browser_report.tested_url}` [playwright, echter Browser-Lauf].")
@@ -2750,6 +2721,7 @@ class VerificationMixin:
         if not (budget_aborted or manually_cancelled):
             a11y_report = await asyncio.to_thread(verifier.check_accessibility)
             if a11y_report.attempted:
+                outcome.record("accessibility", bool(a11y_report.passed))
                 if a11y_report.passed:
                     notify(f"  ♿ [bold green]Accessibility-Check (axe-core) erfolgreich:[/bold green] `{a11y_report.tested_url}`.")
                     summary_lines.append(f"- ♿ Accessibility-Check (axe-core): `{a11y_report.tested_url}` keine WCAG-Verstöße.")

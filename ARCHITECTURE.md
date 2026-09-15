@@ -94,12 +94,14 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
    - **Komplexitäts-Skalierung**: Reine Micro-Tasks (z. B. einfache Bugfixes, Einzelfunktionen) laufen direkt und schlank ohne Teamleiter-Overhead.
 2. **Git-Worktree-Isolation (`core/git_isolation.py`)**:
    - Jeder Lauf operiert in einem isolierten Git-Worktree, um Datei-Kollisionen bei parallelen Läufen zu verhindern.
-3. **Phasenweise Ausführung (`agents/orchestrator.py`)**:
-   - **Phase 1 (Planung & Architektur)**: Anforderungsanalyse, Architecture Decision Records (ADRs), Spezifikation.
-   - **Phase 2 (Entwicklung)**: Parallele Erstellung von Backend-, Frontend-, Datenbank- und Schnittstellencode.
-   - **Phase 3 (Design & Content)**: UI/UX-Styles, Barrierefreiheit (WCAG 2.2), Mehrsprachigkeit, Dokumentation.
-   - **Phase 4 (Qualität & Sicherheit)**: Testsuite, Security-Audits, DevOps/Docker-Konfiguration.
-   - **Phase 5 (Review & Governance)**: Code-Review, Refactoring, Compliance-Check.
+3. **Phasenweise Ausführung (`agents/orchestrator/`)** – Reihenfolge wie in einem echten Team mit CI:
+   - **Planung & Architektur**: Anforderungsanalyse, ADRs, `interface_contract.json`.
+   - **Projektgerüst (`core/project_scaffold.py`)**: deterministisch vor der Entwicklung – Paketordner mit `__init__.py` laut Vertrag, `pytest.ini`, `requirements.txt`/`requirements-dev.txt` je Stack, `.env.example`. Überschreibt nie, erzeugt keine Implementierungs-Stubs, läuft nie im Framework-Repo.
+   - **Entwicklung + Test-First**: Entwickler und `tester` arbeiten parallel (Tests gegen Akzeptanzkriterien und Vertrag, `ENABLE_TEST_FIRST`). Jeder Entwickler durchläuft vor der Abgabe die **Übergabe-Prüfung** (`core/handoff_check.py`: Syntax, lokale Importe, fehlende `__init__.py`).
+   - **Integrations-Checkpoint** (`agents/orchestrator/integration.py`): direkt nach der Entwicklung Pre-Flight + deterministische Autofixes + genau eine gezielte Fix-Runde – bevor Content/QA auf kaputtem Code aufbauen.
+   - **Design & Content, Qualität & Security**: optionale Fachbereiche werden übersprungen, wenn ihr Budget-Anteil (`PHASE_TOKEN_SHARES`) die Kernphasen gefährden würde. Teamleiter koordinieren nur Fachbereiche mit mindestens `DEPARTMENT_LEAD_MIN_MEMBERS` Mitgliedern.
+   - **Echte Verifikation** (siehe 4.) – läuft auch nach einem Budget-Abbruch der Generierung (0 LLM-Tokens, ohne Fix-Agenten).
+   - **Review & Governance NACH der Verifikation** (`ENABLE_REVIEW_AFTER_VERIFICATION`): Reviewer sehen den echten Teststatus; Review-Fixes werden durch einen **Regressionstest** bestätigt.
 4. **Dynamische Verifikations-Schleife (`core/verifier.py`)**:
    - **Multi-Sprachen-Unterstützung**: Echte isolierte Testumgebungen für Python (`pytest`/`unittest`), Node/TS (`npm test`), Rust (`cargo test`) und Go (`go test`).
    - **Testabdeckungs-Messung**: Automatische Prüfung der Codeabdeckung (`pytest-cov`) gegen konfigurierte Schwellen (`MIN_TEST_COVERAGE`).
@@ -110,7 +112,9 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
    - **Lastentest (Smoke-Level)**: Startet die generierte App auf einem freien Port und führt einen kurzen k6-/Locust-Lasttest (`tests/load/`) ECHT dagegen aus – ersetzt den bisherigen Zustand, in dem der `performance`-Agent vollständige Lastentest-Skripte schrieb, die nie ausgeführt wurden.
    - **Accessibility-Scan (axe-core)**: Echter WCAG-2.x-Scan gegen eine per Playwright gerenderte Seite – ersetzt die bisherige LLM-Freitext-Checkliste des `accessibility`-Agenten durch geparste Verstöße mit Regel/Schweregrad/Element.
    - **Runtime Smoke-Check**: Teststart der Applikation im Subprozess (z. B. Uvicorn/FastAPI HTTP-Polling oder CLI-Help-Check), um sicherzustellen, dass die Anwendung tatsächlich hochfährt.
-   - **Gezielte Fix-Schleife**: Traceback-Parsing ermittelt die verursachenden Dateien und weist nur dem zuständigen Agenten einen gezielten Korrekturauftrag zu.
+   - **Gezielte Fix-Schleife**: Traceback-Parsing ermittelt die verursachenden Dateien und weist nur dem zuständigen Agenten einen gezielten Korrekturauftrag zu. Browser-Fehler mit Backend-Ursache (CORS, 5xx, WebSocket-Handshake, 404 auf `/api`) gehen an `backend`.
+   - **Strukturiertes Ergebnis (`core/verification_outcome.py`)**: jede Prüfung meldet `passed`/`failed`/`skipped`; Definition of Done und Status lesen diese Werte statt Markdown-Text. Die informativen Prüfungen (Audit, SAST, Lizenz, Lint) sind eigenständige Pipeline-Schritte (`agents/orchestrator/verification_checks.py`).
+   - **Ehrliche Definition of Done (`core/definition_of_done.py`)**: `is_done` ist nie `True`, wenn die Verifikation rot ist; Build, Installation, App-Start, Secrets (`core/secret_scanner.scan_directory`) und – bei beauftragtem Frontend – der UI-Check sind echte Kriterien.
 5. **Ergebnis-Synthese & Akzeptanzkriterien-Check (`core/result_aggregator.py`)**:
    - Zusammenfassung aller Fachberichte und mechanischer Abgleich mit den Given/When/Then-Akzeptanzkriterien.
 
@@ -134,6 +138,14 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
   - Parst Quelltext in einen typisierten AST-Index (`find_symbol_definition`, `find_symbol_references`, `analyze_code_impact`) für fehlerfreie Refactorings in großen Projekten.
 - **Run-Historie (`memory/run_history.py`)**:
   - Protokolliert Erfolgsquoten je Agent, Tokenverbrauch, Laufzeit und Verifikationsergebnisse.
+- **Projektlokaler Lauf-Trace (`core/run_trace.py`)**:
+  - `<projekt>/.ai_team_runs/<zeitstempel>_trace.jsonl` (Phasen, Agenten, Tokens, Werkzeugaufrufe, Dateien) und `<zeitstempel>_verification.md` (vollständiges Verifikationsprotokoll). Versioniert, auf 20 Läufe begrenzt; Grundlage der Root-Cause-Analyse.
+- **Zentrales Regelwerk (`core/known_pitfalls.py`)**:
+  - Einzige Quelle für Importname→Paket, transitive Pakete, Dev-Pakete, toxische Pakete, versteckte Laufzeit-Abhängigkeiten und den Stolperfallen-Katalog (auch als Prompt-Abschnitt für Agenten).
+- **Team-Lektionen mit Lebenszyklus (`core/team_memory.py`)**:
+  - Signatur je Lektion, Status `open → implemented → verified → archived`, Wiederholungszähler, automatische Verknüpfung mit dem Regelwerk (`/lessons`), Auswahl nach Relevanz je Agent statt nur nach Aktualität. Ein erneut auftretender Fehler öffnet eine erledigte Lektion wieder.
+- **Modell-A/B-Tests (`core/model_ab_trials.py`)**:
+  - Modell-Vorschläge laufen zuerst in `MODEL_AB_TRIAL_SHARE` der Läufe; Übernahme, Ablehnung oder Rücknahme nach `MODEL_AB_MIN_TRIAL_CALLS` echten Aufrufen. `.env`-Overrides haben immer Vorrang.
 - **Zentraler Backlog-Store (`core/backlog_store.py`)**:
   - Einheitliches Kanban-Board für Aufgaben aus CLI, Web-Dashboard, GitHub-Issues und Dependency-Watchern.
 - **GitHub PR-Review Feedback-Loop (`core/pr_review_watcher.py`)**:
@@ -142,6 +154,7 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
   - Automatische Generierung von Manifesten (`fly.toml`, `vercel.json`, `render.yaml`) und Bereitstellung weltweiter Preview-URLs.
 - **Benchmark- & Evaluations-Harness (`evals/`)**:
   - Kanonische Referenzaufgaben (`evals/tasks.py`) für reproduzierbare Qualitäts- und Regressionstests über `python main.py --eval`.
+  - Regressions-Suite aus realen Fehlschlägen (`python main.py --eval --regression`) und **Eval-Gate** (`python main.py --eval-gate`, `evals/gate.py`): Exit-Code 1 bei sinkender Erfolgsquote, gescheiterter Baseline-Aufgabe oder >25 % mehr Tokens. Nächtlich per `.github/workflows/nightly-evals.yml`.
 - **Periodischer Dependency-Watch (`core/dependency_watch.py`)**:
   - Automatische Überwachung aller Workspace-Projekte auf neue CVEs über `python main.py --check-dependencies`.
 

@@ -78,6 +78,15 @@ def _no_real_team_lesson_writes(monkeypatch):
     monkeypatch.setattr(
         "agents.orchestrator.record_unused_agent_tickets", lambda *a, **k: [], raising=False,
     )
+    monkeypatch.setattr("agents.orchestrator.start_trials_from_report", lambda *a, **k: [], raising=False)
+    monkeypatch.setattr(
+        "agents.orchestrator.evaluate_trials",
+        lambda *a, **k: {"promoted": [], "rejected": [], "rolled_back": []}, raising=False,
+    )
+    # Hängt Status-Ereignisse an die versionierte memory/team_lessons.jsonl an.
+    monkeypatch.setattr(
+        "agents.orchestrator.auto_link_lessons_to_rules", lambda *a, **k: [], raising=False,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -101,6 +110,30 @@ def _isolate_run_logs(_run_log_sandbox, monkeypatch):
     Test in ein temporäres Verzeichnis um."""
     monkeypatch.setattr("core.run_logger.RUN_LOGS_DIR", _run_log_sandbox / "runs")
     monkeypatch.setattr("core.run_logger.VERIFICATION_LOGS_DIR", _run_log_sandbox / "verification")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_team_lessons(tmp_path_factory, monkeypatch):
+    """core/team_memory.record_lesson() hängt bei Wiederholungen ein Ereignis an - viele Tests
+    lösen über process() Lektionen aus. Jeder Test arbeitet deshalb auf einer Kopie der echten,
+    versionierten memory/team_lessons.jsonl (Lesen bleibt realistisch, Schreiben ist folgenlos).
+    Tests, die TEAM_MEMORY_FILE selbst patchen, überschreiben diese Umleitung wie bisher."""
+    import shutil
+
+    import core.team_memory as team_memory
+
+    # Eigenes Verzeichnis statt tmp_path des Tests - manche Tests erwarten ihr tmp_path leer.
+    copy = tmp_path_factory.mktemp("team_lessons") / "team_lessons_copy.jsonl"
+    if team_memory.TEAM_MEMORY_FILE.exists():
+        shutil.copy(team_memory.TEAM_MEMORY_FILE, copy)
+    monkeypatch.setattr(team_memory, "TEAM_MEMORY_FILE", copy)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_model_ab_trials(_run_log_sandbox, monkeypatch):
+    """Ein echter memory/model_ab_trials.json auf dem Entwicklerrechner würde über
+    config.get_model_for_agent() zufällig Kandidatenmodelle in Modell-Routing-Tests einstreuen."""
+    monkeypatch.setattr("config.MODEL_AB_TRIALS_FILE", str(_run_log_sandbox / "model_ab_trials_absent.json"))
 
 
 @pytest.fixture(autouse=True)

@@ -19,6 +19,9 @@ class BenchmarkTask:
     expected_project_name: str
     expected_files: list[str] = field(default_factory=list)
     description: str = ""
+    # Aus welchen echten, fehlgeschlagenen workspace/-Läufen die Aufgabe abgeleitet ist - die
+    # Regressions-Suite misst genau die Fehlerklassen, an denen das Team real gescheitert ist.
+    derived_from: tuple[str, ...] = ()
 
 
 # Standard-Katalog der Referenzaufgaben
@@ -97,6 +100,64 @@ BENCHMARK_TASKS: dict[str, BenchmarkTask] = {
         description="Prüft UI/UX-Gestaltung, semantisches HTML und modernes Vanilla CSS/JS.",
     ),
 }
+
+# ── Regressions-Suite aus realen Fehlschlägen ───────────────────────────────────────────────
+# Die obigen Aufgaben sind deutlich einfacher als die echten Projekte, an denen das Team
+# scheiterte (35% nicht verifiziert). Diese Aufgaben bilden die dort beobachteten Fehlerklassen
+# nach, damit jede Framework-Änderung an ihnen gemessen wird (evals/gate.py).
+REGRESSION_TASKS: dict[str, BenchmarkTask] = {
+    "auth_task_api": BenchmarkTask(
+        slug="auth_task_api",
+        name="Aufgaben-API mit JWT-Auth und async SQLAlchemy (Regression)",
+        category="api",
+        prompt=(
+            "Erstelle im Ordner 'auth_task_api' eine FastAPI-Anwendung (app/main.py) mit async SQLAlchemy "
+            "und SQLite: Registrierung und Login per OAuth2PasswordRequestForm mit JWT-Token, geschützte "
+            "CRUD-Endpunkte für Aufgaben je Nutzer, Konfiguration über pydantic-settings, requirements.txt "
+            "und eine pytest-Testsuite mit async Tests für Login und Aufgaben-Endpunkte."
+        ),
+        expected_project_name="auth_task_api",
+        expected_files=["app/main.py", "requirements.txt", "pytest.ini"],
+        description="Deckt jwt/PyJWT, greenlet, python-multipart, pytest-asyncio und Paketstruktur ab.",
+        derived_from=("eventstream_zero", "nexusforge", "logipulse", "fastapi-task-mgmt"),
+    ),
+    "realtime_log_dashboard": BenchmarkTask(
+        slug="realtime_log_dashboard",
+        name="Log-Monitoring mit WebSocket-Dashboard (Regression)",
+        category="fullstack",
+        prompt=(
+            "Erstelle im Ordner 'realtime_log_dashboard' eine FastAPI-Anwendung (app/main.py), die Log-Events "
+            "per POST /api/logs annimmt, in SQLite speichert, per WebSocket /ws/logs live an ein statisches "
+            "HTML-Dashboard (static/index.html mit nativem Browser-WebSocket, ohne Socket.IO) streamt und "
+            "Kennzahlen unter GET /api/stats liefert. Mit requirements.txt und pytest-Tests inkl. WebSocket-Test."
+        ),
+        expected_project_name="realtime_log_dashboard",
+        expected_files=["app/main.py", "static/index.html", "requirements.txt"],
+        description="Deckt WebSocket-Handshake, Backend-verursachte UI-Fehler und Frontend-Auslieferung ab.",
+        derived_from=("syncwave", "devpulse", "nexus_resilience_gateway"),
+    ),
+    "resilient_gateway": BenchmarkTask(
+        slug="resilient_gateway",
+        name="API-Gateway mit Circuit Breaker und Rate-Limiting (Regression)",
+        category="api",
+        prompt=(
+            "Erstelle im Ordner 'resilient_gateway' ein FastAPI-API-Gateway (app/main.py), das Anfragen an "
+            "konfigurierbare Upstream-Dienste weiterleitet, pro Upstream einen Circuit Breaker und ein "
+            "Token-Bucket-Rate-Limit anwendet und den Zustand unter GET /api/health ausgibt. Upstreams in "
+            "Tests mit httpx.MockTransport simulieren. Mit requirements.txt und pytest-Tests."
+        ),
+        expected_project_name="resilient_gateway",
+        expected_files=["app/main.py", "requirements.txt"],
+        description="Deckt parallele Modul-Integration, Re-Exporte und Vertragskonsistenz ab.",
+        derived_from=("aethermesh", "nexus_resilience_gateway", "chronospulse"),
+    ),
+}
+BENCHMARK_TASKS.update(REGRESSION_TASKS)
+
+
+def list_regression_tasks() -> list[BenchmarkTask]:
+    """Die aus realen Fehlschlägen abgeleiteten Aufgaben (Standard-Suite für das Eval-Gate)."""
+    return list(REGRESSION_TASKS.values())
 
 
 def get_task(slug: str) -> BenchmarkTask:

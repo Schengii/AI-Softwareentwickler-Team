@@ -4,7 +4,7 @@ Budgets hinweg – das harte, globale Lauf-Budget (config.MAX_RUN_TOKENS) und da
 projektspezifische Kostenbudget aus `/constitution` (self._project_token_budget).
 """
 
-from config import MAX_RUN_TOKENS, VERIFICATION_TOKEN_RESERVE_RATIO
+from config import MAX_RUN_TOKENS, OPTIONAL_PHASE_IDS, PHASE_TOKEN_SHARES, VERIFICATION_TOKEN_RESERVE_RATIO
 from core.token_guard import token_guard
 
 
@@ -90,6 +90,33 @@ class BudgetMixin:
         reserve_ratio = min(max(VERIFICATION_TOKEN_RESERVE_RATIO, 0.0), 0.9)
         generation_ceiling = MAX_RUN_TOKENS * (1.0 - reserve_ratio)
         return cls._tokens_used_since(start_tokens) >= generation_ceiling
+
+    # Ein optionaler Fachbereich darf starten, solange danach noch mindestens dieser Anteil der
+    # Budget-Anteile aller noch folgenden Kern-Fachbereiche übrig bleibt. Nicht 1.0, weil Phasen
+    # ihren Anteil in der Praxis selten voll ausschöpfen.
+    _CORE_PHASE_SAFETY_FACTOR = 0.5
+
+    @classmethod
+    def _phase_budget_allows(cls, dept_id: str, start_tokens: int, remaining_phase_ids: list[str]) -> bool:
+        """Budget-Anteile je Fachbereich (config.PHASE_TOKEN_SHARES).
+
+        Kern-Fachbereiche (Planung, Entwicklung, QA, Review) laufen immer - ihr Stopp regelt
+        weiterhin `_generation_budget_exceeded()`. Ein OPTIONALER Fachbereich (Design, Content)
+        wird übersprungen, wenn sein eigener Anteil plus die Mindestreserve für die noch
+        folgenden Kern-Fachbereiche nicht mehr ins verbleibende Generierungsbudget passt -
+        vorher konnte Content-/Doku-Arbeit das Budget verbrauchen, das danach für QA und die
+        Verifikation fehlte (chronospulse: Tests liefen gar nicht).
+        """
+        if MAX_RUN_TOKENS <= 0 or dept_id not in OPTIONAL_PHASE_IDS:
+            return True
+        reserve_ratio = min(max(VERIFICATION_TOKEN_RESERVE_RATIO, 0.0), 0.9)
+        generation_ceiling = MAX_RUN_TOKENS * (1.0 - reserve_ratio)
+        remaining = generation_ceiling - cls._tokens_used_since(start_tokens)
+        core_shares = sum(
+            PHASE_TOKEN_SHARES.get(p, 0.0) for p in remaining_phase_ids if p not in OPTIONAL_PHASE_IDS
+        )
+        needed = (PHASE_TOKEN_SHARES.get(dept_id, 0.0) + core_shares * cls._CORE_PHASE_SAFETY_FACTOR) * generation_ceiling
+        return remaining >= needed
 
     def _generation_reserve_is_hard_abort(self, start_tokens: int) -> bool:
         """

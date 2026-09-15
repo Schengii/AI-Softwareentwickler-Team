@@ -51,7 +51,9 @@ def main():
     Mit `--eval [--tasks t1,t2]` startet die kanonische Benchmark-Evaluierungs-Suite
     (siehe evals/), misst Token-Verbrauch, Dauer und Verifikationsergebnis und speichert
     die Ergebnisse in der Benchmark-Historie. Mit `--list-evals` werden alle verfügbaren
-    Benchmark-Aufgaben aufgelistet.
+    Benchmark-Aufgaben aufgelistet. `--eval --regression` führt nur die aus realen Fehlschlägen
+    abgeleitete Regressions-Suite aus; `--eval-gate` vergleicht den jüngsten Lauf mit der
+    Baseline und beendet sich bei einer Regression mit Exit-Code 1 (siehe evals/gate.py).
     Mit `--audit-workspace` läuft EIN Poll-Zyklus, der ProjectVerifier.run_tests() erneut gegen
     JEDES vorhandene Workspace-Projekt ausführt (unabhängig von aktiver Entwicklung) und bei
     einem echten Fehlschlag ein Backlog-Ticket öffnet (siehe core/workspace_audit.py) – dasselbe
@@ -128,12 +130,22 @@ def main():
             print(f"  - {t.slug:<20} [{t.category:<8}] {t.name}: {t.description}")
         return
 
+    if "--eval-gate" in sys.argv:
+        from evals.gate import evaluate_gate, load_history
+
+        gate = evaluate_gate(load_history())
+        print(gate.format_report())
+        sys.exit(0 if gate.passed else 1)
+
     if "--eval" in sys.argv:
         import asyncio
 
         from evals.runner import run_benchmark
+        from evals.tasks import list_regression_tasks
 
         tasks_filter = None
+        if "--regression" in sys.argv:
+            tasks_filter = [t.slug for t in list_regression_tasks()]
         if "--tasks" in sys.argv:
             try:
                 tasks_raw = sys.argv[sys.argv.index("--tasks") + 1]

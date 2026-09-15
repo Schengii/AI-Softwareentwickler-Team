@@ -189,3 +189,31 @@ class TestEditableLearnings(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTopicSaturation:
+    """Analyse 2026-09-15: 6 von 10 frontend-Regeln sagten "Code per write_file statt im Chat"."""
+
+    def test_rephrased_rule_on_covered_topic_is_rejected_and_reported(self, tmp_path, monkeypatch):
+        from memory.agent_knowledge_base import AgentKnowledgeBase
+
+        reported: list[dict] = []
+        monkeypatch.setattr("core.team_memory.record_lesson", lambda **kw: reported.append(kw))
+        kb = AgentKnowledgeBase(file_path=tmp_path / "learnings.json")
+        kb.add_learning("frontend", "Gib niemals Code im Chat aus. Nutze ausnahmslos write_file oder edit_file.")
+        kb.add_learning("frontend", "Beende die Aufgabe nie mit reinem Text; schreibe UI-Artefakte zwingend per write_file physisch.")
+        assert len(kb.get_learnings("frontend")) == 1
+        assert reported and reported[0]["category"] == "learning_saturated"
+
+    def test_consolidate_keeps_first_rule_per_topic(self, tmp_path):
+        import json
+
+        from memory.agent_knowledge_base import AgentKnowledgeBase
+
+        path = tmp_path / "learnings.json"
+        path.write_text(json.dumps({"frontend": [
+            "Nutze write_file statt Code im Chat.", "Andere Regel zu CSS-Pfaden.", "Code nie als Markdown ausgeben, immer write_file.",
+        ]}), encoding="utf-8")
+        kb = AgentKnowledgeBase(file_path=path)
+        assert kb.consolidate_topic_duplicates() == {"frontend": 1}
+        assert kb.get_learnings("frontend") == ["Nutze write_file statt Code im Chat.", "Andere Regel zu CSS-Pfaden."]

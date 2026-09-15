@@ -8,6 +8,7 @@ Speichert:
 """
 
 import json
+import logging
 import re
 from pathlib import Path
 
@@ -149,6 +150,34 @@ def _is_infrastructure_workaround(rule: str) -> bool:
     return bool(_INFRA_ERROR_MARKER_RE.search(rule) and _INFRA_REACTION_MARKER_RE.search(rule))
 
 
+# Themen, zu denen Umformulierungen dieselbe Aussage treffen, ohne genug Wörter zu teilen.
+# Analyse 2026-09-15: der frontend-Agent hatte 6 von 10 Regeln zu "Code per write_file statt im Chat"
+# und scheiterte trotzdem weiter - eine siebte Regel hilft nicht, sie verdrängt nur nützliche Regeln.
+# Eine Wiederholung wird deshalb als Team-Lektion "learning_saturated" gemeldet (Framework-Fix nötig).
+_RULE_TOPICS: dict[str, tuple[re.Pattern[str], ...]] = {
+    "code_via_tools": (
+        re.compile(r"write_file|edit_file|physisch", re.IGNORECASE),
+        re.compile(r"chat|\btext\b|markdown|textantwort|ausgeben|ausgabe", re.IGNORECASE),
+    ),
+    "pyjwt_package": (
+        re.compile(r"\bjwt\b", re.IGNORECASE),
+        re.compile(r"pyjwt", re.IGNORECASE),
+    ),
+    "pytest_asyncio": (
+        re.compile(r"pytest-asyncio|pytest_asyncio", re.IGNORECASE),
+        re.compile(r"async", re.IGNORECASE),
+    ),
+}
+
+
+def rule_topic(rule: str) -> str | None:
+    """Thema einer Regel aus _RULE_TOPICS (alle Muster müssen passen) oder None."""
+    for topic, patterns in _RULE_TOPICS.items():
+        if all(p.search(rule) for p in patterns):
+            return topic
+    return None
+
+
 def _is_semantic_duplicate(new_rule: str, existing_rules: list[str]) -> bool:
     """True, wenn `new_rule` einer bereits gespeicherten Regel semantisch stark ähnelt (Jaccard-
     Ähnlichkeit der Wortmengen >= _SIMILARITY_DEDUP_THRESHOLD) - verhindert Fast-Dubletten wie die
@@ -202,6 +231,11 @@ class AgentKnowledgeBase:
         if agent_id not in self._learnings:
             self._learnings[agent_id] = []
 
+        topic = rule_topic(clean_rule)
+        if topic and any(rule_topic(existing) == topic for existing in self._learnings[agent_id]):
+            self._report_saturated_topic(agent_id, topic, clean_rule)
+            return
+
         if clean_rule not in self._learnings[agent_id] and not _is_semantic_duplicate(
             clean_rule, self._learnings[agent_id]
         ):
@@ -218,6 +252,43 @@ class AgentKnowledgeBase:
                     break
                 _evict_least_valuable(rules)
             self._save()
+
+    @staticmethod
+    def _report_saturated_topic(agent_id: str, topic: str, rule: str) -> None:
+        """Eine erneute Regel zu einem bereits abgedeckten Thema zeigt: Prompt-Regeln wirken hier nicht."""
+        try:
+            from core.team_memory import record_lesson
+            record_lesson(
+                project_slug="_team",
+                category="learning_saturated",
+                detail=(
+                    f"Agent '{agent_id}' bekam erneut eine Regel zum Thema '{topic}', obwohl bereits eine existiert - "
+                    f"das Fehlverhalten wiederholt sich trotz Prompt-Regel. Framework-Fix statt weiterer Regel nötig. "
+                    f"Neue Regel: {rule[:200]}"
+                ),
+            )
+        except Exception as e:  # noqa: BLE001 - Meldung ist Zusatznutzen, das Speichern darf nie scheitern
+            logging.getLogger(__name__).warning("learning_saturated konnte nicht gemeldet werden: %r", e)
+
+    def consolidate_topic_duplicates(self) -> dict[str, int]:
+        """Behält je Agent und Thema nur die erste Regel. Liefert entfernte Regeln je Agent."""
+        removed: dict[str, int] = {}
+        for agent_id, rules in self._learnings.items():
+            seen: set[str] = set()
+            kept: list[str] = []
+            for rule in rules:
+                topic = rule_topic(rule)
+                if topic and topic in seen:
+                    continue
+                if topic:
+                    seen.add(topic)
+                kept.append(rule)
+            if len(kept) != len(rules):
+                removed[agent_id] = len(rules) - len(kept)
+                self._learnings[agent_id] = kept
+        if removed:
+            self._save()
+        return removed
 
     def get_learnings(self, agent_id: str) -> list[str]:
         """Gibt alle gelernten Regeln für einen Agenten zurück."""

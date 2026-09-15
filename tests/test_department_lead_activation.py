@@ -42,6 +42,10 @@ class _RecordingFakeLLM:
 
 class TestDepartmentLeadActivation(unittest.TestCase):
     def setUp(self):
+        # Diese Tests prüfen die LLM-Konsolidierung; Standard ist seit 2026-09-15 deterministisch.
+        patcher = patch("agents.orchestrator.department.ENABLE_LLM_DEPARTMENT_CONSOLIDATION", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.orchestrator = Orchestrator()
         for agent_id, agent in self.orchestrator._agents.items():
             agent._llm = _RecordingFakeLLM(agent_id)

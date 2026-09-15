@@ -78,6 +78,7 @@ from agents.orchestrator.budget import BudgetMixin
 from agents.orchestrator.constants import PHASE_ORDER, REVIEW_ONLY_AGENT_IDS, PlanConfirmationCallback, StatusCallback
 from agents.orchestrator.department import DepartmentMixin
 from agents.orchestrator.dispatch import DispatchMixin
+from agents.orchestrator.efficiency import EfficiencyMixin
 from agents.orchestrator.integration import IntegrationMixin
 from agents.orchestrator.reporting import ReportingMixin
 from agents.orchestrator.retrospective import RetrospectiveMixin
@@ -172,6 +173,7 @@ class Orchestrator(
     RetrospectiveMixin,
     ReportingMixin,
     TeamCommunicationMixin,
+    EfficiencyMixin,
 ):
     """
     Hauptagent, der die 6 Fachbereichs-Teamleiter und deren 33 Spezialisten koordiniert.
@@ -390,6 +392,7 @@ class Orchestrator(
         Logger vor dem Lauf zurückgesetzt, damit frühe Agenten-Aufrufe nie in das Log des
         VORHERIGEN Laufs derselben Orchestrator-Instanz geschrieben werden."""
         self._run_logger = None
+        self._begin_efficiency_tracking()
         try:
             return await self._process_impl(
                 user_request, status_callback, forced_project_dir, plan_confirmation_callback, cancel_requested,
@@ -1535,6 +1538,7 @@ class Orchestrator(
             )
 
         provider_exhaustion_section = self._build_provider_exhaustion_report()
+        efficiency_section = self._build_efficiency_section(results)
         incomplete_project_banner = self._build_incomplete_project_banner(self.last_definition_of_done)
 
         final_output = (
@@ -1555,6 +1559,7 @@ class Orchestrator(
             f"{trainer_result.content if trainer_result else ''}\n\n"
             f"---\n\n"
             + (f"{optimization_section}\n\n---\n\n" if optimization_section else "")
+            + (f"{efficiency_section}\n\n---\n\n" if efficiency_section else "")
             + f"{stats_table}"
         )
 
@@ -1650,6 +1655,7 @@ class Orchestrator(
                     failed_agent_calls=sum(1 for r in results if not r.success),
                     provider_exhausted=bool(getattr(self, "_provider_exhausted_this_run", False)),
                     budget_aborted=self.last_budget_aborted,
+                    **self._efficiency_snapshot(results),
                 )
         except Exception:
             pass

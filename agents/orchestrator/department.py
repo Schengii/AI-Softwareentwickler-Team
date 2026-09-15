@@ -6,6 +6,7 @@ LLM-Aufruf delegieren, sein Fachteam parallel/sequenziell arbeiten und die Ergeb
 anschließend per weiterem LLM-Aufruf konsolidieren.
 """
 
+import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -17,8 +18,10 @@ from config import (
     DEPARTMENT_LEAD_MIN_MEMBERS,
     ENABLE_DEPARTMENT_LEAD_EXECUTION,
     ENABLE_INTEGRATION_CHECKPOINT,
+    ENABLE_LLM_DEPARTMENT_CONSOLIDATION,
     ENABLE_PROJECT_SCAFFOLD,
     ENABLE_TASK_COMPLEXITY_SCALING,
+    ENABLE_TEAM_BOARD,
     ENABLE_TEST_FIRST,
     PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT,
 )
@@ -592,6 +595,55 @@ class DepartmentMixin:
         )
         return await self._execute_and_log(lead, task)
 
+    def _deterministic_consolidation(
+        self, lead: DepartmentLeadAgent, member_results: list[AgentResult], project_dir: str,
+    ) -> AgentResult:
+        """Fachbereichsbericht ohne LLM aus echten Ergebnissen und Team-Board-Übergaben.
+
+        Analyse 2026-09-15: die LLM-Konsolidierung kostete je Lead 10k-18k Tokens und fasste im
+        Wesentlichen zusammen, was als strukturierte Daten ohnehin vorliegt.
+        """
+        succeeded = [r for r in member_results if r.success]
+        failed = [r for r in member_results if not r.success]
+        files = sorted({f for r in member_results for f in r.files_written})
+        open_issues: list[str] = []
+        requires: list[str] = []
+        unmet: list[tuple[str, str]] = []
+        if ENABLE_TEAM_BOARD and project_dir:
+            try:
+                from core.team_board import load_board, unmet_requirements
+
+                member_ids = {r.agent_id for r in member_results}
+                for handoff in load_board(project_dir).handoffs:
+                    if handoff.agent_id in member_ids:
+                        open_issues += [f"{handoff.agent_id}: {issue}" for issue in handoff.open_issues]
+                        requires += [f"{handoff.agent_id}: {req}" for req in handoff.requires]
+                unmet = [(a, r) for a, r in unmet_requirements(project_dir) if a in member_ids]
+            except Exception as e:  # noqa: BLE001 - Bericht bleibt auch ohne Board aussagekräftig
+                logging.getLogger(__name__).warning("Team-Board für Konsolidierung nicht lesbar: %r", e)
+        summary = (
+            f"{len(succeeded)}/{len(member_results)} Mitglieder erfolgreich, {len(files)} Datei(en), "
+            f"{len(open_issues)} offene Punkt(e), {len(unmet)} unerfüllte Anforderung(en)"
+        )
+        lines = [summary, "", f"### Fachbereichsbericht {lead.name} (deterministisch)"]
+        lines += [f"- ❌ {r.agent_name}: {(r.error or 'ohne Fehlertext')[:240]}" for r in failed]
+        if files:
+            lines.append("- Dateien: " + ", ".join(f"`{f}`" for f in files[:25]))
+        if requires:
+            lines.append("- Bedarf zwischen Kollegen: " + "; ".join(requires[:8]))
+        if unmet:
+            lines.append("- ⚠️ Unerfüllt: " + "; ".join(f"{a}: {r}" for a, r in unmet[:8]))
+        if open_issues:
+            lines.append("- Offen: " + "; ".join(open_issues[:8]))
+        return AgentResult(
+            task_id=f"{lead.department_id}_consolidate",
+            agent_id=lead.department_id,
+            agent_name=lead.name,
+            success=True,
+            content="\n".join(lines),
+            model_used="deterministisch",
+        )
+
     async def _run_department_consolidation(
         self,
         lead: DepartmentLeadAgent,
@@ -599,6 +651,8 @@ class DepartmentMixin:
         project_dir: str,
     ) -> AgentResult:
         """Lässt den Teamleiter die echten Ergebnisse seines Teams prüfen und konsolidieren."""
+        if not ENABLE_LLM_DEPARTMENT_CONSOLIDATION:
+            return self._deterministic_consolidation(lead, member_results, project_dir)
         results_text = self._format_results_for_review(member_results)
         task = AgentTask(
             task_id=f"{lead.department_id}_consolidate",

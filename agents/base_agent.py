@@ -20,8 +20,16 @@ import re
 import time
 from abc import ABC, abstractmethod
 
-from config import ENABLE_DEVELOPER_HANDOFF_GATE, MAX_AGENT_TOOL_ITERATIONS, MAX_HANDOFF_RETRIES
+from config import (
+    CONTEXT_COMPACTION_KEEP_ROUNDS,
+    CONTEXT_COMPACTION_MIN_CHARS,
+    ENABLE_CONTEXT_COMPACTION,
+    ENABLE_DEVELOPER_HANDOFF_GATE,
+    MAX_AGENT_TOOL_ITERATIONS,
+    MAX_HANDOFF_RETRIES,
+)
 from core.agent_toolbox import AgentToolbox
+from core.context_compaction import compact_tool_results
 from core.handoff_check import HANDOFF_GATE_AGENT_IDS, check_handoff
 from core.llm_factory import AgentMessage, GeminiClient, LLMFactory, LLMResponse
 from core.message_bus import AgentResult, AgentTask
@@ -250,6 +258,7 @@ class BaseAgent(ABC):
                 tool_calls_count=toolbox.call_count if toolbox else 0,
                 needs_human_input=bool(toolbox and toolbox.clarification_requests),
                 clarification_questions=list(toolbox.clarification_requests) if toolbox else [],
+                context_chars_compacted=toolbox.context_chars_compacted if toolbox else 0,
             )
 
         except Exception as e:
@@ -493,6 +502,11 @@ class BaseAgent(ABC):
                     ))
 
             allow_fallback = active_llm is self._llm
+            if ENABLE_CONTEXT_COMPACTION:
+                compaction = compact_tool_results(
+                    turns, keep_recent_rounds=CONTEXT_COMPACTION_KEEP_ROUNDS, min_chars=CONTEXT_COMPACTION_MIN_CHARS,
+                )
+                toolbox.context_chars_compacted += compaction.chars_saved
             try:
                 response = await active_llm.generate_with_tools(
                     turns, system_prompt, toolbox.tool_specs(), _allow_self_fallback=allow_fallback,

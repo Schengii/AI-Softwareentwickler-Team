@@ -61,6 +61,7 @@ class DispatchMixin:
         """
         result = await agent.execute(task)
         try:
+            self._note_agent_call(agent, result)
             run_logger = getattr(self, "_run_logger", None)
             if run_logger is not None:
                 run_logger.log_agent_result(

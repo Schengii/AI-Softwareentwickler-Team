@@ -350,6 +350,8 @@ class AgentToolbox:
         self.read_only = read_only
         self.files_written: set[str] = set()
         self.call_count = 0
+        # Von agents/base_agent.py gepflegt: eingesparte Zeichen durch Kontext-Verdichtung.
+        self.context_chars_compacted = 0
         self.call_log: list[dict[str, Any]] = []
         # Gefüllt von _tool_ask_human_for_clarification() - agents/base_agent.py liest das nach
         # dem Loop-Ende zurück in AgentResult.clarification_questions (dasselbe Muster wie

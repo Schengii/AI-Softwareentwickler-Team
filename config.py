@@ -997,6 +997,15 @@ TEAMMATE_QUESTIONS_PER_RUN: int = int(os.getenv("TEAMMATE_QUESTIONS_PER_RUN", "8
 TEAMMATE_QUESTIONS_PER_AGENT: int = int(os.getenv("TEAMMATE_QUESTIONS_PER_AGENT", "2"))
 TEAMMATE_ANSWER_TOOL_ITERATIONS: int = int(os.getenv("TEAMMATE_ANSWER_TOOL_ITERATIONS", "2"))
 
+# Kontext-Verdichtung im Werkzeug-Loop (core/context_compaction.py): große Werkzeug-Ergebnisse älter
+# als die letzten N Modell-Runden werden durch eine Vorschau ersetzt (~95 % der Tokens waren Prompt).
+ENABLE_CONTEXT_COMPACTION: bool = _env_flag("ENABLE_CONTEXT_COMPACTION", True)
+CONTEXT_COMPACTION_KEEP_ROUNDS: int = int(os.getenv("CONTEXT_COMPACTION_KEEP_ROUNDS", "2"))
+CONTEXT_COMPACTION_MIN_CHARS: int = int(os.getenv("CONTEXT_COMPACTION_MIN_CHARS", "1500"))
+# Fachbereichs-Konsolidierung per LLM (10k-18k Tokens je Lead) oder deterministisch aus Ergebnissen
+# und Team-Board-Übergaben (0 Tokens). Die Delegation zu Phasenbeginn bleibt ein LLM-Aufruf.
+ENABLE_LLM_DEPARTMENT_CONSOLIDATION: bool = _env_flag("ENABLE_LLM_DEPARTMENT_CONSOLIDATION", False)
+
 # ──────────────────────────────────────────
 # Obsidian Vault & Gedächtnis-Synchronisation (core/obsidian_sync.py)
 # ──────────────────────────────────────────

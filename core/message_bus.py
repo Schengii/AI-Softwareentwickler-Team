@@ -77,6 +77,8 @@ class AgentResult:
     # "provider_unavailable"). Realer Fund: ohne diese Trennung wurden 160 Kontingent-Ausfälle
     # als Qualitätsmängel der Agenten gewertet und flossen in die Selbstoptimierung ein.
     failure_class: str = ""
+    # Zeichen, die core/context_compaction.py im Werkzeug-Loop dieser Aufgabe eingespart hat.
+    context_chars_compacted: int = 0
 
 
 class MessageBus:

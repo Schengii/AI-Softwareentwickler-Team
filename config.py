@@ -975,6 +975,18 @@ MODEL_AB_TRIALS_FILE: str = os.path.join(MEMORY_DIR, "model_ab_trials.json")
 # trigger()), dessen Tokenkosten Nutzer per .env dennoch abschalten können.
 ENABLE_ROOT_CAUSE_ANALYST: bool = os.getenv("ENABLE_ROOT_CAUSE_ANALYST", "true").strip().lower() in ("true", "1", "yes")
 
+
+def _env_flag(name: str, default: bool) -> bool:
+    return os.getenv(name, "true" if default else "false").strip().lower() in ("1", "true", "yes")
+
+
+# ──────────────────────────────────────────
+# Team-Analyse 2026-09-15 (Teil 2): Kosten, Kommunikation, Überwachung
+# ──────────────────────────────────────────
+# Agent-Trainer nur bei echten Ausreißern statt nach jedem Lauf (vorher Schwelle 4000 Tokens).
+TRAINER_HIGH_USAGE_TOKENS_PER_CALL: int = int(os.getenv("TRAINER_HIGH_USAGE_TOKENS_PER_CALL", "150000"))
+TRAINER_MAX_TOOL_ITERATIONS: int = int(os.getenv("TRAINER_MAX_TOOL_ITERATIONS", "3"))
+
 # ──────────────────────────────────────────
 # Obsidian Vault & Gedächtnis-Synchronisation (core/obsidian_sync.py)
 # ──────────────────────────────────────────

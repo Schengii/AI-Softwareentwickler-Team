@@ -62,3 +62,6 @@ Thumbs.db
 
 # Runtime-SQLite-Dateien generierter Workspace-Projekte
 workspace/**/*.db
+
+# Sicherungskopien der Telemetrie-/Backlog-Hygiene (core/telemetry_hygiene.py)
+*.bak_*

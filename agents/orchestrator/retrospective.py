@@ -8,8 +8,10 @@ import json
 import re
 from collections.abc import Callable
 
+from config import TRAINER_HIGH_USAGE_TOKENS_PER_CALL, TRAINER_MAX_TOOL_ITERATIONS
 from core.message_bus import AgentResult, AgentTask
 from core.project_status import has_repeated_failure
+from core.provider_exhaustion import FAILURE_CLASS_PROVIDER_EXHAUSTED
 from core.team_memory import record_lesson
 
 # Team-Optimierung (Retrospektive 2026-09-07): agents/agent_trainer_agent.py wird angewiesen,
@@ -60,7 +62,7 @@ class RetrospectiveMixin:
             description="Erstelle eine ehrliche und konstruktive Retrospektive für dieses Projekt.",
             context=retro_context,
         )
-        return await retro_agent.execute(task)
+        return await self._execute_and_log(retro_agent, task)
 
     async def _run_agent_trainer_self_optimization(
         self,
@@ -73,8 +75,11 @@ class RetrospectiveMixin:
     ) -> AgentResult | None:
         trainer = self._agents.get("agent_trainer")
 
-        has_errors = any(not r.success for r in results)
-        high_usage = any(r.total_tokens > 4000 for r in results)
+        # Infrastruktur-Ausfälle (Kontingent erschöpft) sind kein Lernsignal für Prompts.
+        has_errors = any(not r.success and r.failure_class != FAILURE_CLASS_PROVIDER_EXHAUSTED for r in results)
+        # Früher `> 4000`: jeder Agent liegt real bei 10k-60k Tokens, der Trainer lief dadurch nach
+        # JEDEM Lauf (120k-146k Tokens, ~15 % des Laufs). Jetzt nur echte Ausreißer.
+        high_usage = any(r.total_tokens > TRAINER_HIGH_USAGE_TOKENS_PER_CALL for r in results)
 
         # Realer Fund (pulseflow_gateway, 20260911_095217): der Lauf schloss mit
         # verification_ok=true ab, obwohl KEIN einziger Agent auch nur eine Datei geschrieben
@@ -144,8 +149,9 @@ class RetrospectiveMixin:
             agent_id="agent_trainer",
             description="Analysiere die aufgetretenen Fehler/Ineffizienzen und liefere konkrete Prompt-Schärfungen zur Selbstoptimierung der Agenten.",
             context=context,
+            max_tool_iterations=TRAINER_MAX_TOOL_ITERATIONS,
         )
-        trainer_result = await trainer.execute(task)
+        trainer_result = await self._execute_and_log(trainer, task)
 
         if trainer_result and trainer_result.success and trainer_result.content:
             self._extract_and_store_learnings(trainer_result.content)

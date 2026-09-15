@@ -73,6 +73,20 @@ def main():
     verbrauch und Verifikations-Erfolgsquote der letzten N Tage, plus denselben liegengebliebenen
     Ticket-Block wie `--team-retro`.
     """
+    if "--clean-telemetry" in sys.argv:
+        from core.telemetry_hygiene import clean_eval_history, clean_run_history
+        dry_run = "--dry-run" in sys.argv
+        for label, cleaner in (("Lauf-Historie", clean_run_history), ("Benchmark-Historie", clean_eval_history)):
+            total, removed = cleaner(dry_run=dry_run)
+            verb = "würden entfernt" if dry_run else "entfernt (Sicherung *.bak_*)"
+            print(f"{label}: {removed} von {total} synthetischen Einträgen {verb}.")
+        return
+
+    if "--backlog-hygiene" in sys.argv:
+        from core.backlog_hygiene import run_backlog_hygiene
+        print(run_backlog_hygiene().format_summary())
+        return
+
     if "--sync-obsidian" in sys.argv:
         from core.obsidian_sync import sync_project_to_obsidian
         force = "--force" in sys.argv

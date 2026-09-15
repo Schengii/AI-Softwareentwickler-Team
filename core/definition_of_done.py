@@ -123,6 +123,42 @@ _WEB_ENTRYPOINT_CANDIDATES = (
     "src/index.js", "src/App.tsx", "src/App.jsx",
     "public/index.html", "static/index.html",
 )
+# Analyse 2026-09-15 (nexus_resilience_gateway): ein vollständiges, serverseitig ausgeliefertes
+# Dashboard unter `app/static/dashboard.html` wurde nicht erkannt, weil nur feste Dateinamen galten.
+# Jede nicht-leere HTML-Datei in einem typischen Auslieferungsordner zählt jetzt als geliefert.
+_SERVED_UI_DIR_NAMES = frozenset({"static", "public", "templates", "www", "frontend", "web", "ui"})
+_SERVED_UI_SKIP_DIRS = frozenset({"node_modules", ".venv", "venv", ".ai_team_venv", ".git", "dist", "build", "__pycache__"})
+MIN_SERVED_HTML_BYTES = 200
+
+
+def has_served_html_ui(project_dir: Path, max_depth: int = 3) -> bool:
+    """True, wenn eine nicht-triviale HTML-Datei in static/, public/, templates/ ... liegt (bis Tiefe 3)."""
+    root = Path(project_dir)
+    if not root.is_dir():
+        return False
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack:
+        current, depth = stack.pop()
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_dir():
+                if depth < max_depth and entry.name not in _SERVED_UI_SKIP_DIRS and not entry.name.startswith("."):
+                    stack.append((entry, depth + 1))
+            elif (
+                entry.suffix.lower() in (".html", ".htm")
+                and current.name.lower() in _SERVED_UI_DIR_NAMES
+            ):
+                try:
+                    if entry.stat().st_size >= MIN_SERVED_HTML_BYTES:
+                        return True
+                except OSError:
+                    continue
+    return False
+
+
 _BACKEND_HINT_KEYWORDS = (
     "api", "backend", "server", "endpoint", "rest", "gateway", "service",
     "fastapi", "flask", "django", "uvicorn", "webhook", "microservice",
@@ -415,7 +451,9 @@ def build_definition_of_done(
     # Kriterium prüft NUR dateibasiert (kein LLM/Browser nötig) und ist ausschließlich
     # `applicable`, wenn ein frontend-Agent tatsächlich eingeplant war (`frontend_planned`) -
     # ein Projekt ohne beauftragtes Frontend blockiert dadurch nie.
-    hat_web_entrypoint_datei = any((pfad / rel).is_file() for rel in _WEB_ENTRYPOINT_CANDIDATES)
+    hat_web_entrypoint_datei = (
+        any((pfad / rel).is_file() for rel in _WEB_ENTRYPOINT_CANDIDATES) or has_served_html_ui(pfad)
+    )
     kriterien.append(Criterion(
         key="missing_frontend_ui",
         label="Beauftragtes Frontend wurde tatsächlich geliefert",

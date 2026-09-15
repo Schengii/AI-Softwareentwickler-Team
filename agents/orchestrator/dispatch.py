@@ -49,11 +49,17 @@ class DispatchMixin:
                 content="",
                 error=f"Unbekannter Agent: '{task.agent_id}'",
             )
+        return await self._execute_and_log(agent, task)
+
+    async def _execute_and_log(self, agent, task: AgentTask) -> AgentResult:
+        """Führt einen Agenten-Aufruf aus und protokolliert ihn im Lauf-Log.
+
+        Zentraler Engpass ALLER Agenten-Aufrufe - auch Delegation/Konsolidierung der
+        Fachbereichsleiter, Retrospektive und Trainer. Analyse 2026-09-15: diese riefen
+        `execute()` direkt auf, im nexus_resilience_gateway-Trace fehlten dadurch 9 von 27
+        Aufrufen (~100k Tokens ohne Evidenz). Protokollierung darf einen Lauf nie gefährden.
+        """
         result = await agent.execute(task)
-        # Zentraler Engpass ALLER Agenten-Aufrufe – hier (und nur hier) wird jeder Aufruf für
-        # die spätere Diagnose persistiert. Zuvor existierte überhaupt kein Datei-Log
-        # (logs/ war leer), sodass ein im Hintergrund gescheiterter Lauf hinterher nicht mehr
-        # untersucht werden konnte. Protokollierung darf einen Lauf nie gefährden.
         try:
             run_logger = getattr(self, "_run_logger", None)
             if run_logger is not None:
@@ -61,8 +67,7 @@ class DispatchMixin:
                     result, requested_model=getattr(getattr(agent, "_llm", None), "model_name", ""),
                 )
         except Exception as e:
-            # Nie den Lauf gefährden - aber eine Telemetrie-Lücke muss sichtbar sein, sonst fehlen
-            # Agenten-Aufrufe lautlos in jeder späteren Auswertung (Framework-Analyse 2026-09-10).
+            # Eine Telemetrie-Lücke muss sichtbar sein, sonst fehlen Aufrufe lautlos in jeder Auswertung.
             logging.getLogger(__name__).warning(
                 "Agenten-Aufruf '%s' konnte nicht ins Lauf-Log geschrieben werden: %r", task.agent_id, e,
             )

@@ -30,7 +30,13 @@ from core.code_sandbox import CodeSandbox
 from core.dependency_manifest import add_requirement, merge_preserving_requirements
 from core.docker_sandbox import DockerSandbox
 from core.failure_triage import is_local_module, is_test_file, module_to_file, read_module_interface
-from core.write_guard import check_contract_preserved, check_write_scope, content_digest, file_versions
+from core.write_guard import (
+    check_contract_preserved,
+    check_path_plausible,
+    check_write_scope,
+    content_digest,
+    file_versions,
+)
 
 # Befehle, die Projektcode ausführen und deshalb bei aktiver Docker-Sandbox im Container laufen.
 # ruff/mypy/flake8/black analysieren nur statisch und bleiben lokal.
@@ -697,7 +703,7 @@ class AgentToolbox:
 
         target = self._resolve(path)
         clean_rel = self._relative(target)
-        rejection = check_write_scope(self.agent_id, clean_rel)
+        rejection = check_path_plausible(clean_rel) or check_write_scope(self.agent_id, clean_rel)
         if rejection:
             return {"error": rejection}
         merge_note = None

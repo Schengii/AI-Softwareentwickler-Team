@@ -26,6 +26,7 @@ import ast
 import fnmatch
 import hashlib
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -64,6 +65,34 @@ def check_write_scope(agent_id: str, rel_path: str) -> str | None:
         "selbst, sondern beschreibe die nötige Änderung (Datei, Symbol, gewünschtes Verhalten) klar in "
         "deinem Bericht – der zuständige Fachagent setzt sie um."
     )
+
+
+# ── 1b. Plausible Dateinamen ────────────────────────────────────────────────────────────────
+
+# Analyse 2026-09-15: im Projekt-Root von nexus_resilience_gateway lag eine Datei `asyncio.Lock`
+# mit Python-Code - ein Agent hatte einen Symbolnamen als Pfad übergeben. Solche Dateien werden
+# nie importiert/ausgeführt, der Code fehlt dann dort, wo er gebraucht wird.
+_ATTRIBUTE_LIKE_NAME = re.compile(r"^[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*\.[A-Z][A-Za-z0-9_]*$")
+_INVALID_PATH_CHARS = re.compile(r'[<>:"|?*]')
+
+
+def check_path_plausible(rel_path: str) -> str | None:
+    """Fehlermeldung für offensichtlich unsinnige Dateipfade – None bedeutet plausibel."""
+    path = rel_path.replace("\\", "/").strip("/")
+    if not path:
+        return "Leerer Dateipfad – gib einen relativen Pfad wie `app/main.py` an."
+    for part in path.split("/"):
+        if part != part.strip() or part.endswith("."):
+            return f"Ungültiger Pfadbestandteil '{part}' in '{path}' (Leerzeichen/Punkt am Rand)."
+        if _INVALID_PATH_CHARS.search(part) or any(ord(ch) < 32 for ch in part):
+            return f"Ungültige Zeichen im Dateipfad '{path}'."
+    name = path.rsplit("/", 1)[-1]
+    if _ATTRIBUTE_LIKE_NAME.match(name):
+        return (
+            f"'{name}' sieht wie ein Python-Symbol (Modul.Klasse) aus, nicht wie ein Dateiname. "
+            "Schreibe den Code in eine echte Moduldatei, z. B. `app/core/metrics.py`."
+        )
+    return None
 
 
 # ── 2. Schnittstellenschutz ─────────────────────────────────────────────────────────────────

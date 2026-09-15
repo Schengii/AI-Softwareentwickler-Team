@@ -551,6 +551,20 @@ class CLIInterface:
         report_path = self._write_run_report(result, ticket_id)
         self._last_report_path = str(report_path)
         verification_ok_short = getattr(self._orchestrator, "last_verification_ok", False)
+        # Ticket sofort nach dem Lauf finalisieren: endet die Sitzung vor dem Push-Dialog
+        # (Abbruch, nicht-interaktiver Aufruf, kein GitHub-Agent), blieb es sonst dauerhaft
+        # "in_progress" (Backlog-Analyse 2026-09-15: 10 solcher Tickets). Der Push-Dialog
+        # verfeinert den Status anschließend (review/done/blocked).
+        run_summary = getattr(self._orchestrator, "last_task_summary", None)
+        run_slug = getattr(self._orchestrator, "last_project_slug", None)
+        upsert_ticket(
+            ticket_id=ticket_id,
+            title=(run_summary if isinstance(run_summary, str) and run_summary else user_input)[:80],
+            source="cli",
+            status="done" if verification_ok_short is True else "blocked",
+            detail="" if verification_ok_short is True else f"Verifikation nicht bestanden – Protokoll: {report_path}"[:300],
+            project_slug=run_slug if isinstance(run_slug, str) and run_slug else None,
+        )
         status_icon = "✅" if verification_ok_short else "⚠️"
         status_text = "verifiziert" if verification_ok_short else "NICHT vollständig verifiziert"
         console.print()

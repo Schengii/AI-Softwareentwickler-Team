@@ -20,8 +20,10 @@ from pathlib import Path
 
 from config import BASE_DIR
 from core.provider_exhaustion import is_infrastructure_error, is_infrastructure_failure
+from core.telemetry_hygiene import should_skip_real_write
 
 RUN_HISTORY_FILE = Path(BASE_DIR) / "memory" / "run_history.json"
+_REAL_RUN_HISTORY_FILE = RUN_HISTORY_FILE
 MAX_RUNS_KEPT = 200
 
 
@@ -37,6 +39,9 @@ def record_run(
     core/project_status.py.record_run() – ein I/O-Fehler beim Schreiben darf einen sonst
     erfolgreichen Lauf nie zum Scheitern bringen (siehe _save()).
     """
+    # Testprozesse dürfen die echte Lern-Datenbasis nie verfälschen (core/telemetry_hygiene.py).
+    if should_skip_real_write(RUN_HISTORY_FILE, _REAL_RUN_HISTORY_FILE):
+        return
     runs = _load()
     runs.append({
         "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),

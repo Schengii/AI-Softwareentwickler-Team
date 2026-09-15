@@ -590,7 +590,7 @@ class DepartmentMixin:
             # (Standard 6) auszustatten, da es sich weiterhin um einen rein lesenden Aufruf handelt.
             max_tool_iterations=4,
         )
-        return await lead.execute(task)
+        return await self._execute_and_log(lead, task)
 
     async def _run_department_consolidation(
         self,
@@ -618,4 +618,4 @@ class DepartmentMixin:
             # dieselbe Begründung wie bei _run_department_delegation oben).
             max_tool_iterations=5,
         )
-        return await lead.execute(task)
+        return await self._execute_and_log(lead, task)

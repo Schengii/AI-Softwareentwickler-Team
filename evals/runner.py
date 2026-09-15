@@ -14,10 +14,12 @@ from datetime import datetime
 from pathlib import Path
 
 from agents.orchestrator import Orchestrator
+from core.telemetry_hygiene import should_skip_real_write
 from core.workspace import WorkspaceManager
 from evals.tasks import BenchmarkTask, get_task, list_tasks
 
 EVALS_HISTORY_FILE = Path(__file__).resolve().parent / "eval_history.json"
+_REAL_EVALS_HISTORY_FILE = EVALS_HISTORY_FILE
 StatusCallback = Callable[[str], None]
 
 
@@ -108,6 +110,8 @@ def save_benchmark_result(suite_result: BenchmarkSuiteResult, history_path: Path
     dadurch trotzdem Fake-Ergebnisse in die echte Historie und verfälschte das Eval-Gate.
     """
     history_path = Path(history_path) if history_path is not None else EVALS_HISTORY_FILE
+    if should_skip_real_write(history_path, _REAL_EVALS_HISTORY_FILE):
+        return
     history = []
     if history_path.exists():
         try:

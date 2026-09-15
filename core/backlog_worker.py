@@ -42,6 +42,7 @@ und die Abgrenzung zu einer echten Endlosschleife.
 """
 
 import asyncio
+import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -244,6 +245,20 @@ async def run_backlog_poll_cycle(
             f"(länger als {STALE_IN_PROGRESS_HOURS:.0f}h unverändert - vermutlich abgestürzter "
             f"Lauf) wieder aufgreifbar gemacht: {', '.join(recovered_stale_tickets)}."
         )
+
+    # Dubletten schließen und per Commit referenzierte Tickets erledigen (core/backlog_hygiene.py),
+    # damit der Worker keine bereits behobenen oder doppelten Tickets erneut bearbeitet.
+    try:
+        from core.backlog_hygiene import cancel_duplicates, close_tickets_referenced_in_commits, read_commit_messages
+        hygiene_closed = close_tickets_referenced_in_commits(list_tickets(), read_commit_messages())
+        hygiene_cancelled = cancel_duplicates(list_tickets())
+        if (hygiene_closed or hygiene_cancelled) and status_callback:
+            status_callback(
+                f"🧹 Backlog-Hygiene: {len(hygiene_closed)} per Commit erledigt, "
+                f"{len(hygiene_cancelled)} Dublette(n) geschlossen."
+            )
+    except Exception as e:  # Hygiene darf den Worker nie blockieren
+        logging.getLogger(__name__).warning("Backlog-Hygiene fehlgeschlagen: %r", e)
 
     if BACKLOG_WORKER_WIP_LIMIT > 0 and count_by_status("in_progress") >= BACKLOG_WORKER_WIP_LIMIT:
         report.skipped_reason = (

@@ -1022,6 +1022,9 @@ RED_PROJECT_REPAIR_PER_POLL: int = int(os.getenv("RED_PROJECT_REPAIR_PER_POLL", 
 # Agenten-Watchdog (core/agent_watchdog.py): greift live ein bei Lesen ohne Schreiben, wiederholtem
 # Neuschreiben, wiederholten Werkzeug-Fehlern, explodierendem Kontext und zu teuren Einzelaufgaben.
 ENABLE_AGENT_WATCHDOG: bool = _env_flag("ENABLE_AGENT_WATCHDOG", True)
+
+# Review-Paar Frontend ↔ Backend im Integrations-Checkpoint (core/contract_verifier.py).
+ENABLE_CONTRACT_REVIEW: bool = _env_flag("ENABLE_CONTRACT_REVIEW", True)
 WATCHDOG_MAX_PROMPT_TOKENS: int = int(os.getenv("WATCHDOG_MAX_PROMPT_TOKENS", "80000"))
 WATCHDOG_TASK_TOKEN_CAP: int = int(os.getenv("WATCHDOG_TASK_TOKEN_CAP", "250000"))
 

@@ -21,7 +21,8 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 
-from config import ENABLE_TEAM_BOARD
+from config import ENABLE_CONTRACT_REVIEW, ENABLE_TEAM_BOARD
+from core.contract_verifier import normalize_path, verify_api_contracts
 from core.decision_log import log_decision
 from core.dependency_manifest import add_requirement, manifest_for_package, package_from_finding
 from core.message_bus import AgentResult, AgentTask
@@ -39,6 +40,26 @@ _BLOCKING_ISSUE_TYPES = frozenset({
     "conflicting_sqlalchemy_engines", "module_level_event_loop_call", "hidden_runtime_dependency",
 })
 _FALLBACK_OWNERS = ("backend", "database", "frontend", "api_integration")
+
+
+def _is_contract_false_positive(mismatch, endpoints) -> bool:
+    """Dynamische Pfade (`${BASE_URL}${url}`) und Router-Präfixe (`/api/items` ↔ Route `/items`)."""
+    raw = (mismatch.frontend_call.raw_path or "").strip()
+    if not raw.startswith("/"):
+        return True
+    first_segment = raw.split("/")[1] if len(raw) > 1 else ""
+    if "${" in first_segment or first_segment.startswith("{"):
+        return True
+    if mismatch.mismatch_type != "MISSING_ENDPOINT":
+        return False
+    target = normalize_path(raw).strip("/").split("/")
+    for endpoint in endpoints:
+        route = endpoint.normalized_path.strip("/").split("/")
+        if route and len(route) < len(target) and all(
+            r == t or r == ":param" or t == ":param" for r, t in zip(route, target[-len(route):], strict=False)
+        ):
+            return True
+    return False
 
 
 class IntegrationMixin:
@@ -80,6 +101,7 @@ class IntegrationMixin:
         if not is_safe_project_dir(project_dir):
             return lines
         lines.extend(await self._check_team_board_requirements(project_dir, notify))
+        lines.extend(await self._run_frontend_backend_contract_review(project_dir, all_results, file_owners, notify, run_start_tokens))
         try:
             report = await asyncio.to_thread(run_pre_flight_check, project_dir)
         except Exception as e:  # noqa: BLE001 - Checkpoint ist Frühwarnung, kein Blocker
@@ -164,6 +186,62 @@ class IntegrationMixin:
         log_decision(project_dir, "integration_checkpoint", f"{len(blocking)} Befund(e) → {status}")
         self._trace_event("integration_checkpoint", passed=not remaining, issues=len(blocking), remaining=len(remaining))
         return lines
+
+    async def _run_frontend_backend_contract_review(
+        self,
+        project_dir: str,
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        notify: Callable[[str], None],
+        run_start_tokens: int | None,
+    ) -> list[str]:
+        """Review-Paar Frontend ↔ Backend: API-Aufrufe der UI gegen die echten Backend-Routen.
+
+        Analyse 2026-09-15: `core/contract_verifier.py` existierte, wurde in keinem Lauf aufgerufen.
+        Im nexus_resilience_gateway-Dashboard rief die UI `GET /metrics` ab, das Backend bot nur
+        `/health` an - aufgefallen ist das niemandem. Genau eine gezielte Fix-Runde an `backend`
+        (darf Routen UND UI-Aufrufe anpassen); dynamische Pfade und Router-Präfixe erzeugen keine Funde.
+        """
+        if not ENABLE_CONTRACT_REVIEW or "backend" not in self._agents:
+            return []
+        try:
+            report = await asyncio.to_thread(verify_api_contracts, project_dir)
+        except Exception as e:  # noqa: BLE001 - Review-Paar ist Frühwarnung, kein Blocker
+            logger.warning("API-Contract-Review fehlgeschlagen: %r", e)
+            return []
+        mismatches = [m for m in report.mismatches if not _is_contract_false_positive(m, report.endpoints)]
+        self._trace_event("contract_review", endpoints=report.endpoints_found, calls=report.frontend_calls_found, mismatches=len(mismatches))
+        if not mismatches:
+            return []
+        described = [
+            f"- [{m.mismatch_type}] {m.frontend_call.method} {m.frontend_call.raw_path} in {m.frontend_call.source_file}: "
+            f"{m.details}" + (f" Hinweis: {m.suggested_fix}" if m.suggested_fix else "")
+            for m in mismatches[:15]
+        ]
+        notify(f"  🤝 [bold yellow]Frontend↔Backend-Review:[/bold yellow] {len(mismatches)} API-Abweichung(en)")
+        if run_start_tokens is not None and (
+            self._generation_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+        ):
+            return [f"- 🤝 ⚠️ Frontend↔Backend-Review: {len(mismatches)} Abweichung(en), Fix-Runde wegen Budget übersprungen."]
+        task = AgentTask(
+            task_id="contract_review_fix_backend",
+            agent_id="backend",
+            description=(
+                "Review-Paar Frontend ↔ Backend: Die Oberfläche ruft API-Pfade auf, die das Backend so nicht anbietet. "
+                "Gleiche beide Seiten an: Gehört der Endpunkt zum Auftrag, implementiere ihn im Backend; ist es ein "
+                "falscher Pfad/eine falsche Methode im Frontend, korrigiere den Aufruf. Keine neuen Features darüber hinaus. "
+                "Kläre Unklarheiten per ask_teammate mit `frontend`.\n\n" + "\n".join(described)
+            ),
+            project_dir=project_dir,
+        )
+        results = await self._run_agents_parallel([task], notify=notify)
+        self._update_file_owners(file_owners, results)
+        all_results.extend(results)
+        after = await asyncio.to_thread(verify_api_contracts, project_dir)
+        remaining = [m for m in after.mismatches if not _is_contract_false_positive(m, after.endpoints)]
+        status = "behoben" if not remaining else f"{len(remaining)} offen"
+        log_decision(project_dir, "contract_review", f"{len(mismatches)} Abweichung(en) → {status}")
+        return [f"- 🤝 Frontend↔Backend-Review: {len(mismatches)} API-Abweichung(en) an backend → {status}."]
 
     async def _check_team_board_requirements(self, project_dir: str, notify: Callable[[str], None]) -> list[str]:
         """Gleicht die `requires`-Angaben der Übergaben mit dem echten Projektstand ab (core/team_board.py).

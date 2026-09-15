@@ -283,3 +283,39 @@ class TestTestDepthInVerificationLoop:
             assert orchestrator.last_verification_outcome.status("test_depth") is True
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
+
+
+class TestFrontendBackendContractReview:
+    """Analyse 2026-09-15: contract_verifier lief nie; das nexus-Dashboard rief GET /metrics ohne Backend-Route auf."""
+
+    def test_mismatch_dispatches_one_backend_fix_round(self, tmp_path):
+        from agents.orchestrator import Orchestrator
+        from core.message_bus import AgentResult
+
+        _write(tmp_path / "app" / "__init__.py")
+        _write(tmp_path / "app" / "main.py", "from fastapi import FastAPI\napp = FastAPI()\n\n@app.get('/health')\ndef health():\n    return {}\n")
+        _write(tmp_path / "static" / "index.html", "<script>fetch('/metrics').then(r => r.json())</script>")
+        orchestrator = Orchestrator()
+        dispatched: list = []
+
+        async def fake_parallel(tasks, notify=None):
+            dispatched.extend(tasks)
+            _write(tmp_path / "app" / "main.py", "from fastapi import FastAPI\napp = FastAPI()\n\n@app.get('/health')\ndef health():\n    return {}\n\n@app.get('/metrics')\ndef metrics():\n    return {}\n")
+            return [AgentResult(task_id=t.task_id, agent_id=t.agent_id, agent_name=t.agent_id, success=True, content="ok", files_written=["app/main.py"]) for t in tasks]
+
+        orchestrator._run_agents_parallel = fake_parallel
+        lines = asyncio.run(orchestrator._run_frontend_backend_contract_review(str(tmp_path), [], {}, lambda m: None, None))
+        assert [t.agent_id for t in dispatched] == ["backend"] and "/metrics" in dispatched[0].description
+        assert lines and "behoben" in lines[0]
+
+    def test_dynamic_paths_and_router_prefixes_are_not_findings(self):
+        from agents.orchestrator.integration import _is_contract_false_positive
+        from core.contract_verifier import ContractMismatch, Endpoint, FrontendApiCall
+
+        endpoints = [Endpoint(method="GET", path="/items/{item_id}", source_file="app/api.py")]
+        dynamic = ContractMismatch("MISSING_ENDPOINT", FrontendApiCall("GET", "${BASE_URL}${url}", "src/api.ts"), "x")
+        prefixed = ContractMismatch("MISSING_ENDPOINT", FrontendApiCall("GET", "/api/items/${id}", "src/api.ts"), "x")
+        real = ContractMismatch("MISSING_ENDPOINT", FrontendApiCall("GET", "/api/metrics", "static/index.html"), "x")
+        assert _is_contract_false_positive(dynamic, endpoints)
+        assert _is_contract_false_positive(prefixed, endpoints)
+        assert not _is_contract_false_positive(real, endpoints)

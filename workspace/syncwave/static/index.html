@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="de" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SyncWave - Live Log & Event Monitoring</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌊</text></svg>">
+</head>
+<body>
+    <div id="app" class="dashboard-layout">
+        <header class="top-nav">
+            <div class="brand">
+                <div class="logo-badge">🌊</div>
+                <div class="brand-titles">
+                    <h1>SyncWave</h1>
+                    <span class="sub-title">Microservice Event & Log Hub</span>
+                </div>
+            </div>
+
+            <div class="nav-status">
+                <div class="status-indicator-pill" id="connection-pill" role="status" aria-live="polite">
+                    <span class="status-dot disconnected" id="connection-dot"></span>
+                    <span class="status-text" id="connection-status">Verbinde...</span>
+                </div>
+                <button id="btn-pause-stream" class="btn btn-secondary btn-sm" title="Live-Stream pausieren">
+                    <span id="pause-icon" aria-hidden="true">⏸</span> <span id="pause-label">Pause</span>
+                </button>
+                <button id="btn-clear-logs" class="btn btn-ghost btn-sm" title="Lokale Ansicht leeren">
+                    🗑 Leeren
+                </button>
+            </div>
+        </header>
+
+        <section class="metrics-grid" aria-label="System-Kennzahlen">
+            <div class="metric-card">
+                <div class="metric-title">Gesamtevents</div>
+                <div class="metric-value" id="kpi-total-events">0</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-title">Fehlerquote (5 Min)</div>
+                <div class="metric-value error-rate" id="kpi-error-rate">0.0%</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-title">Durchsatz</div>
+                <div class="metric-value" id="kpi-rate">0.0 <span class="unit">evt/s</span></div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-title">Aktive Services</div>
+                <div class="metric-value" id="kpi-services-count">0</div>
+            </div>
+        </section>
+
+        <main class="content-area">
+            <section class="toolbar-panel">
+                <div class="filter-group">
+                    <label for="filter-search" class="visually-hidden">Volltextsuche</label>
+                    <input type="text" id="filter-search" placeholder="Suche in Message..." autocomplete="off">
+                </div>
+                <div class="filter-group">
+                    <label for="filter-service">Service:</label>
+                    <select id="filter-service"><option value="">Alle Services</option></select>
+                </div>
+                <div class="filter-group">
+                    <span id="level-label">Log-Level:</span>
+                    <div class="level-pills" id="level-filter-container" role="group" aria-labelledby="level-label">
+                        <button class="level-chip active" data-level="ALL">ALL</button>
+                        <button class="level-chip" data-level="INFO">INFO</button>
+                        <button class="level-chip" data-level="WARN">WARN</button>
+                        <button class="level-chip" data-level="ERROR">ERROR</button>
+                    </div>
+                </div>
+            </section>
+
+            <section class="feed-container">
+                <div class="log-stream" id="log-stream-view" role="log" aria-live="polite" aria-atomic="false" aria-relevant="additions">
+                    <!-- Logs werden hier dynamisch eingefügt -->
+                </div>
+            </section>
+        </main>
+
+        <div id="detail-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-service-name">
+            <div class="modal-panel">
+                <div class="modal-header">
+                    <h3 id="modal-service-name">Details</h3>
+                    <button id="modal-close-btn" aria-label="Schließen">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <pre id="modal-payload"></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="/static/app.js"></script>
+</body>
+</html>

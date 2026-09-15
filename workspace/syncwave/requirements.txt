@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+sqlalchemy
+aiosqlite
+pydantic
+pydantic-settings
+websockets
+pytest
+pytest-asyncio
+httpx
+pytest-cov
+locust
+starlette
+greenlet

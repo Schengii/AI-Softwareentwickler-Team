@@ -14,10 +14,12 @@ import os
 import re
 import signal
 import sys
+import tempfile
 import threading
 import time
 import traceback
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from rich import box
@@ -178,6 +180,7 @@ class CLIInterface:
         self._workspace = self._orchestrator.get_workspace_manager()
         self._loaded_project_dir: str | None = None  # von /load gesetzt, von /rag genutzt
         self._tasks_since_audit_reminder = 0
+        self._last_report_path: str | None = None  # zuletzt geschriebenes Lauf-Protokoll (_write_run_report)
         # Gesetzt/geleert bei jedem Lauf (siehe _process_task) - Grundlage für den
         # kooperativen Strg+C-Abbruch (Orchestrator.process(cancel_requested=...)).
         self._cancel_event = threading.Event()
@@ -401,6 +404,25 @@ class CLIInterface:
             except KeyboardInterrupt:
                 console.print("\n⏹️ [bold red]Lauf hart abgebrochen.[/bold red]", style="red")
 
+    def _write_run_report(self, result: str, ticket_id: str) -> Path:
+        """
+        Schreibt das vollständige Lauf-Ergebnis (Verifikations-Protokoll, Fehleranalyse etc.)
+        in eine temporäre Datei statt es als riesigen Panel-Block ins Terminal zu drucken.
+
+        Realer Fund: bei mehrstufigen Korrekturschleifen (Pre-Flight, Testfixes, Root-Cause-
+        Analyse) wurde `result` schnell mehrere hundert Zeilen lang und hat die Konsole bei
+        jedem Lauf komplett zugeschrieben - der eigentlich interessante Teil (bestanden/
+        gescheitert, Kernfehler) ging darin unter. Die Datei liegt im System-Temp-Verzeichnis,
+        damit sie das Repo/den Workspace nicht zumüllt; wer die Details braucht, bekommt nur
+        noch den Pfad angezeigt.
+        """
+        report_dir = Path(tempfile.gettempdir()) / "ki_team_reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_path = report_dir / f"{timestamp}_{ticket_id}.md"
+        report_path.write_text(result, encoding="utf-8")
+        return report_path
+
     def _install_cancel_handler(self):
         """
         Installiert für die Dauer EINES Laufs einen eigenen SIGINT-Handler und gibt den
@@ -522,11 +544,19 @@ class CLIInterface:
             finally:
                 signal.signal(signal.SIGINT, original_sigint_handler)
 
-        # Gesamtergebnis ausgeben
+        # Gesamtergebnis: volles Verifikations-Protokoll in eine temp. Datei statt in die
+        # Konsole - siehe _write_run_report() für den Hintergrund. Im Terminal bleibt nur ein
+        # kompakter Hinweis mit Erfolg/Misserfolg und dem Dateipfad für die Detailanalyse.
+        report_path = self._write_run_report(result, ticket_id)
+        self._last_report_path = str(report_path)
+        verification_ok_short = getattr(self._orchestrator, "last_verification_ok", False)
+        status_icon = "✅" if verification_ok_short else "⚠️"
+        status_text = "verifiziert" if verification_ok_short else "NICHT vollständig verifiziert"
         console.print()
         console.print(
             Panel(
-                Markdown(result),
+                f"{status_icon} Lauf abgeschlossen – Code {status_text}.\n"
+                f"📄 Vollständiges Protokoll (Verifikation, Fehleranalyse): [bold]{report_path}[/bold]",
                 title="[bold blue]🤖 Hauptagent (Geprüftes Gesamtergebnis)[/bold blue]",
                 border_style="blue",
                 padding=(1, 2),
@@ -694,9 +724,10 @@ class CLIInterface:
         # verifiziert. last_verification_ok (Orchestrator._run_verification_loop) macht den
         # Unterschied jetzt genau HIER sichtbar, wo eine irreversible Aktion (Push) ansteht.
         verification_ok = getattr(self._orchestrator, "last_verification_ok", False)
+        report_hint = f" (Details: {self._last_report_path})" if self._last_report_path else ""
         verification_note = (
             "\n\n[bold yellow]⚠️ Nicht verifiziert:[/bold yellow] Die echte Testsuite hat diesen "
-            "Code NICHT bestätigt bestanden (siehe Verifikations-Protokoll im Ergebnis oben)."
+            f"Code NICHT bestätigt bestanden{report_hint}."
             if not verification_ok else ""
         )
         # Realer Fund: Rückfragen (core/agent_toolbox.py.ask_human_for_clarification) passierten

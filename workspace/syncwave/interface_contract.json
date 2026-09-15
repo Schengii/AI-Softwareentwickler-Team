@@ -1,0 +1,25 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/db/database.py": {
+      "Base": "class",
+      "get_db": "function"
+    },
+    "app/db/models.py": {
+      "LogEvent": "class"
+    },
+    "app/services/connection_manager.py": {
+      "ConnectionManager": "class",
+      "manager": "instance"
+    },
+    "app/services/log_service.py": {
+      "LogService": "class"
+    },
+    "app/services/stats_service.py": {
+      "StatsService": "class"
+    }
+  }
+}

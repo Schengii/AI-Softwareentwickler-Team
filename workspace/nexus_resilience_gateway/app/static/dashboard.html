@@ -1,0 +1,37 @@
+<!-- app/static/dashboard.html -->
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Nexus Resilience Dashboard</title>
+    <style>
+        :focus-visible { outline: 3px solid #ffbf47; outline-offset: 2px; }
+        body { background: #121212; color: #e0e0e0; font-family: sans-serif; padding: 2rem; }
+    </style>
+</head>
+<body>
+    <header>
+        <nav aria-label="Hauptnavigation">
+            <h1>Nexus Resilience Gateway</h1>
+        </nav>
+    </header>
+    <main>
+        <section aria-labelledby="metrics-heading">
+            <h2 id="metrics-heading">Live-Metriken</h2>
+            <div aria-live="polite" id="metrics-container">
+                <p>Anfragen pro Sekunde: <span id="req-count">0</span></p>
+            </div>
+        </section>
+    </main>
+    <script>
+        async function updateMetrics() {
+            try {
+                const res = await fetch('/metrics');
+                const data = await res.json();
+                document.getElementById('req-count').textContent = data.total_requests;
+            } catch (e) { console.error("Fehler beim Laden der Metriken", e); }
+        }
+        setInterval(updateMetrics, 2000);
+    </script>
+</body>
+</html>

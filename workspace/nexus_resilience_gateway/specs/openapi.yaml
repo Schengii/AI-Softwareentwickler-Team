@@ -1,0 +1,123 @@
+openapi: 3.1.0
+info:
+  title: Nexus Resilience Gateway - Ingress & Webhook API
+  version: 1.0.0
+  description: >
+    Hochverfügbares API- & Webhook-Gateway mit automatischer Fehlertoleranz,
+    HMAC-SHA256 Signaturprüfung und striktem Replay-Schutz (Timestamp/Nonce).
+paths:
+  /api/v1/ingress/{path}:
+    post:
+      summary: Ingress Proxy & Webhook Receiver
+      description: >
+        Nimmt eingehende Webhook- und API-Requests entgegen, verifiziert die 
+        HMAC-SHA256 Signatur, validiert Timestamp/Nonce gegen Replay-Angriffe
+        und routet resilient zum Upstream-Ziel.
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Zielpfad für das dynamische Routing
+        - name: X-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+          description: "Hex-codierte HMAC-SHA256 Signatur: sha256=HEX_DIGEST"
+        - name: X-Timestamp
+          in: header
+          required: true
+          schema:
+            type: integer
+          description: Unix-Timestamp in Sekunden (Toleranzfenster +/- 300s)
+        - name: X-Nonce
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Eindeutige Nonce (UUIDv4 oder min. 16 alphanumerische Zeichen)
+        - name: X-Tenant-Key
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Mandanten-API-Key zur Auflösung des HMAC Secret Keys
+        - name: X-Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Eindeutiger Idempotenzschlüssel für Mutations-Anfragen
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Payload erfolgreich verifiziert und weitergeleitet
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  upstream_status:
+                    type: integer
+                    example: 200
+                  data:
+                    type: object
+        '400':
+          description: Ungültige Header oder fehlerhaft formatierter Timestamp/Nonce
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Signatur ungültig, Mandant unbekannt oder abgelaufener Timestamp
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Replay erkannt - Nonce wurde im Toleranzfenster bereits verwendet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate-Limit für Tenant überschritten
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Interner Gateway-Fehler oder Upstream DLQ-Absturz
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          example: REPLAY_ATTACK_DETECTED
+        message:
+          type: string
+          example: Nonce has already been consumed within the valid time window.
+        timestamp:
+          type: integer
+          example: 1717900000

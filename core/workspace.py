@@ -46,6 +46,20 @@ _PATTERN_FIRST_LINE_COMMENT = re.compile(
     r'```(?:[a-zA-Z0-9_\-]+)?\r?\n(?=#\s*([a-zA-Z0-9_\-]+(?:[./\\][a-zA-Z0-9_\-]+)*\.[a-zA-Z0-9]+)\s*\r?\n)(.*?)```',
     re.DOTALL
 )
+# `/goal`-Auftrag ("Hard Delivery Gate"-Optimierung, echter Fund nexus_resilience_gateway-Lauf):
+# der frontend-Agent lieferte fertigen HTML/JS-Code als Markdown-Codeblock, dessen Dateipfad
+# NICHT im etablierten "Datei:"/"File:"-Format (_PATTERN_EXPLICIT_FILE) davorstand, sondern in
+# den ebenfalls verbreiteten Konventionen `# Dateipfad: public/index.html`,
+# `<!-- public/index.html -->` oder `// File: app/main.py` unmittelbar VOR dem Fence. Keines
+# der bisherigen vier Muster erkannte das (_PATTERN_EXPLICIT_FILE verlangt zwingend das Wort
+# "Datei"/"File" gefolgt von ":", "Dateipfad" und der Kommentar-/HTML-Kommentar-Syntax passen
+# nicht). Dieses Muster deckt alle drei Header-Varianten in einer Regex ab.
+_PATTERN_COMMENT_STYLE_PATH = re.compile(
+    r'(?:^|\n)[ \t]*(?:#\s*Dateipfad:|//\s*File:|<!--\s*)\s*'
+    r'([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9]+)\s*(?:-->)?[ \t]*\r?\n'
+    r'[ \t]*```(?:[a-zA-Z0-9_\-]+)?\r?\n(.*?)```',
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 # Realer Fund in HookSentinel: der security-Agent brachte in seiner Review-Ausgabe ein
@@ -103,7 +117,7 @@ def _find_file_blocks(text_content: str) -> dict[str, str]:
     matches_found: dict[str, str] = {}
     for pattern in (
         _PATTERN_FENCE_COLON, _PATTERN_HEADER_FENCE, _PATTERN_EXPLICIT_FILE,
-        _PATTERN_FIRST_LINE_COMMENT,
+        _PATTERN_FIRST_LINE_COMMENT, _PATTERN_COMMENT_STYLE_PATH,
     ):
         for match in pattern.finditer(text_content):
             rel_path, content = match.group(1).strip(), match.group(2)
@@ -135,6 +149,21 @@ def text_has_extractable_file_blocks(text_content: str) -> bool:
     trotzdem einen rettbaren Codeblock enthält, NICHT als Fehlschlag zu werten.
     """
     return bool(_find_file_blocks(text_content))
+
+
+def extract_file_blocks(text_content: str) -> dict[str, str]:
+    """
+    Öffentlicher Zugriff auf die rohen Rel-Pfad -> Inhalt-Treffer aus `_find_file_blocks()`, für
+    Aufrufer, die den tatsächlichen Pfad+Inhalt brauchen (nicht nur das bool von
+    `text_has_extractable_file_blocks()`).
+
+    `/goal`-Auftrag ("Hard Delivery Gate"-Optimierung): agents/base_agent.py nutzt dies für den
+    Auto-Recovery-Parser, der einen erkannten Codeblock SOFORT über den validierten
+    write_file-Pfad speichert, statt den Turn nur als "theoretisch rettbar" zu markieren und die
+    tatsächliche Speicherung dem viel späteren, orchestrator-weiten Text-Fallback
+    (agents/orchestrator/__init__.py, AUTO_SAVE_WORKSPACE) zu überlassen.
+    """
+    return dict(_find_file_blocks(text_content))
 
 
 @dataclass

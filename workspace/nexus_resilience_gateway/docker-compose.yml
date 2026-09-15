@@ -1,0 +1,40 @@
+version: "3.8"
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nexus_resilience_gateway:latest
+    container_name: nexus_resilience_gateway
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=production
+      - HOST=0.0.0.0
+      - PORT=8000
+      - SQLITE_DB_PATH=/app/data/nexus_gateway.db
+      - LOG_LEVEL=info
+    volumes:
+      - gateway_data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+volumes:
+  gateway_data:
+    driver: local

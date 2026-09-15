@@ -10,6 +10,16 @@ gültiges, aber semantisch unvollständiges Python - core/workspace.py.parse_and
 prüft nur echte Syntaxfehler, nicht das). Ohne den Dateinamen im Bericht war bei einem
 späteren Lint-/Testfehler nicht erkennbar, welche der vielen Dateien überhaupt über diesen
 fehleranfälligeren Pfad statt eines echten write_file-Tool-Aufrufs entstanden ist.
+
+`/goal`-Auftrag ("Hard Delivery Gate"-Optimierung): der Fall "Agent liefert ALLES nur als
+Text, ruft NIE ein Werkzeug auf" (tool_calls_count: 0) wird inzwischen bereits VORHER von
+agents/base_agent.py._attempt_auto_recovery_save() abgefangen - dieser hier getestete,
+orchestrator-weite Text-Fallback (AUTO_SAVE_WORKSPACE) bleibt als zweite Sicherheitsebene für
+den davon verschiedenen Fall bestehen, dass ein Agent BEREITS mindestens eine Datei über ein
+echtes Werkzeug geschrieben hat (Hard Delivery Gate greift dann gar nicht erst) und ZUSÄTZLICH
+einen weiteren Codeblock für eine ANDERE Datei nur im Antworttext zurücklässt. Die Fixture
+unten bildet genau diesen zweiten Fall nach, statt des inzwischen vom Auto-Recovery-Parser
+bereits vorher gelösten ersten Falls.
 """
 
 import asyncio
@@ -19,23 +29,42 @@ import unittest
 from unittest.mock import patch
 
 from agents.orchestrator import Orchestrator
-from core.llm_factory import LLMResponse
+from core.llm_factory import LLMResponse, ToolCall
 from core.message_bus import AgentTask
 from core.verifier import VerificationReport
 from core.workspace import WorkspaceManager
 
 
 class _FakeToolCapableLLM:
-    def __init__(self, text: str):
-        self._text = text
+    """Liefert EINEN echten write_file-Tool-Aufruf (Hard Delivery Gate ist damit erfüllt,
+    der Auto-Recovery-Parser in base_agent.py kommt gar nicht erst zum Zug) UND lässt
+    zusätzlich einen zweiten Codeblock für eine ANDERE Datei nur im Antworttext zurück - genau
+    der Fall, für den der orchestrator-weite Text-Fallback (AUTO_SAVE_WORKSPACE) weiterhin
+    zuständig ist."""
+
+    def __init__(self, tool_written_path: str, tool_written_content: str, leftover_text: str):
+        self._tool_written_path = tool_written_path
+        self._tool_written_content = tool_written_content
+        self._leftover_text = leftover_text
         self.model_name = "fake-model"
+        self._call_index = 0
 
     async def generate_with_tools(self, messages, system_prompt, tools, _allow_self_fallback=True):
-        return LLMResponse(text=self._text, model_name=self.model_name,
+        self._call_index += 1
+        if self._call_index == 1:
+            return LLMResponse(
+                text="", model_name=self.model_name,
+                prompt_tokens=10, completion_tokens=5, total_tokens=15,
+                tool_calls=[ToolCall(
+                    id="call-1", name="write_file",
+                    arguments={"path": self._tool_written_path, "content": self._tool_written_content},
+                )],
+            )
+        return LLMResponse(text=self._leftover_text, model_name=self.model_name,
                             prompt_tokens=10, completion_tokens=5, total_tokens=15, tool_calls=[])
 
     async def generate_with_usage(self, prompt, system_prompt=None):
-        return LLMResponse(text=self._text, model_name=self.model_name,
+        return LLMResponse(text=self._leftover_text, model_name=self.model_name,
                             prompt_tokens=10, completion_tokens=5, total_tokens=15)
 
 
@@ -44,11 +73,14 @@ class TestTextFallbackReportVisibility(unittest.TestCase):
         self.temp_workspace = tempfile.mkdtemp()
         self.orchestrator = Orchestrator()
         self.orchestrator._workspace = WorkspaceManager(self.temp_workspace)
-        # Codeblock mit Datei-Pfad im Antworttext statt eines echten write_file-Tool-Aufrufs -
-        # genau der Pfad, den core/workspace.py.parse_and_save_files() abfängt.
-        fake_text = "```python:app/routes.py\nfrom fastapi import APIRouter\nrouter = APIRouter()\n```"
+        # Echter Tool-Aufruf für app/main.py (Hard Delivery Gate erfüllt) + ein zweiter
+        # Codeblock für app/routes.py NUR im Antworttext - genau der Pfad, den
+        # core/workspace.py.parse_and_save_files() (Text-Fallback) abfängt.
+        fake_leftover_text = "```python:app/routes.py\nfrom fastapi import APIRouter\nrouter = APIRouter()\n```"
         for agent in list(self.orchestrator._agents.values()) + list(self.orchestrator._dept_leads.values()):
-            agent._llm = _FakeToolCapableLLM(fake_text)
+            agent._llm = _FakeToolCapableLLM(
+                "app/main.py", "from fastapi import FastAPI\napp = FastAPI()\n", fake_leftover_text,
+            )
 
     def tearDown(self):
         shutil.rmtree(self.temp_workspace, ignore_errors=True)

@@ -14,6 +14,8 @@ Ein-Schuss-Aufruf über generate_with_usage() erhalten.
 """
 
 import json
+import logging
+import re
 import time
 from abc import ABC, abstractmethod
 
@@ -23,7 +25,9 @@ from core.llm_factory import AgentMessage, GeminiClient, LLMFactory, LLMResponse
 from core.message_bus import AgentResult, AgentTask
 from core.model_capability import min_tier_for_agent, pop_capability_floor, push_capability_floor
 from core.provider_exhaustion import FAILURE_CLASS_AGENT_ERROR, classify_failure, is_infrastructure_failure
-from core.workspace import text_has_extractable_file_blocks
+from core.workspace import extract_file_blocks, text_has_extractable_file_blocks
+
+logger = logging.getLogger(__name__)
 
 # Realer Fund aus einem echten Lauf: Groq (häufig der Fallback für HEAVY-Rollen ohne
 # ANTHROPIC_API_KEY, siehe config.py) lehnte einen rein lesenden Konsolidierungs-Aufruf
@@ -102,6 +106,35 @@ def _analysis_target_file_hint(agent_id: str) -> str:
 # CODE_WRITING_AGENT_IDS, da architect legitim Code-Fences für Mermaid-Diagramme liefert, ohne
 # dass "kein write_file aufgerufen" dort ein Problem wäre.
 _ADR_TEXT_MARKERS = ("Technologie-Entscheidung", "Architektur-Entscheidung", "ADR")
+
+# `/goal`-Auftrag ("Hard Delivery Gate"-Optimierung, echter Fund nexus_resilience_gateway-Lauf):
+# der frontend-Agent lieferte ein komplettes HTML-Dokument als reinen Markdown-Codeblock, ohne
+# jeden Dateipfad-Hinweis davor (kein "Datei:", kein "# Dateipfad:", ...) - core/workspace.py's
+# _find_file_blocks() erkennt so einen Block grundsätzlich NICHT, da ihm jeder Pfad-Anker fehlt.
+# Für GENAU diese eine Rolle ist der Zielpfad aber eindeutig erratbar: ein Fence, dessen Inhalt
+# mit einem vollständigen HTML-Dokument beginnt (<!DOCTYPE html> oder <html>), ist praktisch
+# immer die Haupt-UI-Seite.
+_GENERIC_FENCE_RE = re.compile(r'```([a-zA-Z0-9_\-]*)\r?\n(.*?)```', re.DOTALL)
+_HTML_DOCUMENT_MARKERS = ("<!doctype html", "<html")
+
+
+def _extract_recoverable_frontend_html(text: str) -> str | None:
+    """Erster Fence-Block in `text`, dessen Inhalt wie ein vollständiges HTML-Dokument aussieht -
+    None, wenn keiner gefunden wurde. Nur als LETZTE Rettungsstufe gedacht, wenn
+    `extract_file_blocks()` (mit explizitem Dateipfad-Anker) bereits leer zurückkam."""
+    for _lang, content in _GENERIC_FENCE_RE.findall(text):
+        lowered = content.strip().lower()
+        if lowered and any(lowered.startswith(marker) or f"\n{marker}" in lowered for marker in _HTML_DOCUMENT_MARKERS):
+            return content
+    return None
+
+
+def _frontend_html_target_path(toolbox: AgentToolbox) -> str:
+    """Zielpfad für einen so geretteten HTML-Block: folgt der bereits im Projekt etablierten
+    Konvention (`static/` vs. `public/`), statt blind IMMER denselben Pfad zu wählen."""
+    if (toolbox.project_dir / "static").is_dir():
+        return "static/index.html"
+    return "public/index.html"
 
 
 class BaseAgent(ABC):
@@ -243,6 +276,55 @@ class BaseAgent(ABC):
             )
         finally:
             pop_capability_floor(floor_tokens)
+
+    async def _attempt_auto_recovery_save(self, toolbox: AgentToolbox, response_text: str) -> list[str]:
+        """
+        Auto-Recovery-Parser (`/goal`-Auftrag "Hard Delivery Gate"-Optimierung, echter Fund
+        nexus_resilience_gateway-Lauf): der frontend-Agent (bei gemini-3.8-flash reproduzierbar
+        auch backend) lieferte über 8.000 Tokens fertigen Code als Markdown-Codeblock im
+        Antworttext, rief aber write_file/edit_file NIE auf (tool_calls_count: 0) - das Hard
+        Delivery Gate schlug daraufhin an, das Projekt schloss mit `missing_frontend_ui` und
+        `verification_ok: false` ab, obwohl der Code inhaltlich bereits fertig formuliert war.
+
+        Bisher wertete `text_has_extractable_file_blocks()` einen solchen Block nur als Signal,
+        den finalen Fehlschlag NICHT zu setzen - die tatsächliche Rettung passierte (wenn
+        überhaupt) erst viele Schritte später im orchestrator-weiten Text-Fallback
+        (agents/orchestrator/__init__.py, AUTO_SAVE_WORKSPACE), und NUR wenn `res.success` schon
+        true war. Diese Methode speichert den erkannten Code STATTDESSEN sofort über denselben
+        validierten write_file-Pfad wie ein echter Tool-Aufruf (inkl. Python-Syntax-/Manifest-
+        Prüfung, siehe AgentToolbox._tool_write_file) - `toolbox.files_written` zeigt den
+        geretteten Pfad direkt danach, der Turn gilt unmittelbar als erfolgreich, und der Hard
+        Delivery Gate feuert nicht mehr fälschlich für tatsächlich gelieferten Code.
+
+        Erkennt zwei Formate:
+        1. Ein Dateipfad-Anker direkt vor dem Codeblock (core/workspace.py.extract_file_blocks -
+           deckt u.a. "```python:app/main.py", "Datei: app/main.py", "# Dateipfad: ...",
+           "<!-- ... -->" und "// File: ..." ab).
+        2. NUR für den frontend-Agenten, wenn (1) nichts fand: ein Fence mit einem vollständigen
+           HTML-Dokument (<!DOCTYPE html>/<html>) ohne jeden Pfad-Hinweis - eindeutig als
+           public/index.html bzw. static/index.html identifizierbar (siehe
+           _frontend_html_target_path).
+        """
+        recovered_paths: list[str] = []
+        blocks = extract_file_blocks(response_text)
+        if not blocks and self.agent_id == "frontend":
+            html_content = _extract_recoverable_frontend_html(response_text)
+            if html_content:
+                blocks = {_frontend_html_target_path(toolbox): html_content}
+
+        for path, content in blocks.items():
+            result = await toolbox.dispatch("write_file", {"path": path, "content": content})
+            if "error" in result:
+                logger.warning(
+                    "[Auto-Recovery] Codeblock für '%s' aus Chat-Antwort erkannt, aber Speichern "
+                    "abgelehnt: %s", path, result["error"],
+                )
+                continue
+            recovered_paths.append(path)
+            logger.info(
+                "[Auto-Recovery] Code-Block aus Chat-Antwort extrahiert und als %s gespeichert.", path,
+            )
+        return recovered_paths
 
     async def _run_agentic_loop(
         self,
@@ -528,7 +610,7 @@ class BaseAgent(ABC):
                         ),
                     ))
                     continue
-                if (
+                gate_retry_exhausted = (
                     self.agent_id in CODE_WRITING_AGENT_IDS
                     and not toolbox.files_written
                     and not task.tools_read_only
@@ -537,6 +619,18 @@ class BaseAgent(ABC):
                         no_file_written_retry_used
                         or (iteration == hard_limit and max_iterations > 1 and not response.tool_calls)
                     )
+                )
+                if gate_retry_exhausted:
+                    # Auto-Recovery-Parser (`/goal`-Auftrag "Hard Delivery Gate"-Optimierung):
+                    # BEVOR das Gate unten endgültig als Fehlschlag markiert, wird versucht, den
+                    # im Antworttext erkannten Code SOFORT über den validierten write_file-Pfad
+                    # zu retten (siehe _attempt_auto_recovery_save-Docstring). Gelingt das,
+                    # ist `toolbox.files_written` danach nicht mehr leer und die folgende
+                    # Bedingung greift gar nicht erst.
+                    await self._attempt_auto_recovery_save(toolbox, response.text)
+                if (
+                    gate_retry_exhausted
+                    and not toolbox.files_written
                     and not text_has_extractable_file_blocks(response.text)
                 ):
                     # Hard Delivery Gate, zweite Stufe: der obige Korrektur-Hinweis wurde bereits
@@ -696,6 +790,9 @@ Du hast direkten Zugriff auf das Projektverzeichnis über Werkzeuge:
 - `edit_file`: Für punktuelle Änderungen an bestehenden Dateien (präziser Patch statt Neuerstellung).
 - `search_code`: Um relevante Stellen im Projekt zu finden, ohne jede Datei einzeln zu lesen.
 - `run_command` / `run_tests`: Um Abhängigkeiten zu installieren bzw. deine Änderungen wirklich zu verifizieren.
+
+**WICHTIG: Gib keinen Quellcode als reine Chat-Nachricht aus. Du MUSST das Werkzeug `write_file(path, content)`
+verwenden, um Code zu speichern. Code, der nur im Chat-Text steht, wird vom System verworfen.**
 
 Speichere Code IMMER direkt über write_file/edit_file im Projektverzeichnis – gib ihn nicht nur als Text in
 deiner Antwort aus. Schreibe NIEMALS Platzhalter wie `# ...`, `# Rest beibehalten` oder unvollständigen Pseudo-Code;

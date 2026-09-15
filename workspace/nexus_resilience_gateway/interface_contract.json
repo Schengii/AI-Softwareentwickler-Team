@@ -1,0 +1,28 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/core/security.py": {
+      "SecurityManager": "class",
+      "security_manager": "instance"
+    },
+    "app/resilience/circuit_breaker.py": {
+      "CircuitBreakerRegistry": "class",
+      "circuit_breaker_registry": "instance"
+    },
+    "app/resilience/rate_limiter.py": {
+      "TokenBucketLimiter": "class",
+      "rate_limiter": "instance"
+    },
+    "app/dlq/service.py": {
+      "DLQService": "class",
+      "dlq_service": "instance"
+    },
+    "app/monitoring/metrics.py": {
+      "MetricsCollector": "class",
+      "metrics_collector": "instance"
+    }
+  }
+}

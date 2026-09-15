@@ -4,6 +4,8 @@ mit präziser Token-Messung und automatischer Failover-Kette.
 """
 
 import asyncio
+import contextlib
+import contextvars
 import json
 import os
 import re
@@ -754,6 +756,32 @@ async def _cross_provider_failover_with_tools(
     return await GeminiClient(model_name=GEMINI_STANDARD_MODEL).generate_with_tools(messages, system_prompt, tools)
 
 
+# Erzwungener Werkzeug-Aufruf (Analyse 2026-09-15): der frontend-Agent lieferte 8.188 Completion-
+# Tokens Code als Chat-Text mit 0 Werkzeug-Aufrufen - trotz sechs gleichlautender Lernregeln.
+# agents/base_agent.py setzt diesen Kontext für Code-Rollen, solange noch keine Datei geschrieben
+# ist; alle Provider übersetzen ihn in ihr natives "Tool-Aufruf ist Pflicht" (Gemini mode=ANY,
+# OpenAI-kompatibel tool_choice="required", Anthropic tool_choice={"type": "any"}).
+_TOOL_CALL_REQUIRED: contextvars.ContextVar[bool] = contextvars.ContextVar("tool_call_required", default=False)
+
+
+def tool_call_required() -> bool:
+    return _TOOL_CALL_REQUIRED.get()
+
+
+def openai_tool_choice() -> str:
+    return "required" if tool_call_required() else "auto"
+
+
+@contextlib.contextmanager
+def require_tool_call(active: bool = True):
+    """Erzwingt für Aufrufe innerhalb des Blocks einen Werkzeug-Aufruf (sofern `active`)."""
+    token = _TOOL_CALL_REQUIRED.set(bool(active))
+    try:
+        yield
+    finally:
+        _TOOL_CALL_REQUIRED.reset(token)
+
+
 @dataclass
 class ToolCall:
     """Ein vom Modell angeforderter Werkzeug-Aufruf innerhalb des agentischen Loops."""
@@ -990,7 +1018,7 @@ class OpenRouterClient:
             "model": self.model_name if self.model_name != "auto" else "google/gemini-2.5-flash",
             "messages": _openai_build_messages(messages, system_prompt),
             "tools": _openai_build_tools(tools),
-            "tool_choice": "auto",
+            "tool_choice": openai_tool_choice(),
             "temperature": TEMPERATURE,
             "max_tokens": MAX_OUTPUT_TOKENS,
         }
@@ -1119,7 +1147,7 @@ class DeepSeekClient:
             "model": self.model_name,
             "messages": _openai_build_messages(messages, system_prompt),
             "tools": _openai_build_tools(tools),
-            "tool_choice": "auto",
+            "tool_choice": openai_tool_choice(),
             "temperature": TEMPERATURE,
             "max_tokens": MAX_OUTPUT_TOKENS,
         }
@@ -1221,6 +1249,10 @@ class GeminiClient:
             max_output_tokens=MAX_OUTPUT_TOKENS,
             system_instruction=system_prompt if system_prompt else None,
             tools=[genai_tool] if genai_tool else None,
+            tool_config=(
+                genai_types.ToolConfig(function_calling_config=genai_types.FunctionCallingConfig(mode="ANY"))
+                if genai_tool and tool_call_required() else None
+            ),
         )
 
         all_candidates = _resolve_gemini_candidates(self.model_name, _allow_self_fallback)
@@ -1738,7 +1770,7 @@ class GroqClient:
                 model=self.model_name,
                 messages=_openai_build_messages(messages, system_prompt),
                 tools=_openai_build_tools(tools),
-                tool_choice="auto",
+                tool_choice=openai_tool_choice(),
                 temperature=TEMPERATURE,
                 max_tokens=MAX_OUTPUT_TOKENS,
             )
@@ -2010,6 +2042,8 @@ class ClaudeClient:
             "messages": anthropic_messages,
             "tools": anthropic_tools,
         }
+        if anthropic_tools and tool_call_required():
+            kwargs["tool_choice"] = {"type": "any"}
         if system_prompt:
             kwargs["system"] = [
                 {

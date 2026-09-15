@@ -104,6 +104,9 @@ _F = TypeVar("_F", bound=_FailureLike)
 # ── Pfad-Helfer ────────────────────────────────────────────────────────────────────────────
 
 
+_NON_PYTHON_MODULE_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".vue", ".svelte", ".html", ".css", ".json")
+
+
 def _norm(path: str) -> str:
     return path.replace("\\", "/").strip()
 
@@ -259,6 +262,9 @@ def load_interface_contract(project_dir: Path | str | None) -> dict[str, dict[st
         if not isinstance(symbols, dict):
             continue
         key = _norm(str(key))
+        # Nicht-Python-Module (z. B. "src/core/GameLoop.ts") wurden bisher zu "src/core/GameLoop/ts.py".
+        if key.lower().endswith(_NON_PYTHON_MODULE_SUFFIXES):
+            continue
         file_key = key if key.endswith(".py") else key.replace(".", "/") + ".py"
         contract[file_key] = {str(name): str(kind).lower() for name, kind in symbols.items()}
     return contract

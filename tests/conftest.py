@@ -90,6 +90,13 @@ def _no_real_team_lesson_writes(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_workspace_repair_queue(monkeypatch):
+    """Der Backlog-Worker plant sonst rote Projekte aus dem ECHTEN workspace/ in das Test-Backlog ein
+    (core/red_project_repair.py) und bearbeitet sie vor dem eigentlich getesteten Ticket."""
+    monkeypatch.setattr("core.backlog_worker.RED_PROJECT_REPAIR_PER_POLL", 0, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _reset_gemini_rate_limiter():
     from core.llm_factory import _gemini_rate_limiter
     _gemini_rate_limiter._call_times.clear()

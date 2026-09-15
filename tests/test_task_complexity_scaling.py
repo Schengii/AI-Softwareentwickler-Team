@@ -131,7 +131,8 @@ class TestOrchestratorSkipsLeadLayerForMicroTasks(unittest.TestCase):
         ))
         result_agent_ids = [r.agent_id for r in results]
         self.assertEqual(result_agent_ids.count("dev_lead"), 2)  # Delegation + Konsolidierung
-        self.assertEqual(len(self.lead_llms["dev_lead"].calls), 2)
+        # Konsolidierung ist seit 2026-09-15 standardmäßig deterministisch (kein LLM-Aufruf).
+        self.assertEqual(len(self.lead_llms["dev_lead"].calls), 1)
 
     def test_flag_disabled_keeps_old_behavior_for_single_member_department(self):
         """Regressionsschutz: ENABLE_TASK_COMPLEXITY_SCALING=False muss exakt das alte

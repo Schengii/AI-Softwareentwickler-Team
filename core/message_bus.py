@@ -79,6 +79,8 @@ class AgentResult:
     failure_class: str = ""
     # Zeichen, die core/context_compaction.py im Werkzeug-Loop dieser Aufgabe eingespart hat.
     context_chars_compacted: int = 0
+    # Eingriffe des Agenten-Watchdogs (core/agent_watchdog.py) während dieser Aufgabe.
+    watchdog_events: list[str] = field(default_factory=list)
 
 
 class MessageBus:

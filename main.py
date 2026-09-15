@@ -82,6 +82,11 @@ def main():
             print(f"{label}: {removed} von {total} synthetischen Einträgen {verb}.")
         return
 
+    if "--queue-red-projects" in sys.argv:
+        from core.red_project_repair import queue_red_projects
+        print(queue_red_projects().format_summary())
+        return
+
     if "--backlog-hygiene" in sys.argv:
         from core.backlog_hygiene import run_backlog_hygiene
         print(run_backlog_hygiene().format_summary())

@@ -328,6 +328,7 @@ def build_definition_of_done(
     user_request: str = "",
     frontend_planned: bool = False,
     build_passes: bool | None = None,
+    test_depth_ok: bool | None = None,
     verification_ok: bool | None = None,
     failed_checks: list[str] | None = None,
 ) -> DefinitionOfDone:
@@ -434,6 +435,13 @@ def build_definition_of_done(
         passed=bool(ui_ok),
         required=frontend_planned,
         applicable=ui_ok is not None,
+    ))
+    kriterien.append(Criterion(
+        key="test_depth",
+        label="Die API-Routen werden in Tests tatsächlich aufgerufen",
+        passed=bool(test_depth_ok),
+        applicable=test_depth_ok is not None,
+        detail="" if test_depth_ok is not False else "zu viele Backend-Routen ohne Test (core/test_depth.py)",
     ))
     kriterien.append(Criterion(
         key="build_passes",

@@ -7,6 +7,57 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Team-Analyse 2026-09-15 (Teil 2): saubere Lerndaten, Team-Kommunikation, Token-Effizienz, Qualitäts-Gates
+
+Auswertung von 200 Läufen, allen Workspace-Projekten, Backlog, Lektionen und Eval-Historie. Befunde:
+nur 50/200 Läufe verifiziert, 61 Lauf- und 48/50 Benchmark-Einträge stammten aus Tests, ~95 % der
+Tokens waren Prompt-Tokens, der Agent-Trainer lief nach jedem Lauf (120k-146k Tokens), der
+frontend-Agent scheiterte trotz sechs gleichlautender Lernregeln am Hard Delivery Gate, Agenten
+konnten nicht miteinander sprechen, rote Projekte blieben liegen.
+
+**1 – Sofort-Fixes**
+- `core/telemetry_hygiene.py`: Testprozesse schreiben nie in die echte Lauf-/Benchmark-Historie;
+  `python main.py --clean-telemetry [--dry-run]` bereinigt Altlasten (Sicherung `*.bak_*`).
+- Agent-Trainer nur bei echten Fehlern, Schein-Erfolgen oder Ausreißern
+  (`TRAINER_HIGH_USAGE_TOKENS_PER_CALL`, vorher 4000), Provider-Erschöpfung ist kein Lernsignal.
+- Lead-Delegation/-Konsolidierung, Retrospektive und Trainer laufen über `_execute_and_log()` und
+  erscheinen im Lauf-Trace (vorher fehlten 9 von 27 Aufrufen).
+- DoD erkennt serverseitig ausgelieferte HTML-Dashboards (`has_served_html_ui`).
+- `write_guard.check_path_plausible()` lehnt Symbolnamen als Dateinamen ab (`asyncio.Lock`).
+- `core/backlog_hygiene.py` + `--backlog-hygiene`: hängende Tickets, Dubletten, `Closes: <id>` in
+  Commits; die CLI finalisiert das Lauf-Ticket direkt nach dem Lauf.
+
+**3 – Kommunikation**
+- `core/team_board.py` (`.ai_team_runs/team_board.json`): Übergabe-Notizen (provides/requires/
+  open_issues), Datei-Owner, Änderungen an fremden Dateien, Fragen im Team, Stand des
+  Schnittstellen-Vertrags. Jeder Agent sieht beim Start die aktuelle Board-Sicht.
+- Werkzeug `ask_teammate`: kurzer Nur-Lese-Aufruf des Kollegen, Limits pro Lauf/Agent.
+- `__init__.py`-Re-Exporte aus noch fehlenden Modulen werden beim Schreiben abgelehnt.
+- Integrations-Checkpoint meldet unerfüllte `requires` zwischen Kollegen.
+
+**4 – Tokens**
+- `core/context_compaction.py`: alte große Werkzeug-Ergebnisse werden verdichtet.
+- Fachbereichs-Konsolidierung deterministisch (`ENABLE_LLM_DEPARTMENT_CONSOLIDATION=false`).
+- `agents/orchestrator/efficiency.py`: Cache-Quote, eingesparter Kontext, Watchdog-Eingriffe und
+  Modell-Abwertungen im Abschlussbericht und in `run_closed`.
+
+**5 – Qualität**
+- `core/test_depth.py`: Anteil getesteter API-Routen; eine grüne, aber flache Suite bekommt eine
+  gezielte tester-Runde, bleibt sie flach, blockiert das DoD-Kriterium `test_depth`.
+- Erzwungener Werkzeug-Aufruf für Code-Rollen ohne gespeicherte Datei (`require_tool_call`:
+  Gemini `mode=ANY`, OpenAI-kompatibel `required`, Anthropic `any`).
+- `core/red_project_repair.py` + `--queue-red-projects`: rote Projekte werden als
+  Nachbesserungs-Ticket eingeplant, der Backlog-Worker greift sie auf.
+- `core/agent_watchdog.py`: Live-Eingriffe bei Lesen ohne Schreiben, wiederholtem Neuschreiben,
+  wiederholten Werkzeug-Fehlern, explodierendem Kontext und zu teuren Einzelaufgaben.
+- `failure_triage.load_interface_contract()` ignoriert Nicht-Python-Module (`GameLoop.ts` wurde
+  zu `GameLoop/ts.py`).
+
+Verifikation: `tests/test_team_analysis_quickfixes.py`, `tests/test_team_communication.py`,
+`tests/test_token_efficiency.py`, `tests/test_quality_gates.py`, volle Testsuite und `ruff check`.
+
+---
+
 ## 🟢 Team-Analyse 2026-09-15: ehrliche Verifikation, Arbeitsweise wie ein echtes Team, wirksame Selbstoptimierung
 
 Auswertung aller 23 Workspace-Projekte mit Status: 8 (35 %) nicht verifiziert, 3 davon trotzdem

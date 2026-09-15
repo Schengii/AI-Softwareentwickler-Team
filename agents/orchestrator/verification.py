@@ -49,11 +49,13 @@ from config import (
     ENABLE_GOVERNANCE_FIX_LOOP,
     ENABLE_LOAD_TEST_CHECK,
     ENABLE_SMOKE_TEST_GATE,
+    ENABLE_TEST_DEPTH_GATE,
     LOAD_TEST_DURATION_SECONDS,
     LOAD_TEST_TIMEOUT_SECONDS,
     MAX_REVIEW_ITERATIONS,
     MAX_TASK_TOKENS,
     MAX_VERIFICATION_ITERATIONS,
+    MIN_ROUTE_TEST_RATIO,
     MIN_TEST_COVERAGE,
 )
 from core.backlog_store import get_ticket, upsert_ticket
@@ -82,6 +84,7 @@ from core.review_gate import (
     route_findings_to_owners,
 )
 from core.team_memory import record_lesson
+from core.test_depth import analyze_test_depth
 from core.verification_outcome import VerificationOutcome, parse_install_exit_code
 from core.verifier import ProjectVerifier, VerificationReport
 
@@ -1808,6 +1811,7 @@ class VerificationMixin:
             )
             summary_lines.extend(smoke_gate_summary)
 
+        test_depth_fix_attempted = False
         for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
             if cancel_requested and cancel_requested():
                 manually_cancelled = True
@@ -1925,6 +1929,41 @@ class VerificationMixin:
                 notify(f"  ⚠️ [yellow]{report.reason_skipped}[/yellow]")
                 summary_lines.append(f"- ⚠️ {report.reason_skipped} Generierter Code wurde NICHT automatisch verifiziert.")
                 break
+
+            if report.passed and ENABLE_TEST_DEPTH_GATE:
+                depth = await asyncio.to_thread(analyze_test_depth, project_dir, MIN_ROUTE_TEST_RATIO)
+                if depth.applicable:
+                    outcome.record("test_depth", depth.passed, "" if depth.passed else depth.format_summary())
+                can_fix_depth = (
+                    not depth.passed and not test_depth_fix_attempted and not budget_aborted
+                    and "tester" in self._agents and attempt < MAX_VERIFICATION_ITERATIONS
+                    and not (run_start_tokens is not None and self._run_budget_exceeded(run_start_tokens))
+                )
+                if can_fix_depth:
+                    test_depth_fix_attempted = True
+                    notify(f"  🧪 [yellow]Tests grün, aber zu flach:[/yellow] {depth.format_summary()[:300]}")
+                    summary_lines.append(f"- 🧪 ⚠️ {depth.format_summary()} → tester ergänzt Tests.")
+                    log_decision(project_dir, "test_depth_fix_dispatched", depth.format_summary()[:500])
+                    fix_task = AgentTask(
+                        task_id=f"test_depth_fix_{attempt}",
+                        agent_id="tester",
+                        description=(
+                            "Die Testsuite ist grün, prüft aber zu wenig: folgende API-Routen werden in keinem Test "
+                            "aufgerufen. Ergänze für JEDE dieser Routen mindestens einen echten Test (Erfolgsfall und "
+                            "einen Fehler-/Validierungsfall) mit dem Test-Client des Frameworks. Ändere keinen "
+                            "Produktionscode; fehlt dir eine Information, frage per ask_teammate.\n\n"
+                            + "\n".join(f"- {r.label()}" for r in depth.untested_routes[:20])
+                        ),
+                        context="", project_dir=project_dir,
+                    )
+                    fix_results = await self._run_agents_parallel([fix_task], notify=notify)
+                    self._update_file_owners(file_owners, fix_results)
+                    all_results.extend(fix_results)
+                    await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
+                    continue
+                if depth.applicable:
+                    icon = "✅" if depth.passed else "⚠️"
+                    summary_lines.append(f"- 🧪 {icon} {depth.format_summary()}")
 
             if report.passed:
                 notify(f"  ✅ [bold green]Alle Tests bestanden[/bold green] (Versuch {attempt}, {report.duration_seconds:.1f}s).")

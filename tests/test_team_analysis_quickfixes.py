@@ -121,7 +121,7 @@ class TestLeadCallsAreLogged(unittest.TestCase):
         orchestrator._run_logger = MagicMock()
         lead = orchestrator._dept_leads["dev_lead"]
         result = AgentResult(task_id="x", agent_id="dev_lead", agent_name="Lead", success=True, content="ok")
-        with patch.object(lead, "execute", AsyncMock(return_value=result)):
+        with patch.object(lead, "execute", AsyncMock(return_value=result)),              patch("agents.orchestrator.department.ENABLE_LLM_DEPARTMENT_CONSOLIDATION", True):
             asyncio.run(orchestrator._run_department_delegation(lead, "Aufgabe", [], tempfile.mkdtemp()))
             asyncio.run(orchestrator._run_department_consolidation(lead, [result], tempfile.mkdtemp()))
         self.assertEqual(orchestrator._run_logger.log_agent_result.call_count, 2)

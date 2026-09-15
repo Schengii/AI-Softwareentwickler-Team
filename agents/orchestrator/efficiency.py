@@ -65,6 +65,7 @@ class EfficiencyMixin:
             "cache_hit_ratio": round(run_cache / run_prompt, 3) if run_prompt else 0.0,
             "context_chars_compacted": sum(getattr(r, "context_chars_compacted", 0) or 0 for r in results),
             "model_downgrades": len(downgrades),
+            "watchdog_interventions": sum(len(getattr(r, "watchdog_events", []) or []) for r in results),
             "downgraded_agents": sorted({d["agent_id"] for d in downgrades}),
         }
 
@@ -80,6 +81,9 @@ class EfficiencyMixin:
                 f"- Kontext-Verdichtung: ~{snapshot['context_chars_compacted'] // 4:,} Tokens je Folge-Iteration eingespart "
                 f"({snapshot['context_chars_compacted']:,} Zeichen)"
             )
+        watchdog = sorted({f"{r.agent_id}: {e}" for r in results for e in (getattr(r, "watchdog_events", []) or [])})
+        if watchdog:
+            lines.append(f"- 🛡️ Watchdog-Eingriffe: {', '.join(watchdog[:10])}")
         downgrades = getattr(self, "_model_downgrades", [])
         if downgrades:
             pairs = sorted({f"{d['agent_id']} ({d['requested']} → {d['effective']})" for d in downgrades})

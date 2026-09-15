@@ -1006,6 +1006,25 @@ CONTEXT_COMPACTION_MIN_CHARS: int = int(os.getenv("CONTEXT_COMPACTION_MIN_CHARS"
 # und Team-Board-Übergaben (0 Tokens). Die Delegation zu Phasenbeginn bleibt ein LLM-Aufruf.
 ENABLE_LLM_DEPARTMENT_CONSOLIDATION: bool = _env_flag("ENABLE_LLM_DEPARTMENT_CONSOLIDATION", False)
 
+# Testtiefe (core/test_depth.py): Anteil der Backend-Routen, die in Tests aufgerufen werden müssen.
+# Eine grüne, aber flache Suite bekommt EINE gezielte tester-Runde; bleibt sie zu flach, blockiert die DoD.
+ENABLE_TEST_DEPTH_GATE: bool = _env_flag("ENABLE_TEST_DEPTH_GATE", True)
+MIN_ROUTE_TEST_RATIO: float = float(os.getenv("MIN_ROUTE_TEST_RATIO", "0.6"))
+
+# Erzwungener Werkzeug-Aufruf für Code-Rollen ohne gespeicherte Datei (erste und Rettungs-Iteration):
+# strukturelle Antwort auf "Code im Chat statt write_file", das Lernregeln allein nicht lösten.
+ENABLE_FORCED_TOOL_CALL: bool = _env_flag("ENABLE_FORCED_TOOL_CALL", True)
+
+# Rote Workspace-Projekte automatisch als Nachbesserungs-Ticket einplanen (core/red_project_repair.py),
+# höchstens N neue Tickets pro Backlog-Worker-Poll (0 = aus).
+RED_PROJECT_REPAIR_PER_POLL: int = int(os.getenv("RED_PROJECT_REPAIR_PER_POLL", "1"))
+
+# Agenten-Watchdog (core/agent_watchdog.py): greift live ein bei Lesen ohne Schreiben, wiederholtem
+# Neuschreiben, wiederholten Werkzeug-Fehlern, explodierendem Kontext und zu teuren Einzelaufgaben.
+ENABLE_AGENT_WATCHDOG: bool = _env_flag("ENABLE_AGENT_WATCHDOG", True)
+WATCHDOG_MAX_PROMPT_TOKENS: int = int(os.getenv("WATCHDOG_MAX_PROMPT_TOKENS", "80000"))
+WATCHDOG_TASK_TOKEN_CAP: int = int(os.getenv("WATCHDOG_TASK_TOKEN_CAP", "250000"))
+
 # ──────────────────────────────────────────
 # Obsidian Vault & Gedächtnis-Synchronisation (core/obsidian_sync.py)
 # ──────────────────────────────────────────

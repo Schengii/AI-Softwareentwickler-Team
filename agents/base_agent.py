@@ -23,15 +23,20 @@ from abc import ABC, abstractmethod
 from config import (
     CONTEXT_COMPACTION_KEEP_ROUNDS,
     CONTEXT_COMPACTION_MIN_CHARS,
+    ENABLE_AGENT_WATCHDOG,
     ENABLE_CONTEXT_COMPACTION,
     ENABLE_DEVELOPER_HANDOFF_GATE,
+    ENABLE_FORCED_TOOL_CALL,
     MAX_AGENT_TOOL_ITERATIONS,
     MAX_HANDOFF_RETRIES,
+    WATCHDOG_MAX_PROMPT_TOKENS,
+    WATCHDOG_TASK_TOKEN_CAP,
 )
 from core.agent_toolbox import AgentToolbox
+from core.agent_watchdog import AgentWatchdog
 from core.context_compaction import compact_tool_results
 from core.handoff_check import HANDOFF_GATE_AGENT_IDS, check_handoff
-from core.llm_factory import AgentMessage, GeminiClient, LLMFactory, LLMResponse
+from core.llm_factory import AgentMessage, GeminiClient, LLMFactory, LLMResponse, require_tool_call
 from core.message_bus import AgentResult, AgentTask
 from core.model_capability import min_tier_for_agent, pop_capability_floor, push_capability_floor
 from core.provider_exhaustion import FAILURE_CLASS_AGENT_ERROR, classify_failure, is_infrastructure_failure
@@ -259,6 +264,7 @@ class BaseAgent(ABC):
                 needs_human_input=bool(toolbox and toolbox.clarification_requests),
                 clarification_questions=list(toolbox.clarification_requests) if toolbox else [],
                 context_chars_compacted=toolbox.context_chars_compacted if toolbox else 0,
+                watchdog_events=list(toolbox.watchdog_events) if toolbox else [],
             )
 
         except Exception as e:
@@ -416,6 +422,12 @@ class BaseAgent(ABC):
         # Aufgabe (`write_rescue_grant_used`), damit die Schleife garantiert terminiert.
         hard_limit = max_iterations
         write_rescue_grant_used = False
+        watchdog = AgentWatchdog(
+            agent_id=self.agent_id,
+            code_writing=self.agent_id in CODE_WRITING_AGENT_IDS and not task.tools_read_only,
+            max_prompt_tokens=WATCHDOG_MAX_PROMPT_TOKENS,
+            task_token_cap=WATCHDOG_TASK_TOKEN_CAP,
+        ) if ENABLE_AGENT_WATCHDOG else None
         # Übergabe-Prüfung (core/handoff_check.py): wie oft der Agent bereits aufgefordert wurde,
         # statische Fehler in seinen eigenen Dateien vor der Abgabe zu beheben.
         handoff_retries_used = 0
@@ -507,10 +519,21 @@ class BaseAgent(ABC):
                     turns, keep_recent_rounds=CONTEXT_COMPACTION_KEEP_ROUNDS, min_chars=CONTEXT_COMPACTION_MIN_CHARS,
                 )
                 toolbox.context_chars_compacted += compaction.chars_saved
+            # Code-Rollen ohne bisher gespeicherte Datei: in der ersten Iteration und in der
+            # Rettungs-Iteration ist ein Werkzeug-Aufruf Pflicht (core/llm_factory.require_tool_call).
+            force_tool_call = (
+                ENABLE_FORCED_TOOL_CALL
+                and self.agent_id in CODE_WRITING_AGENT_IDS
+                and not task.tools_read_only
+                and not toolbox.files_written
+                and not toolbox.clarification_requests
+                and ((iteration == 1 and hard_limit > 1) or rescue_applicable)
+            )
             try:
-                response = await active_llm.generate_with_tools(
-                    turns, system_prompt, toolbox.tool_specs(), _allow_self_fallback=allow_fallback,
-                )
+                with require_tool_call(force_tool_call):
+                    response = await active_llm.generate_with_tools(
+                        turns, system_prompt, toolbox.tool_specs(), _allow_self_fallback=allow_fallback,
+                    )
             except Exception as e:
                 # Ein Retry verbraucht die aktuelle Iteration mit - auf der ohnehin letzten
                 # erlaubten Iteration NICHT mehr retryen, sonst bliebe `response` auf None
@@ -726,14 +749,33 @@ class BaseAgent(ABC):
                 break
 
             turns.append(AgentMessage(role="assistant", text=response.text, tool_calls=response.tool_calls))
+            iteration_results: list[dict] = []
             for tool_call in response.tool_calls:
                 result = await toolbox.dispatch(tool_call.name, tool_call.arguments)
+                iteration_results.append(result)
                 turns.append(AgentMessage(
                     role="tool",
                     tool_call_id=tool_call.id,
                     tool_name=tool_call.name,
                     text=json.dumps(result, ensure_ascii=False),
                 ))
+
+            if watchdog is not None:
+                for intervention in watchdog.observe(
+                    prompt_tokens=response.prompt_tokens,
+                    completion_tokens=response.completion_tokens,
+                    tool_calls=[(tc.name, tc.arguments) for tc in response.tool_calls],
+                    tool_results=iteration_results,
+                    files_written_count=len(toolbox.files_written),
+                ):
+                    if intervention.compact:
+                        toolbox.context_chars_compacted += compact_tool_results(
+                            turns, keep_recent_rounds=1, min_chars=500,
+                        ).chars_saved
+                    if intervention.stop:
+                        hard_limit = min(hard_limit, iteration + 1)
+                    turns.append(AgentMessage(role="user", text=intervention.message))
+                toolbox.watchdog_events = list(watchdog.events)
 
         assert response is not None
         return response, total_prompt_tokens, total_completion_tokens, hard_delivery_gate_failed

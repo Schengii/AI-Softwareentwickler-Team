@@ -1,0 +1,97 @@
+"""
+core/red_project_repair.py – Rote Projekte automatisch zur Nachbesserung einplanen
+
+Analyse 2026-09-15: alle 8 roten Workspace-Projekte wurden genau einmal ausgeführt und blieben
+danach liegen. Ein echtes Team lässt einen roten Build nicht über Nacht stehen.
+
+`queue_red_projects()` legt für jedes Projekt, dessen letzter Lauf nicht verifiziert wurde und für
+das noch kein offenes Nachbesserungs-Ticket existiert, ein `recurring-failure-<slug>`-Ticket an.
+Der Backlog-Worker (`--work-backlog`) greift es über seinen Governance-Retry-Pool auf und schickt
+genau den bekannten Befund als Fix-Auftrag – keine Neuentwicklung, begrenzt durch
+MAX_GOVERNANCE_TICKET_RETRIES.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from config import MAX_GOVERNANCE_TICKET_RETRIES
+from core.backlog_store import get_ticket, upsert_ticket
+from core.project_status import read_full_detail, read_status
+
+logger = logging.getLogger(__name__)
+
+REPAIR_TICKET_PREFIX = "recurring-failure-"
+_RELATED_PREFIXES = ("recurring-failure-", "unresolved-governance-critical-", "audit-", "recurring-lint-")
+MAX_DETAIL_CHARS = 3000
+
+
+@dataclass
+class RepairQueueReport:
+    queued: list[str] = field(default_factory=list)
+    skipped: dict[str, str] = field(default_factory=dict)
+
+    def format_summary(self) -> str:
+        lines = [f"🔁 Rote Projekte: {len(self.queued)} zur Nachbesserung eingeplant"]
+        lines += [f"  • {slug}" for slug in self.queued]
+        lines += [f"  - {slug}: {reason}" for slug, reason in sorted(self.skipped.items())]
+        return "\n".join(lines)
+
+
+def _existing_repair_state(slug: str) -> str | None:
+    """Grund, warum kein neues Ticket nötig ist – None, wenn eingeplant werden darf."""
+    for prefix in _RELATED_PREFIXES:
+        ticket = get_ticket(f"{prefix}{slug}")
+        if ticket is None:
+            continue
+        if ticket.status in ("todo", "in_progress", "review"):
+            return f"Ticket {ticket.id} ist bereits '{ticket.status}'"
+        if ticket.status == "blocked":
+            if ticket.retries >= MAX_GOVERNANCE_TICKET_RETRIES:
+                return f"Ticket {ticket.id}: automatische Versuche ausgeschöpft – menschliche Prüfung nötig"
+            return f"Ticket {ticket.id} wartet bereits auf den Backlog-Worker"
+    return None
+
+
+def queue_red_projects(workspace_dir: str | Path | None = None, max_new: int = 3) -> RepairQueueReport:
+    from core.workspace import WorkspaceManager
+
+    manager = WorkspaceManager(base_workspace_dir=str(workspace_dir)) if workspace_dir else WorkspaceManager()
+    report = RepairQueueReport()
+    for slug in manager.list_projects():
+        project_dir = str(Path(manager.base_dir) / slug)
+        history = read_status(project_dir)
+        if not history:
+            continue
+        last = history[0]
+        if last.get("verification_ok") or last.get("cancelled"):
+            continue
+        reason = _existing_repair_state(slug)
+        if reason:
+            report.skipped[slug] = reason
+            continue
+        if len(report.queued) >= max_new:
+            report.skipped[slug] = "Limit pro Durchlauf erreicht"
+            continue
+        detail = read_full_detail(project_dir, last)[:MAX_DETAIL_CHARS]
+        budget_note = " Der letzte Lauf endete am Token-Budget - führe zuerst die Verifikation aus." if last.get("budget_aborted") else ""
+        try:
+            upsert_ticket(
+                ticket_id=f"{REPAIR_TICKET_PREFIX}{slug}",
+                title=f"Nicht behobener Verifikations-Fehler: {slug}",
+                source="orchestrator",
+                status="blocked",
+                project_slug=slug,
+                detail=(
+                    "Automatisch eingeplante Nachbesserung (core/red_project_repair.py): Behebe die verbleibenden "
+                    f"Befunde dieses bestehenden Projekts, keine Neuentwicklung.{budget_note}\n\n{detail}"
+                ),
+            )
+        except Exception as e:  # noqa: BLE001 - ein defektes Backlog darf die übrigen Projekte nicht blockieren
+            logger.warning("Nachbesserungs-Ticket für %s nicht anlegbar: %r", slug, e)
+            report.skipped[slug] = f"Ticket konnte nicht angelegt werden: {e}"
+            continue
+        report.queued.append(slug)
+    return report

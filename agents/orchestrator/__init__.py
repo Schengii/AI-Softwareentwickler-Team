@@ -1328,6 +1328,7 @@ class Orchestrator(
                 lint_clean=_outcome.status("lint"),
                 ui_ok=_outcome.status("browser_ui"),
                 build_passes=_outcome.status("frontend_build"),
+                test_depth_ok=_outcome.status("test_depth"),
                 coverage_percent=getattr(self, "last_coverage_percent", None),
                 min_coverage=float(MIN_TEST_COVERAGE),
                 verification_ok=verification_ok,

@@ -137,6 +137,12 @@ class RunLogger:
             "tool_calls_count": getattr(result, "tool_calls_count", 0),
             "files_written": list(getattr(result, "files_written", []) or []),
         }
+        watchdog_events = list(getattr(result, "watchdog_events", []) or [])
+        if watchdog_events:
+            entry["watchdog_events"] = watchdog_events
+        compacted = getattr(result, "context_chars_compacted", 0) or 0
+        if compacted:
+            entry["context_chars_compacted"] = compacted
         if not entry["success"]:
             entry["failure_class"] = getattr(result, "failure_class", "") or ""
             error = getattr(result, "error", None)

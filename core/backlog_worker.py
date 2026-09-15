@@ -56,6 +56,7 @@ from config import (
     BASE_DIR,
     GIT_PROTECTED_BRANCHES,
     MAX_GOVERNANCE_TICKET_RETRIES,
+    RED_PROJECT_REPAIR_PER_POLL,
     WORKSPACE_DIR,
 )
 from core.backlog_store import Ticket, count_by_status, is_ticket_ready, list_tickets, upsert_ticket
@@ -259,6 +260,17 @@ async def run_backlog_poll_cycle(
             )
     except Exception as e:  # Hygiene darf den Worker nie blockieren
         logging.getLogger(__name__).warning("Backlog-Hygiene fehlgeschlagen: %r", e)
+
+    # Rote Projekte zur Nachbesserung einplanen (core/red_project_repair.py) - höchstens eins pro
+    # Poll, damit ein Worker-Durchlauf nicht das gesamte Token-Budget auf alte Projekte verteilt.
+    if RED_PROJECT_REPAIR_PER_POLL > 0:
+        try:
+            from core.red_project_repair import queue_red_projects
+            repair = queue_red_projects(max_new=RED_PROJECT_REPAIR_PER_POLL)
+            if repair.queued and status_callback:
+                status_callback(f"🔁 Rotes Projekt zur Nachbesserung eingeplant: {', '.join(repair.queued)}")
+        except Exception as e:  # noqa: BLE001 - Einplanung darf den Worker nie blockieren
+            logging.getLogger(__name__).warning("Rote Projekte konnten nicht eingeplant werden: %r", e)
 
     if BACKLOG_WORKER_WIP_LIMIT > 0 and count_by_status("in_progress") >= BACKLOG_WORKER_WIP_LIMIT:
         report.skipped_reason = (

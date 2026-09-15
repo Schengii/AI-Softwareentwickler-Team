@@ -37,6 +37,8 @@ def main() -> int:
     parser.add_argument("files", nargs="+")
     parser.add_argument("--ref", default="HEAD")
     args = parser.parse_args()
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Windows-Konsole (cp1252) kann keine Emojis
     failed = False
     for file in args.files:
         rel = Path(file).as_posix()

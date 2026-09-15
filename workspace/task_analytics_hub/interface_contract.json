@@ -1,0 +1,16 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/core/database.py": {
+      "Base": "class",
+      "get_db": "function"
+    },
+    "app/models/analytics.py": {
+      "Metric": "class",
+      "Event": "class"
+    }
+  }
+}

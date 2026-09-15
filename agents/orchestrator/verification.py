@@ -23,6 +23,7 @@ unten), damit bestehende Importe (Tests, core-Module) unangetastet bleiben.
 
 import asyncio
 import logging
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -76,6 +77,44 @@ from core.review_gate import (
 )
 from core.team_memory import record_lesson
 from core.verifier import ProjectVerifier, VerificationReport
+
+# Team-Optimierung (root_cause_analysis, syncwave-Projekt, 2026-09-15): _build_browser_fix_task()
+# wies JEDEN Fehlschlag des Browser/UI-Checks hartcodiert dem frontend-Agenten zu. Ein Teil der
+# echten Konsolenfehler (CORS-Ablehnungen, 5xx-API-Antworten, abgelehnte WebSocket-Handshakes,
+# Netzwerkfehler wie ECONNREFUSED) hat seine Ursache aber im Backend - der Frontend-Agent kann
+# einen fehlenden CORS-Header oder einen abstürzenden Endpunkt nicht beheben, sieht das korrekt,
+# und der Fix-Loop drehte sich bisher wiederholt ergebnislos. Diese Signale sind rein textuell
+# aus den vom Browser gemeldeten Fehlern erkennbar, kein LLM-Aufruf nötig.
+_BACKEND_CAUSED_BROWSER_ERROR_RE = re.compile(
+    r"cors|cross-origin request blocked|"
+    r"websocket handshake|'connection' header is missing|"
+    r"failed to fetch|networkerror when attempting to fetch|"
+    r"err_connection_refused|err_connection_reset|econnrefused|"
+    r"\bhttp 5\d\d\b",
+    re.IGNORECASE,
+)
+
+
+def _classify_browser_failure_owner(
+    console_errors: list[str], missing_assets: list[str], available_agents: set[str] | dict,
+) -> str | None:
+    """Ermittelt den zuständigen Agenten für einen fehlgeschlagenen Browser/UI-Check.
+
+    Bevorzugt `backend`, wenn mindestens ein gemeldeter Fehler auf eine Backend-Ursache
+    hindeutet (siehe _BACKEND_CAUSED_BROWSER_ERROR_RE) UND ein backend-Agent existiert -
+    sonst wie bisher `frontend`, mit `backend` als Fallback, falls kein frontend-Agent
+    existiert. Gibt None zurück, wenn keiner der beiden Agenten existiert.
+    """
+    has_backend_signal = any(
+        _BACKEND_CAUSED_BROWSER_ERROR_RE.search(msg) for msg in (*console_errors, *missing_assets)
+    )
+    if has_backend_signal and "backend" in available_agents:
+        return "backend"
+    if "frontend" in available_agents:
+        return "frontend"
+    if "backend" in available_agents:
+        return "backend"
+    return None
 
 
 class VerificationMixin:
@@ -2637,22 +2676,29 @@ class VerificationMixin:
         # Smoke-Test oben als echte Anforderungsverletzung.
         if not (budget_aborted or manually_cancelled):
             def _build_browser_fix_task(browser_report, attempt):
-                agent_id = "frontend" if "frontend" in self._agents else next(
-                    (a for a in ("backend",) if a in self._agents), None,
+                agent_id = _classify_browser_failure_owner(
+                    browser_report.console_errors, browser_report.missing_assets, self._agents,
                 )
                 if agent_id is None:
                     return None
                 details = browser_report.missing_assets + browser_report.console_errors + [
                     f"Canvas nie gezeichnet: {c}" for c in browser_report.blank_canvases
                 ]
+                backend_hint = (
+                    " Die Fehlermeldung deutet auf eine Backend-Ursache hin (CORS, 5xx-Antwort, "
+                    "WebSocket-Handshake oder Netzwerkfehler) - prüfe zuerst die betroffenen "
+                    "Endpunkte/Middleware, nicht das Frontend-Rendering."
+                    if agent_id == "backend"
+                    else ""
+                )
                 return AgentTask(
                     task_id=f"verify_fix_browser_{agent_id}_{attempt}",
                     agent_id=agent_id,
                     description=(
                         f"Der ECHTE Browser/UI-Check (Playwright) gegen `{browser_report.tested_url}` ist "
-                        f"fehlgeschlagen: {'; '.join(details)[:800]}. Nutze read_file, um die betroffene(n) "
-                        f"Datei(en) zu prüfen, und edit_file/write_file, um den Fehler zu beheben (z.B. "
-                        f"fehlendes Asset, JS-Konsolenfehler, nie gezeichnetes Canvas-Element)."
+                        f"fehlgeschlagen: {'; '.join(details)[:800]}.{backend_hint} Nutze read_file, um die "
+                        f"betroffene(n) Datei(en) zu prüfen, und edit_file/write_file, um den Fehler zu "
+                        f"beheben (z.B. fehlendes Asset, JS-Konsolenfehler, nie gezeichnetes Canvas-Element)."
                     ),
                     context="",
                     project_dir=project_dir,

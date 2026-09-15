@@ -455,6 +455,7 @@ class PreFlightReport:
         blocking_types = {
             "missing_init", "syntax_error", "unresolved_import_name",
             "conflicting_sqlalchemy_engines", "module_level_event_loop_call",
+            "malformed_ini_section",
         }
         return any(i.issue_type in blocking_types for i in self.issues)
 
@@ -604,6 +605,47 @@ def _check_empty_test_suite(project_path: Path, sources_by_file: dict[str, str])
     )
 
 
+_INDENTED_INI_SECTION_RE = re.compile(r"^[ \t]+\[[^\]]+\]\s*$")
+
+
+def _check_ini_section_indentation(project_dir: Path) -> list[PreFlightIssue]:
+    """
+    Team-Optimierung (deterministic_check_suggestion aus team_lessons.jsonl, 2026-09-14):
+    ein LLM-generiertes `pytest.ini`/`setup.cfg`/`tox.ini` enthielt gelegentlich eine
+    eingerückte Sektionsüberschrift (z.B. `    [pytest]` statt `[pytest]`), typischerweise
+    weil das Modell die Datei aus einem eingerückten Codeblock-Kontext heraus generiert hat.
+    `configparser` behandelt eine eingerückte Zeile NICHT als neue Sektion, sondern als
+    Fortsetzungszeile des vorherigen Werts - die Datei bleibt syntaktisch "gültig", aber
+    `[pytest]` existiert dann schlicht nicht, wodurch pytest sämtliche dort gesetzten Optionen
+    (z.B. `asyncio_mode = auto`) stillschweigend ignoriert. Das fällt nie als Parse-Fehler auf,
+    nur als mysteriöses Testverhalten - genau der Fall, den ein deterministischer Vorab-Check
+    (statt Testlauf-Nachlese) verhindern soll.
+    """
+    issues: list[PreFlightIssue] = []
+    for ini_file in project_dir.glob("*.ini"):
+        try:
+            lines = ini_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for lineno, line in enumerate(lines, start=1):
+            if _INDENTED_INI_SECTION_RE.match(line):
+                rel_path = ini_file.name
+                issues.append(PreFlightIssue(
+                    file=rel_path,
+                    line=lineno,
+                    issue_type="malformed_ini_section",
+                    message=(
+                        f"Zeile {lineno} (`{line.strip()}`) ist eingerückt - configparser "
+                        "interpretiert eine eingerückte `[section]`-Zeile NICHT als neue "
+                        "Sektion, sondern als Fortsetzung des vorherigen Werts. Die Sektion "
+                        "existiert dadurch effektiv nicht, alle darunter gesetzten Optionen "
+                        "werden stillschweigend ignoriert."
+                    ),
+                    suggestion=f"Entferne die führenden Leerzeichen/Tabs vor `{line.strip()}` in {rel_path}.",
+                ))
+    return issues
+
+
 def run_pre_flight_check(project_dir: str | Path) -> PreFlightReport:
     """Fuehrt den deterministischen Vorab-Import-Check aus und gibt einen PreFlightReport zurueck.
 
@@ -625,6 +667,12 @@ def _run_checks(project_path: Path, report: PreFlightReport) -> None:
     if not project_path.exists() or not project_path.is_dir():
         report.error = f"Projektverzeichnis existiert nicht: {project_path}"
         return
+
+    # Unabhängig von Python-Dateien: eine kaputte pytest.ini/tox.ini/setup.cfg ist bereits
+    # ohne einen einzigen gescannten .py-Fund ein reales Problem - dieser Check läuft deshalb
+    # VOR dem frühen Return unten, der sich auf die py-basierten Checks weiter unten bezieht.
+    for ini_issue in _check_ini_section_indentation(project_path):
+        report.issues.append(ini_issue)
 
     py_files = _collect_python_files(project_path)
     report.files_checked = len(py_files)
@@ -798,7 +846,17 @@ def format_pre_flight_issues_for_fix(report: PreFlightReport) -> str:
         "Vorab-Import-Check hat Probleme gefunden (bevor Tests laufen koennen):",
         "",
     ]
-    blocking = [i for i in report.issues if i.issue_type in {"missing_init", "syntax_error", "unresolved_import_name"}]
+    # Team-Optimierung (echter Fund: `blocking` listete ursprünglich nur 3 fest verdrahtete
+    # issue_types auf - jeder seither hinzugekommene Check (conflicting_sqlalchemy_engines,
+    # module_level_event_loop_call, empty_test_suite, malformed_ini_section, ...) erzeugte zwar
+    # einen Befund (report.passed wurde korrekt False), der aber NIE im an den Fix-Agenten
+    # gesendeten Text auftauchte - der Agent bekam keinerlei Hinweis, was zu tun ist, und der
+    # Fix-Loop drehte sich bis zum Kein-Fortschritt-Abbruch ergebnislos. Jetzt landet JEDER
+    # Befund außer den beiden eigenen Dependency-Kategorien (die unten separat und ausführlicher
+    # formatiert werden) in der "Blockierende Befunde"-Liste - neue Check-Typen erscheinen damit
+    # automatisch, ohne dass diese Funktion jedes Mal manuell erweitert werden muss.
+    _dependency_issue_types = {"missing_dependency", "hidden_runtime_dependency"}
+    blocking = [i for i in report.issues if i.issue_type not in _dependency_issue_types]
     deps = [i for i in report.issues if i.issue_type == "missing_dependency"]
     hidden_deps = [i for i in report.issues if i.issue_type == "hidden_runtime_dependency"]
 

@@ -295,6 +295,45 @@ class TestRunPreFlightCheckConflictingSqlAlchemyEngines(unittest.TestCase):
             self.assertEqual(conflicts, [])
 
 
+class TestRunPreFlightCheckMalformedIniSection(unittest.TestCase):
+    """Team-Optimierung (deterministic_check_suggestion aus team_lessons.jsonl, 2026-09-14):
+    eine eingerückte `[section]`-Zeile in pytest.ini/setup.cfg/tox.ini wird von configparser
+    NICHT als neue Sektion erkannt, sondern als Fortsetzung des vorherigen Werts - die
+    darunter gesetzten Optionen (z.B. asyncio_mode) werden dadurch stillschweigend ignoriert."""
+
+    def test_detects_indented_section_header(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "app" / "main.py", "x = 1\n")
+            _write(proj / "pytest.ini", "    [pytest]\nasyncio_mode = auto\npythonpath = .\n")
+            report = run_pre_flight_check(proj)
+            findings = [i for i in report.issues if i.issue_type == "malformed_ini_section"]
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0].file, "pytest.ini")
+            self.assertEqual(findings[0].line, 1)
+            self.assertTrue(report.has_blocking_issues)
+
+    def test_no_issue_for_correctly_formatted_ini(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "app" / "main.py", "x = 1\n")
+            _write(proj / "pytest.ini", "[pytest]\nasyncio_mode = auto\npythonpath = .\n")
+            report = run_pre_flight_check(proj)
+            findings = [i for i in report.issues if i.issue_type == "malformed_ini_section"]
+            self.assertEqual(findings, [])
+
+    def test_indented_key_value_line_is_not_flagged(self):
+        # Eine eingerückte Fortsetzungszeile eines Werts (kein "[...]") ist gültiges ini-Format
+        # und darf keinen Fund auslösen.
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d)
+            _write(proj / "app" / "main.py", "x = 1\n")
+            _write(proj / "tox.ini", "[metadata]\ndescription =\n    line one\n    line two\n")
+            report = run_pre_flight_check(proj)
+            findings = [i for i in report.issues if i.issue_type == "malformed_ini_section"]
+            self.assertEqual(findings, [])
+
+
 class TestRunPreFlightCheckEmptyTestSuite(unittest.TestCase):
     """
     KI-Team-Zustandsbericht 2026-09-08, echter Fund (memory/backlog.json-Ticket

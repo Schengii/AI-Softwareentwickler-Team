@@ -1,0 +1,14 @@
+fastapi>=0.100.0
+uvicorn>=0.23.0
+sqlalchemy>=2.0.0
+aiosqlite>=0.19.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+greenlet>=2.0.0
+alembic
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.0.0
+httpx>=0.24.0
+starlette
+locust

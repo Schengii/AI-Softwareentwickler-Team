@@ -93,8 +93,8 @@ class TestGovernanceLoopResilience(unittest.TestCase):
                 for t in tasks
             ]
 
-        with patch("agents.orchestrator.verification.MAX_REVIEW_ITERATIONS", 1), \
-             patch("agents.orchestrator.verification.find_critical_findings", side_effect=_fake_find_critical_findings), \
+        with patch("agents.orchestrator.governance.MAX_REVIEW_ITERATIONS", 1), \
+             patch("agents.orchestrator.governance.find_critical_findings", side_effect=_fake_find_critical_findings), \
              patch.object(self.orchestrator, "_run_agents_parallel", side_effect=_fake_run_agents_parallel):
             try:
                 results, summary, budget_aborted, cancelled = asyncio.run(

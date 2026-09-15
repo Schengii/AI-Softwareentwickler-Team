@@ -183,7 +183,7 @@ class TestGovernanceFixLoop(unittest.TestCase):
         self.assertNotIn("Governance-Fix-Protokoll", result)
 
     def test_disabled_flag_reproduces_old_behavior(self):
-        with patch("agents.orchestrator.verification.ENABLE_GOVERNANCE_FIX_LOOP", False):
+        with patch("agents.orchestrator.governance.ENABLE_GOVERNANCE_FIX_LOOP", False):
             result, logs = self._run(CRITICAL_CODE_REVIEWER_REPORT)
 
         self.assertNotIn("Governance-Fix-Protokoll", result)
@@ -229,7 +229,7 @@ class TestGovernanceFixLoop(unittest.TestCase):
         self.orchestrator._agents["backend"]._llm = _ScriptedLLM(written_file="backend/db.py")
         self.orchestrator._agents["code_reviewer"]._llm = _TwoStageLLM()
 
-        with patch("agents.orchestrator.verification.MAX_REVIEW_ITERATIONS", 2):
+        with patch("agents.orchestrator.governance.MAX_REVIEW_ITERATIONS", 2):
             @patch("agents.orchestrator.verification.ProjectVerifier")
             @patch("core.task_manager.TaskManager.decompose")
             @patch("core.result_aggregator.ResultAggregator.synthesize")

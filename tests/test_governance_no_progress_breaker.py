@@ -99,7 +99,7 @@ class TestGovernanceNoProgressBreaker(unittest.TestCase):
         # (core.llm_factory.LLMFactory.create_for_model) statt weiter mit einer kontrollierten
         # Test-Double zu arbeiten.
         @patch("core.llm_factory.LLMFactory.create_for_model")
-        @patch("agents.orchestrator.verification.upsert_ticket")
+        @patch("agents.orchestrator.governance.upsert_ticket")
         @patch("agents.orchestrator.verification.ProjectVerifier")
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")

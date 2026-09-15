@@ -171,7 +171,7 @@ class TestPermissionBlockedClarificationFix(unittest.TestCase):
             needs_human_input=True, clarification_questions=[PERMISSION_BLOCKED_QUESTION],
         )
 
-        with patch("agents.orchestrator.verification.upsert_ticket") as mock_ticket:
+        with patch("agents.orchestrator.governance.upsert_ticket") as mock_ticket:
             results, summary, budget_aborted, cancelled = asyncio.run(
                 self.orchestrator._run_permission_blocked_clarification_fix(
                     project_dir=self.temp_workspace,
@@ -193,7 +193,7 @@ class TestPermissionBlockedClarificationFix(unittest.TestCase):
             needs_human_input=True, clarification_questions=[PERMISSION_BLOCKED_QUESTION],
         )
 
-        with patch("agents.orchestrator.verification.upsert_ticket") as mock_ticket:
+        with patch("agents.orchestrator.governance.upsert_ticket") as mock_ticket:
             results, summary, budget_aborted, cancelled = asyncio.run(
                 self.orchestrator._run_permission_blocked_clarification_fix(
                     project_dir=self.temp_workspace,
@@ -221,7 +221,7 @@ class TestPermissionBlockedClarificationFix(unittest.TestCase):
             )]
 
         with patch.object(self.orchestrator, "_run_agents_parallel", side_effect=_oversized_run), \
-             patch("agents.orchestrator.verification.MAX_TASK_TOKENS", 100):
+             patch("agents.orchestrator.governance.MAX_TASK_TOKENS", 100):
             results, summary, budget_aborted, cancelled = asyncio.run(
                 self.orchestrator._run_permission_blocked_clarification_fix(
                     project_dir=self.temp_workspace,

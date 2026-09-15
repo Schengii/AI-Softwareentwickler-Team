@@ -76,7 +76,7 @@ class TestGovernanceFinalReverification(unittest.TestCase):
             task_id="t2", agent_id="code_reviewer", agent_name="Code-Reviewer", success=True,
             content=CRITICAL_CODE_REVIEWER_REPORT,
         )
-        with patch("agents.orchestrator.verification.MAX_REVIEW_ITERATIONS", 1):
+        with patch("agents.orchestrator.governance.MAX_REVIEW_ITERATIONS", 1):
             return asyncio.run(self.orchestrator._run_governance_fix_loop(
                 project_dir=self.temp_workspace,
                 all_results=[code_reviewer_result],
@@ -85,7 +85,7 @@ class TestGovernanceFinalReverification(unittest.TestCase):
             ))
 
     def test_unconfirmed_fix_opens_backlog_ticket(self):
-        with patch("agents.orchestrator.verification.upsert_ticket") as mock_ticket:
+        with patch("agents.orchestrator.governance.upsert_ticket") as mock_ticket:
             results, summary, budget_aborted, cancelled = self._run(CRITICAL_CODE_REVIEWER_REPORT)
 
         self.assertFalse(budget_aborted)
@@ -96,7 +96,7 @@ class TestGovernanceFinalReverification(unittest.TestCase):
         self.assertIn("unresolved-governance-critical-", mock_ticket.call_args.kwargs["ticket_id"])
 
     def test_confirmed_fix_reports_success_without_ticket(self):
-        with patch("agents.orchestrator.verification.upsert_ticket") as mock_ticket:
+        with patch("agents.orchestrator.governance.upsert_ticket") as mock_ticket:
             results, summary, budget_aborted, cancelled = self._run(CLEAN_CODE_REVIEWER_REPORT)
 
         self.assertIn("Re-Review nach Versuch 1 bestätigt", summary)
@@ -116,7 +116,7 @@ class TestGovernanceFinalReverification(unittest.TestCase):
         (app_dir / "resilience.py").write_text("class ResilienceManager:\n    pass\n", encoding="utf-8")
         (app_dir / "main.py").write_text("from app.resilience import resilience\n", encoding="utf-8")
 
-        with patch("agents.orchestrator.verification.upsert_ticket") as mock_ticket:
+        with patch("agents.orchestrator.governance.upsert_ticket") as mock_ticket:
             results, summary, budget_aborted, cancelled = self._run(CLEAN_CODE_REVIEWER_REPORT)
 
         self.assertIn("bestätigt der Re-Review WEITERHIN", summary)
@@ -157,8 +157,8 @@ class TestGovernanceFinalReverification(unittest.TestCase):
             task_id="t2", agent_id="code_reviewer", agent_name="Code-Reviewer", success=True,
             content=CRITICAL_CODE_REVIEWER_REPORT,
         )
-        with patch("agents.orchestrator.verification.upsert_ticket") as mock_ticket, \
-             patch("agents.orchestrator.verification.MAX_REVIEW_ITERATIONS", 1):
+        with patch("agents.orchestrator.governance.upsert_ticket") as mock_ticket, \
+             patch("agents.orchestrator.governance.MAX_REVIEW_ITERATIONS", 1):
             results, summary, budget_aborted, cancelled = asyncio.run(self.orchestrator._run_governance_fix_loop(
                 project_dir=self.temp_workspace,
                 all_results=[code_reviewer_result],
@@ -174,7 +174,7 @@ class TestGovernanceFinalReverification(unittest.TestCase):
         # Gegenprobe: löst auch die Eskalation an den Fachbereichsleiter das Problem NICHT,
         # wird (wie bisher) ein Backlog-Ticket eröffnet - die Eskalation ersetzt die
         # menschliche Prüfung nicht, sie ist nur ein zusätzlicher Versuch davor.
-        with patch("agents.orchestrator.verification.upsert_ticket") as mock_ticket:
+        with patch("agents.orchestrator.governance.upsert_ticket") as mock_ticket:
             results, summary, budget_aborted, cancelled = self._run(CRITICAL_CODE_REVIEWER_REPORT)
 
         self.assertIn("Eskalation an Fachbereichsleiter behob den Befund NICHT", summary)
@@ -197,8 +197,8 @@ class TestGovernanceFinalReverification(unittest.TestCase):
             )]
 
         with patch.object(self.orchestrator, "_run_agents_parallel", side_effect=_oversized_run), \
-             patch("agents.orchestrator.verification.MAX_TASK_TOKENS", 100), \
-             patch("agents.orchestrator.verification.MAX_REVIEW_ITERATIONS", 1):
+             patch("agents.orchestrator.governance.MAX_TASK_TOKENS", 100), \
+             patch("agents.orchestrator.governance.MAX_REVIEW_ITERATIONS", 1):
             results, summary, budget_aborted, cancelled = asyncio.run(self.orchestrator._run_governance_fix_loop(
                 project_dir=self.temp_workspace,
                 all_results=[code_reviewer_result],

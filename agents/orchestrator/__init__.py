@@ -79,6 +79,7 @@ from agents.orchestrator.constants import PHASE_ORDER, REVIEW_ONLY_AGENT_IDS, Pl
 from agents.orchestrator.department import DepartmentMixin
 from agents.orchestrator.dispatch import DispatchMixin
 from agents.orchestrator.efficiency import EfficiencyMixin
+from agents.orchestrator.governance import GovernanceMixin
 from agents.orchestrator.integration import IntegrationMixin
 from agents.orchestrator.reporting import ReportingMixin
 from agents.orchestrator.retrospective import RetrospectiveMixin
@@ -168,6 +169,7 @@ class Orchestrator(
     DepartmentMixin,
     IntegrationMixin,
     VerificationMixin,
+    GovernanceMixin,
     DispatchMixin,
     BudgetMixin,
     RetrospectiveMixin,

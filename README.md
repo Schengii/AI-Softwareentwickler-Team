@@ -151,19 +151,28 @@ Was die Grafik oben zeigt, läuft technisch über zwei einfache Datenstrukturen
 4. **Ausführung mit echtem Werkzeugzugriff:** Jedes Fachteam-Mitglied arbeitet über den
    agentischen Werkzeug-Loop (siehe oben) direkt im Projektverzeichnis und liefert ein
    `AgentResult` (Erfolg/Fehler, Inhalt, Tokens, geschriebene Dateien) zurück.
-5. **Echte Konsolidierung:** Nach jeder Phase prüft derselbe Teamleiter per weiterem
+5. **Team-Board & Rückfragen im Team (`core/team_board.py`):** Jeder Agent sieht beim Start die
+   Übergaben seiner Kollegen (`provides`/`requires`/`open_issues`), die Datei-Owner, Änderungen an
+   seinen Dateien durch andere Rollen und welche Module des Schnittstellen-Vertrags noch fehlen.
+   Code-Rollen hinterlassen am Ende eine Übergabe-Notiz; über das Werkzeug `ask_teammate` fragt ein
+   Agent einen Kollegen direkt (kurzer Nur-Lese-Aufruf, begrenzt pro Lauf). Der
+   Integrations-Checkpoint meldet unerfüllte `requires`. Abschaltbar über `ENABLE_TEAM_BOARD` /
+   `ENABLE_ASK_TEAMMATE`.
+6. **Konsolidierung:** Nach jeder Phase erstellt der Teamleiter den Fachbereichsbericht – seit
+   2026-09-15 standardmäßig deterministisch aus Ergebnissen und Team-Board (0 Tokens,
+   `ENABLE_LLM_DEPARTMENT_CONSOLIDATION=true` für den früheren LLM-Bericht). Früher: per weiterem
    LLM-Aufruf die Ergebnisse seines Teams und erstellt den offiziellen Fachbereichsbericht
    (bei einem einzelnen Mitglied und kleiner Gesamtaufgabe entfällt auch dieser Schritt, siehe
    Punkt 3). Eine `file_owners`-Map merkt sich dabei, welcher Agent welche Datei geschrieben
    hat – die Grundlage für die gezielte Fehlerbehebung in der Verifikationsphase (siehe unten).
-6. **Governance-Fix-Loop:** `code_reviewer`/`security`/`compliance` kategorisieren Befunde in
+7. **Governance-Fix-Loop:** `code_reviewer`/`security`/`compliance` kategorisieren Befunde in
    ihren Reports selbst nach Schweregrad ("Kritisch") – `agents/orchestrator.py._run_governance_fix_loop()`
    (`core/review_gate.py`) erkennt diese Befunde per Text-Heuristik und spielt sie GEZIELT an
    den laut `file_owners` zuständigen Agenten zur Korrektur zurück, BEVOR die echte
    Testverifikation läuft – ein "Kritisch" im Review ist bei einem echten Team ein Blocker,
    kein FYI im Abschlussbericht. Abschaltbar über `ENABLE_GOVERNANCE_FIX_LOOP=false`, Anzahl
    der Fix-/Recheck-Runden über `MAX_REVIEW_ITERATIONS` (Standard `1`).
-7. **Synthese:** Der Hauptagent fasst alle Fachbereichsberichte über `ResultAggregator`
+8. **Synthese:** Der Hauptagent fasst alle Fachbereichsberichte über `ResultAggregator`
    zu einem einheitlichen Gesamtergebnis zusammen und liefert es an den Nutzer zurück.
 
 ---
@@ -804,6 +813,9 @@ python main.py --eval [--tasks t1,t2]       # Reproduzierbare Benchmark-Suite au
 python main.py --eval --regression          # Regressions-Suite aus realen Fehlschlägen
 python main.py --eval-gate                  # Jüngsten Lauf gegen Baseline prüfen (Exit 1 bei Regression)
 python main.py --list-evals                 # Alle Benchmark-Aufgaben auflisten
+python main.py --clean-telemetry [--dry-run] # Test-Rauschen aus Lauf-/Benchmark-Historie entfernen
+python main.py --backlog-hygiene             # Hängende/doppelte/per "Closes:" erledigte Tickets bereinigen
+python main.py --queue-red-projects          # Rote Workspace-Projekte als Nachbesserungs-Ticket einplanen
 ```
 
 Details zum Web-Dashboard: [🌐 Modernes Web-Dashboard & Visualisierung](#web-dashboard).

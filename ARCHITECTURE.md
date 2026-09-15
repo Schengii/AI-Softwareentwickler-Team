@@ -98,13 +98,16 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
    - **Planung & Architektur**: Anforderungsanalyse, ADRs, `interface_contract.json`.
    - **Projektgerüst (`core/project_scaffold.py`)**: deterministisch vor der Entwicklung – Paketordner mit `__init__.py` laut Vertrag, `pytest.ini`, `requirements.txt`/`requirements-dev.txt` je Stack, `.env.example`. Überschreibt nie, erzeugt keine Implementierungs-Stubs, läuft nie im Framework-Repo.
    - **Entwicklung + Test-First**: Entwickler und `tester` arbeiten parallel (Tests gegen Akzeptanzkriterien und Vertrag, `ENABLE_TEST_FIRST`). Jeder Entwickler durchläuft vor der Abgabe die **Übergabe-Prüfung** (`core/handoff_check.py`: Syntax, lokale Importe, fehlende `__init__.py`).
-   - **Integrations-Checkpoint** (`agents/orchestrator/integration.py`): direkt nach der Entwicklung Pre-Flight + deterministische Autofixes + genau eine gezielte Fix-Runde – bevor Content/QA auf kaputtem Code aufbauen.
+   - **Team-Board** (`core/team_board.py`, `agents/orchestrator/team_communication.py`): Übergabe-Notizen, Datei-Owner, Fragen per `ask_teammate`, Stand des Schnittstellen-Vertrags; jeder Agent sieht beim Start die aktuelle Sicht. `__init__.py`-Re-Exporte aus noch fehlenden Modulen lehnt die Toolbox ab.
+   - **Live-Überwachung im Werkzeug-Loop**: `core/agent_watchdog.py` (Lesen ohne Schreiben, wiederholtes Neuschreiben, Fehlerwiederholung, Kontext-Explosion, Aufgaben-Tokendeckel), `core/context_compaction.py` (alte große Werkzeug-Ergebnisse verdichten) und ein erzwungener Werkzeug-Aufruf für Code-Rollen ohne gespeicherte Datei (`llm_factory.require_tool_call`).
+   - **Integrations-Checkpoint** (`agents/orchestrator/integration.py`): direkt nach der Entwicklung Pre-Flight + deterministische Autofixes + genau eine gezielte Fix-Runde – bevor Content/QA auf kaputtem Code aufbauen. Meldet zusätzlich unerfüllte `requires` vom Team-Board.
    - **Design & Content, Qualität & Security**: optionale Fachbereiche werden übersprungen, wenn ihr Budget-Anteil (`PHASE_TOKEN_SHARES`) die Kernphasen gefährden würde. Teamleiter koordinieren nur Fachbereiche mit mindestens `DEPARTMENT_LEAD_MIN_MEMBERS` Mitgliedern.
    - **Echte Verifikation** (siehe 4.) – läuft auch nach einem Budget-Abbruch der Generierung (0 LLM-Tokens, ohne Fix-Agenten).
    - **Review & Governance NACH der Verifikation** (`ENABLE_REVIEW_AFTER_VERIFICATION`): Reviewer sehen den echten Teststatus; Review-Fixes werden durch einen **Regressionstest** bestätigt.
 4. **Dynamische Verifikations-Schleife (`core/verifier.py`)**:
    - **Multi-Sprachen-Unterstützung**: Echte isolierte Testumgebungen für Python (`pytest`/`unittest`), Node/TS (`npm test`), Rust (`cargo test`) und Go (`go test`).
    - **Testabdeckungs-Messung**: Automatische Prüfung der Codeabdeckung (`pytest-cov`) gegen konfigurierte Schwellen (`MIN_TEST_COVERAGE`).
+   - **Testtiefe (`core/test_depth.py`)**: Anteil der Backend-Routen, die in Tests aufgerufen werden (`MIN_ROUTE_TEST_RATIO`). Eine grüne, aber flache Suite bekommt eine gezielte tester-Runde; bleibt sie flach, blockiert das DoD-Kriterium `test_depth`.
    - **Statisches & AST-Linting**: `ruff` für Python, `eslint`/`tsc` für TypeScript/JavaScript, `cargo clippy` für Rust, `go vet` für Go.
    - **Headless Browser & Frontend-UI-Validierung (`core/browser_verifier.py`)**: Startet Web-Frontends, fängt JavaScript-Konsolenfehler (`console.error`) ab und prüft Asset-404s (Playwright / statisches DOM).
    - **Schwachstellen-Scan**: Echter `pip-audit`, `npm audit`, `cargo audit` und `govulncheck` gegen öffentliche CVE-Datenbanken.
@@ -128,6 +131,8 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
   - Primär- und Fallback-Modelle über Gemini, Anthropic Claude, DeepSeek und Groq.
 - **Token Guard, Prompt Caching & Quota-Management (`core/token_guard.py`, `core/quota_estimator.py`, `core/llm_factory.py`)**:
   - Hartes Budget-Limit (`MAX_RUN_TOKENS`) mit kontrolliertem, sicherem Abbruch vor Budget-Überschreitung.
+  - Effizienz-Kennzahlen pro Lauf (`agents/orchestrator/efficiency.py`): Cache-Quote, eingesparter Kontext, Watchdog-Eingriffe und Modell-Abwertungen im Abschlussbericht und in `run_closed`.
+- **Saubere Lern-Datenbasis & Selbstheilung**: `core/telemetry_hygiene.py` (keine Test-Einträge in Lauf-/Benchmark-Historie), `core/backlog_hygiene.py` (hängende/doppelte Tickets, `Closes: <id>` in Commits), `core/red_project_repair.py` (rote Projekte als Nachbesserungs-Ticket für den Backlog-Worker).
   - Automatisches **Prompt-Caching** (Anthropic `cache_control: ephemeral`) und **Gemini Context Caching** für signifikante Kosten- und Latenzreduktion bei Multi-Turn-Tool-Loops.
 
 ---

@@ -23,6 +23,10 @@ Ein autonomes Multi-Agenten-System (33 Fachrollen, 6 Fachbereichs-Leiter) für d
 | **Web-Dashboard starten** | `python main.py --dashboard` |
 | **Gedächtnis-Sync nach Obsidian** | `python main.py --sync-obsidian` |
 | **Obsidian-Echtzeit-Watcher** | `python scripts/watch_obsidian_sync.py` |
+| **Test-Rauschen aus Lern-Historie entfernen** | `python main.py --clean-telemetry [--dry-run]` |
+| **Backlog-Hygiene** | `python main.py --backlog-hygiene` |
+| **Rote Projekte zur Nachbesserung einplanen** | `python main.py --queue-red-projects` |
+| **Nur-Kommentar-Änderung beweisen** | `python scripts/check_comment_only_change.py <dateien>` |
 
 ---
 

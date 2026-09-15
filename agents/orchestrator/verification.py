@@ -1,22 +1,14 @@
 """
 agents/orchestrator/verification.py – VerificationMixin: echte Verifikations-/Fix-Schleife.
 
-Die Governance-Fix-Schleife und die autonome Behandlung von Rückfragen leben seit der
-Team-Analyse 2026-09-15 in agents/orchestrator/governance.py (GovernanceMixin).
+_run_verification_loop() installiert Abhängigkeiten isoliert, führt die echte Testsuite aus und
+schickt bei Fehlschlägen einen GEZIELTEN Korrekturauftrag an die Agenten, deren Dateien laut
+Traceback betroffen sind. Danach laufen die weiteren Checks (Docker-Build, Audits, Lint,
+Coverage, Runtime-Smoke, Lastentest, Browser/A11y); Runtime-Smoke, Lastentest und Browser/UI
+lösen über _run_runtime_check_with_fix() ebenfalls gezielte Fixes aus.
 
-_run_verification_loop() installiert Abhängigkeiten in einer isolierten Umgebung, führt die
-echte Testsuite aus und schickt bei Fehlschlägen einen GEZIELTEN Korrekturauftrag an genau
-die Agenten, deren Dateien laut echtem Traceback betroffen sind. Führt anschließend alle
-weiteren Verifikations-Checks aus (Docker-Build, Dependency-/SAST-/Lizenz-Audit, Lint,
-Coverage, Runtime-Smoke, Lastentest, Browser/A11y) - Runtime-Smoke, Lastentest und Browser/UI
-laufen dabei über _run_runtime_check_with_fix() (siehe unten), das bei Fehlschlag ebenfalls
-einen gezielten Korrekturauftrag auslöst statt nur verification_ok zurückzusetzen.
-
-ki_team_verbesserungsanalyse.md, Teil 5.1 (größte Einzeldatei des Frameworks, ~2850 Zeilen):
-Die reinen, zustandslosen Diagnose-/Routing-Funktionen (Regex-basierte Fehlerklassifikation,
-Owner-Ermittlung, Fortschritts-Signaturen) leben seitdem in
-agents/orchestrator/failure_diagnosis.py - diese Datei re-exportiert sie unverändert (Import
-unten), damit bestehende Importe (Tests, core-Module) unangetastet bleiben.
+Die zustandslosen Diagnose-/Routing-Funktionen leben in failure_diagnosis.py (hier re-exportiert),
+die Governance-Fix-Schleife in governance.py.
 """
 
 import asyncio
@@ -73,21 +65,15 @@ from core.test_depth import analyze_test_depth
 from core.verification_outcome import VerificationOutcome, parse_install_exit_code
 from core.verifier import ProjectVerifier, VerificationReport
 
-# Team-Optimierung (root_cause_analysis, syncwave-Projekt, 2026-09-15): _build_browser_fix_task()
-# wies JEDEN Fehlschlag des Browser/UI-Checks hartcodiert dem frontend-Agenten zu. Ein Teil der
-# echten Konsolenfehler (CORS-Ablehnungen, 5xx-API-Antworten, abgelehnte WebSocket-Handshakes,
-# Netzwerkfehler wie ECONNREFUSED) hat seine Ursache aber im Backend - der Frontend-Agent kann
-# einen fehlenden CORS-Header oder einen abstürzenden Endpunkt nicht beheben, sieht das korrekt,
-# und der Fix-Loop drehte sich bisher wiederholt ergebnislos. Diese Signale sind rein textuell
-# aus den vom Browser gemeldeten Fehlern erkennbar, kein LLM-Aufruf nötig.
+# Browser-Fehler mit Backend-Ursache (CORS, 5xx, WebSocket-Handshake, Netzwerkfehler) kann der
+# frontend-Agent nicht beheben - sie werden rein textuell erkannt und an backend geroutet.
 _BACKEND_CAUSED_BROWSER_ERROR_RE = re.compile(
     r"cors|cross-origin request blocked|"
     r"websocket handshake|'connection' header is missing|"
     r"failed to fetch|networkerror when attempting to fetch|"
     r"err_connection_refused|err_connection_reset|econnrefused|"
     r"\bhttp 5\d\d\b|"
-    # Chromes Standardformat ("the server responded with a status of 500") und API-Routen, die
-    # es serverseitig nicht gibt bzw. die Eingaben ablehnen (404/405/422 auf /api/...).
+    # Chrome-Statusformat sowie serverseitig fehlende/ablehnende API-Routen (404/405/422 auf /api/...).
     r"status of 5\d\d\b|\b5\d\d \((?:internal server error|bad gateway|service unavailable|gateway timeout)\)|"
     r"/api/\S*\s+(?:404|405|422)\b",
     re.IGNORECASE,
@@ -133,15 +119,9 @@ class VerificationMixin:
         is_passed: Callable,
     ):
         """
-        Realer Fund bei einer Bestandsaufnahme des eigenen Teams: anders als ein echter
-        Testfehler (siehe _run_verification_loop oben) lösten ein fehlgeschlagener Runtime-
-        Smoke-Test, Lastentest oder Browser/UI-Check bisher NIE einen Korrekturauftrag aus -
-        sie setzten nur verification_ok=False und der Lauf endete. Ein Projekt mit einem
-        kaputten Frontend blieb dadurch über beliebig viele Läufe hinweg rot, weil derselbe
-        Fehler nie behoben wurde (real beobachtet: snippet_vault scheiterte 3 Läufe in Folge
-        am selben Frontend-Check). Dieselbe gezielte Fix-Schleife wie beim Testfehler, nur
-        mit vom Aufrufer übergebener Owner-Ermittlung statt Traceback-Dateizuordnung (diese
-        Checks liefern keinen Python-Traceback mit betroffenen Dateien).
+        Gezielte Fix-Schleife für Runtime-Smoke-Test, Lastentest und Browser/UI-Check - ohne sie
+        bliebe ein kaputtes Projekt über beliebig viele Läufe rot. Die Owner-Ermittlung übergibt
+        der Aufrufer, da diese Checks keinen Python-Traceback mit Dateien liefern.
 
         Gibt (report, all_results, budget_aborted, manually_cancelled) zurück. `report` ist
         das Ergebnis des letzten Check-Laufs (erster Lauf, falls nie gefixt wurde).
@@ -166,8 +146,7 @@ class VerificationMixin:
 
             fix_task = build_fix_task(report, attempt)
             if fix_task is None:
-                # Kein zuständiger Agent ermittelbar (z.B. kein frontend-Agent Teil des Plans) -
-                # Fix-Schleife kann hier nichts beitragen, letzter Check-Stand bleibt maßgeblich.
+                # Kein zuständiger Agent ermittelbar - letzter Check-Stand bleibt maßgeblich.
                 break
 
             notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix (Versuch {attempt}):[/bold yellow] Beauftrage {fix_task.agent_id}...")
@@ -192,15 +171,12 @@ class VerificationMixin:
         notify: Callable[[str], None],
     ) -> list[str]:
         """
-        Prüft VOR der Testschleife, ob die erzeugte Anwendung überhaupt startet, und lässt einen
-        Startfehler gezielt beheben, bevor Zeit und Token in eine vollständige Testsuite fließen.
+        Prüft VOR der Testschleife, ob die Anwendung überhaupt startet, und lässt einen
+        Startfehler gezielt beheben, bevor Token in eine vollständige Testsuite fließen.
+        Gibt die Zeilen für das Verifikations-Protokoll zurück.
 
-        Gibt die Zeilen zurück, die ins Verifikations-Protokoll aufgenommen werden sollen.
-
-        Bewusst höchstens EIN Fixversuch: Das Gate soll den häufigsten und teuersten Fall früh
-        abfangen (App startet gar nicht), nicht die eigentliche Fix-Schleife duplizieren. Bleibt
-        der Start danach kaputt, läuft die reguläre Testschleife trotzdem an - sie sieht denselben
-        Fehler dann erneut und hat ihre eigene, mehrstufige Eskalationsleiter dafür.
+        Bewusst höchstens EIN Fixversuch: die reguläre Testschleife sieht einen verbleibenden
+        Startfehler erneut und hat ihre eigene Eskalationsleiter.
         """
         summary: list[str] = []
         try:
@@ -297,16 +273,9 @@ class VerificationMixin:
         notify: Callable[[str], None], summary_lines: list[str],
     ) -> None:
         """
-        Team-Optimierung (Analysebericht `ki_team_schwachstellen_und_fehleranalyse_aethermesh_
-        20260913.md`, Schwachstelle 2): `verifier.ensure_environment()` lief bisher NUR einmal
-        ganz zu Beginn der Verifizierungsphase. Trägt ein Fix-Agent (`tester`, `backend`, ...) im
-        Rahmen der Fix-Schleife ein neues Paket in `requirements.txt`/`package.json`/
-        `pyproject.toml` ein (z.B. `pytest-asyncio`), lief der darauffolgende Testlauf bisher
-        gegen die UNVERÄNDERTE venv - das neu eingetragene Paket war schlicht nicht installiert,
-        der eigentlich korrekte Fix scheiterte am Re-Test aus einem rein infrastrukturellen
-        Grund. Ein erneuter `ensure_environment()`-Aufruf VOR dem nächsten Testlauf schließt
-        diese Lücke, läuft aber gezielt NUR, wenn tatsächlich eine Manifest-Datei verändert
-        wurde (kein unnötiger pip/npm-Install bei reinen Code-Fixes).
+        Synchronisiert die Umgebung erneut, wenn ein Fix-Agent ein Dependency-Manifest geändert hat -
+        sonst liefe der Re-Test gegen die alte venv ohne das neu eingetragene Paket. Bei reinen
+        Code-Fixes kein unnötiger pip/npm-Install.
         """
         if not self._fix_touched_dependency_manifests(fix_results):
             return
@@ -319,14 +288,8 @@ class VerificationMixin:
     async def _run_tests_logged(self, verifier: ProjectVerifier, phase: str) -> VerificationReport:
         """
         Führt die echte Testsuite aus und schreibt deren ROHE Ausgabe (stdout+stderr) in das
-        Verifikations-Log dieses Laufs (core/run_logger.py).
-
-        Realer Fund (KI-Team-Masterplan-Analyse): In den Bericht wandert nur eine stark gekürzte
-        Zusammenfassung ("⚠️ pip install -r requirements.txt (exit_code=1)"). Die eigentliche
-        Fehlerausgabe - also genau das, was ein Mensch zum Debuggen braucht - existierte nach
-        Ende des Laufs nirgends mehr, weil `logs/` leer blieb und die rich-Konsolenausgabe mit
-        dem Terminal verschwand. `phase` unterscheidet den Erstlauf von den Wiederholungen nach
-        einem Fixversuch, damit im Log nachvollziehbar bleibt, ob ein Fix etwas bewirkt hat.
+        Verifikations-Log dieses Laufs (core/run_logger.py), da der Bericht nur eine gekürzte
+        Zusammenfassung enthält. `phase` unterscheidet Erstlauf und Wiederholungen nach Fixversuchen.
         """
         report = await asyncio.to_thread(verifier.run_tests)
         try:
@@ -340,8 +303,7 @@ class VerificationMixin:
                     ),
                 )
         except Exception as e:
-            # Sichtbar statt verschluckt: ohne Rohausgabe ist ein roter Lauf später nicht mehr
-            # diagnostizierbar (Framework-Analyse 2026-09-10).
+            # Sichtbar statt verschluckt: ohne Rohausgabe ist ein roter Lauf nicht diagnostizierbar.
             logging.getLogger(__name__).warning(
                 "Testausgabe (%s) konnte nicht ins Verifikations-Log geschrieben werden: %r", phase, e,
             )
@@ -357,15 +319,10 @@ class VerificationMixin:
         cancel_requested: Callable[[], bool] | None = None,
     ) -> tuple[list[AgentResult], str, bool, bool, bool]:
         """
-        Robuste Außenhülle um `_run_verification_loop_impl()` (Fehleranalyse ecochef-Lauf 3,
-        `logs/runs/20260913_163546_ecochef.jsonl`, abort_reason "exception:TypeError"): egal was
-        innerhalb der Schleife schiefgeht (z.B. unerwartete Failure-Datentypen aus einem
-        Testrunner-Sonderfall) - `process()` erwartet hier IMMER ein valides 5er-Tupel
-        `(all_results, summary, budget_aborted, manually_cancelled, verification_ok)` und darf NIE
-        mit einer durchgereichten Exception abstürzen. `all_results` wird dabei bewusst
-        unverändert zurückgegeben (statt eines Teilzustands), da bei einem Absturz nicht sicher
-        feststeht, wie weit die Schleife intern schon mutiert hat; `verification_ok=False` macht
-        den unvollständigen Verifikationsstatus sichtbar statt ihn zu verschleiern.
+        Robuste Außenhülle um `_run_verification_loop_impl()`: `process()` erwartet IMMER ein
+        valides 5er-Tupel `(all_results, summary, budget_aborted, manually_cancelled,
+        verification_ok)`, nie eine Exception. `all_results` bleibt bei einem Absturz unverändert;
+        `verification_ok=False` macht den unvollständigen Status sichtbar.
         """
         self.last_verification_outcome = VerificationOutcome()
         try:
@@ -389,21 +346,13 @@ class VerificationMixin:
         cancel_requested: Callable[[], bool] | None = None,
     ) -> tuple[list[AgentResult], str, bool, bool, bool]:
         """
-        Ersetzt die alte Keyword-basierte Fix-Schleife. Installiert Abhängigkeiten
-        in einer isolierten Umgebung, führt die echte Testsuite aus und schickt bei
-        Fehlschlägen einen GEZIELTEN Korrekturauftrag an genau die Agenten, deren
-        Dateien laut echtem Traceback betroffen sind.
+        Installiert Abhängigkeiten isoliert, führt die echte Testsuite aus und schickt bei
+        Fehlschlägen einen GEZIELTEN Korrekturauftrag an die laut Traceback betroffenen Agenten.
 
-        Gibt zusätzlich zurück, ob das harte Lauf-Budget (MAX_RUN_TOKENS) während der
-        Fixversuche erreicht wurde bzw. der Lauf manuell abgebrochen wurde
-        (run_start_tokens/cancel_requested=None -> jeweiliger Mechanismus deaktiviert),
-        sowie verification_ok: True NUR, wenn die echte Testsuite tatsächlich gelaufen UND
-        bestanden ist – False bei jedem anderen Ausgang (keine Tests gefunden, Testfehler
-        blieben ungelöst, Budget während der Fixversuche erreicht, manuell abgebrochen).
-        Realer Fund: bisher endete JEDER Lauf mit einem uneingeschränkten "✅ Fertig!", selbst
-        wenn die Verifikation nie bestätigt werden konnte – verification_ok macht diesen
-        Unterschied jetzt im finalen Status sichtbar (siehe process()) statt ihn im
-        Kleingedruckten des Verifikations-Protokolls zu verstecken.
+        Gibt zusätzlich budget_aborted/manually_cancelled zurück (run_start_tokens bzw.
+        cancel_requested=None deaktiviert den Mechanismus) sowie verification_ok: True NUR, wenn
+        die echte Testsuite gelaufen UND bestanden ist - damit process() keinen unbestätigten
+        Lauf als "Fertig" meldet.
         """
         verifier = ProjectVerifier(project_dir)
         summary_lines: list[str] = []
@@ -416,83 +365,36 @@ class VerificationMixin:
             self.last_verification_outcome = outcome
         pre_flight_report = None
         completeness_report = None
-        # Bleibt None, wenn die Schleife unten (z.B. MAX_VERIFICATION_ITERATIONS<=0) nie
-        # durchläuft - der Coverage-Check danach prüft explizit auf None, statt sich auf eine
-        # garantierte Zuweisung zu verlassen.
+        # Bleibt None, wenn die Schleife nie durchläuft (MAX_VERIFICATION_ITERATIONS<=0).
         report: VerificationReport | None = None
-        # Höchstens EIN automatischer Nachbeauftragungs-Versuch für "keine Tests gefunden" (siehe
-        # unten) - verhindert eine Endlosschleife, falls der tester-Agent wiederholt keine
-        # echte Testdatei anlegt.
+        # Höchstens EIN Nachbeauftragungs-Versuch für "keine Tests gefunden" (keine Endlosschleife).
         no_tests_fix_attempted = False
-        # Zirkuit-Breaker gegen wirkungslose Wiederholungen (Team-Retrospektive nach dem
-        # taskpulse-Lauf): bisher wurde ein zweiter Fixversuch immer unternommen, selbst wenn
-        # der erste erkennbar NICHTS verändert hat - derselbe Satz Testfehler (gleiche
-        # test_id+Fehlermeldung) nach einem Fixversuch bedeutet fast immer, dass der
-        # beauftragte Agent das Problem nicht lösen konnte, nicht dass ein zweiter,
-        # identischer Auftrag beim nächsten Versuch anders ausgeht. Bricht die Schleife dann
-        # SOFORT ab (spart einen kompletten, meist wirkungslosen Agenten-Durchlauf) statt den
-        # letzten erlaubten Versuch trotzdem zu verbrauchen.
+        # Zirkuit-Breaker: identische Testfehler nach einem Fixversuch bedeuten, dass der Agent das
+        # Problem nicht lösen kann - sofort abbrechen statt einen weiteren Versuch zu verbrauchen.
         previous_failure_signature: frozenset[tuple[str, str]] | None = None
-        # Team-Retrospektive (Verbesserungsvorschlag "Strategiewechsel statt Wiederholung"):
-        # bisher bedeutete der obige Zirkuit-Breaker nur "aufgeben" - derselbe Agent bekam
-        # denselben Fehler zweimal exakt gleich beschrieben und scheiterte beide Male gleich,
-        # das Ergebnis wurde dann trotzdem als "letzter Stand" übernommen (real beobachtet in
-        # mehreren Läufen: sentinelproxy, incidentpilot, omnichat - "Nach 2 Versuchen nicht
-        # vollständig grün"). EIN zusätzlicher Eskalations-Versuch (nicht mehr, um die Schleife
-        # nicht doch wieder unbegrenzt zu verlängern) holt bei "kein Fortschritt" den
-        # zuständigen Fachbereichsleiter (falls vorhanden) statt denselben Mitarbeiter erneut
-        # gegen dasselbe Problem laufen zu lassen - eine andere Perspektive/Instruktion statt
-        # exakter Wiederholung.
+        # Bei "kein Fortschritt" EIN Eskalationsversuch an den Fachbereichsleiter (andere Perspektive
+        # statt exakter Wiederholung) - nicht mehr, damit die Schleife begrenzt bleibt.
         escalation_attempted = False
-        # Team-Optimierung (Retrospektive 2026-09-05, Punkt 3): core/backlog_worker.py eskaliert
-        # bereits beim ZWEITEN automatischen Retry eines liegen gebliebenen Governance-/
-        # Verifikations-Tickets auf HEAVY_MODEL (Orchestrator(escalate_models=True)) - aber ERST
-        # in einem SEPARATEN, späteren Lauf. Real beobachtet (workspace/zeiterfassung_app,
-        # 2026-09-04): drei komplette, eigenständige Läufe an demselben Projekt, bevor der Fehler
-        # behoben war - jeder einzelne davon wiederholte innerhalb sich selbst nur "derselbe
-        # Agent, dann der Fachbereichsleiter", beide mit dem UNVERÄNDERTEN Standard-Modell. Bevor
-        # DIESER Lauf komplett aufgibt und ein Ticket für einen erst viel später folgenden
-        # Backlog-Retry eröffnet, wird deshalb - GENAU EINMAL pro Lauf, NUR für die tatsächlich
-        # betroffenen Agenten (kein pauschales Hochstufen aller 33 Fachagenten) - ein letzter
-        # Versuch mit HEAVY_MODEL unternommen. Das verkürzt den in zeiterfassung_app real
-        # beobachteten Drei-Lauf-Kreislauf im Idealfall auf einen einzigen Lauf.
+        # Danach GENAU EINMAL pro Lauf ein letzter Versuch mit HEAVY_MODEL nur für die betroffenen
+        # Agenten, statt erst im späteren Backlog-Retry (core/backlog_worker.py) zu eskalieren.
         model_escalation_attempted = False
-        # Defensiv vorinitialisiert (nicht nur im escalation_attempted-Zweig unten): bei einem
-        # per Env auf >2 hochgesetzten MAX_VERIFICATION_ITERATIONS kann der "kein Fortschritt"-
-        # Zweig ein zweites Mal greifen, NACHDEM escalation_attempted schon True ist - top_failures
-        # würde dann sonst nie (neu) berechnet, aber unten beim Ticket-Text referenziert.
+        # Vorinitialisiert: bei MAX_VERIFICATION_ITERATIONS > 2 kann der "kein Fortschritt"-Zweig nach
+        # bereits erfolgter Eskalation erneut greifen und top_failures im Ticket-Text referenzieren.
         top_failures = ""
-        # Ebenso defensiv vorinitialisiert: wird das Budget bereits VOR der ersten Eskalation
-        # überschritten (run_start_tokens-Check oben), bleibt der gesamte
-        # "if not escalation_attempted and not (...)"-Zweig ungelaufen und stuck_owners würde
-        # nie gesetzt - der direkt danach folgende Check "if not model_escalation_attempted and
-        # stuck_owners" würde dann mit einem NameError crashen (real möglich bei knappem
-        # Token-Budget + fehlenden betroffenen Dateien, z.B. bei `npm test`-Fehlern ohne
-        # zuordenbare Datei). Ein leeres Set ist hier bewusst "kein stecken gebliebener Owner
-        # gefunden" statt eines Absturzes.
+        # Vorinitialisiert: wird das Budget vor der ersten Eskalation überschritten, bliebe stuck_owners
+        # sonst ungesetzt und der Modell-Eskalations-Check würde mit NameError crashen.
         stuck_owners: set = set()
-        # Cross-Run-Gedächtnis (Team-Retrospektive nach dem taskpulse-Lauf, zweite Runde): ein
-        # offenes Ticket aus einem VORHERIGEN Lauf desselben Projekts fließt als Kontext in den
-        # ERSTEN Fix-Auftrag dieses Laufs ein (siehe _prior_run_context()) - und wird, sobald
-        # die Testsuite in DIESEM Lauf tatsächlich grün wird, als gelöst geschlossen, statt als
-        # "blocked" liegen zu bleiben, obwohl das Problem längst behoben ist.
+        # Cross-Run-Gedächtnis: ein offenes Ticket aus einem früheren Lauf fließt in den ersten
+        # Fix-Auftrag ein und wird geschlossen, sobald die Testsuite grün ist.
         test_ticket_id = f"recurring-failure-{self.last_project_slug}" if self.last_project_slug else None
         try:
             had_prior_test_ticket = bool(test_ticket_id and get_ticket(test_ticket_id) is not None)
         except Exception:
             had_prior_test_ticket = False
 
-        # Deterministischer Pre-Flight-Check: ast-basiert, blitzschnell vor isolierter Testsuite.
-        # Erkennt fehlende __init__.py, Syntax-Fehler und nicht deklarierte Abhängigkeiten in
-        # requirements.txt.
-        #
-        # Realer Fund (Analyse 2026-09-06): core/pre_flight_check.py wurde eingeführt, aber nur
-        # für eine reine Notify-Anzeige verdrahtet - format_pre_flight_issues_for_fix() (extra
-        # dafür geschrieben) und has_blocking_issues wurden nie aufgerufen, jeder Fund blieb
-        # bis zum teuren, isolierten Testlauf liegen statt sofort behoben zu werden, obwohl er
-        # in Millisekunden ohne LLM erkannt wurde. Jetzt derselbe gezielte Fix-und-Retry-Loop
-        # (Owner-Routing über file_owners, Kein-Fortschritt-Zirkuitbrecher) wie beim Vorab-
-        # Import-Check direkt darunter.
+        # Deterministischer Pre-Flight-Check (ast-basiert, ohne LLM): fehlende __init__.py,
+        # Syntaxfehler, nicht deklarierte Abhängigkeiten. Funde werden sofort per Fix-und-Retry mit
+        # Owner-Routing und Kein-Fortschritt-Breaker behoben, statt bis zum teuren Testlauf zu warten.
         previous_preflight_signature: frozenset[tuple[str, str]] | None = None
         for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
             if run_start_tokens is not None and (
@@ -539,35 +441,20 @@ class VerificationMixin:
                 break
             previous_preflight_signature = current_preflight_signature
 
-            # Zuständigkeits-Fallback (Team-Optimierung, echter Fund: Pre-Flight-Befunde ohne
-            # bekannten file_owners-Eintrag blieben bisher komplett unbeauftragt liegen und
-            # landeten als Dauer-Blocker im recurring-failure-*-Backlog-Ticket, ohne dass je ein
-            # Agent den Fix übernahm. Statt den Fund stillschweigend fallen zu lassen: Format-/
-            # Lint-/Import-Funde (missing_init = fehlende __init__.py, hidden_runtime_dependency
-            # = Import ohne deklarierte Abhängigkeit) gehen an project_cleaner (räumt Struktur/
-            # Imports auf), reine Dependency-Manifest-Lücken (missing_dependency) an refactoring
-            # (pflegt requirements.txt/pyproject.toml), alle übrigen echten Code-Probleme
-            # (syntax_error u.ä.) an dev_lead als Auffangzuständigkeit für Code-Fehler.
+            # Zuständigkeits-Fallback für Funde ohne file_owners-Eintrag, damit sie nicht unbeauftragt
+            # liegen bleiben: Struktur/Imports -> project_cleaner, Manifest-Lücken -> refactoring,
+            # übrige Code-Probleme -> dev_lead.
             _FALLBACK_OWNER_BY_ISSUE_TYPE = {
                 "missing_init": "project_cleaner",
                 "hidden_runtime_dependency": "project_cleaner",
                 "missing_dependency": "refactoring",
                 "syntax_error": "dev_lead",
-                # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08): "empty_test_suite"
-                # (core/pre_flight_check.py._check_empty_test_suite) meldet ein tests/-
-                # Verzeichnis ohne eine einzige echte Testfunktion - kein Code-/Import-Problem,
-                # sondern fehlende Testabdeckung. `tester` (nicht dev_lead) schreibt bereits
-                # regulär die gesamte Testsuite und ist damit der fachlich richtige Owner.
+                # Tests/-Verzeichnis ohne echte Testfunktion: fehlende Testabdeckung, kein Code-Problem.
                 "empty_test_suite": "tester",
             }
-            # Deterministischer Kurzschluss für "missing_dependency": ein exakt benanntes,
-            # fehlendes PyPI-Paket (z.B. `alembic`, `asyncpg`, `greenlet` - realer Fund
-            # auditlog_sentinel 2026-09-10, dreimal derselbe Fehlerklasse) wird direkt in
-            # requirements.txt eingetragen, OHNE einen LLM-Agenten zu beauftragen - schneller,
-            # günstiger und ohne das Risiko einer parallelen Überschreibung des Manifests.
-            # Test-/Werkzeugpakete (pytest, locust, ...) bzw. Pakete, die nur aus Testdateien
-            # importiert werden, landen in requirements-dev.txt (core/dependency_manifest.
-            # manifest_for_package) - sonst blähen sie die Produktions-Abhängigkeiten auf.
+            # Deterministischer Kurzschluss: ein exakt benanntes fehlendes Paket wird ohne LLM-Agent
+            # direkt ins Manifest eingetragen (schneller, keine parallele Überschreibung). Test-/
+            # Werkzeugpakete landen in requirements-dev.txt (manifest_for_package).
             remaining_issues = list(pre_flight_report.issues)
             manifest = primary_python_manifest(project_dir) if project_dir else None
             if manifest is not None:
@@ -600,8 +487,7 @@ class VerificationMixin:
 
             if not agents_to_fix:
                 if not remaining_issues:
-                    # Alle Funde deterministisch behoben (siehe oben) - direkt erneut prüfen,
-                    # statt fälschlich "ungelöst" zu melden.
+                    # Alle Funde deterministisch behoben - direkt erneut prüfen.
                     continue
                 summary_lines.append(f"- 🔍 ❌ Pre-Flight-Check: {len(remaining_issues)} Fund(e) blieben ungelöst (keinem Agenten eindeutig zuordenbar).")
                 break
@@ -654,21 +540,11 @@ class VerificationMixin:
             f"exit_code={install_exit_code}" if install_exit_code is not None else "",
         )
 
-        # Vorab-Check (statt Vollständigkeits-Check erst NACH der teuren Testsuite/Governance-
-        # Schleife, siehe unten): ein fehlendes lokales Python-Modul (z.B. `app/models.py`, das
-        # per `from . import database, models, schemas` referenziert wird) ist rein statisch,
-        # ohne jeden Testlauf, in Millisekunden erkennbar (core/verifier/completeness.py.
-        # _missing_local_python_imports) - beim taskpulse-Lauf wurde genau dieser Fund erst nach
-        # der vollständigen Test-/Governance-/Review-Kaskade sichtbar (33 Agenten-Durchläufe,
-        # 714k Tokens, 23 Minuten), obwohl er von Anfang an feststand. Läuft NUR gegen
-        # Import-Auflösungs-Funde (nicht den vollen Vollständigkeits-Check inkl. Stub-Marker/
-        # fehlender I/O - die bleiben bewusst beim regulären, späteren Durchlauf, der zusätzlich
-        # den frischen Testlauf mitprüft), maximal MAX_VERIFICATION_ITERATIONS Versuche wie jede
-        # andere Fix-Schleife hier.
+        # Vorab-Import-Check: fehlende lokale Module/Symbole sind statisch in Millisekunden erkennbar
+        # und würden sonst erst nach der teuren Test-/Governance-Kaskade auffallen. Prüft nur
+        # Import-Funde; Stub-Marker u.ä. bleiben beim späteren vollständigen Durchlauf.
         if ENABLE_COMPLETENESS_CHECK and not (budget_aborted or manually_cancelled):
-            # Derselbe Zirkuit-Breaker wie in den übrigen Fix-Schleifen dieser Datei (Team-
-            # Retrospektive nach dem taskpulse-Lauf) - identische Import-Funde nach einem
-            # Fixversuch bedeuten fast immer, dass der Agent das Problem nicht lösen konnte.
+            # Zirkuit-Breaker wie in den übrigen Fix-Schleifen.
             previous_preimport_signature: frozenset[tuple[str, str]] | None = None
             for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
                 if run_start_tokens is not None and (
@@ -683,21 +559,12 @@ class VerificationMixin:
                     break
 
                 pre_report = await asyncio.to_thread(verifier.check_completeness)
-                # Dieselbe Reihenfolge (erst .attempted, DANN .passed, bevor .issues überhaupt
-                # angefasst wird) wie der bestehende Vollständigkeits-Check weiter unten - hält
-                # Tests, die ProjectVerifier komplett mocken, ohne check_completeness() explizit
-                # zu konfigurieren, unverändert lauffähig (ein MagicMock().passed ist truthy,
-                # ein MagicMock().issues wäre dagegen nicht iterierbar und würde crashen).
+                # Erst .attempted/.passed, dann .issues: hält Tests mit komplett gemocktem
+                # ProjectVerifier lauffähig (MagicMock().issues wäre nicht iterierbar).
                 if not pre_report.attempted or pre_report.passed:
                     break
-                # Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive, echter
-                # Fund am event_relay-Lauf 2026-09-06): dieselbe fragile Substring-Suche wie
-                # oben (structural_import_issues) - core/verifier/models.py.CompletenessIssue.
-                # kind == "missing_local_import" erfasst jetzt auch einen fehlenden SYMBOL-Import
-                # (z.B. `from app.resilience import resilience`), den die alte Suche nach
-                # "existierendes lokales" NIE fand, obwohl check_completeness() ihn bereits
-                # korrekt erkannte - der Vorab-Check brach damit still ab, statt den längst
-                # erkannten Fund zur Korrektur weiterzureichen.
+                # CompletenessIssue.kind ist ein stabiles Tag und erfasst auch fehlende Symbol-Importe,
+                # die eine Substring-Suche auf die Meldung verpassen würde.
                 import_issues = [i for i in pre_report.issues if i.kind == "missing_local_import"]
                 if not import_issues:
                     if attempt > 1:
@@ -719,10 +586,7 @@ class VerificationMixin:
                 top = "; ".join(f"{i.file_path}:{i.line_number} – {i.message}" for i in import_issues[:5])
                 notify(f"  🧩 [bold red]Vorab-Import-Check: {len(import_issues)} fehlende(s) lokale(s) Modul/Symbol VOR jedem Testlauf gefunden.[/bold red]")
 
-                # Derselbe Zuständigkeits-Fallback wie beim Pre-Flight-Check oben: ein fehlendes
-                # lokales Modul/Symbol ist immer ein Code-Problem, nie ein Format-/Lint-Fund -
-                # ohne bekannten file_owners-Eintrag geht der Fund deshalb an dev_lead statt
-                # unbeauftragt liegen zu bleiben.
+                # Fehlendes lokales Modul/Symbol ist immer ein Code-Problem - Fallback-Owner dev_lead.
                 agents_to_fix: dict[str, list] = {}
                 for issue in import_issues:
                     owner = file_owners.get(issue.file_path)
@@ -764,19 +628,8 @@ class VerificationMixin:
 
         # ── Smoke-Test-Gate: Startet die App überhaupt? ───────────────────────────────────
         #
-        # Team-Optimierung (KI-Team-Masterplan, Stufe 2): Der Runtime-Smoke-Test lief bisher
-        # ERST NACH der kompletten Testschleife (siehe check_runtime_smoke weiter unten). Der
-        # `tester` ist mit 78 Aufrufen der meistgerufene und mit 65,4% der schwächste
-        # Kern-Agent - und ein Großteil dieser Fehlschläge entsteht, weil die Anwendung
-        # überhaupt nicht startet. Eine vollständige Testsuite gegen eine App zu schreiben und
-        # auszuführen, die schon beim Import scheitert, erzeugt nur Folgefehler: Jeder einzelne
-        # Test schlägt aus derselben Ursache fehl, die Fix-Schleife bekommt einen Berg
-        # scheinbar unabhängiger Fehler und verbrennt Token an Symptomen statt an der Ursache.
-        # Genau das erklärt die teuren Fehlläufe (opspilot: 1.038.910 Tokens, agent_governance:
-        # 999.313 - beide ohne bestandene Verifikation).
-        #
-        # Deshalb VOR der Testschleife: Startet die App nicht, wird genau dieser eine Fehler
-        # gezielt behoben, bevor irgendetwas anderes passiert.
+        # VOR der Testschleife: startet die App nicht, scheitern alle Tests an derselben Ursache und
+        # die Fix-Schleife verbrennt Token an Folgefehlern. Deshalb zuerst genau diesen Fehler beheben.
         if ENABLE_SMOKE_TEST_GATE and not (budget_aborted or manually_cancelled):
             smoke_gate_summary = await self._run_smoke_test_gate(
                 verifier=verifier, project_dir=project_dir, all_results=all_results,
@@ -792,17 +645,9 @@ class VerificationMixin:
                 summary_lines.append(f"- ⏹️ Manuell abgebrochen – Verifikation nach Versuch {attempt - 1} beendet.")
                 break
 
-            # Team-Optimierung (Analysebericht `ki_team_schwachstellen_und_fehleranalyse_
-            # aethermesh_20260913.md`, Schwachstelle 3): das Budget darf NEUE, tokenkostende
-            # Fix-Agent-Aufträge blockieren, aber NIEMALS einen reinen lokalen Testlauf - pytest
-            # selbst verbraucht 0 LLM-Tokens. Vorher brach die Schleife HIER, VOR dem Testlauf,
-            # sofort ab, sobald das Budget (inkl. 10%-Puffer) überschritten war - selbst wenn ein
-            # Fix-Agent im vorherigen Versuch seinen Fix bereits erfolgreich ins Dateisystem
-            # geschrieben hatte (realer Fund: AetherMesh-Lauf, `budget_aborted: true` trotz
-            # bereits vorhandener, funktionierender pytest.ini). Das Projekt wurde dadurch
-            # fälschlich als gescheitert gewertet, obwohl ein kostenloser Re-Test es als grün
-            # bestätigt hätte. `budget_aborted` wird daher nur noch gesetzt und erst NACH dem
-            # Testlauf ausgewertet (siehe unten, vor dem Dispatch neuer Fix-Agenten).
+            # Das Budget blockiert nur neue Fix-Agenten, NIE einen lokalen Testlauf (0 LLM-Tokens) - ein
+            # bereits geschriebener Fix soll noch kostenlos als grün bestätigt werden können.
+            # budget_aborted wird deshalb erst vor dem nächsten Fix-Dispatch ausgewertet.
             if not budget_aborted and run_start_tokens is not None and (
                 self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
             ):
@@ -821,26 +666,14 @@ class VerificationMixin:
 
             if not report.ran:
                 if not report.passed:
-                    # Realer Fund (Workspace-Audit): ein mehrteiliges Backend-Projekt ohne jeden
-                    # Einstiegspunkt bzw. eine Testsuite mit conftest.py, aber ohne echte Testdatei,
-                    # sah bisher genauso aus wie "keine Tests gefunden" und lief als vermeintlich
-                    # bestandene Verifikation durch – core/verifier.py.ProjectVerifier erkennt das
-                    # jetzt als eigenständigen Fehlschlag statt als bloßes "nicht geprüft".
+                    # Kein Einstiegspunkt bzw. conftest.py ohne echte Testdatei ist ein eigenständiger
+                    # Fehlschlag, nicht bloß "nicht geprüft".
                     notify(f"  ❌ [bold red]{report.reason_skipped}[/bold red]")
                     summary_lines.append(f"- ❌ {report.reason_skipped}")
 
-                    # Team-Optimierung (Retrospektive, zeiterfassung_app-Lauf): "conftest.py ohne
-                    # jede echte Testdatei" wurde bisher zwar korrekt als Fehlschlag ERKANNT, aber
-                    # nie ein Fix dafür ausgelöst - der Zweig endete direkt in `break`, anders als
-                    # der Nachbar-Zweig weiter unten ("keine Tests gefunden" bei report.passed=True),
-                    # der den tester gezielt nachbeauftragt. Ergebnis: das Projekt blieb dauerhaft
-                    # ohne lauffähige Testsuite, obwohl die Ursache (fehlende Testdatei, kein
-                    # fehlender Einstiegspunkt) für den tester-Agenten genauso behebbar gewesen wäre
-                    # wie im Nachbar-Fall. Derselbe EINE Nachbeauftragungs-Versuch (no_tests_fix_
-                    # attempted-Zirkuit-Breaker) wie dort, NUR für die Testdatei-Variante des Befunds
-                    # - eine fehlende Einstiegspunkt-Datei (main.py/app.py/...) ist kein Testsuite-
-                    # Problem und bleibt bewusst unangetastet, damit der tester nicht fälschlich mit
-                    # einer Aufgabe beauftragt wird, die architect/backend lösen müssten.
+                    # Fehlt nur die Testdatei, bekommt tester denselben EINEN Nachbeauftragungs-Versuch wie
+                    # bei "keine Tests gefunden". Ein fehlender Einstiegspunkt ist kein Testsuite-Problem
+                    # und bleibt bewusst unangetastet (Aufgabe für architect/backend).
                     if (
                         not no_tests_fix_attempted and not budget_aborted and "tester" in self._agents
                         and ("Testdatei" in report.reason_skipped or "Testsuite" in report.reason_skipped)
@@ -868,15 +701,8 @@ class VerificationMixin:
                         await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
                         continue
                     break
-                # Bewusst ⚠️ statt ℹ️: "keine Tests gefunden" bedeutet, dass generierter Code
-                # UNGEPRÜFT ausgeliefert wird – real beobachtet an einem Taschenrechner-Projekt
-                # ohne jeden Test, dessen "+"-Button sofort mit TypeError abstürzte (Add.execute()
-                # verlangte zwei Argumente, die GUI übergab nur eines). DECOMPOSE_SYSTEM_PROMPT
-                # (core/task_manager.py) weist das Modell inzwischen an, den tester-Agenten bei
-                # echter Programmlogik einzubeziehen - reicht aber nicht immer (real beobachtet
-                # am incidentpilot-Projekt: tester blieb ganz ohne Testdatei, statt hier nur
-                # sichtbar zu bleiben, wird jetzt EIN gezielter Nachbeauftragungs-Versuch
-                # unternommen, bevor endgültig aufgegeben wird.
+                # Bewusst ⚠️ statt ℹ️: "keine Tests gefunden" heißt, Code wird UNGEPRÜFT ausgeliefert.
+                # Vor dem Aufgeben wird tester EINMAL gezielt mit einer Testsuite beauftragt.
                 if not no_tests_fix_attempted and not budget_aborted and "tester" in self._agents:
                     no_tests_fix_attempted = True
                     notify(f"  🧪 [yellow]{report.reason_skipped}[/yellow] – beauftrage tester mit einer echten Testsuite...")
@@ -1010,15 +836,9 @@ class VerificationMixin:
                                 f"- 🔀 Versuch {attempt}: kein Fortschritt beim vorherigen Fix → Eskalation an "
                                 f"Fachbereichsleiter ({', '.join(sorted(lead_targets))}) mit geänderter Strategie."
                             )
-                            # WICHTIG: das Ergebnis der Eskalation wird HIER SOFORT per echtem
-                            # Testlauf geprüft (nicht über `continue` in die äußere Schleife
-                            # zurückgereicht) - ein `continue` würde einen der ohnehin knappen
-                            # MAX_VERIFICATION_ITERATIONS-Versuche für die Eskalation selbst
-                            # verbrauchen und im letzten erlaubten Versuch dazu führen, dass die
-                            # Schleife nach der Eskalation kommentarlos endet, OHNE das Scheitern
-                            # zu melden oder ein Ticket zu eröffnen (so beim ersten Implementierungs-
-                            # versuch real per Test aufgedeckt, siehe
-                            # tests/test_verification_no_progress_breaker.py).
+                            # Eskalationsergebnis HIER sofort per Testlauf prüfen statt per `continue`: das
+                            # würde einen Versuch verbrauchen und im letzten Versuch ohne Meldung/Ticket
+                            # enden (siehe tests/test_verification_no_progress_breaker.py).
                             await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
                             report = await self._run_tests_logged(verifier, "nach-fixversuch")
                             if report.passed:
@@ -1038,12 +858,8 @@ class VerificationMixin:
                                 break
                             escalated_and_resolved = True  # Eskalation lief, aber weiterhin rot - unten normal abbrechen.
 
-                        # Team-Optimierung (Retrospektive 2026-09-05, Punkt 3): letzter Versuch VOR
-                        # dem endgültigen Aufgeben - dieselben stecken gebliebenen Agenten (NICHT die
-                        # Fachbereichsleiter, die haben es gerade erst versucht) bekommen für GENAU
-                        # diesen einen Fix-Auftrag ein stärkeres Modell (HEAVY_MODEL), statt den Fehler
-                        # unverändert in ein Ticket zu schieben, das ohnehin erst bei einem viel
-                        # späteren Backlog-Retry (core/backlog_worker.py) dieselbe Eskalation bekäme.
+                        # Letzter Versuch vor dem Aufgeben: dieselben stecken gebliebenen Agenten (nicht die
+                        # Fachbereichsleiter) bekommen für diesen einen Fix HEAVY_MODEL.
                         if not model_escalation_attempted and stuck_owners:
                             model_escalation_attempted = True
                             escalated_agent_ids = self._escalate_agent_models(stuck_owners)
@@ -1153,10 +969,9 @@ class VerificationMixin:
             }
             for failure in dispatch_failures:
                 triage = triages[id(failure)]
-                # Persistentes Lernen (siehe _record_verification_learning) für künftige Läufe
-                # desselben Agenten - bewusst außerhalb der seiteneffektfreien Routing-Funktion.
-                # Bei Schnittstellen-Drift liegt der Fehler beim Konsumenten, die Backend-Regel
-                # ("Symbol im Zielmodul definieren") wäre dann eine falsche Lektion.
+                # Persistentes Lernen für künftige Läufe - außerhalb der seiteneffektfreien Routing-
+                # Funktion. Bei Schnittstellen-Drift liegt der Fehler beim Konsumenten, die Backend-
+                # Regel wäre dann eine falsche Lektion.
                 if _import_name_error_target(failure.message) is not None and (
                     triage is None or triage.kind == KIND_MISSING_SYMBOL
                 ):
@@ -1198,9 +1013,8 @@ class VerificationMixin:
                 ))
 
             notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix:[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())} (nicht blind alle Dev-Agenten)...")
-            # Reine Strukturfehler sind nie durch Manifest-Änderungen zu beheben (realer Fehl-Loop:
-            # refactoring editierte requirements.txt bei einem ImportError) - Manifeste werden
-            # deshalb gesichert und nach dem Fix-Schritt zurückgesetzt.
+            # Reine Strukturfehler sind nie durch Manifest-Änderungen zu beheben - Manifeste werden
+            # gesichert und nach dem Fix-Schritt zurückgesetzt.
             structural_only = all(triages.get(id(f)) is not None for fails in agents_to_fix.values() for f in fails)
             manifest_snapshot = snapshot_dependency_manifests(project_dir) if project_dir and structural_only else None
             fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
@@ -1215,21 +1029,14 @@ class VerificationMixin:
                 )
             self._update_file_owners(file_owners, fix_results)
             all_results.extend(fix_results)
-            # Nur re-syncen, wenn die Manifest-Änderung tatsächlich bestehen blieb (siehe oben) -
-            # bei einem Rücksetzer entspricht die Umgebung bereits wieder dem installierten Stand.
+            # Nur re-syncen, wenn die Manifest-Änderung bestehen blieb.
             if not restored_manifests:
                 await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
             summary_lines.append(f"- 🛠️ Versuch {attempt}: {len(report.failures)} echte Testfehler → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt.")
 
             if attempt == MAX_VERIFICATION_ITERATIONS:
-                # Fehleranalyse ki_team_fehleranalyse_zusammenfassung.md: die Schleife oben ruft
-                # _run_tests_logged() NUR am ANFANG jedes Versuchs auf (Zeile "erstlauf") - im
-                # LETZTEN erlaubten Versuch verbraucht der `range()` danach keinen weiteren
-                # Schleifendurchlauf mehr, der Fix des letzten Versuchs wurde also NIE gegen die
-                # echte Testsuite geprüft, bevor unten das Ticket eröffnet und der Lauf als
-                # fehlgeschlagen gewertet wurde - selbst wenn der Fix tatsächlich griff. Eine
-                # einzelne zusätzliche Abschlussprüfung schließt genau diese Lücke, bevor endgültig
-                # aufgegeben wird.
+                # Die Schleife testet nur am Anfang jedes Versuchs - ohne diese Abschlussprüfung würde
+                # der Fix des letzten Versuchs nie gegen die Testsuite geprüft.
                 if any(r.files_written for r in fix_results):
                     notify("  🔍 [yellow]Abschlussprüfung nach letztem Fixversuch:[/yellow] prüft, ob der Fix tatsächlich griff...")
                     post_fix_report = await self._run_tests_logged(verifier, "abschluss")
@@ -1255,17 +1062,9 @@ class VerificationMixin:
 
                 notify("  ⚠️ [yellow]Maximale Verifikations-Iterationen erreicht – letzter Stand wird übernommen.[/yellow]")
                 summary_lines.append(f"- ⚠️ Nach {MAX_VERIFICATION_ITERATIONS} Versuchen nicht vollständig grün – letzter Stand wurde übernommen.")
-                # Realer Fund (Team-Retrospektive, omnichat-Projekt): bisher wurde ein nach
-                # MAX_VERIFICATION_ITERATIONS aufgegebener Testfehlschlag NUR geloggt - kein
-                # Backlog-Ticket, keine sonstige Eskalation. Die bereits bestehende
-                # `has_repeated_failure`-Eskalation in agents/orchestrator/__init__.py greift
-                # erst NACH zwei aufeinanderfolgenden kompletten Läufen - hier wird bereits
-                # beim ERSTEN Scheitern innerhalb dieses einen Laufs ein Ticket eröffnet
-                # (upsert_ticket, dieselbe Ticket-ID wie ein etwaiges späteres wiederholtes
-                # Scheitern würde erzeugen, damit beide Pfade dasselbe Ticket aktualisieren
-                # statt Duplikate anzulegen), statt auf einen zweiten fehlgeschlagenen Lauf
-                # zu warten, bevor überhaupt ein sichtbares Signal für menschliche Prüfung
-                # entsteht.
+                # Ticket schon beim ersten Scheitern in diesem Lauf, nicht erst nach zwei gescheiterten
+                # Läufen (has_repeated_failure). Dieselbe Ticket-ID, damit beide Pfade dasselbe Ticket
+                # aktualisieren statt Duplikate anzulegen.
                 if self.last_project_slug:
                     try:
                         upsert_ticket(
@@ -1277,9 +1076,8 @@ class VerificationMixin:
                     except Exception as e:
                         notify(f"  ⚠️ [dim yellow]Ticket für ungelösten Testfehler konnte nicht angelegt werden: {e}[/dim yellow]")
 
-        # Strukturiertes Testergebnis (core/verification_outcome.py): verification_ok spiegelt an
-        # dieser Stelle ausschließlich die Kern-Testsuite wider - nachgelagerte Prüfungen setzen es
-        # ggf. später zurück, ohne das Testergebnis selbst zu verfälschen.
+        # verification_ok spiegelt hier nur die Kern-Testsuite wider - nachgelagerte Prüfungen setzen
+        # es ggf. zurück, ohne das Testergebnis selbst zu verfälschen.
         if report is not None:
             if report.ran or verification_ok:
                 outcome.record("tests", verification_ok, "" if verification_ok else f"{len(report.failures)} Testfehler")
@@ -1288,13 +1086,8 @@ class VerificationMixin:
             else:
                 outcome.record("tests", None, report.reason_skipped or "keine Tests ausgeführt")
 
-        # Echtes Deployment beginnt damit, dass das Projekt sich überhaupt containerisieren
-        # lässt: ein generiertes Dockerfile, das nie tatsächlich baut, bringt niemanden näher
-        # an ein echtes Ausrollen. Baut NIE `docker run`/einen echten Push/Deploy aus (würde
-        # eine konkrete Ziel-Infrastruktur voraussetzen, die dieses Framework nicht kennt) -
-        # nur die Build-Fähigkeit wird geprüft. Übersprungen bei Budget-Abbruch (kostet zwar
-        # keine LLM-Tokens, aber echte Zeit) und generell kein Fehler, wenn kein Dockerfile
-        # existiert oder Docker lokal nicht verfügbar ist (siehe DockerBuildReport).
+        # Prüft nur die Build-Fähigkeit des Dockerfiles (kein run/push/deploy - die Ziel-Infrastruktur
+        # ist unbekannt). Kein Fehler ohne Dockerfile oder ohne lokales Docker.
         if not (budget_aborted or manually_cancelled):
             docker_report = await asyncio.to_thread(verifier.check_docker_build)
             if docker_report.attempted:
@@ -1306,20 +1099,12 @@ class VerificationMixin:
                     notify("  🐳 [bold red]Docker-Build fehlgeschlagen.[/bold red]")
                     summary_lines.append(f"- 🐳 ❌ Docker-Build fehlgeschlagen: {docker_report.output[:500]}")
             elif docker_report.reason_skipped and "Daemon" in docker_report.reason_skipped:
-                # Sichtbar (anders als "kein Dockerfile"/"Docker nicht installiert"), weil diese
-                # Ursache sonst leicht mit einem echten, im Dockerfile liegenden Fehler verwechselt
-                # wird - siehe _DOCKER_DAEMON_UNAVAILABLE_RE (core/verifier/models.py).
+                # Sichtbar, weil ein fehlender Daemon sonst mit einem Dockerfile-Fehler verwechselt wird.
                 notify(f"  🐳 [dim yellow]{docker_report.reason_skipped}[/dim yellow]")
                 summary_lines.append(f"- 🐳 ⏭️ {docker_report.reason_skipped}")
 
-        # Realer Fund (auditlog_sentinel, 2026-09-10): core/verifier/runtime.py.check_frontend_build()
-        # (echter `npm run build`) existierte bereits, wurde aber NIRGENDS aus der Verifikation
-        # aufgerufen - ein React/Vite-Frontend, das nie tatsächlich baute, bestand die Verifikation
-        # trotzdem. Der Browser-UI-Check unten servierte danach die ROHE `main.tsx` statisch,
-        # der Browser brach mit "Expected a JavaScript-or-Wasm module script but the server
-        # responded with a MIME type of text/plain" ab - ein Fehler, der wie ein Frontend-Bug
-        # aussah, obwohl es ein fehlender Build-Schritt war. Läuft VOR dem Browser-UI-Check, damit
-        # core/browser_verifier.py bereits den echten `dist/`-Output servieren kann.
+        # Echter `npm run build` VOR dem Browser-UI-Check: ohne Build würde der Browser-Check rohe
+        # Quelldateien (z.B. main.tsx) servieren und einen Build-Fehler als Frontend-Bug melden.
         if not (budget_aborted or manually_cancelled):
             frontend_build_reports = await asyncio.to_thread(verifier.check_frontend_build)
             for fb_report in frontend_build_reports:
@@ -1353,10 +1138,8 @@ class VerificationMixin:
                         self._update_file_owners(file_owners, fix_result)
                         all_results.extend(fix_result)
 
-        # Informative Prüfschritte (Dependency-Audit, SAST, Lizenzen, Lint) - ausgelagert in
-        # agents/orchestrator/verification_checks.py; beeinflussen verification_ok nicht.
-        # last_lint_signature/last_lint_attempted: siehe core/project_status.has_repeated_lint_finding()
-        # und das automatische Schließen von recurring-lint-Tickets in agents/orchestrator/__init__.py.
+        # Informative Prüfschritte (Dependency-Audit, SAST, Lizenzen, Lint) aus verification_checks.py;
+        # beeinflussen verification_ok nicht. last_lint_*: siehe has_repeated_lint_finding().
         self.last_lint_signature: list[str] = []
         self.last_lint_attempted: bool = False
         if not (budget_aborted or manually_cancelled):
@@ -1366,18 +1149,11 @@ class VerificationMixin:
             self.last_lint_signature = check_ctx.lint_signature
             self.last_lint_attempted = check_ctx.lint_attempted
 
-        # Vollständigkeits-Check: erkennt Stub-/Platzhalter-Code (z.B. "Hier würde die
-        # Verschlüsselung erfolgen") und im README referenzierte, aber fehlende Dateien (z.B.
-        # requirements.txt) - siehe core/verifier/completeness.py und ENABLE_COMPLETENESS_CHECK
-        # (config.py) für den vollständigen Kontext. Anders als Lint/SAST blockiert ein Fund
-        # hier verification_ok, weil ein Stub-Kommentar eine nicht erfüllte fachliche
-        # Anforderung ist, kein Stil-Hinweis - deshalb dieselbe gezielte Fix-Schleife wie beim
-        # echten Testfehler oben, statt nur eine informative Zeile im Protokoll.
+        # Vollständigkeits-Check: Stub-/Platzhalter-Code und im README referenzierte, fehlende Dateien.
+        # Anders als Lint/SAST blockiert ein Fund verification_ok (nicht erfüllte Anforderung) und
+        # löst eine gezielte Fix-Schleife aus.
         if ENABLE_COMPLETENESS_CHECK and not (budget_aborted or manually_cancelled):
-            # Derselbe Zirkuit-Breaker wie in der Test-Fix- und der Governance-Fix-Schleife
-            # (Team-Retrospektive nach dem taskpulse-Lauf): identische Vollständigkeits-Funde
-            # nach einem Fixversuch bedeuten fast immer, dass der Agent das Problem nicht lösen
-            # konnte - ein zweiter, identischer Fix-Dispatch wäre reine Verschwendung.
+            # Zirkuit-Breaker wie in den übrigen Fix-Schleifen.
             previous_completeness_signature: frozenset[tuple[str, str]] | None = None
             for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
                 if run_start_tokens is not None and (
@@ -1483,12 +1259,8 @@ class VerificationMixin:
                 "" if completeness_report.passed else f"{len(completeness_report.issues)} Fund(e)",
             )
 
-        # Realer Fund bei einer Bestandsaufnahme des eigenen Teams: die Verifikation misst
-        # bisher nur Pass/Fail, keine Abdeckung - ein Projekt mit 3 bestandenen Tests bei 500
-        # Zeilen ungetestetem Code gilt genauso als "verifiziert" wie eines mit echter
-        # Abdeckung. Opt-in über MIN_TEST_COVERAGE (Standard 0 = deaktiviert, siehe config.py) -
-        # nur sinnvoll, wenn die Testsuite überhaupt gelaufen UND bestanden ist (report kann
-        # None sein, wenn die Schleife oben nie durchlief, z.B. MAX_VERIFICATION_ITERATIONS<=0).
+        # Opt-in-Abdeckungsschwelle (MIN_TEST_COVERAGE, Standard 0): Pass/Fail allein sagt nichts
+        # über ungetesteten Code. Nur sinnvoll bei gelaufener UND bestandener Testsuite.
         if not (budget_aborted or manually_cancelled) and MIN_TEST_COVERAGE > 0 and report is not None and report.ran and report.passed:
             coverage_report = await asyncio.to_thread(verifier.check_coverage)
             if coverage_report.attempted:
@@ -1498,9 +1270,7 @@ class VerificationMixin:
                     notify(f"  📊 [bold green]Testabdeckung: {coverage_report.percent}%[/bold green] (Schwelle: {MIN_TEST_COVERAGE}%).")
                     summary_lines.append(f"- 📊 Testabdeckung: {coverage_report.percent}% (Schwelle von {MIN_TEST_COVERAGE}% erreicht).")
                 else:
-                    # Anders als ein Lint-Fund (rein informativ) ist eine EXPLIZIT konfigurierte
-                    # Schwelle als echte Anforderung gemeint - verification_ok wird deshalb
-                    # tatsächlich zurückgesetzt, nicht nur protokolliert.
+                    # Eine explizit konfigurierte Schwelle ist eine echte Anforderung - verification_ok zurücksetzen.
                     notify(f"  📊 [bold red]Testabdeckung {coverage_report.percent}% UNTER der Schwelle von {MIN_TEST_COVERAGE}%.[/bold red]")
                     summary_lines.append(f"- 📊 ❌ Testabdeckung {coverage_report.percent}% UNTER der konfigurierten Schwelle (`MIN_TEST_COVERAGE={MIN_TEST_COVERAGE}%`).")
                     verification_ok = False
@@ -1510,16 +1280,8 @@ class VerificationMixin:
 
         # Runtime Smoke-Check: Prüft, ob die generierte App tatsächlich hochfährt / antwortet (Tests grün != App startet)
         #
-        # Team-Optimierung (Retrospektive 2026-09-04): bisher lief dieser Check nur bei
-        # report.passed - also GENAU DANN NICHT, wenn die Testsuite nach MAX_VERIFICATION_
-        # ITERATIONS-Versuchen weiterhin rot blieb und "der letzte Stand übernommen" wurde
-        # (siehe Zweig oben, `verify_fix_test`-Schleife). Real beobachtet an `zeiterfassung_
-        # app`: genau in diesem Fall blieb ein simpler ImportError (Klassenname-Mismatch
-        # zwischen main.py-Import und der tatsächlichen Middleware-Klasse) unentdeckt, bis ihn
-        # ein SPÄTERER Governance-Review-Lauf per Code-Lesen fand - der automatisierte Smoke-
-        # Test hätte ihn sofort UND günstiger gefunden. `report.ran` bleibt Voraussetzung (ohne
-        # jeden Testlauf ist z.B. auch keine Dependency-Installation gesichert, gegen die
-        # `check_runtime_smoke()` starten könnte), `report.passed` nicht mehr.
+        # Läuft auch bei roter Testsuite (z.B. findet er einen ImportError günstiger als ein späteres
+        # Review). `report.ran` bleibt Voraussetzung, da sonst keine Dependency-Installation gesichert ist.
         if not (budget_aborted or manually_cancelled) and report is not None and report.ran:
             def _build_smoke_fix_task(smoke_report, attempt):
                 owner = file_owners.get(smoke_report.entrypoint) if smoke_report.entrypoint else None
@@ -1560,14 +1322,8 @@ class VerificationMixin:
                     notify(f"  🚀 [bold green]Runtime-Smoke-Test erfolgreich:[/bold green] `{smoke_report.entrypoint}` [{smoke_report.app_type}]{code_info}.")
                     summary_lines.append(f"- 🚀 Runtime-Smoke-Test: `{smoke_report.entrypoint}` [{smoke_report.app_type}] startet fehlerfrei{code_info}.")
                 else:
-                    # Bugfix (Code-Review-Fund): dieser Zweig baute bisher nur eine `err`-Variable,
-                    # rief aber weder notify() noch summary_lines.append() auf und setzte
-                    # verification_ok nicht zurück - ein fehlgeschlagener Smoke-Test (App startet
-                    # nicht) blieb dadurch komplett unsichtbar UND unblockiert, obwohl genau das
-                    # der Sinn dieses Checks ist ("Tests grün != App startet", siehe Kommentar
-                    # oben). Analog zur Testabdeckungs-Schwelle: eine tatsächlich geprüfte, aber
-                    # nicht startende App ist eine echte Anforderungsverletzung, kein reiner
-                    # Stil-Hinweis wie ein Lint-Fund.
+                    # Eine geprüfte, aber nicht startende App ist eine echte Anforderungsverletzung -
+                    # sichtbar melden und verification_ok zurücksetzen.
                     err = f": {smoke_report.output[:150]}" if smoke_report.output else ""
                     notify(f"  🚀 [bold red]Runtime-Smoke-Test fehlgeschlagen:[/bold red] `{smoke_report.entrypoint}` [{smoke_report.app_type}]{err}.")
                     summary_lines.append(f"- 🚀 ❌ Runtime-Smoke-Test fehlgeschlagen: `{smoke_report.entrypoint}` [{smoke_report.app_type}] startet nicht{err}.")
@@ -1576,14 +1332,9 @@ class VerificationMixin:
                     notify(f"  ❌ [bold red]Verifikations-Veto durch Runtime-Smoke-Test:[/bold red] {_grund}")
                     summary_lines.append(f"- ❌ **Verifikations-Veto durch Runtime-Smoke-Test:** {_grund}")
 
-        # Lastentest: führt vom performance-Agenten geschriebene k6-/Locust-Skripte (tests/load/)
-        # tatsächlich AUS statt sie nur unausgeführt im Projekt liegen zu lassen - startet die
-        # App und lässt einen kurzen Smoke-Lasttest (wenige Sekunden, wenige virtuelle Nutzer)
-        # dagegen laufen. Rein informativ wie Lint/SAST (kein Performance-Benchmark, keine
-        # Kapazitätsaussage) - EXCEPT ein fehlgeschlagener Request ist wie beim Runtime-Smoke-
-        # Test eine echte Anforderungsverletzung (die App crasht/fehlerantwortet unter simultaner
-        # Last), kein reiner Stil-Hinweis. In der Praxis für die meisten Projekte ein No-Op
-        # (braucht ein Skript unter tests/load/ UND das jeweilige Tool lokal installiert).
+        # Lastentest: führt k6-/Locust-Skripte unter tests/load/ kurz gegen die gestartete App aus.
+        # Kein Benchmark, aber fehlgeschlagene Requests unter Last sind eine echte
+        # Anforderungsverletzung. Für die meisten Projekte ein No-Op (Skript + Tool nötig).
         if ENABLE_LOAD_TEST_CHECK and not (budget_aborted or manually_cancelled) and report is not None and report.ran and report.passed:
             def _build_load_fix_task(perf_report, attempt):
                 owner = file_owners.get(perf_report.script) if perf_report.script else None
@@ -1620,13 +1371,8 @@ class VerificationMixin:
             if perf_report.attempted:
                 outcome.record("load_test", bool(perf_report.passed))
                 stats = f"{perf_report.total_requests} Requests, {perf_report.failed_requests} fehlgeschlagen"
-                # isinstance() statt "is not None": ein Test, der ProjectVerifier komplett mockt,
-                # aber check_load_test() nicht explizit auf ein PerfCheckReport setzt (wie bei
-                # check_docker_build/check_runtime_smoke gibt es hier keinen sicheren MagicMock-
-                # Default), liefert für p95_ms sonst ein MagicMock-Objekt statt None - das würde
-                # an der ":.0f"-Formatierung mit TypeError crashen. isinstance() ist für den
-                # echten Produktivpfad (p95_ms ist dort immer float|None) gleichwertig, macht den
-                # Codepfad aber robust gegen unvollständig gemockte Verifier in Tests.
+                # isinstance() statt "is not None": hält Tests mit unvollständig gemocktem Verifier
+                # robust (MagicMock würde an ":.0f" mit TypeError crashen).
                 if isinstance(perf_report.p95_ms, (int, float)):
                     stats += f", p95={perf_report.p95_ms:.0f}ms"
                 if perf_report.passed:
@@ -1641,15 +1387,8 @@ class VerificationMixin:
                     summary_lines.append(f"- ❌ **Verifikations-Veto durch Lastentest:** {_grund}")
 
         # Browser / Frontend UI-Check: Prüft statische Assets, Rendering und JS-Konsolenfehler.
-        # Realer Fund (Pong-Projekt): ein Fehlschlag hier war bisher rein informativ und
-        # beeinflusste verification_ok NICHT - ein Frontend, das im echten Browser mit einem
-        # JS-Fehler crasht oder ein <canvas> nie tatsächlich zeichnet (siehe blank_canvases,
-        # core/browser_verifier.py), bestand die Verifikation trotzdem. Das war eine bewusste
-        # Design-Entscheidung analog zu Lint/SAST - für ein Frontend-Projekt ist dieser Check
-        # aber oft die EINZIGE Instanz, die überhaupt echten Browser-Code ausführt (Unit-Tests
-        # wie im Pong-Fall mockten Canvas/DOM komplett weg), nicht nur ein Stil-Hinweis wie ein
-        # Lint-Fund. Ein echter Fehlschlag zählt deshalb jetzt wie beim Lastentest/Runtime-
-        # Smoke-Test oben als echte Anforderungsverletzung.
+        # Blockiert verification_ok, da er oft die EINZIGE Instanz ist, die echten Browser-Code
+        # ausführt (Unit-Tests mocken Canvas/DOM häufig komplett weg).
         if not (budget_aborted or manually_cancelled):
             def _build_browser_fix_task(browser_report, attempt):
                 agent_id = _classify_browser_failure_owner(
@@ -1706,12 +1445,8 @@ class VerificationMixin:
                         notify(f"  🌐 [bold green]Frontend/UI-Check erfolgreich:[/bold green] `{browser_report.tested_url}` [playwright, echter Browser-Lauf].")
                         summary_lines.append(f"- 🌐 Frontend/UI-Check: `{browser_report.tested_url}` [playwright] fehlerfrei (JS wurde echt ausgeführt).")
                     else:
-                        # static_dom-Fallback: prüft NUR, ob referenzierte Dateien existieren -
-                        # es läuft dabei KEIN JavaScript. Ein grüner static_dom-Pass sah bisher
-                        # optisch identisch zu einem echten Playwright-Pass aus (nur der kleine
-                        # "[engine]"-Zusatz unterschied sie) - genau der fehlende Kontrast, der
-                        # einen kaputten Bootstrap (fehlendes type="module", kein Game-Loop) als
-                        # "geprüft und ok" durchgehen ließ, obwohl nie echter Code lief.
+                        # static_dom-Fallback führt KEIN JavaScript aus - deutlich als eingeschränkt
+                        # kennzeichnen, damit er nicht wie ein echter Playwright-Pass wirkt.
                         notify(f"  🌐 [bold yellow]Frontend/UI-Check eingeschränkt:[/bold yellow] `{browser_report.tested_url}` [static_dom] - kein echter Browser installiert, JavaScript wurde NICHT ausgeführt (nur Dateiexistenz geprüft).")
                         summary_lines.append(f"- 🌐 ⚠️ Frontend/UI-Check nur eingeschränkt (`static_dom`, `{browser_report.tested_url}`): referenzierte Dateien existieren, aber JavaScript lief NICHT in einem echten Browser (Playwright fehlt/nicht nutzbar) - Laufzeitfehler bleiben so unentdeckt.")
                 else:
@@ -1725,11 +1460,8 @@ class VerificationMixin:
                     notify(f"  ❌ [bold red]Verifikations-Veto durch Browser-UI-Check:[/bold red] {err_details}.")
                     summary_lines.append(f"- ❌ **Verifikations-Veto durch Browser-UI-Check:** {err_details}.")
 
-        # Accessibility-Check: echter axe-core-Scan (WCAG 2.x) gegen die gerenderte Seite -
-        # ersetzt die rein LLM-basierte Einschätzung des accessibility-Agenten durch geparste
-        # Verstöße mit Regel/Schweregrad/Element. Rein informativ wie Lint/SAST/Lizenz-Scan
-        # (beeinflusst verification_ok nicht) - dieselbe Einstufung wie der bereits bestehende
-        # Frontend/UI-Check direkt darüber, der aus demselben Grund ebenfalls nicht blockiert.
+        # Accessibility-Check: echter axe-core-Scan (WCAG 2.x) gegen die gerenderte Seite.
+        # Rein informativ, beeinflusst verification_ok nicht.
         if not (budget_aborted or manually_cancelled):
             a11y_report = await asyncio.to_thread(verifier.check_accessibility)
             if a11y_report.attempted:
@@ -1744,22 +1476,9 @@ class VerificationMixin:
                     notify(f"  ♿ [bold red]Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße.[/bold red]")
                     summary_lines.append(f"- ♿ ⚠️ Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße: {top}")
 
-        # Bugfix (Analysebericht 2026-09-13, HyperionSentinel-Lauf): budget_aborted konnte bis
-        # hierhin auch dann noch True werden, wenn die Kern-Testsuite trotz erreichtem Budget
-        # über den weiterhin kostenlos ausgeführten Bestätigungs-Testlauf (siehe oben) bereits
-        # erfolgreich bestanden hatte (verification_ok == True) - eine NACHGELAGERTE, rein
-        # optionale Prüfung (Docker-Build, Vollständigkeits-
-        # Check, Lastentest, ...) traf danach erneut auf dasselbe (weiterhin überschrittene)
-        # Token-Limit und setzte budget_aborted = True, obwohl am eigentlichen Ergebnis nichts
-        # mehr abzubrechen war. Real beobachtet: `run_closed` meldete `budget_aborted: true`
-        # UND `verification_ok: true` gleichzeitig, wodurch der Lauf in Dashboard/Team-Historie
-        # fälschlich als abgebrochen statt als erfolgreich zählte. Ein NACHGELAGERTER Fehlschlag
-        # (Coverage unter Schwelle, Runtime-Smoke/Lastentest/Browser-Check fehlgeschlagen) setzt
-        # verification_ok oben explizit wieder auf False zurück - genau dann bleibt
-        # budget_aborted zurecht bestehen. Nur wenn verification_ok an DIESER Stelle noch True
-        # ist (die Kern-Testsuite bestand UND kein nachgelagerter Check fand einen echten
-        # Fehlschlag), gilt der Lauf als erfolgreich abgeschlossen - mit einem Hinweis, dass
-        # lediglich weitere optionale Prüfungen wegen des Budgets übersprungen wurden.
+        # Hat die Kern-Testsuite bestanden und kein nachgelagerter Check verification_ok zurückgesetzt,
+        # gilt der Lauf als erfolgreich - auch wenn eine optionale Prüfung danach noch das Budget
+        # traf. Sonst meldete run_closed budget_aborted und verification_ok gleichzeitig.
         if verification_ok and budget_aborted:
             summary_lines.append(
                 "- ℹ️ Token-Budget nach bestandener Kern-Testsuite erreicht – "

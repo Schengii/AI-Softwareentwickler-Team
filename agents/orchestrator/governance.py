@@ -1,8 +1,6 @@
 """
 agents/orchestrator/governance.py – GovernanceMixin: Fix-Schleifen für Review-Befunde und Rückfragen
 
-Aus agents/orchestrator/verification.py ausgelagert (Team-Analyse 2026-09-15, Punkt 6: die Datei
-hatte ~2.800 Zeilen). Enthält unverändert:
 - `_run_governance_fix_loop()` – gezielte Korrekturen für kritische Review-Befunde
   (code_reviewer/security/compliance) mit Re-Review, Eskalation und No-Progress-Breaker
 - `_run_permission_blocked_clarification_fix()` – Rückfragen, die nur fehlende Freigaben betreffen
@@ -58,14 +56,10 @@ class GovernanceMixin:
         cancel_requested: Callable[[], bool] | None = None,
     ) -> tuple[list[AgentResult], str, bool, bool]:
         """
-        Robuste Außenhülle um `_run_governance_fix_loop_impl()` (Fehleranalyse 2026-09-13,
-        reale unbehandelte TypeErrors im Governance-Loop): egal was innerhalb der Schleife
-        schiefgeht (z.B. ein nicht-String-`block` in `finding_from_critical_block()`, ein
-        defektes Ticket-System o.ä.) - `process()` erwartet hier IMMER ein valides Tupel
-        `(all_results, summary, budget_aborted, manually_cancelled)` und darf NIE mit einer
-        durchgereichten Exception abstürzen. `all_results` wird dabei bewusst unverändert
-        zurückgegeben (statt eines Teilzustands), da bei einem Absturz nicht sicher feststeht,
-        wie weit die Schleife intern schon mutiert hat.
+        Robuste Außenhülle um `_run_governance_fix_loop_impl()`: `process()` erwartet IMMER ein
+        valides Tupel `(all_results, summary, budget_aborted, manually_cancelled)`, nie eine
+        Exception. `all_results` bleibt bei einem Absturz unverändert, da unklar ist, wie weit
+        die Schleife intern schon mutiert hat.
         """
         try:
             return await self._run_governance_fix_loop_impl(
@@ -87,33 +81,17 @@ class GovernanceMixin:
         cancel_requested: Callable[[], bool] | None = None,
     ) -> tuple[list[AgentResult], str, bool, bool]:
         """
-        Realer Fund bei einer Bestandsaufnahme des eigenen Teams: code_reviewer/security/
-        compliance (REVIEW_ONLY_AGENT_IDS) kategorisieren Befunde in ihren Reports selbst nach
-        Schweregrad ("Kritisch") - das löste bisher NIE einen Korrekturauftrag aus, nur ein
-        echter Testfehler tat das (siehe _run_verification_loop unten). Ein "Kritisch" im
-        Code-Review ist bei einem echten Team ein Blocker, kein FYI im Abschlussbericht.
+        Behandelt als "Kritisch" markierte Befunde der Review-Rollen (REVIEW_ONLY_AGENT_IDS) als
+        Blocker und routet sie per core/review_gate.py-Heuristik an die Datei-Owner zur Korrektur.
 
-        Läuft NACH der Fachbereichs-Hierarchie (die Governance-Phase ist bereits gelaufen,
-        all_results enthält also schon die individuellen Review-Ergebnisse) und VOR der echten
-        Testverifikation - Kritisch-Fixes zuerst, damit die anschließende Testsuite den
-        reparierten Stand prüft. core/review_gate.py liefert die (bewusst als Best-Effort
-        dokumentierte) Text-Heuristik zur Fund-Erkennung/-Zuordnung, kein LLM-Aufruf dafür nötig.
+        Läuft nach der Governance-Phase und VOR der Testverifikation, damit die Testsuite den
+        reparierten Stand prüft. Bei "kein Fortschritt" (identische Befunde) wird erst an den
+        Fachbereichsleiter, dann an HEAVY_MODEL eskaliert, bevor ein Backlog-Ticket entsteht.
+        check_completeness() dient als deterministische Gegenprobe zum LLM-Re-Review, damit ein
+        vom Fix eingeführter Import-Bruch nicht übersehen wird.
 
-        Gibt (all_results, summary, budget_aborted, manually_cancelled) zurück - summary ist
-        "", wenn nichts zu tun war (kein Rauschen im Normalfall, siehe process()).
-
-        Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive): bei "kein
-        Fortschritt" (identische kritische Befunde nach einem Fixversuch) durchläuft diese
-        Schleife jetzt dieselbe Eskalationsleiter wie _run_verification_loop unten, BEVOR ein
-        Backlog-Ticket eröffnet wird - erst Fachbereichsleiter (geänderte Strategie), dann ein
-        letzter Versuch mit HEAVY_MODEL für die stecken gebliebenen Agenten. Vorher gab diese
-        Schleife nach GENAU EINEM erfolglosen Fixversuch auf; der spätere `--work-backlog`-
-        Retry (core/backlog_worker.py) eskaliert zwar ebenfalls das Modell, aber erst Stunden/
-        Tage später im nächsten Scheduler-Zyklus. Zusätzlich läuft check_completeness() (core/
-        verifier/completeness.py) als harte, deterministische Gegenprobe zum finalen LLM-Re-
-        Review - ein struktureller Neu-Bruch (z.B. ein durch den Fix selbst eingeführter
-        `ImportError`, real beobachtet am event_relay-Lauf 2026-09-06) gilt damit als weiterhin
-        kritisch, UNABHÄNGIG davon, ob der LLM-Reviewer ihn bemerkt.
+        Gibt (all_results, summary, budget_aborted, manually_cancelled) zurück; summary ist "",
+        wenn nichts zu tun war.
         """
         if not ENABLE_GOVERNANCE_FIX_LOOP:
             return all_results, "", False, False
@@ -123,31 +101,19 @@ class GovernanceMixin:
             if r.agent_id in REVIEW_ONLY_AGENT_IDS and r.success and r.content
         }
         if not review_agent_ids:
-            # Keine der Review-Rollen war Teil dieses Plans (z.B. eine kleine Aufgabe ohne
-            # QA/Governance) - kein Verhaltensunterschied zu vor dieser Erweiterung.
+            # Keine Review-Rolle im Plan (z.B. kleine Aufgabe ohne QA/Governance).
             return all_results, "", False, False
 
         summary_lines: list[str] = []
         budget_aborted = False
         manually_cancelled = False
-        # Derselbe Zirkuit-Breaker wie in _run_verification_loop (Team-Retrospektive nach dem
-        # taskpulse-Lauf): identische kritische Befunde nach einem Fixversuch bedeuten fast
-        # immer, dass der Agent das Problem nicht lösen konnte - ein zweiter Fix-Dispatch UND
-        # der anschließende verpflichtende Re-Review (siehe unten, "attempt ==
-        # MAX_REVIEW_ITERATIONS") wären dann reine Tokens/Zeit-Verschwendung. Bricht in diesem
-        # Fall direkt zur Ticket-Eröffnung durch, ohne den zweiten Fix-Dispatch zu versuchen.
+        # Zirkuit-Breaker: identische kritische Befunde nach einem Fixversuch bedeuten, dass der
+        # Agent das Problem nicht lösen kann - ein weiterer Fix-Dispatch wäre Verschwendung.
         previous_findings_signature: frozenset[tuple[str, str]] | None = None
-        # Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive): _run_verification_loop
-        # unten eskaliert bei Stagnation bereits an den Fachbereichsleiter UND an ein stärkeres
-        # Modell, BEVOR aufgegeben wird - diese Schleife hier brach bisher bei "kein Fortschritt"
-        # nach genau EINEM Fixversuch direkt zum Ticket ab, ohne dieselbe Eskalationsleiter zu
-        # durchlaufen (der spätere `--work-backlog`-Retry eskaliert zwar das Modell, aber erst
-        # Stunden/Tage später im nächsten Scheduler-Zyklus, siehe core/backlog_worker.py). Diese
-        # beiden Flags spiegeln escalation_attempted/model_escalation_attempted unten 1:1.
+        # Eskalationsleiter wie in _run_verification_loop: erst Fachbereichsleiter, dann stärkeres Modell.
         escalation_attempted = False
         model_escalation_attempted = False
-        # Dasselbe Cross-Run-Gedächtnis wie in _run_verification_loop (Team-Retrospektive nach
-        # dem taskpulse-Lauf, zweite Runde).
+        # Cross-Run-Gedächtnis: ein Ticket aus einem früheren Lauf wird bei Erfolg geschlossen.
         governance_ticket_id = f"unresolved-governance-critical-{self.last_project_slug}" if self.last_project_slug else None
         try:
             had_prior_governance_ticket = bool(governance_ticket_id and get_ticket(governance_ticket_id) is not None)
@@ -155,8 +121,7 @@ class GovernanceMixin:
             had_prior_governance_ticket = False
 
         def _latest_review_results() -> list[AgentResult]:
-            # Neuestes Ergebnis JE Rolle - bei einem Re-Check ab Versuch 2 überschreibt das
-            # frische Ergebnis das ursprüngliche für die Fund-Extraktion.
+            # Neuestes Ergebnis je Rolle - ein Re-Check überschreibt das ursprüngliche.
             latest: dict[str, AgentResult] = {}
             for r in all_results:
                 if r.agent_id in review_agent_ids and r.success and r.content:
@@ -180,9 +145,7 @@ class GovernanceMixin:
             if attempt == 1:
                 review_results = _latest_review_results()
             else:
-                # Nur relevant, wenn MAX_REVIEW_ITERATIONS per .env erhöht wurde (Standard 1
-                # macht diesen Zweig nie sichtbar) - ruft dieselben Review-Rollen frisch auf,
-                # um zu prüfen, ob nach dem letzten Fix-Versuch noch kritische Befunde bestehen.
+                # Nur bei MAX_REVIEW_ITERATIONS > 1: Review-Rollen prüfen den Stand nach dem letzten Fix erneut.
                 notify(f"  🔍 [yellow]Versuch {attempt}/{MAX_REVIEW_ITERATIONS}:[/yellow] Governance-Rollen prüfen den aktuellen Stand erneut...")
                 recheck_tasks = [
                     AgentTask(
@@ -244,9 +207,7 @@ class GovernanceMixin:
                     findings_text = "\n\n".join(block for _agent_id, block in findings)[:3000]
 
                     async def _rerun_review_agents(task_prefix: str) -> list[tuple[str, str]]:
-                        # Dieselbe Nur-Lese-Recheck-Logik wie beim regulären Zwischen-Versuch
-                        # oben (attempt > 1) - prüft NACH der Eskalation, ob die Governance-
-                        # Rollen jetzt noch etwas Kritisches melden, statt blind weiterzumachen.
+                        # Nur-Lese-Recheck nach der Eskalation, statt blind weiterzumachen.
                         tasks = [
                             AgentTask(
                                 task_id=f"{task_prefix}_{agent_id}",
@@ -371,13 +332,8 @@ class GovernanceMixin:
                     "Fixversuch (keine Veränderung)" + (" - auch nach Eskalation" if escalated_and_resolved else "") +
                     " – weiterer Fix-Dispatch übersprungen, Backlog-Ticket direkt eröffnet."
                 )
-                # Team-Optimierung (Retrospektive 2026-09-05): früher wurde dieselbe Zusammen-
-                # fassung an 3 Stellen (Ticket, Lernprotokoll, Entscheidungslog) JEWEILS separat
-                # auf 300 Zeichen gekürzt - für keine der drei existiert ein ungekürztes
-                # Vollprotokoll wie .ai_team_status_full.log, ein hier gekürzter Governance-Fund
-                # war also unwiederbringlich weg. Einmal ungekürzt berechnen, überall gleich
-                # verwenden (log_decision() deckelt selbst noch auf core.decision_log.
-                # MAX_DETAIL_CHARS, aber deutlich großzügiger als vorher).
+                # Einmal ungekürzt berechnen und überall verwenden - Ticket, Lernprotokoll und
+                # Entscheidungslog haben kein Vollprotokoll, gekürzte Funde wären verloren.
                 unresolved_detail = "\n\n".join(block for _agent_id, block in findings) + self._provider_exhaustion_ticket_note()
                 try:
                     upsert_ticket(
@@ -416,21 +372,9 @@ class GovernanceMixin:
                 notify("  ⚠️ [yellow]Kritische Governance-Befunde konnten keinem Agenten eindeutig zugeordnet werden – Auto-Fix übersprungen.[/yellow]")
                 break
 
-            # Team-Retrospektive nach dem zeiterfassung_app-Lauf: dieselbe Fehlerklasse (fehlendes
-            # lokales Modul/Paket, z.B. `app/routers/`) wurde hier vom LLM-Reviewer als Freitext-
-            # Befund gemeldet UND wenig später vom rein statischen Vorab-Import-Check in
-            # _run_verification_loop erneut gefunden - zwei getrennte, unkoordinierte Fix-Budgets
-            # für denselben Defekt. Reichert den Freitext-Befund hier zusätzlich um die exakte,
-            # dateigenaue Fundliste des statischen Checks an (Datei:Zeile + erwarteter Pfad statt
-            # nur Prosa) - derselbe check_completeness()-Aufruf wie beim Vorab-Import-Check, hier
-            # nur zusätzlich in den Fix-Prompt gemischt, läuft rein lokal (Millisekunden, kein
-            # LLM-Aufruf) und kostet daher kein zusätzliches Budget.
-            # Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive, echter Fund
-            # am event_relay-Lauf 2026-09-06): dieser Filter nutzte bisher dieselbe fragile
-            # Substring-Suche `"existierendes lokales" in message` wie der Vorab-Import-Check
-            # unten - core/verifier/models.py.CompletenessIssue.kind ersetzt das durch ein
-            # stabiles, maschinenlesbares Tag (siehe dessen Docstring für den vollen Kontext,
-            # inkl. des `resilience`-Imports, den die alte Substring-Suche verpasste).
+            # Reichert den Freitext-Befund um die dateigenaue Fundliste des statischen Import-Checks
+            # an, damit Review und Vorab-Import-Check denselben Defekt nicht getrennt fixen.
+            # Rein lokal (kein LLM-Aufruf); CompletenessIssue.kind ist ein stabiles Tag.
             try:
                 structural_report = ProjectVerifier(project_dir).check_completeness()
                 structural_import_issues = [
@@ -483,12 +427,8 @@ class GovernanceMixin:
                 f"nur die anschließende echte Testverifikation, nicht die qualitative Review-Aussage selbst)."
             )
 
-            # Proaktives Pro-Task-Budget (Punkt 2 einer Team-Retrospektive): ein einzelner
-            # ausufernder Fix-Task konnte bisher unbemerkt einen unverhältnismäßig großen Teil
-            # des GESAMTEN Lauf-Budgets verbrauchen, bevor spätere Fachbereiche überhaupt an der
-            # Reihe waren. Kein Abbruch mitten im laufenden Aufruf (technisch nicht sauber
-            # möglich), aber ein klares Warnsignal, das WEITERE Versuche für denselben Befund in
-            # dieser Schleife stoppt, statt ungebremst weiterzueskalieren.
+            # Pro-Task-Budget: ein laufender Aufruf lässt sich nicht sauber abbrechen, aber ein
+            # ausufernder Fix-Task stoppt weitere Versuche für denselben Befund.
             oversized = [r for r in fix_results if MAX_TASK_TOKENS > 0 and r.total_tokens > MAX_TASK_TOKENS]
             if oversized:
                 names = ", ".join(sorted({r.agent_id for r in oversized}))
@@ -500,14 +440,8 @@ class GovernanceMixin:
                 break
 
             if attempt == MAX_REVIEW_ITERATIONS:
-                # Verpflichtender Re-Review nach dem letzten Fix-Dispatch (Punkt 4 einer
-                # Team-Retrospektive): bisher wurde der Fix im letzten erlaubten Versuch NIE mehr
-                # gegengeprüft (nur Zwischen-Versuche liefen in eine erneute Runde mit Recheck
-                # oben) - ein Fix im finalen Versuch galt damit unbesehen als erledigt, selbst bei
-                # sicherheitskritischen Befunden. Ein einzelner, günstiger Nur-Lese-Recheck
-                # derselben Rollen schließt diese Lücke; bleibt der Befund bestehen, wird ein
-                # Backlog-Ticket für menschliche Prüfung eröffnet statt stillschweigend zu
-                # akzeptieren.
+                # Verpflichtender Re-Review nach dem letzten Fix-Dispatch - sonst gälte ein Fix im
+                # finalen Versuch ungeprüft als erledigt. Bleibt der Befund, folgt ein Backlog-Ticket.
                 notify(f"  🔍 [yellow]Verpflichtender Re-Review nach Versuch {attempt}:[/yellow] prüft, ob der Fix tatsächlich griff...")
                 final_recheck_tasks = [
                     AgentTask(
@@ -536,17 +470,8 @@ class GovernanceMixin:
                     block for res in final_recheck_results if res.success and res.content
                     for block in find_critical_findings(res.content)
                 ]
-                # Team-Optimierung (vollständige Umsetzung einer KI-Team-Retrospektive, echter
-                # Fund am event_relay-Lauf 2026-09-06): der Re-Review oben verlässt sich AUSSCHLIESSLICH
-                # auf die Einschätzung des LLM-Reviewers - genau das akzeptierte real einen Fix
-                # als erledigt ("Resilience-Manager verdrahtet"), der dabei einen frischen,
-                # garantierten `ImportError` einführte (`from app.resilience import resilience`,
-                # obwohl die globale Instanz im selben Fix entfernt wurde). Der Bruch fiel erst im
-                # NÄCHSTEN, unabhängigen Lauf per echtem pytest auf. check_completeness() erkennt
-                # genau diese Fund-Klasse bereits rein lokal (kein LLM-Aufruf, keine zusätzlichen
-                # Kosten) - läuft deshalb HIER zusätzlich als harte, deterministische Gegenprobe:
-                # ein struktureller Neu-Bruch gilt als weiterhin kritisch, UNABHÄNGIG davon, ob
-                # der LLM-Re-Review ihn bemerkt hat.
+                # Deterministische Gegenprobe zum LLM-Re-Review: ein vom Fix eingeführter, nicht
+                # auflösbarer lokaler Import gilt als weiterhin kritisch, auch wenn der Reviewer ihn übersieht.
                 try:
                     structural_recheck = ProjectVerifier(project_dir).check_completeness()
                     structural_still_critical = [
@@ -559,17 +484,9 @@ class GovernanceMixin:
                     notify(f"  🧩 [bold red]Struktureller Neu-Bruch:[/bold red] {len(structural_still_critical)} lokale(r) Import(e) nach dem Fix nicht auflösbar - unabhängig vom LLM-Re-Review als weiterhin kritisch gewertet.")
                 still_critical = still_critical + structural_still_critical
 
-                # Team-Optimierung (Fortsetzung der Analyse 2026-09-06, echter Fund am
-                # event_relay-Lauf): der `_no_progress()`-Zirkuit-Breaker oben eskaliert nur bei
-                # EXAKT WIEDERHOLTEM Befund - real blieb ein Fixversuch beim zweiten Fund derselben
-                # Ursache aber eine ANDERE Symptomatik zurück (Versuch 1: "ResilienceManager nicht
-                # verdrahtet" → Versuch 2, nach dem Fix: "ImportError: `resilience` keine globale
-                # Instanz mehr"), sodass `_no_progress()` NIE griff und der verpflichtende
-                # Re-Review hier direkt ein Ticket eröffnete, OHNE je den Fachbereichsleiter mit
-                # einer geänderten Strategie zu versuchen - dieselbe Eskalationsleiter wie oben,
-                # nur ohne die Modell-Eskalation (die bräuchte einen echten Provider-Client, siehe
-                # core/llm_factory.py.LLMFactory.create_for_model() - hier bewusst nicht riskiert,
-                # das ist bereits über den Zirkuit-Breaker-Pfad oben abgedeckt).
+                # _no_progress() greift nur bei exakt wiederholtem Befund; eine andere Symptomatik
+                # derselben Ursache soll trotzdem vor dem Ticket an den Fachbereichsleiter eskalieren.
+                # Modell-Eskalation hier bewusst nicht (deckt der Breaker-Pfad oben ab).
                 if still_critical and not escalation_attempted and not (
                     run_start_tokens is not None and (
                         self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
@@ -582,9 +499,7 @@ class GovernanceMixin:
                         if stuck_owner_ids & set(defn["members"]) and dept_id in self._dept_leads
                     }
                     if lead_targets:
-                        # Dieselbe Absicherung wie bei `still_critical_detail` weiter unten - auch
-                        # hier darf ein nicht-string-facher Eintrag in `still_critical` nicht mit
-                        # einem TypeError abbrechen.
+                        # Nicht-String-Einträge in still_critical dürfen keinen TypeError auslösen.
                         still_critical_text = "\n\n".join(
                             b if isinstance(b, str) else str(b) for b in still_critical
                         )[:3000]
@@ -664,26 +579,14 @@ class GovernanceMixin:
                         f"{len(still_critical)} kritische(n) Befund(e) – Backlog-Ticket eröffnet statt "
                         "stillschweigend zu übernehmen."
                     )
-                    # Fehleranalyse 2026-09-13: `still_critical` mischt Freitext-Blöcke aus dem
-                    # LLM-Re-Review mit den oben angehängten `structural_still_critical`-Strings -
-                    # beide sind zwar in der Praxis immer `str`, ein zukünftiger, nicht-string-
-                    # facher Eintrag (z.B. ein versehentlich durchgereichtes Exception-Objekt)
-                    # riss hier bisher per TypeError in `finding_from_critical_block()` (erwartet
-                    # `block: str`) die gesamte Governance-Fix-Schleife mit sich. `str(block)`
-                    # statt eines harten Abbruchs bewahrt den Fund wenigstens als Text.
+                    # str(block) statt TypeError, falls still_critical je einen Nicht-String enthält
+                    # (finding_from_critical_block() erwartet str) - der Fund bleibt als Text erhalten.
                     still_critical_detail = "\n\n".join(
                         b if isinstance(b, str) else str(b) for b in still_critical
                     ) + self._provider_exhaustion_ticket_note()
                     try:
-                        # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echte PR-Review-
-                        # Kommentare): dieselben still_critical-Blöcke, die gerade als Fließtext im
-                        # Backlog-Ticket landen, werden hier ZUSÄTZLICH in ReviewFinding-Objekte
-                        # (mit best-effort extrahiertem file_path) umgewandelt und am Orchestrator
-                        # gespeichert - interface/cli.py._ask_for_git_push()/core/backlog_worker.py
-                        # lesen dieses Attribut nach einem erfolgreichen create_pull_request() und
-                        # hinterlassen echte, dateibezogene GitHub-Review-Kommentare am PR
-                        # (agents/github_agent.py.post_pr_review()), statt den Befund nur im PR-Body
-                        # zu verstecken, wo ihn ein menschlicher Reviewer leicht überliest.
+                        # Zusätzlich als ReviewFinding speichern: CLI/backlog_worker posten diese nach
+                        # create_pull_request() als dateibezogene PR-Review-Kommentare.
                         self.last_unresolved_review_findings.extend(
                             finding_from_critical_block(block if isinstance(block, str) else str(block))
                             for block in still_critical
@@ -709,11 +612,8 @@ class GovernanceMixin:
                             f"{getattr(self, 'last_project_slug', 'project')}: {still_critical_detail[:300]}",
                         )
                     except Exception as e:
-                        # Robustheits-Netz (Fehleranalyse 2026-09-13): Ticket-Erstellung, Lern-
-                        # protokoll und externe Benachrichtigung sind Nebenwirkungen der eigentlich
-                        # bereits abgeschlossenen Fund-Ermittlung - ein Fehler hier (z.B. ein
-                        # defektes Backlog-/Notify-Backend) darf den Governance-Fix-Lauf selbst
-                        # nicht mit einer unbehandelten Exception zum Absturz bringen.
+                        # Ticket/Lernprotokoll/Benachrichtigung sind Nebenwirkungen - ein defektes
+                        # Backend darf den Governance-Fix-Lauf nicht abstürzen lassen.
                         notify(f"⚠️ [dim yellow]Nachbearbeitung des ungelösten Governance-Befunds fehlgeschlagen: {e}[/dim yellow]")
                 else:
                     summary_lines.append(f"- ✅ Re-Review nach Versuch {attempt} bestätigt: keine kritischen Befunde mehr.")
@@ -734,11 +634,8 @@ class GovernanceMixin:
         cancel_requested: Callable[[], bool] | None = None,
     ) -> tuple[list[AgentResult], str, bool, bool]:
         """
-        Robuste Außenhülle um `_run_permission_blocked_clarification_fix_impl()` (Fehleranalyse
-        2026-09-13, analog zu `_run_governance_fix_loop` oben) - garantiert, dass `process()`
-        auch bei einem unerwarteten Fehler in dieser Klärungs-Schleife (z.B. beim Ticket- oder
-        Lernprotokoll-Zugriff) IMMER ein valides Tupel erhält, statt mit einer durchgereichten
-        Exception abzustürzen.
+        Robuste Außenhülle um `_run_permission_blocked_clarification_fix_impl()` - garantiert wie
+        bei `_run_governance_fix_loop` IMMER ein valides Tupel statt einer Exception.
         """
         try:
             return await self._run_permission_blocked_clarification_fix_impl(
@@ -763,21 +660,15 @@ class GovernanceMixin:
         cancel_requested: Callable[[], bool] | None = None,
     ) -> tuple[list[AgentResult], str, bool, bool]:
         """
-        Realer Fund (omnichat-Projekt): der security-Agent identifizierte ein echtes kritisches
-        Problem (Pydantic-v2-Migration in `app/schemas.py`, CORS-Härtung in `app/main.py`), hatte
-        in diesem Aufruf aber keine Schreibrechte und griff statt zu einem normalen, per
-        `find_critical_findings` erkennbaren "Kritisch"-Bericht zu `ask_human_for_clarification`
-        mit der Frage "Wie erhalte ich Schreibrechte...?". Diese Frage landete unbeantwortet in
-        .ai_team_status.json (open_questions) und wurde NIE an einen schreibberechtigten Agenten
-        weitergeroutet - anders als bei _run_governance_fix_loop oben blieb das Problem so über
-        beliebig viele Läufe hinweg ungelöst liegen, obwohl der Fund selbst konkret und lösbar
-        war. Läuft direkt NACH der Governance-Fix-Schleife (dieselbe Reihenfolge-Logik: vor der
-        echten Testverifikation, damit die Testsuite den reparierten Stand prüft) und nutzt
-        dieselbe core/review_gate.py.route_findings_to_owners()-Zuordnung wie dort - der
-        Fund-Text ist hier die Rückfrage selbst statt eines Review-Abschnitts.
+        Routet Rückfragen, die nur an fehlenden Schreibrechten scheitern (z.B. ein read-only
+        security-Agent mit konkretem Fund), an einen schreibberechtigten Datei-Owner - sonst
+        bliebe ein lösbares Problem über beliebig viele Läufe unbeantwortet liegen.
 
-        Gibt (all_results, summary, budget_aborted, manually_cancelled) zurück - summary ist ""
-        bei nichts zu tun (kein Rauschen im Normalfall).
+        Läuft nach der Governance-Fix-Schleife und vor der Testverifikation; nutzt dieselbe
+        route_findings_to_owners()-Zuordnung, mit der Rückfrage als Fund-Text.
+
+        Gibt (all_results, summary, budget_aborted, manually_cancelled) zurück; summary ist ""
+        bei nichts zu tun.
         """
         blocked: list[tuple[str, str, AgentResult]] = []
         for res in all_results:
@@ -839,21 +730,15 @@ class GovernanceMixin:
                 f"Rückfrage mehr im Abschlussbericht)."
             )
 
-            # Dasselbe Pro-Task-Budget-Warnsignal wie in _run_governance_fix_loop oben (Punkt 2
-            # einer Team-Retrospektive) - auch hier kann ein einzelner Fix-Task ausufern.
+            # Pro-Task-Budget-Warnsignal wie in _run_governance_fix_loop.
             oversized = [r for r in fix_results if MAX_TASK_TOKENS > 0 and r.total_tokens > MAX_TASK_TOKENS]
             if oversized:
                 names = ", ".join(sorted({r.agent_id for r in oversized}))
                 notify(f"  🚫 [bold red]Pro-Task-Budget überschritten[/bold red] ({names}).")
                 summary_lines.append(f"- 🚫 Pro-Task-Budget ({MAX_TASK_TOKENS:,} Tokens) von {names} überschritten.")
 
-            # Behobene Fragen aus dem Abschlussbericht entfernen (open_questions), damit sie nicht
-            # trotz erfolgtem Fix als unbeantwortet im Status/PROJECT_STATE.md landen - eine echte
-            # fachliche Rückfrage im selben Ergebnis (falls vorhanden) bleibt davon unberührt.
-            # `unrouted`-Einträge tragen dasselbe "[agent_id] text"-Format wie
-            # route_findings_to_owners() sie selbst erzeugt (core/review_gate.py) - so lässt sich
-            # ohne eigene Owner-Neuberechnung feststellen, welche der ursprünglichen Fragen
-            # tatsächlich geroutet (= gerade gefixt) statt unrouted geblieben sind.
+            # Behobene Fragen aus open_questions entfernen. `unrouted` nutzt dasselbe "[agent_id] text"-
+            # Format wie route_findings_to_owners(), daran erkennt man die gerouteten Fragen.
             unrouted_set = set(unrouted)
             fixed_raiser_ids: set[str] = set()
             for agent_id, q, res in blocked:
@@ -863,12 +748,8 @@ class GovernanceMixin:
                     res.clarification_questions.remove(q)
                     fixed_raiser_ids.add(res.agent_id)
 
-            # Verpflichtender Re-Review (Punkt 4 einer Team-Retrospektive, analog zum finalen
-            # Recheck in _run_governance_fix_loop): der ursprünglich blockierte Agent (z.B.
-            # security) prüft den nun schreibbaren Fix noch einmal read-only nach, statt den
-            # Fix-Dispatch ungeprüft als erledigt zu behandeln - genau die Lücke, die im echten
-            # omnichat-Fund dazu führte, dass niemand je bestätigte, ob CORS/Pydantic-v2
-            # tatsächlich behoben wurden.
+            # Verpflichtender Re-Review: der ursprünglich blockierte Agent prüft den Fix read-only nach,
+            # statt den Fix-Dispatch ungeprüft als erledigt zu behandeln.
             if fixed_raiser_ids and not oversized:
                 notify(f"  🔍 [yellow]Verpflichtender Re-Review:[/yellow] {', '.join(sorted(fixed_raiser_ids))} prüft den Fix nach...")
                 recheck_tasks = [
@@ -897,16 +778,12 @@ class GovernanceMixin:
                         f"- 🛑 Re-Review bestätigt den Fix NICHT – {len(still_critical)} weiterhin kritische(r) "
                         "Befund(e). Backlog-Ticket für menschliche Prüfung eröffnet."
                     )
-                    # Fehleranalyse 2026-09-13 / analog zur Schwester-Stelle in
-                    # _run_governance_fix_loop_impl() oben: `str(block)` statt eines harten
-                    # TypeError-Abbruchs, falls `still_critical` je einen Nicht-String enthält.
+                    # str(block) statt TypeError bei Nicht-Strings (wie in _run_governance_fix_loop_impl).
                     still_critical_detail = "\n\n".join(
                         b if isinstance(b, str) else str(b) for b in still_critical
                     ) + self._provider_exhaustion_ticket_note()
                     try:
-                        # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echte PR-Review-
-                        # Kommentare) - siehe die ausführliche Begründung bei der Schwester-Stelle in
-                        # _run_governance_fix_loop_impl() oben.
+                        # Als ReviewFinding für PR-Review-Kommentare speichern (wie in _run_governance_fix_loop_impl).
                         self.last_unresolved_review_findings.extend(
                             finding_from_critical_block(block if isinstance(block, str) else str(block))
                             for block in still_critical
@@ -932,8 +809,7 @@ class GovernanceMixin:
                             f"{getattr(self, 'last_project_slug', 'project')}: {still_critical_detail[:300]}",
                         )
                     except Exception as e:
-                        # Robustheits-Netz (Fehleranalyse 2026-09-13): siehe Begründung bei der
-                        # Schwester-Stelle in _run_governance_fix_loop_impl() oben.
+                        # Nebenwirkungen dürfen den Lauf nicht abstürzen lassen (wie in _run_governance_fix_loop_impl).
                         notify(f"⚠️ [dim yellow]Nachbearbeitung des ungelösten, schreibgeschützt blockierten Befunds fehlgeschlagen: {e}[/dim yellow]")
                 else:
                     summary_lines.append("- ✅ Re-Review bestätigt: Fix erfolgreich.")
@@ -954,34 +830,16 @@ class GovernanceMixin:
         cancel_requested: Callable[[], bool] | None = None,
     ) -> tuple[list[AgentResult], str, bool, bool]:
         """
-        Realer Fund (incidentpilot-Projekt): der tester-Agent stellte eine echte fachliche
-        Scope-Rückfrage ("Soll ich die Grundstruktur der Anwendung ... von Grund auf neu
-        erstellen, da ich kein 'app/'-Verzeichnis sehe?") statt sie autonom zu beantworten und
-        weiterzuarbeiten. Anders als eine Schreibrechte-Rückfrage (siehe
-        _run_permission_blocked_clarification_fix oben) passt hier KEIN Muster von
-        find_permission_blocked_questions() - die Frage blieb deshalb unbeantwortet in
-        .ai_team_status.json (open_questions) stehen, und der Lauf endete mit
-        verification_ok=False, OHNE dass die eigentliche Kernfunktion je gebaut wurde, obwohl
-        Architektur/ADRs/OpenAPI-Spezifikation für das Projekt bereits vollständig vorlagen.
+        Lässt Agenten strukturelle Scope-Rückfragen (z.B. "Soll ich die fehlende app/-Struktur
+        anlegen?") autonom mit der naheliegendsten Annahme beantworten und weiterbauen - es gibt
+        keinen anwesenden Menschen, sonst endet der Lauf ohne Kernfunktion.
 
-        Das Team hat keinen anwesenden Menschen, der eine solche Rückfrage in Echtzeit
-        beantworten könnte - der einzig sinnvolle Default ist, dass der fragende Agent selbst
-        die naheliegendste Annahme trifft (z.B. "ja, lege die fehlende Struktur selbst an") und
-        die Aufgabe zu Ende bringt, statt den Lauf unbeantwortet stehen zu lassen. Läuft NACH
-        der Schreibrechte-Fix-Schleife (die spezifischere, bereits behandelte Fälle vorher
-        herausfiltert), aus demselben Grund wie dort: vor der echten Testverifikation, damit
-        die Testsuite den vervollständigten Stand prüft.
+        Läuft nach der Schreibrechte-Fix-Schleife und vor der Testverifikation. Nutzt bewusst
+        die enge Allowlist find_structural_scope_questions(): echte fachliche Unklarheiten
+        (z.B. "Welche Zahlungsanbieter?") müssen weiter zur Eskalation an einen Menschen führen.
 
-        Nutzt bewusst find_structural_scope_questions() (eine enge ALLOWLIST, siehe deren
-        Docstring in core/review_gate.py) statt "alles außer Schreibrechte-Fragen" - eine echte
-        fachliche Unklarheit, die nur ein Mensch beantworten kann (z.B. "Welche Zahlungsanbieter
-        sollen unterstützt werden?"), MUSS weiterhin unangetastet zur Mid-Task-Eskalation an
-        einen Menschen führen (core/agent_toolbox.py.ask_human_for_clarification, siehe
-        tests/test_clarification_escalation.py) - sonst würde diese Funktion genau die
-        Eskalation unterlaufen, die sie eigentlich ergänzen soll.
-
-        Gibt (all_results, summary, budget_aborted, manually_cancelled) zurück - summary ist ""
-        bei nichts zu tun (kein Rauschen im Normalfall, in dem gar keine Rückfrage offen ist).
+        Gibt (all_results, summary, budget_aborted, manually_cancelled) zurück; summary ist ""
+        bei nichts zu tun.
         """
         remaining: list[tuple[str, str, AgentResult]] = []
         for res in all_results:
@@ -1004,8 +862,7 @@ class GovernanceMixin:
             notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – Auto-Entscheid für offene Rückfragen übersprungen.")
             return all_results, "", False, True
 
-        # Je fragendem Agent EINE Sammel-Aufgabe (nicht pro Frage einzeln) - dieselbe Bündelung
-        # wie route_findings_to_owners() bei Governance-Funden.
+        # Je fragendem Agent EINE Sammel-Aufgabe statt einer pro Frage.
         by_agent: dict[str, list[str]] = {}
         for agent_id, q, _res in remaining:
             if agent_id in self._agents or agent_id in self._dept_leads:
@@ -1045,9 +902,7 @@ class GovernanceMixin:
         self._update_file_owners(file_owners, fix_results)
         all_results.extend(fix_results)
 
-        # Beantwortete Rückfragen aus dem ursprünglichen Ergebnis entfernen, damit sie nicht
-        # trotz Auto-Entscheid weiterhin als unbeantwortet im Abschlussbericht/PROJECT_STATE.md
-        # auftauchen - dieselbe Bereinigung wie in _run_permission_blocked_clarification_fix.
+        # Beantwortete Rückfragen entfernen, damit sie nicht weiter als offen im Bericht erscheinen.
         resolved_agent_ids = set(by_agent.keys())
         for agent_id, q, res in remaining:
             if agent_id in resolved_agent_ids and q in res.clarification_questions:

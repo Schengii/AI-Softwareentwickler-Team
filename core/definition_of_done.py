@@ -284,6 +284,7 @@ def build_definition_of_done(
     min_coverage: float = 0.0,
     verification_skipped: bool = False,
     user_request: str = "",
+    frontend_planned: bool = False,
 ) -> DefinitionOfDone:
     """
     Setzt die Einzelsignale eines Laufs zu einer Gesamtaussage zusammen.
@@ -382,6 +383,27 @@ def build_definition_of_done(
         passed=bool(ui_ok),
         required=False,
         applicable=ui_ok is not None,
+    ))
+    # `/goal`-Auftrag (20260915, Schwachstelle 2): das bisherige `ui_ok`-Kriterium oben ist nur
+    # dann `applicable`, wenn der Browser-UI-Check überhaupt LIEF - und der überspringt sich
+    # selbst mangels servierbarer index.html genau dann, wenn der frontend-Agent am Hard
+    # Delivery Gate scheiterte (agents/base_agent.py: "keine einzige Datei über write_file/
+    # edit_file gespeichert"). Ein komplett ausgefallenes Frontend blieb dadurch unbemerkt -
+    # `ui_ok=None` ("nicht anwendbar") statt eines echten, blockierenden Befunds. Dieses
+    # Kriterium prüft NUR dateibasiert (kein LLM/Browser nötig) und ist ausschließlich
+    # `applicable`, wenn ein frontend-Agent tatsächlich eingeplant war (`frontend_planned`) -
+    # ein Projekt ohne beauftragtes Frontend blockiert dadurch nie.
+    hat_web_entrypoint_datei = any((pfad / rel).is_file() for rel in _WEB_ENTRYPOINT_CANDIDATES)
+    kriterien.append(Criterion(
+        key="missing_frontend_ui",
+        label="Beauftragtes Frontend wurde tatsächlich geliefert",
+        passed=hat_web_entrypoint_datei,
+        applicable=frontend_planned,
+        detail=(
+            "" if hat_web_entrypoint_datei or not frontend_planned
+            else "kein index.html/src/main.tsx/... gefunden - Frontend-Agent ist am Hard "
+                 "Delivery Gate gescheitert oder hat keine UI-Dateien geschrieben"
+        ),
     ))
     if min_coverage > 0:
         erreicht = coverage_percent is not None and coverage_percent >= min_coverage

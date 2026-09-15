@@ -76,7 +76,14 @@ _PATTERNS: dict[str, re.Pattern] = {
 }
 
 _SOURCE_GLOBS = ("**/*.py", "**/*.ts", "**/*.js")
-_SKIP_DIR_PARTS = {"node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "build"}
+# Fund 2026-09-15: harvest_from_project() erntete Code aus .ai_team_venv/Lib/site-packages/pip/...
+# (unvollständige/fremde Snippets, blockierten den Git-Pre-Commit-Hook) - diese Verzeichnisse
+# enthalten NIE projekteigenen, vom Team geschriebenen Code, sondern installierte
+# Fremdabhängigkeiten, und dürfen daher unter keinen Umständen gescannt werden.
+_SKIP_DIR_PARTS = {
+    "node_modules", ".git", "__pycache__", ".venv", "venv", "env",
+    ".ai_team_venv", "site-packages", "dist", "build",
+}
 
 # Ein Baustein mit weniger "echten" Codezeilen gilt als Stub - genau das Muster aus dem
 # chronospulse-Fund (5 Zeilen Kommentar statt Implementierung), siehe Moduldocstring.

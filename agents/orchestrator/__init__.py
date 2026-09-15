@@ -1236,6 +1236,12 @@ class Orchestrator(
                 ),
                 verification_skipped=bool(budget_aborted or manually_cancelled),
                 user_request=user_request,
+                # `/goal`-Auftrag (20260915, Schwachstelle 2): macht das ausschließlich
+                # dateibasierte "missing_frontend_ui"-Kriterium (core/definition_of_done.py)
+                # erst dann verpflichtend, wenn tatsächlich ein frontend-Agent eingeplant war -
+                # unabhängig davon, ob dessen Ergebnis erfolgreich war (gerade das Hard Delivery
+                # Gate-Scheitern soll hier sichtbar werden, siehe agents/base_agent.py).
+                frontend_planned=any(r.agent_id == "frontend" for r in results),
             )
             write_definition_of_done(project_dir, self.last_definition_of_done)
             if self._run_logger is not None:

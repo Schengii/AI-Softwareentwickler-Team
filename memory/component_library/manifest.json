@@ -1,1 +1,15 @@
-[]
+[
+  {
+    "id": "circuit_breaker-endpointcircuitbreaker-b57ca821",
+    "category": "circuit_breaker",
+    "class_name": "EndpointCircuitBreaker",
+    "source_project": "event_pulse",
+    "source_path": "app/dispatcher.py",
+    "language": "py",
+    "added_at": "2026-09-15T10:55:42.415092+00:00",
+    "char_count": 1148,
+    "content_hash": "b57ca82170ca82df",
+    "preview": "class EndpointCircuitBreaker:\n    \"\"\"\n    In-Memory Circuit Breaker pro Endpoint-URL.\n    Zustände: CLOSED (normal), OPEN (blockiert Aufrufe), HALF_OPEN (Probe-Request).\n    Nutzt time.monotonic() für Zeitmessungen.\n    \"\"\"\n\n    def __init__(\n        self,\n        failure_threshold: int = 5,\n       ",
+    "snippet_file": "C:\\Users\\sche-\\Desktop\\Programmieren Projekte\\AI-Softwareentwickler-Team\\memory\\component_library\\circuit_breaker\\circuit_breaker-endpointcircuitbreaker-b57ca821.py"
+  }
+]

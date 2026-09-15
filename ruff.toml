@@ -12,6 +12,14 @@ extend-exclude = [
     "test_proj",
     "zip_proj",
     "scratch",  # lokale, unversionierte Notiz-/Experimentierdateien (kein Framework-Code)
+    # `/goal`-Auftrag (20260915, Schwachstelle 1): core/component_library.py.harvest_from_project()
+    # extrahiert bewusst nur einzelne Klassen-BLÖCKE aus fremden Projektdateien (mit Provenienz),
+    # kein vollständiges, eigenständig lauffähiges Modul - ein extrahierter Block referenziert
+    # z.B. `time.monotonic()`, ohne dass `import time` mit ausgeschnitten wurde. Das ist beabsichtigt
+    # (siehe Moduldocstring: Agenten lesen den Treffer nur als Referenz/Vorlage), macht die Dateien
+    # hier aber untauglich für `ruff check`, das echte, eigenständig lauffähige Module erwartet -
+    # ein `F821 Undefined name 'time'` blockierte deshalb den Pre-Commit-Lint-Gate-Hook.
+    "memory/component_library",
 ]
 
 [lint]

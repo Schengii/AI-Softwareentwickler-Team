@@ -242,6 +242,15 @@ TESTER_CONTRACT_DIRECTIVE = f"""
   und die eigentlich geplanten Tests fehlten am Ende ganz im Projekt.
 - Vor jedem Import aus Produktivcode liest du `{INTERFACE_CONTRACT_FILE}` UND die Zieldatei selbst
   (read_file/search_code). Du importierst NUR Symbole, die dort auf Modulebene existieren.
+- Routen-Pfade und HTTP-Methoden NIEMALS raten: Bevor du eine `client.get/post/put/patch/delete(...)`
+  -Zeile schreibst, liest du zuerst per `read_file` entweder `{INTERFACE_CONTRACT_FILE}` (falls dort
+  Endpunkte gelistet sind) oder direkt `app/main.py`/die jeweiligen Router-Module (`app/api/*.py`) und
+  übernimmst Pfad UND Methode exakt so, wie sie dort im `@router.get(...)`/`@app.post(...)`-Dekorator
+  stehen – inklusive eines abschließenden Slashes, falls die Route ihn hat (`/webhooks/` ist NICHT
+  dasselbe wie `/webhooks`; FastAPI antwortet auf den jeweils falschen Pfad standardmäßig mit
+  `405 Method Not Allowed` bzw. `404`). Realer Fund (task_analytics_hub-Lauf): 7 von 13 Tests
+  scheiterten zu Beginn an `405 Method Not Allowed`, weil Pfade/Methoden geraten statt aus dem
+  tatsächlichen Code übernommen wurden – das kostete drei teure Korrekturschleifen.
 - Nimm nie an, dass eine Methode als freie Funktion existiert: Definiert das Modul
   `class EncryptionService` mit `encrypt()`, testest du `EncryptionService(...).encrypt(...)` bzw. die
   vereinbarte Instanz – nicht `from app.core.encryption import encrypt`.

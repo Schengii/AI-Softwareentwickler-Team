@@ -1,6 +1,9 @@
 """
-core/llm_factory.py – Erstellt und verwaltet LLM-Instanzen (Gemini, Groq, DeepSeek, OpenRouter, HuggingFace & Claude)
-mit präziser Token-Messung und automatischer Failover-Kette.
+core/llm_factory.py – Erstellt und verwaltet LLM-Clients (Gemini, Groq, DeepSeek, OpenRouter,
+HuggingFace, Claude) mit einheitlicher Schnittstelle (Text, JSON, Function-Calling).
+
+Enthält Token-Messung, Gemini-Key-Pool, provider-übergreifende Fallback-Ketten, Cooldowns
+für Rate-Limits/Kontingent-/Auth-Fehler (via core/token_guard.py) und sichtbare Modell-Abwertungen.
 """
 
 import asyncio
@@ -40,10 +43,8 @@ from core.token_guard import token_guard
 # ──────────────────────────────────────────
 # Gemini API-Key-Pool & Client-Manager
 # ──────────────────────────────────────────
-# Ermöglicht das Hinterlegen mehrerer Gemini-API-Keys (z.B. kommagetrennt in GEMINI_API_KEY
-# oder als GEMINI_API_KEY_1..N / GEMINI_API_KEY_FALLBACK_1..N). Erreicht ein Key sein
-# Tageskontingent (429 RESOURCE_EXHAUSTED), wird dieser Key temporär deaktiviert und
-# automatisch auf den nächsten verfügbaren Key im Pool umgeschaltet.
+# Mehrere Gemini-Keys (kommagetrennt oder GEMINI_API_KEY_1..N). Ein Key mit 429
+# RESOURCE_EXHAUSTED wird temporär deaktiviert und auf den nächsten umgeschaltet.
 _gemini_clients_by_key: dict[str, genai.Client] = {}
 _gemini_model_exhausted_keys: dict[tuple[str, str], float] = {}  # (key, model) -> timestamp bis wann key für dieses Modell erschöpft
 _gemini_active_key_index: int = 0
@@ -61,12 +62,10 @@ _gemini_exhausted_keys: dict[str, float] = _ExhaustedKeysDict()  # key -> timest
 
 
 def _get_gemini_client(model: str = "") -> tuple[genai.Client | None, str]:
-    """Gibt das aktive (nicht erschöpfte) Gemini Client-Objekt und den zugehörigen Key zurück.
+    """Gibt den aktiven (nicht erschöpften) Gemini-Client und dessen Key zurück.
 
-    Ist `model` angegeben (oder _gemini_active_model aktiv), werden Keys berücksichtigt, die
-    nur für DIESES Modell erschöpft sind (Google AI Studio Free-Tier limitiert experimentelle
-    Modelle wie gemini-3.8-flash pro Modell auf 20 Requests/Tag, während gemini-3.6-flash/flash-lite
-    auf demselben Key weiterhin frei sind).
+    Mit `model` zählen auch modellspezifisch erschöpfte Keys: das Free-Tier limitiert
+    manche Modelle pro Modell, andere Modelle bleiben auf demselben Key frei.
     """
     global _gemini_active_key_index
     import os
@@ -120,11 +119,9 @@ def _get_gemini_client(model: str = "") -> tuple[genai.Client | None, str]:
 
 
 def _mark_gemini_key_exhausted(key: str, cooldown_seconds: float = 3600.0, *, model: str = "") -> bool:
-    """Markiert einen Gemini-Key als erschöpft. Gibt True zurück, wenn ein weiterer funktionierender Key verfügbar ist.
+    """Markiert einen Gemini-Key als erschöpft; True, wenn noch ein anderer Key verfügbar ist.
 
-    Ist `model` angegeben (oder _gemini_active_model gesetzt), wird der Key nur für dieses Modell
-    erschöpft gemeldet (Modell-spezifische Free-Tier-Quote, z. B. 20 Requests/Tag bei gemini-3.8-flash).
-    Andere Gemini-Modelle bleiben auf diesem Key verfügbar.
+    Mit `model` gilt die Sperre nur für dieses Modell (modellspezifische Free-Tier-Quote).
     """
     global _gemini_active_key_index
     import os
@@ -180,65 +177,15 @@ if GROQ_API_KEY:
     except ImportError:
         _groq_client = None
 
-# Fallback-Kette bei Ausfall / Quota-Erschöpfung: primär echtes Claude<->Gemini-Failover
-# (die stärkeren Anbieter zuerst untereinander, erst danach auf eine kleinere Modellstufe
-# ausweichen) – Groq/DeepSeek/OpenRouter/HuggingFace bleiben als Provider verfügbar
-# (core/llm_factory.py-Clients existieren weiter), werden aber standardmäßig nicht mehr
-# zugewiesen (siehe config.AGENT_MODELS) und daher hier nicht mehr als erste Wahl gelistet.
-#
-# Realer Fund aus einem echten End-to-End-Testlauf ohne ANTHROPIC_API_KEY: die
-# STANDARD/LITE-Gemini-Ketten endeten bisher NACH dem Claude-Versuch (der ohne Schlüssel
-# sofort scheitert) – ein Agent mit einer echten Gemini-Störung (nicht nur Quota, sondern
-# z.B. ein Function-Calling-Fehler) hatte dann KEINE weitere Rettung mehr, obwohl Groq im
-# SELBEN Lauf für andere Rollen (HEAVY-Tier, siehe GROQ_HEAVY_MODEL in config.py) einwandfrei
-# funktionierte. Groq/openai/gpt-oss-120b jetzt als letzte Stufe auch in den STANDARD/LITE-
-# Ketten ergänzt – kein Endlosloop möglich, da _allow_self_fallback=False verhindert, dass
-# Groq bei eigenem Scheitern zurück zu Gemini zurückspringt (siehe generate_with_tools()).
-#
-# WICHTIG (Reichweite dieses Dicts): `MODEL_FALLBACKS.get()` wird AUSSCHLIESSLICH von
-# GeminiClient gelesen (siehe generate_with_tools()/_call_with_retry_and_usage() weiter
-# unten), keyed auf `self.model_name` eines GeminiClient - und ein GeminiClient wird im
-# echten Betrieb nie mit einem Nicht-Gemini-Modellnamen instanziiert (LLMFactory.create_
-# for_model() routet Claude/Groq/DeepSeek/OpenRouter/HuggingFace-Namen immer an den
-# jeweils passenden eigenen Client-Wrapper). Frühere Versionen enthielten hier zusätzlich
-# Einträge mit Nicht-Gemini-Keys ("groq:...", "deepseek:...", ...) in der Annahme, damit
-# ließe sich die Fallback-Kette DIESER Provider steuern - das war totes Konfigurations-
-# wissen: DeepSeekClient/GroqClient/OpenRouterClient/HuggingFaceClient haben stattdessen
-# jeweils fest einprogrammiert genau EINEN Hop direkt zu gemini-3.6-flash (siehe deren
-# generate_with_usage()/generate_with_tools() oben), unabhängig vom Inhalt dieses Dicts.
-# Nur Gemini-Modellnamen gehören hier als Key rein.
+# Fallback-Ketten bei Ausfall/Quota-Erschöpfung. Wird NUR von GeminiClient gelesen (keyed auf
+# dessen model_name); daher gehören hier nur Gemini-Modellnamen als Key hinein. Die anderen
+# Clients haben einen fest verdrahteten Hop zu Gemini. Kein Endlosloop: Fallback-Hops laufen mit
+# _allow_self_fallback=False.
 MODEL_FALLBACKS = {
-    # Gemini erschöpft/fehlerhaft -> auf das jeweils gleichwertige Claude-Modell ausweichen,
-    # dann eine kleinere Gemini-Stufe, dann DeepSeek, zuletzt Groq als kostenloser Backstop.
-    #
-    # Team-Optimierung (KI-Team-Optimierungs-Session, echter Fund): DEEPSEEK_API_KEY war in
-    # diesem Setup bereits konfiguriert (core/llm_factory.py.DeepSeekClient existiert seit
-    # Langem, _provider_available() prüft den Key bereits korrekt), tauchte aber in KEINER
-    # dieser Fallback-Ketten als Fallback-ZIEL auf - eine vollständige Gemini-Tageskontingent-
-    # Erschöpfung (google.rpc.QuotaFailure: "GenerateRequestsPerDayPerProjectPerModel-
-    # FreeTier") legte dadurch jeden Agenten-Aufruf lahm, obwohl ein zweiter, komplett
-    # ungenutzter Anbieter mit eigenem, separatem Tageskontingent bereits einsatzbereit war
-    # (live verifiziert: ein echter DeepSeek-Tool-Call gelang sofort). Vor Groq einsortiert,
-    # da DeepSeek ein vollwertiges, eigenständiges Modell ist (nicht nur ein Open-Weight-
-    # Kompatibilitäts-Backstop wie gpt-oss-120b über Groq).
-    #
-    # Team-Optimierung (dieselbe Session, Fortsetzung): dasselbe Muster wiederholte sich mit
-    # OPENROUTER_API_KEY - ebenfalls konfiguriert, ebenfalls nie als Fallback-ZIEL genutzt.
-    # Live verifiziert: ein echter OpenRouter-Tool-Call UND ein echter JSON-Decompose-Prompt
-    # (dieselbe Art Anfrage, die core/task_manager.py stellt) gelangen beide sofort. Nach
-    # DeepSeek einsortiert (beide sind bezahlte Gateways, keine Gratis-Kontingente wie
-    # Gemini/Groq - Reihenfolge hier daher nicht kritisch, nur ein weiterer unabhängiger
-    # Kontingent-Pool, der zuvor komplett ungenutzt blieb).
-    #
-    # Team-Optimierung (pulseflow_gateway-Retrospektive, 20260911_095217): `claude-sonnet-5`
-    # stand für die BEIDEN Flash-Stufen (gemini-3.8-flash, gemini-3.6-flash) als ERSTER
-    # Fallback - dadurch liefen bei jeder Gemini-Störung praktisch alle Agenten über Claude und
-    # erschöpften binnen eines einzigen Laufs das monatliche Anthropic-Kontingent ("API usage
-    # limits reached"). Claude bleibt für gemini-pro-latest (HEAVY-Rolle, seltener genutzt)
-    # weiterhin die erste Ausweichstufe, wird für die beiden Flash-Stufen aber HINTER die
-    # bezahlten Gateway-Provider (DeepSeek, OpenRouter) UND Groq zurückgestuft - diese haben
-    # eigene, von Anthropic unabhängige Kontingente/Guthaben. Claude bleibt als letzte Stufe
-    # erhalten, damit eine Kette bei komplett erschöpften Drittanbietern nicht ins Leere läuft.
+    # DeepSeek/OpenRouter/Groq haben eigene, von Gemini und Anthropic unabhängige Kontingente.
+    # Claude steht bei den Flash-Stufen nur am Ende, weil sonst jede Gemini-Störung das
+    # Anthropic-Monatslimit in einem Lauf aufbraucht. Für die seltene HEAVY-Stufe bleibt Claude
+    # die erste Ausweichstufe.
     "gemini-pro-latest":    ["claude-opus-5", "claude-sonnet-5", "deepseek:deepseek-chat", "openrouter:openrouter/auto", "gemini-3.8-flash", "gemini-3.6-flash"],
     "gemini-3.8-flash":     ["deepseek:deepseek-chat", "openrouter:openrouter/auto", "groq:openai/gpt-oss-120b", "gemini-3.6-flash", "gemini-3.1-flash-lite", "claude-sonnet-5"],
     "gemini-3.6-flash":     ["deepseek:deepseek-chat", "openrouter:openrouter/auto", "groq:openai/gpt-oss-120b", "gemini-3.8-flash", "gemini-3.1-flash-lite", "claude-sonnet-5"],
@@ -247,14 +194,8 @@ MODEL_FALLBACKS = {
     "gemini-3.5-flash":     ["deepseek:deepseek-chat", "openrouter:openrouter/auto", "groq:openai/gpt-oss-120b", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "claude-sonnet-5"],
 }
 
-# Modul-globaler Schalter (KEIN token_guard-Eintrag, da der pro exaktem Modellnamen gilt):
-# sobald EIN Claude-Aufruf ein erschöpftes Nutzungslimit meldet ("API usage limits reached",
-# "credit balance too low"), gilt das für ALLE Claude-Modellvarianten in diesem Prozess
-# (Opus/Sonnet/Haiku teilen sich dasselbe Anthropic-Konto/Monatslimit) - anders als ein
-# Rate-Limit ist ein Monatskontingent nicht dadurch umgehbar, ein anderes Claude-Modell zu
-# probieren. Realer Fund (pulseflow_gateway, 20260911_095217): ohne diesen Schalter
-# zerschellte jeder weitere Agent im selben Lauf erneut an genau demselben harten Fehler,
-# bevor `_free_heavy_fallback_client()` überhaupt zum Zug kam.
+# Prozessweiter Schalter statt token_guard-Eintrag (der gilt pro Modellname): ein erschöpftes
+# Anthropic-Nutzungslimit betrifft alle Claude-Varianten, da sie dasselbe Konto teilen.
 _claude_billing_exhausted_reason: str | None = None
 
 
@@ -266,19 +207,9 @@ def mark_claude_billing_exhausted(reason: str) -> None:
 
 def _provider_available(model_name: str) -> bool:
     """
-    Realer Fund aus echten Läufen (siehe ZWISCHENSTAND_KI_TEAM_PROJEKT.md, wiederholt
-    aufgetreten: `Claude innerhalb einer Fallback-Kette nicht verfügbar (kein
-    ANTHROPIC_API_KEY)`): MODEL_FALLBACKS listet Claude als ERSTEN Fallback-Kandidaten für
-    jede Gemini-Stufe, obwohl in diesem Setup nie ein ANTHROPIC_API_KEY konfiguriert war. Die
-    Fallback-Schleifen unten versuchten den Hop trotzdem jedes Mal - Client instanziieren,
-    Anfrage starten, `RuntimeError` fangen, zum nächsten Kandidaten weiterziehen -, bevor sie
-    beim tatsächlich funktionierenden Groq-Fallback landeten. Der Lauf scheiterte dadurch
-    nicht (die Kette lief ja weiter), aber jeder betroffene Agent-Aufruf erzeugte unnötige
-    Latenz UND eine irreführende ❌-Zeile im Report, die wie ein echter Ausfall aussah statt
-    wie eine von vornherein bekannte Konfigurationslücke.
-    Filtert Kandidaten OHNE konfigurierten API-Key bereits VOR dem Versuch heraus, statt sie
-    zu versuchen und den Fehler abzufangen. Gemini selbst ist hier immer verfügbar (sonst
-    würde diese Methode gar nicht erst aufgerufen, siehe GEMINI_API_KEY-Check am Modulanfang).
+    True, wenn für den Provider des Modells ein API-Key konfiguriert ist (und Claude nicht
+    billing-erschöpft ist). Filtert Fallback-Kandidaten vor dem Versuch, statt Latenz und
+    irreführende Fehlerzeilen zu erzeugen. Gemini gilt hier immer als verfügbar.
     """
     name = model_name.lower()
     if "claude" in name:
@@ -299,68 +230,29 @@ def _provider_available(model_name: str) -> bool:
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 1.5
 
-# Realer Fund aus einem echten Lauf: als an einem Tag alle Gemini-Kontingente gleichzeitig
-# an ihrem Minutenlimit hingen (kein ANTHROPIC_API_KEY als Backstop), scheiterten praktisch
-# alle Agenten sofort - jeder einzelne Aufruf kassierte denselben 429 nochmal, ohne je den
-# (oft nur Sekunden entfernten) Cooldown abzuwarten. Ist die GESAMTE Fallback-Kette eines
-# Aufrufs aktuell erschöpft, wird auf den kürzesten bekannten Cooldown gewartet – gedeckelt,
-# damit ein Lauf dadurch nie unbegrenzt hängt.
+# Ist die gesamte Fallback-Kette erschöpft, wird auf den kürzesten Cooldown gewartet (Minutenlimits
+# sind oft nur Sekunden entfernt), gedeckelt, damit ein Lauf nie unbegrenzt hängt.
 MAX_EXHAUSTION_WAIT_SECONDS = 20.0
 
-# Team-Optimierung (echter Fund, echter --work-backlog-Lauf 2026-09-06): Gemini meldet bei
-# Kontingent-Erschöpfung strukturiert ein `quotaId` - z.B. "GenerateRequestsPerDayPerProjectPer
-# Model-FreeTier" (echt beobachtet: `quotaValue: '20'`, also ein TAGES-Kontingent von 20
-# Anfragen) statt eines kurzen Minutenlimits. Bisher bekam JEDES 429 denselben generischen
-# `default_cooldown_seconds`-Cooldown (60s, core/token_guard.py) - jeder weitere Agent im selben
-# Lauf (und jeder Retry-Poll-Zyklus danach) versuchte das erkennbar für Stunden erschöpfte Modell
-# trotzdem sofort wieder, statt es zuverlässig zu überspringen. Erkennt das TAGES-Signal am
-# Fehlertext (kein API-Zugriff/Parsing nötig, der Marker steht bereits im rohen Fehlertext) und
-# nutzt einen deutlich längeren Cooldown statt eines echten, exakten Countdowns bis Mitternacht
-# (unnötig kompliziert für denselben Zweck: EINEN Lauf zuverlässig nicht mehr auf diesem Modell
-# hängen zu lassen, ohne den Prozess bei einem schneller zurückgesetzten Kontingent unnötig lang
-# zu blockieren).
-# Team-Optimierung (chronos_queue-Retrospektive, 20260911): auf 12h angehoben (vorher 4h) - der
-# Cooldown wird seit dieser Härtung zusätzlich nach memory/provider_cooldowns.json persistiert
-# (siehe core/token_guard.py) und core/capacity_gate.py prüft ihn VOR dem Start eines neuen Laufs.
-# Ein zu kurzer Cooldown ließ das Gate ein Tageskontingent schon nach wenigen Stunden wieder als
-# "verfügbar" gelten, obwohl das reale Tageslimit typischerweise erst am nächsten Kalendertag
-# zurückgesetzt wird.
+# Gemini-Tageskontingente ("...PerDay..." in quotaId) bekommen einen langen Cooldown statt 60 s.
+# 12 h, weil der Cooldown persistiert wird (memory/provider_cooldowns.json) und
+# core/capacity_gate.py ihn vor neuen Läufen prüft; das Limit setzt erst am Folgetag zurück.
 _DAILY_QUOTA_MARKER = "PerDay"
 DAILY_QUOTA_COOLDOWN_SECONDS = 12 * 3600.0
 
 
-# Realer Fund (Smoke-Lauf 2026-09-10, logs/runs/20260910_105833_smoke_jwt_router.jsonl): nur
-# Gemini-Tageskontingente bekamen einen langen Cooldown. Groq meldete "tokens per day (TPD) ...
-# Please try again in 2h42m9.504s", DeepSeek "Insufficient Balance", OpenRouter "requires more
-# credits" - alle drei landeten beim 60-s-Standard-Cooldown und wurden jede Minute erneut vergeblich
-# angefragt. Kein Guthaben erholt sich nicht von selbst; Groq nennt die Wartezeit exakt.
+# Leeres Guthaben (alle Provider, inkl. Anthropics "API usage limits reached") erholt sich nie von
+# selbst; ohne Marker fiele es auf den 60-s-Standard-Cooldown und würde jede Minute neu versucht.
 _BILLING_EXHAUSTION_MARKERS = (
     "insufficient balance", "requires more credits", "insufficient credits", "insufficient_quota",
     "payment required",
-    # Realer Fund (pulseflow_gateway, 20260911_095217): Anthropic meldet ein erschöpftes
-    # Monats-/Nutzungslimit als "API usage limits reached" bzw. "credit balance too low" -
-    # bislang kannten die Marker oben nur Guthaben-Formulierungen anderer Provider. Ohne
-    # eigenen Marker fiel das auf den 60-s-Standard-Cooldown zurück und jeder Folgeagent
-    # zerschellte binnen der nächsten Minute erneut am selben harten Kontingent-Fehler.
     "api usage limits", "usage limit", "credit balance too low",
 )
-# Team-Optimierung (chronos_queue-Retrospektive, 20260911): auf 24h angehoben (vorher 6h) - ein
-# 0,00-$-Guthaben (DeepSeek "Insufficient Balance", OpenRouter "requires more credits") erholt
-# sich NIE von selbst, nur ein manuelles Aufladen hilft. Der lange Cooldown verhindert lediglich,
-# dass core/capacity_gate.py denselben toten Key stündlich neu als "verfügbar" einstuft, seit
-# dieser Härtung persistiert über memory/provider_cooldowns.json auch über Prozess-Neustarts
-# hinweg (siehe core/token_guard.py).
+# 24 h, damit core/capacity_gate.py einen toten Key (persistierter Cooldown) nicht stündlich neu freigibt.
 BILLING_EXHAUSTION_COOLDOWN_SECONDS = 24 * 3600.0
 
-# ki_team_verbesserungsanalyse.md, Stufe-0-#1: `_provider_available()` prüfte bislang für Claude
-# NUR `bool(ANTHROPIC_API_KEY)` - ob der Key tatsächlich gültig ist, erfuhr das Team erst live
-# beim ersten echten Aufruf. OpenRouter/DeepSeek erkannten einen 401 bereits am `status_code` und
-# riefen `mark_model_exhausted()` auf, ABER `_exhaustion_cooldown_seconds()` kannte kein
-# Auth-Marker-Muster - ein ungültiger Key fiel mangels erkanntem Marker auf den
-# `default_cooldown_seconds`-Standard (60s, core/token_guard.py) zurück und wurde dadurch JEDE
-# Minute erneut vergeblich angefragt. Anders als ein Rate-Limit oder ein leeres Guthaben repariert
-# sich ein falscher/widerrufener Key nie von selbst innerhalb eines Laufs - Cooldown daher absichtlich
-# sehr lang (praktisch: für den Rest des Prozesses nicht mehr versuchen), nicht nur ein paar Stunden.
+# Ein ungültiger/widerrufener Key repariert sich innerhalb eines Laufs nie - Cooldown daher
+# bewusst so lang, dass er praktisch für den Rest des Prozesses nicht mehr versucht wird.
 _AUTH_ERROR_MARKERS = (
     "401", "unauthorized", "authentication_error", "invalid_api_key", "invalid x-api-key",
     "incorrect api key", "invalid api key",
@@ -384,26 +276,15 @@ def _retry_after_seconds(err_str: str) -> float | None:
 
 
 def is_authentication_error(exc: Exception | str) -> bool:
-    """True, wenn eine Fehlermeldung nach einem ungültigen/abgelehnten API-Key aussieht (401 o.ä.)
-    statt nach einem vorübergehenden Rate-Limit oder erschöpftem Guthaben. Öffentlich (kein
-    Unterstrich-Präfix), da core/model_preflight.py denselben Marker-Abgleich für den
-    Preflight-Bericht braucht - eine zweite, abweichende Implementierung dort wäre eine
-    schleichende Quelle für Inkonsistenz."""
+    """True, wenn der Fehler nach ungültigem/abgelehntem API-Key aussieht (401 o.ä.).
+    Öffentlich, weil core/model_preflight.py denselben Marker-Abgleich nutzt."""
     text = str(exc).lower()
     return any(marker in text for marker in _AUTH_ERROR_MARKERS)
 
 
 def is_billing_exhaustion_error(exc: Exception | str) -> bool:
-    """True bei einer Fehlermeldung wie Anthropics "API usage limits reached" / "credit balance
-    too low" oder vergleichbaren Provider-Formulierungen für ein erschöpftes Kontingent/Guthaben
-    (siehe _BILLING_EXHAUSTION_MARKERS) - anders als ein vorübergehendes Rate-Limit (429, meist
-    Minuten) oder ein Auth-Fehler (falscher Key) erholt sich das nie innerhalb desselben Laufs.
-
-    Realer Fund (pulseflow_gateway, 20260911_095217): ClaudeClient erkannte NUR Rate-Limit- und
-    Auth-Fehler und rief für ein erschöpftes Monatslimit (400 "API usage limits reached")
-    weder mark_model_exhausted() noch einen Cooldown auf - jeder Folgeagent im selben Prozess
-    zerschellte dadurch am selben harten Fehler erneut, statt sofort auf einen anderen Provider
-    umzuschwenken."""
+    """True bei erschöpftem Kontingent/Guthaben (siehe _BILLING_EXHAUSTION_MARKERS). Anders als
+    ein Rate-Limit oder Auth-Fehler erholt sich das nie innerhalb desselben Laufs."""
     text = str(exc).lower()
     return any(marker in text for marker in _BILLING_EXHAUSTION_MARKERS)
 
@@ -432,11 +313,7 @@ def _short_error(exc: BaseException | None, limit: int = 160) -> str:
 
 
 def _describe_chain_failures(all_candidates: list[str], attempted: dict[str, str]) -> str:
-    """Anhang für die finale Fehlermeldung einer Fallback-Kette: warum JEDER Kandidat ausfiel.
-
-    Realer Fund (Smoke-Lauf 2026-09-10): die Meldung zeigte nur den letzten Gemini-Fehler - dass
-    DeepSeek/OpenRouter kein Guthaben mehr hatten und Groq sein Tageskontingent aufgebraucht hatte,
-    war erst durch manuelle Einzelaufrufe erkennbar."""
+    """Anhang für die finale Fehlermeldung einer Fallback-Kette: warum JEDER Kandidat ausfiel."""
     parts: list[str] = []
     for model in dict.fromkeys(all_candidates):
         if model in attempted:
@@ -447,36 +324,17 @@ def _describe_chain_failures(all_candidates: list[str], attempted: dict[str, str
             parts.append(f"{model}: übersprungen ({_short_error(reason, 120)})")
     return (" | Kette: " + "; ".join(parts)) if parts else ""
 
-# Proaktive Rate-Begrenzung (core/rate_limiter.py): reduziert, WIE OFT ein Minutenlimit
-# überhaupt erst erreicht wird – ergänzt MAX_EXHAUSTION_WAIT_SECONDS oben (das nur REAGIERT,
-# nachdem das Limit schon erreicht ist). Realer Fund: 3+-Mitglieder-Fachbereiche schicken über
-# asyncio.gather (agents/orchestrator.py) ihre erste Anfrage praktisch zeitgleich los – ohne
-# Entzerrung stürmen alle Agenten gleichzeitig denselben Provider an. EINE geteilte Instanz für
-# alle Gemini-Aufrufe dieses Prozesses (nicht pro Client), da sich alle dasselbe Kontingent
-# teilen.
+# Proaktive Rate-Begrenzung, da parallele Fachbereichs-Agenten sonst gleichzeitig denselben
+# Provider anstürmen. Eine geteilte Instanz pro Prozess, weil alle dasselbe Kontingent teilen.
 _gemini_rate_limiter = RateLimiter(
     max_calls=GEMINI_MAX_CALLS_PER_MINUTE * max(1, len(GEMINI_API_KEYS)),
     window_seconds=60.0,
 )
 
 
-# ── Sichtbare Modell-Abwertung (KI-Team-Masterplan-Optimierung, Stufe 1) ───────────────────
-#
-# Realer, live reproduzierter Fund (09.09.2026): Ein GeminiClient für `gemini-3.8-flash`
-# lieferte eine Antwort von `gemini-3.6-flash`, und einer für `gemini-3.6-flash` eine von
-# `gemini-3.1-flash-lite` - AUCH mit _allow_self_fallback=False. Der Grund: Die
-# `models_to_try`-Ketten unten wurden bedingungslos aus MODEL_FALLBACKS aufgebaut; der
-# Pin-Schalter steuerte nur den Groq-Hop am Methodenanfang. Zwei Folgen:
-#
-# 1. Das Pinning aus agents/base_agent.py (`active_llm`, _allow_self_fallback=False) war für
-#    Gemini-Modelle wirkungslos - genau der Zustand, den der dortige Kommentar als Ursache des
-#    "Function call is missing a thought_signature"-Abbruchs beschreibt.
-# 2. Die Abwertung geschah lautlos. In Summe liefen 82% ALLER Calls auf der schwächsten Stufe
-#    (`gemini-3.1-flash-lite`: 4.380 von 5.368), ohne dass das irgendwo sichtbar wurde.
-#
-# `_model_downgrade_listener` erlaubt es der Oberfläche/dem Lauf-Log, jede tatsächliche
-# Abwertung mitzubekommen. Bewusst ein einzelner, optionaler Callback statt eines
-# Logging-Frameworks: llm_factory ist ein Basismodul und soll keine UI-Abhängigkeit bekommen.
+# ── Sichtbare Modell-Abwertung ─────────────────────────────────────────────────────────────
+# Fallbacks auf schwächere Modelle dürfen nicht lautlos geschehen. Ein einzelner optionaler
+# Callback statt Logging-Framework, damit dieses Basismodul keine UI-Abhängigkeit bekommt.
 _model_downgrade_listener: Callable[[str, str, str], None] | None = None
 
 
@@ -490,9 +348,7 @@ def set_model_downgrade_listener(listener) -> None:
 def _notify_model_downgrade(requested: str, actual: str, reason: str = "") -> None:
     """Meldet eine Abwertung - schluckt jeden Fehler des Listeners, damit eine reine
     Benachrichtigung nie einen laufenden LLM-Aufruf zum Scheitern bringt."""
-    # Kanonischer Vergleich (siehe normalize_model_name unten): Ohne ihn meldete jeder
-    # Groq-/OpenRouter-/DeepSeek-Aufruf eine Abwertung, nur weil der Client das
-    # Provider-Praefix aus dem Namen entfernt.
+    # Kanonischer Vergleich, da Clients das Provider-Präfix entfernen (sonst Schein-Abwertung).
     if is_same_model(requested, actual):
         return
     record_downgrade(requested, actual, reason)
@@ -514,13 +370,8 @@ def normalize_model_name(model_name: str) -> str:
     """
     Kanonische Form eines Modellnamens für VERGLEICHE (nie für API-Aufrufe).
 
-    Latenter Fund, aktiviert durch die Umstellung von HEAVY_MODEL auf einen providerneutralen
-    Wert (config.py): Vergleiche der Form `agent._llm.model_name == HEAVY_MODEL` sind für jedes
-    präfixbehaftete Modell strukturell falsch, weil der Client das Präfix beim Anlegen entfernt
-    ("groq:openai/gpt-oss-120b" wird zu "openai/gpt-oss-120b"). Solange HEAVY_MODEL auf Claude
-    zeigte, fiel das nie auf. Ohne diese Normalisierung hielte
-    agents/orchestrator/__init__.py._escalate_agent_models() JEDEN Agenten für "noch nicht
-    hochgestuft" und legte bei jedem Eskalationsversuch neue Clients an.
+    Nötig, weil Clients das Provider-Präfix entfernen ("groq:openai/gpt-oss-120b" ->
+    "openai/gpt-oss-120b"); direkte Vergleiche mit Konfigwerten wären sonst falsch.
     """
     name = (model_name or "").strip()
     for prefix in _PROVIDER_PREFIXES:
@@ -538,18 +389,14 @@ def _resolve_gemini_candidates(start_model: str, allow_fallback: bool) -> list[s
     """
     Ermittelt die tatsächlich zu versuchenden Modelle für einen Gemini-Aufruf.
 
-    Ist `allow_fallback` False, ist der Aufruf bewusst auf GENAU EIN Modell festgenagelt (ein
-    Fallback-Hop innerhalb einer fremden Kette oder ein per agents/base_agent.py gepinnter
-    Provider). Dann darf hier KEINE Ersatzkette aufgebaut werden - zuvor geschah genau das und
-    hebelte das Pinning aus.
+    Ist `allow_fallback` False (Fallback-Hop oder gepinnter Provider), bleibt es bei GENAU
+    diesem Modell - eine Ersatzkette würde das Pinning aushebeln.
     """
     if not allow_fallback:
         ordered = [start_model]
     else:
         candidates = [start_model] + MODEL_FALLBACKS.get(start_model, [])
-        # Eine Lite-Stufe ist nur letzte Rettung: vollwertige Modelle ANDERER Provider (z.B. Groq
-        # gpt-oss-120b) gehen vor, sonst landen HEAVY-Rollen lautlos auf flash-lite (siehe
-        # _INDEPENDENT_FAILOVER_MODELS-Kommentar).
+        # Lite-Stufen nur als letzte Rettung, sonst landen HEAVY-Rollen lautlos auf flash-lite.
         ordered = candidates if _is_lite_model(start_model) else (
             [m for m in candidates if not _is_lite_model(m)] + [m for m in candidates if _is_lite_model(m)]
         )
@@ -560,14 +407,8 @@ def _resolve_gemini_candidates(start_model: str, allow_fallback: bool) -> list[s
         raise CapabilityFloorError(start_model, ordered)
     return floored
 
-# Realer Fund aus einem echten End-to-End-Lauf: governance_lead (HEAVY-Tier, kein
-# ANTHROPIC_API_KEY) war innerhalb EINER Aufgabe bereits erfolgreich auf Groq gepinnt
-# (siehe agents/base_agent.py active_llm), verbrauchte über mehrere Iterationen genug
-# Tokens, um Groqs echtes Tageskontingent zu kippen ("tokens per day (TPD)") - und scheiterte
-# dann mit dem ROHEN Groq-JSON-Fehlertext als AgentResult.error. Das Verhalten selbst (kein
-# weiterer Hop zu Gemini NACH dem Pinning) ist bewusst und bleibt unverändert – ein Hop hier
-# würde exakt die Provider-Historie-Korruption zurückbringen, die das Pinning verhindert
-# (siehe _run_agentic_loop-Docstring). Nur die Fehlermeldung selbst war unnötig kryptisch.
+# Erkennt Rate-Limits eines gepinnten Providers, um statt rohem Provider-JSON eine verständliche
+# Meldung zu liefern. Ein Hop nach dem Pinning bleibt bewusst aus (Provider-Historie-Korruption).
 _RATE_LIMIT_ERROR_MARKERS = ("429", "rate_limit", "resource_exhausted", "quota")
 
 
@@ -576,14 +417,8 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return any(marker in text for marker in _RATE_LIMIT_ERROR_MARKERS)
 
 
-# Realer Fund (logs/runs/20260911_211719_chronos_queue.jsonl): Groqs Free-Tier für
-# `openai/gpt-oss-120b` erlaubt nur 8.000 Tokens PRO MINUTE (TPM) - deutlich enger als das
-# generische Rate-Limit oben. Ein großer System-Prompt + Werkzeugkatalog überschreitet dieses
-# Limit bereits bei einem einzelnen Aufruf (beobachtet: "Requested 8685" gegen "Limit 8000") und
-# scheitert mit HTTP 413 "Request too large" - kein 429, aber strukturell dasselbe Problem
-# (Kontingent-Deckel PRO ZEITFENSTER). Andere Modelle desselben Providers
-# (config.GROQ_FALLBACK_MODELS) haben ein 4-8x großzügigeres TPM-Limit und lösen den Fehler
-# schlicht durch einen anderen Modellnamen, ganz ohne Provider-Wechsel.
+# Groqs Free-Tier-TPM-Limit (z.B. 8.000 bei gpt-oss-120b) sprengt schon ein einzelner großer
+# Prompt (HTTP 413). Andere Groq-Modelle (config.GROQ_FALLBACK_MODELS) haben höhere TPM-Limits.
 _REQUEST_TOO_LARGE_MARKERS = ("413", "request too large", "tokens per minute", "reduce your message size")
 
 
@@ -592,13 +427,8 @@ def _is_request_too_large_error(exc: Exception) -> bool:
     return any(marker in text for marker in _REQUEST_TOO_LARGE_MARKERS)
 
 
-# Realer Fund (logs/runs/20260912_082145_sentinelgrid.jsonl): Groq entfernte
-# `llama-3.3-70b-versatile`/`llama-3.1-8b-instant` ersatzlos vom Endpoint - jeder Versuch
-# scheiterte mit HTTP 404 "does not exist or you do not have access to it" und riss die
-# gesamte Innerhalb-Groq-Ausweichkette ab, statt einfach das nächste Modell zu probieren.
-# Ein 404 ist KEIN vorübergehendes Rate-Limit, sondern ein dauerhaft ungültiger Modellname -
-# entsprechend langer Cooldown (siehe cooldown_seconds unten), damit kein weiterer Agent im
-# selben Lauf denselben toten Modellnamen erneut anfragt.
+# Vom Provider entfernte Modelle (HTTP 404) sind dauerhaft ungültig: nächstes Modell probieren
+# und langer Cooldown, damit kein Agent den toten Namen erneut anfragt.
 _MODEL_NOT_FOUND_MARKERS = ("404", "does not exist", "model_not_found", "model_decommissioned")
 _MODEL_NOT_FOUND_COOLDOWN_SECONDS = 86400.0
 
@@ -608,15 +438,8 @@ def _is_model_not_found_error(exc: Exception) -> bool:
     return any(marker in text for marker in _MODEL_NOT_FOUND_MARKERS)
 
 
-# Realer Fund (logs/runs/20260912_082145_sentinelgrid.jsonl, Rolle api_integration): Groq
-# lieferte "Error code: 400 - Failed to parse tool call arguments as JSON (failed_generation:
-# ...)", wenn das Modell abgeschnittenes/ungültiges JSON für einen Tool-Call erzeugte. Das ist
-# ein modellbedingter Generierungsfehler, keine Kontingent-Erschöpfung - trotzdem blockierte
-# `_pinned_provider_failure` (bewusst für ECHTE Kontingent-Fehler gedacht) hier jeden Wechsel
-# und der Agent hing fest. Ein wiederholt ungültiges Tool-Call-JSON rechtfertigt einen
-# Failover zum nächsten Provider/Modell, selbst innerhalb einer gepinnten Aufgabe - anders als
-# bei Kontingent-Fehlern gefährdet das nicht die Konversationshistorie, weil ohnehin keine
-# gültige Antwort zustande kam, die weiterverwendet werden könnte.
+# Ungültiges Tool-Call-JSON (Groq 400) ist ein Generierungsfehler, keine Quota-Erschöpfung: Failover
+# ist auch bei gepinntem Provider erlaubt, da keine gültige Antwort in die Historie gelangte.
 _TOOL_CALL_JSON_ERROR_MARKERS = ("failed to parse tool call arguments", "tool_use_failed")
 
 
@@ -627,10 +450,7 @@ def _is_tool_call_json_error(exc: Exception) -> bool:
 
 def _next_groq_fallback_model(current_model: str, already_tried: frozenset[str]) -> str | None:
     """
-    Nächstes noch nicht versuchtes, nicht als erschöpft bekanntes Modell aus
-    config.GROQ_FALLBACK_MODELS - oder None, wenn die Kette erschöpft ist. `already_tried`
-    verhindert, dass GroqClient dasselbe Modell zweimal probiert (z.B. wenn ein Aufrufer
-    bereits mit einem der Ausweichmodelle als `model_name` gestartet ist).
+    Nächstes weder versuchte noch erschöpfte Modell aus config.GROQ_FALLBACK_MODELS, sonst None.
     """
     exhausted = already_tried | {current_model}
     for candidate in GROQ_FALLBACK_MODELS:
@@ -643,12 +463,8 @@ def _next_groq_fallback_model(current_model: str, already_tried: frozenset[str])
 
 def _pinned_provider_failure(provider_label: str, model_name: str, exc: Exception) -> Exception:
     """
-    Baut eine verständliche Fehlermeldung für den Fall, dass ein bereits GEPINNTER Provider
-    (kein weiterer Fallback-Hop innerhalb dieser Aufgabe mehr erlaubt, siehe
-    _allow_self_fallback=False) mit einem erkennbaren Kontingent-/Rate-Limit-Fehler scheitert.
-    Ersetzt NICHT die ursprüngliche Exception als Fehlerursache (siehe `raise ... from exc`),
-    macht aber die für den Nutzer sichtbare AgentResult.error-Zeile sofort verständlich statt
-    rohes Provider-JSON zu zeigen.
+    Verständliche Fehlermeldung, wenn ein GEPINNTER Provider (_allow_self_fallback=False) an
+    Kontingent/Rate-Limit scheitert. Aufrufer verketten die Original-Exception per `from exc`.
     """
     return RuntimeError(
         f"{provider_label} ({model_name}) ist für diese Aufgabe bereits fest eingeplant "
@@ -660,20 +476,8 @@ def _pinned_provider_failure(provider_label: str, model_name: str, exc: Exceptio
 
 
 # ── Provider-unabhängiges Failover bei Quota-Erschöpfung ───────────────────────────────────
-#
-# Realer Fund (logipulse-Lauf 2026-09-10, logs/runs/20260910_084833_logipulse.jsonl): ALLE
-# HEAVY-Rollen (architect, backend, security, code_reviewer, refactoring) forderten Groq
-# `openai/gpt-oss-120b` an und liefen tatsächlich auf `gemini-3.1-flash-lite`, bis auch dessen
-# Free-Tier-Tageskontingent (`429 RESOURCE_EXHAUSTED`, quotaId `GenerateRequestsPerDay...`) den
-# Lauf beendete - obwohl DEEPSEEK_API_KEY und OPENROUTER_API_KEY konfiguriert waren. Drei
-# Ursachen:
-# 1. Groq/DeepSeek/OpenRouter sprangen bei eigenem Scheitern DIREKT auf GEMINI_STANDARD_MODEL
-#    statt zuerst auf einen anderen unabhängigen Provider.
-# 2. Eine echte Quota-Erschöpfung wurde innerhalb desselben Providers noch zweimal mit kurzen
-#    Pausen wiederholt ("retry in 44s" wird durch 1,5-4,5 s Warten nie behoben) und die Kette
-#    lief danach erst die übrigen Gemini-Stufen ab, bevor Groq überhaupt versucht wurde.
-# 3. `flash-lite` stand in den STANDARD-Ketten VOR Groq - die schwächste Stufe gewann damit
-#    gegen ein vollwertiges, verfügbares Modell.
+# Bei Quota-Erschöpfung zuerst auf einen anderen, unabhängigen Provider wechseln, statt kurz zu
+# retryen (hilft bei Quota nie) oder auf schwächere Stufen desselben Providers auszuweichen.
 _INDEPENDENT_FAILOVER_MODELS: tuple[str, ...] = (
     GROQ_HEAVY_MODEL, "deepseek:deepseek-chat", "openrouter:openrouter/auto",
 )
@@ -756,11 +560,9 @@ async def _cross_provider_failover_with_tools(
     return await GeminiClient(model_name=GEMINI_STANDARD_MODEL).generate_with_tools(messages, system_prompt, tools)
 
 
-# Erzwungener Werkzeug-Aufruf (Analyse 2026-09-15): der frontend-Agent lieferte 8.188 Completion-
-# Tokens Code als Chat-Text mit 0 Werkzeug-Aufrufen - trotz sechs gleichlautender Lernregeln.
-# agents/base_agent.py setzt diesen Kontext für Code-Rollen, solange noch keine Datei geschrieben
-# ist; alle Provider übersetzen ihn in ihr natives "Tool-Aufruf ist Pflicht" (Gemini mode=ANY,
-# OpenAI-kompatibel tool_choice="required", Anthropic tool_choice={"type": "any"}).
+# Erzwungener Werkzeug-Aufruf, damit Code-Rollen Code nicht als Chat-Text liefern. Gesetzt von
+# agents/base_agent.py; Provider übersetzen ihn nativ (Gemini mode=ANY, OpenAI tool_choice="required",
+# Anthropic tool_choice={"type": "any"}).
 _TOOL_CALL_REQUIRED: contextvars.ContextVar[bool] = contextvars.ContextVar("tool_call_required", default=False)
 
 
@@ -788,24 +590,17 @@ class ToolCall:
     id: str
     name: str
     arguments: dict[str, Any]
-    # Gemini verlangt bei mehrstufigem Function-Calling, dass die thought_signature des
-    # ORIGINALEN function_call-Parts unverändert mitgeschickt wird, wenn dieser Aufruf als
-    # Verlaufs-Nachricht in den nächsten Request eingebettet wird – sonst 400 INVALID_ARGUMENT
-    # ("Function call is missing a thought_signature"). Andere Provider setzen dies nicht.
+    # Gemini verlangt die thought_signature des ORIGINALEN function_call-Parts unverändert im
+    # Verlauf, sonst 400 "Function call is missing a thought_signature". Nur Gemini setzt sie.
     thought_signature: bytes | None = None
 
 
 @dataclass
 class AgentMessage:
     """
-    Ein neutraler, provider-unabhängiger Konversations-Turn für den agentischen
-    Werkzeug-Loop. Wird von jedem Client-Wrapper in sein natives Nachrichtenformat
-    (Gemini Content, OpenAI-Style Messages, Anthropic Messages) übersetzt.
+    Provider-neutraler Konversations-Turn des Werkzeug-Loops; jeder Client übersetzt ihn nativ.
 
-    role:
-    - "user"      – Aufgabenstellung / Werkzeug-Ergebnis wird als Folgeeingabe gesendet
-    - "assistant" – Modellantwort (Text und/oder angeforderte tool_calls)
-    - "tool"      – Ergebnis eines ausgeführten Werkzeug-Aufrufs (verweist per tool_call_id zurück)
+    role: "user" (Eingabe), "assistant" (Text/tool_calls), "tool" (Ergebnis, via tool_call_id).
     """
     role: str
     text: str = ""
@@ -827,11 +622,7 @@ class LLMResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Gemeinsame Helfer für alle OpenAI-kompatiblen REST-Clients (Groq, DeepSeek,
-# OpenRouter) – bauen den Nachrichtenverlauf und Tool-Katalog im OpenAI-Format
-# auf und parsen die Antwort (Text ODER tool_calls) einheitlich.
-# ──────────────────────────────────────────────────────────────────────────
+# ── Gemeinsame Helfer für OpenAI-kompatible Clients (Groq, DeepSeek, OpenRouter) ──
 
 def _openai_build_messages(messages: list["AgentMessage"], system_prompt: str | None) -> list[dict]:
     payload_messages: list[dict] = []
@@ -896,12 +687,7 @@ class HuggingFaceClient:
     async def generate_with_usage(
         self, prompt: str, system_prompt: str | None = None, _allow_self_fallback: bool = True,
     ) -> LLMResponse:
-        # Fallback auf Gemini für Text-/SVG-Generierung. _allow_self_fallback=False wird von
-        # GeminiClient gesetzt, wenn dieser Client bereits ALS Fallback-Ziel innerhalb einer
-        # Provider-Kette aufgerufen wird – verhindert eine Endlosschleife (Gemini -> HF -> Gemini
-        # -> ...), falls HuggingFace irgendwann direkt in MODEL_FALLBACKS als Fallback-ZIEL
-        # (Wert, nicht Key) eingetragen wird - MODEL_FALLBACKS.get() wird aber nur mit
-        # Gemini-Modellnamen als Key aufgerufen, siehe Kommentar an MODEL_FALLBACKS oben.
+        # Fallback auf Gemini; _allow_self_fallback=False verhindert Gemini<->HF-Endlosschleifen.
         if not _allow_self_fallback:
             raise RuntimeError("HuggingFace-Provider innerhalb einer Fallback-Kette nicht verfügbar.")
         fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
@@ -915,8 +701,7 @@ class HuggingFaceClient:
         self, messages: list["AgentMessage"], system_prompt: str | None, tools: list[dict],
         _allow_self_fallback: bool = True,
     ) -> LLMResponse:
-        # HuggingFace-Modelle werden hier nicht mit nativem Function-Calling angebunden –
-        # Fallback auf Gemini, das die Werkzeug-Schleife vollständig unterstützt.
+        # Kein natives Function-Calling für HuggingFace - Gemini übernimmt.
         if not _allow_self_fallback:
             raise RuntimeError("HuggingFace-Provider innerhalb einer Fallback-Kette nicht verfügbar.")
         fallback = GeminiClient(model_name=GEMINI_STANDARD_MODEL)
@@ -1217,16 +1002,10 @@ class GeminiClient:
         _allow_self_fallback: bool = True,
     ) -> LLMResponse:
         """
-        Führt einen Function-Calling-fähigen Gemini-Aufruf aus. Gibt entweder finalen
-        Text (response.tool_calls == []) oder angeforderte Werkzeug-Aufrufe zurück,
-        die der Aufrufer ausführen und per Folge-Message zurückspielen muss.
+        Function-Calling-fähiger Gemini-Aufruf: liefert finalen Text oder tool_calls.
 
-        _allow_self_fallback=False wird gesetzt, wenn DIESER Aufruf bereits selbst ein
-        Fallback-Hop innerhalb einer Provider-Kette ist (siehe unten) – verhindert eine
-        Endlosschleife der Form Gemini -> Claude (kein Key) -> Gemini -> Claude -> ...,
-        indem hier dann sofort ein Fehler geworfen wird, statt selbst weiterzureichen.
-        Der AUFRUFER (die models_to_try-Schleife, die diesen Hop ausgelöst hat) fängt
-        den Fehler ab und versucht stattdessen den nächsten Kandidaten der Kette.
+        _allow_self_fallback=False (Aufruf ist selbst ein Fallback-Hop) wirft sofort, statt
+        weiterzureichen - verhindert Endlosschleifen; der Aufrufer nimmt den nächsten Kandidaten.
         """
         if not _gemini_client:
             if _groq_client and _allow_self_fallback:
@@ -1258,11 +1037,8 @@ class GeminiClient:
         all_candidates = _resolve_gemini_candidates(self.model_name, _allow_self_fallback)
         models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)]
         if not models_to_try:
-            # Komplette Kette gerade erschöpft (siehe MAX_EXHAUSTION_WAIT_SECONDS oben) -
-            # kurz auf den kürzesten bekannten Cooldown warten statt sofort denselben
-            # Fehler erneut zu kassieren. Kandidaten ohne konfigurierten Key (siehe
-            # _provider_available()) bleiben auch nach dem Warten aussortiert - ein
-            # Cooldown behebt keinen fehlenden API-Key.
+            # Ganze Kette erschöpft: kurz auf den kürzesten Cooldown warten. Kandidaten ohne Key
+            # bleiben aussortiert - ein Cooldown behebt keinen fehlenden API-Key.
             wait_s = min(token_guard.seconds_until_available(all_candidates), MAX_EXHAUSTION_WAIT_SECONDS)
             if wait_s > 0:
                 await asyncio.sleep(wait_s)
@@ -1276,14 +1052,8 @@ class GeminiClient:
         while pending:
             model = pending.pop(0)
             if not model.startswith("gemini"):
-                # Nicht-Gemini-Fallback-Ziel (Claude/Groq/DeepSeek/OpenRouter/HuggingFace) an den
-                # passenden Provider-Client delegieren – zentral über LLMFactory, damit hier NIE
-                # versehentlich ein Fremd-Modellname direkt an die Gemini-API durchgereicht wird
-                # (das würde 400/404 werfen und die Fallback-Kette bis zur letzten Gemini-Stufe
-                # durchreichen, ohne den eigentlich vorgesehenen Provider je zu erreichen).
-                # _allow_self_fallback=False: dieser Provider darf bei eigenem Scheitern NICHT
-                # selbst wieder zu Gemini zurückspringen (Endlosschleife) – stattdessen fliegt
-                # eine Exception, die wir hier abfangen und zum nächsten Kandidaten weiterziehen.
+                # Fremd-Provider über LLMFactory delegieren, nie an die Gemini-API. Mit
+                # _allow_self_fallback=False wirft er bei Scheitern -> nächster Kandidat.
                 try:
                     return await LLMFactory.create_for_model(model).generate_with_tools(
                         messages, system_prompt, tools, _allow_self_fallback=False
@@ -1301,9 +1071,6 @@ class GeminiClient:
                     response = await asyncio.to_thread(
                         _gemini_client.models.generate_content, model=model, contents=contents, config=config,
                     )
-                    # Abwertung sichtbar machen: `model` ist das Modell, das TATSÄCHLICH
-                    # geantwortet hat - `self.model_name` das, was die Rolle laut config.py
-                    # angefordert hatte. Zuvor geschah dieser Wechsel vollkommen lautlos.
                     _notify_model_downgrade(self.model_name, model, "Fallback-Kette (generate_with_tools)")
                     return self._parse_gemini_tool_response(response, model)
                 except Exception as e:
@@ -1311,8 +1078,7 @@ class GeminiClient:
                     err_str = str(e)
                     is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower()
                     is_unavailable = "503" in err_str or "UNAVAILABLE" in err_str or "high demand" in err_str.lower()
-                    # Echte Quota-Erschöpfung: kein Retry beim selben Provider, sondern sofort ein
-                    # unabhängiger Provider (siehe _INDEPENDENT_FAILOVER_MODELS-Kommentar).
+                    # Echte Quota-Erschöpfung: kein Retry, sofort unabhängiger Provider.
                     is_quota_exhausted = is_rate_limit and _is_quota_exhaustion(err_str)
 
                     if (is_rate_limit or is_unavailable) and not is_quota_exhausted and attempt < MAX_RETRIES - 1:
@@ -1322,16 +1088,15 @@ class GeminiClient:
 
                     if is_rate_limit:
                         if is_quota_exhausted:
-                            # Prüfe, ob im Gemini API-Key-Pool ein weiterer funktionsfähiger Key existiert
                             _, active_key = _get_gemini_client(model=model)
                             has_next_gemini_key = _mark_gemini_key_exhausted(
                                 active_key, cooldown_seconds=_exhaustion_cooldown_seconds(err_str) or 86400.0,
                                 model=model,
                             )
                             if has_next_gemini_key:
-                                # Es gibt einen weiteren Gemini-Key! Sofort mit dem neuen Key für dasselbe Modell wiederholen
+                                # Weiterer Key im Pool: dasselbe Modell sofort erneut versuchen
                                 continue
-                            # Alle Gemini-Keys erschöpft -> Modell als erschöpft markieren & Alternativprovider priorisieren
+                            # Alle Keys erschöpft -> Modell sperren, andere Provider vorziehen
                             token_guard.mark_model_exhausted(
                                 model, "429 Quota Exceeded (alle Gemini-Keys erschöpft)", cooldown_seconds=_exhaustion_cooldown_seconds(err_str),
                             )
@@ -1363,15 +1128,13 @@ class GeminiClient:
                     parts.append(genai_types.Part(text=msg.text))
                 for tc in msg.tool_calls:
                     fc_part = genai_types.Part.from_function_call(name=tc.name, args=tc.arguments)
-                    # thought_signature MUSS beim Zurückspielen erhalten bleiben (siehe ToolCall-Feld oben),
-                    # sonst lehnt Gemini den Folgeaufruf mit 400 INVALID_ARGUMENT ab.
+                    # thought_signature MUSS erhalten bleiben, sonst 400 INVALID_ARGUMENT (siehe ToolCall).
                     if tc.thought_signature:
                         fc_part.thought_signature = tc.thought_signature
                     parts.append(fc_part)
                 contents.append(genai_types.Content(role="model", parts=parts))
             elif msg.role == "tool":
-                # Gemini kennt keine eigene "tool"-Rolle in Content – die Funktionsantwort
-                # wird als "user"-Content mit einem function_response-Part gesendet.
+                # Gemini hat keine "tool"-Rolle: function_response geht als "user"-Content.
                 contents.append(genai_types.Content(
                     role="user",
                     parts=[genai_types.Part.from_function_response(name=msg.tool_name, response={"result": msg.text})],
@@ -1432,10 +1195,7 @@ class GeminiClient:
         all_candidates = _resolve_gemini_candidates(start_model, _allow_self_fallback)
         models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)]
         if not models_to_try:
-            # Siehe generate_with_tools() weiter oben: kurz auf den kürzesten bekannten
-            # Cooldown warten, statt sofort denselben Fehler erneut zu kassieren. Kandidaten
-            # ohne konfigurierten Key bleiben auch danach aussortiert (siehe
-            # _provider_available()).
+            # Wie in generate_with_tools(): kurz auf den kürzesten Cooldown warten.
             wait_s = min(token_guard.seconds_until_available(all_candidates), MAX_EXHAUSTION_WAIT_SECONDS)
             if wait_s > 0:
                 await asyncio.sleep(wait_s)
@@ -1447,10 +1207,7 @@ class GeminiClient:
         while pending:
             model = pending.pop(0)
             if not model.startswith("gemini"):
-                # Siehe generate_with_tools() weiter oben: zentrale Provider-Delegation statt
-                # eines Fremd-Modellnamens, der sonst versehentlich an die Gemini-API ginge.
-                # _allow_self_fallback=False verhindert eine Endlosschleife, falls dieser Provider
-                # ebenfalls scheitert (dann Exception -> hier abgefangen -> nächster Kandidat).
+                # Wie in generate_with_tools(): Delegation an den Fremd-Provider ohne Self-Fallback.
                 try:
                     return await LLMFactory.create_for_model(model).generate_with_usage(
                         contents, config.system_instruction, _allow_self_fallback=False
@@ -1506,8 +1263,7 @@ class GeminiClient:
                     err_str = str(e)
                     is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower()
                     is_unavailable = "503" in err_str or "UNAVAILABLE" in err_str or "high demand" in err_str.lower()
-                    # Echte Quota-Erschöpfung: kein Retry beim selben Provider, sondern sofort ein
-                    # unabhängiger Provider (siehe _INDEPENDENT_FAILOVER_MODELS-Kommentar).
+                    # Echte Quota-Erschöpfung: kein Retry, sofort unabhängiger Provider.
                     is_quota_exhausted = is_rate_limit and _is_quota_exhaustion(err_str)
 
                     if (is_rate_limit or is_unavailable) and not is_quota_exhausted and attempt < MAX_RETRIES - 1:
@@ -1517,16 +1273,15 @@ class GeminiClient:
 
                     if is_rate_limit:
                         if is_quota_exhausted:
-                            # Prüfe, ob im Gemini API-Key-Pool ein weiterer funktionsfähiger Key existiert
                             _, active_key = _get_gemini_client(model=model)
                             has_next_gemini_key = _mark_gemini_key_exhausted(
                                 active_key, cooldown_seconds=_exhaustion_cooldown_seconds(err_str) or 86400.0,
                                 model=model,
                             )
                             if has_next_gemini_key:
-                                # Es gibt einen weiteren Gemini-Key! Sofort mit dem neuen Key für dasselbe Modell wiederholen
+                                # Weiterer Key im Pool: dasselbe Modell sofort erneut versuchen
                                 continue
-                            # Alle Gemini-Keys erschöpft -> Modell als erschöpft markieren & Alternativprovider priorisieren
+                            # Alle Keys erschöpft -> Modell sperren, andere Provider vorziehen
                             token_guard.mark_model_exhausted(
                                 model, "429 Quota Exceeded (alle Gemini-Keys erschöpft)", cooldown_seconds=_exhaustion_cooldown_seconds(err_str),
                             )
@@ -1556,25 +1311,16 @@ class GeminiClient:
         return res.text
 
 
-# ── Prompt-Kompression für Groq-Fallbacks (chronos_queue-Retrospektive, 20260911) ──────────
-#
-# Realer Fund: Groq hat im Free-Tier ein strenges TPM-Limit (Tokens Pro Minute). Fällt Gemini
-# komplett aus (Tageskontingent erschöpft) und der Orchestrator schickt einen über die Läufe
-# gewachsenen System-Prompt + vollständigen Toolkatalog + agentische Werkzeug-Loop-History
-# (real beobachtet: 30.000-50.000 Tokens auf einmal) an Groq, wirft Groq SOFORT einen
-# 429-Rate-Limit-Fehler, bevor überhaupt eine Antwort zustande kommt - core/rate_limiter.py
-# hilft hier nicht, das begrenzt nur die ANZAHL der Aufrufe pro Minute, nicht die GRÖSSE eines
-# einzelnen Aufrufs. Ein grober Zeichen-Schätzer (1 Token ≈ 4 Zeichen) reicht für diese reine
-# Sicherheitsmarge, ein exaktes Tokenizing wäre unnötiger Aufwand für einen Fallback-Pfad.
+# ── Prompt-Kompression für Groq-Fallbacks ──────────────────────────────────────────────────
+# Groqs Free-Tier-TPM-Limit sprengt schon ein einzelner großer Agenten-Prompt; core/rate_limiter.py
+# begrenzt nur die Anzahl der Aufrufe. Ein grober Schätzer (1 Token ≈ 4 Zeichen) reicht als Marge.
 GROQ_PROMPT_TOKEN_BUDGET = int(os.getenv("GROQ_PROMPT_TOKEN_BUDGET", "6000"))
 _CHARS_PER_TOKEN_ESTIMATE = 4
 
 
 def _compress_text_for_groq(text: str, budget_chars: int) -> str:
-    """Kürzt EINEN Text auf `budget_chars` Zeichen - behält Anfang (meist die eigentliche
-    Aufgabenstellung/das erste Tool-Ergebnis) UND Ende (meist die abschließende Anweisung bzw.
-    das geforderte Ausgabeformat) vollständig, entfernt nur die Mitte. Eine reine Kopf-Kürzung
-    würde oft gerade die entscheidende letzte Anweisung ("Antworte NUR mit...") abschneiden."""
+    """Kürzt einen Text auf `budget_chars` durch Entfernen der Mitte - Anfang (Aufgabe) und Ende
+    (oft die entscheidende Format-Anweisung) bleiben erhalten."""
     if budget_chars <= 0:
         return ""
     if len(text) <= budget_chars:
@@ -1588,10 +1334,7 @@ def _compress_text_for_groq(text: str, budget_chars: int) -> str:
 
 
 def _compress_prompt_for_groq(prompt: str, system_prompt: str | None) -> tuple[str, str | None]:
-    """Komprimiert `prompt`/`system_prompt` GEMEINSAM auf GROQ_PROMPT_TOKEN_BUDGET, bevor sie an
-    Groq gesendet werden (GroqClient.generate_with_usage) - reduziert, WIE OFT Groqs TPM-Limit
-    überhaupt erst erreicht wird, ergänzt core/rate_limiter.py (das nur REAGIERT, nachdem eine
-    Minute bereits zu viele AUFRUFE gesehen hat, nicht die GRÖSSE eines einzelnen Aufrufs)."""
+    """Komprimiert `prompt`/`system_prompt` gemeinsam auf GROQ_PROMPT_TOKEN_BUDGET."""
     budget_chars = GROQ_PROMPT_TOKEN_BUDGET * _CHARS_PER_TOKEN_ESTIMATE
     if len(prompt) + len(system_prompt or "") <= budget_chars:
         return prompt, system_prompt
@@ -1605,14 +1348,8 @@ def _compress_prompt_for_groq(prompt: str, system_prompt: str | None) -> tuple[s
 def _compress_messages_for_groq(
     messages: list["AgentMessage"], system_prompt: str | None,
 ) -> tuple[list["AgentMessage"], str | None]:
-    """Komprimiert die agentische Werkzeug-Loop-History für einen Groq-Aufruf
-    (GroqClient.generate_with_tools) auf GROQ_PROMPT_TOKEN_BUDGET - kürzt nur den `text` jedes
-    Turns (tool_calls/tool_call_id bleiben strukturell unangetastet, sonst würde das
-    OpenAI-kompatible Tool-Protokoll inkonsistent, wenn zu einem gekürzten tool_call das
-    zugehörige Ergebnis fehlt). Neuere Turns sind für die aktuelle Entscheidung wichtiger als
-    ältere, werden hier aber der Einfachheit halber gleich behandelt (gleichmäßiges Pro-Turn-
-    Budget) - ausreichend, um innerhalb des Groq-Burst-Limits zu bleiben, ohne die Reihenfolge/
-    Struktur der History aufwendig neu zu gewichten."""
+    """Komprimiert die Werkzeug-Loop-History auf GROQ_PROMPT_TOKEN_BUDGET. Gekürzt wird nur `text`
+    (gleiches Budget pro Turn); tool_calls/tool_call_id bleiben intakt, sonst bricht das Tool-Protokoll."""
     budget_chars = GROQ_PROMPT_TOKEN_BUDGET * _CHARS_PER_TOKEN_ESTIMATE
     total_len = len(system_prompt or "") + sum(len(m.text or "") for m in messages)
     if total_len <= budget_chars:
@@ -1646,10 +1383,7 @@ class GroqClient:
             if not _allow_self_fallback:
                 raise RuntimeError("Groq innerhalb einer Fallback-Kette nicht verfügbar (kein Key).")
             return await _cross_provider_failover_with_usage("groq", prompt, system_prompt)
-        # ki_team_verbesserungsanalyse.md, Stufe-0-#1: dieselbe Lücke wie bei Claude - ein bereits
-        # erkannter Groq-Key-/Kontingent-Fehler (siehe except-Zweig unten) landet jetzt in
-        # token_guard, GENAU wie OpenRouter/DeepSeek es schon lange tun (siehe deren Pre-Checks
-        # oben), statt bei jedem frisch instanziierten GroqClient erneut live zu scheitern.
+        # Bereits erkannte Key-/Kontingent-Fehler aus token_guard vor dem Live-Aufruf abfangen.
         if token_guard.is_model_exhausted(f"groq:{self.model_name}"):
             if not _allow_self_fallback:
                 raise _pinned_provider_failure(
@@ -1658,10 +1392,7 @@ class GroqClient:
                 )
             return await _cross_provider_failover_with_usage("groq", prompt, system_prompt)
 
-        # Prompt-Kompression VOR dem Senden (siehe Modul-Kommentar über _compress_text_for_groq
-        # oben) - reduziert, wie oft Groqs striktes Free-Tier-TPM-Limit überhaupt erst erreicht
-        # wird, wenn ein über die Läufe gewachsener Prompt (z.B. Gemini-Ausfall + große
-        # History) sonst in einem Rutsch gesendet würde.
+        # Prompt-Kompression vor dem Senden wegen Groqs TPM-Limit.
         prompt, system_prompt = _compress_prompt_for_groq(prompt, system_prompt)
 
         messages = []
@@ -1701,9 +1432,7 @@ class GroqClient:
             is_not_found = _is_model_not_found_error(e)
             is_auth_error = is_authentication_error(e)
             if is_not_found:
-                # Dauerhaft ungültiger Modellname (siehe _is_model_not_found_error-Docstring) -
-                # langer Cooldown statt des kurzen Rate-Limit-Cooldowns, damit kein weiterer
-                # Agent im selben Lauf denselben toten Modellnamen erneut anfragt.
+                # Dauerhaft ungültiger Modellname -> langer Cooldown.
                 token_guard.mark_model_exhausted(
                     f"groq:{self.model_name}", f"Groq Modell nicht gefunden (404): {_short_error(e, 200)}",
                     cooldown_seconds=_MODEL_NOT_FOUND_COOLDOWN_SECONDS,
@@ -1718,13 +1447,8 @@ class GroqClient:
                     f"groq:{self.model_name}", f"Groq Auth-Fehler (ungültiger/abgelehnter API-Key): {_short_error(e, 160)}",
                     cooldown_seconds=AUTH_FAILURE_COOLDOWN_SECONDS,
                 )
-            # Innerhalb-Groq-Ausweichkette (config.GROQ_FALLBACK_MODELS, siehe Modul-Kommentar
-            # über _is_request_too_large_error): ein TPM-/Größen-Fehler ist providerspezifisch
-            # (nur DIESES Groq-Modell hat ein zu enges Limit) - ein großzügigeres Groq-Modell
-            # erneut zu versuchen kostet keinen zusätzlichen Provider-Hop und rettet den Aufruf
-            # oft ganz ohne Cross-Provider-Fallback. Ein 404 (Modell existiert nicht mehr) wird
-            # genauso behandelt - einfach das nächste konfigurierte Modell probieren, statt die
-            # ganze Kette abzubrechen.
+            # TPM-/Größen-Fehler und 404 betreffen nur DIESES Groq-Modell: erst das nächste
+            # Modell aus config.GROQ_FALLBACK_MODELS probieren, ohne Provider-Wechsel.
             if is_too_large or is_not_found:
                 next_model = _next_groq_fallback_model(self.model_name, _tried_groq_models)
                 if next_model:
@@ -1760,8 +1484,7 @@ class GroqClient:
                 )
             return await _cross_provider_failover_with_tools("groq", messages, system_prompt, tools)
 
-        # Prompt-Kompression VOR dem Senden - siehe _compress_messages_for_groq-Docstring oben.
-        # Kürzt nur den Text ALTER Turns, tool_calls/tool_call_id bleiben strukturell erhalten.
+        # Prompt-Kompression vor dem Senden (siehe _compress_messages_for_groq).
         messages, system_prompt = _compress_messages_for_groq(messages, system_prompt)
 
         try:
@@ -1817,8 +1540,7 @@ class GroqClient:
                     f"groq:{self.model_name}", f"Groq Auth-Fehler (ungültiger/abgelehnter API-Key): {_short_error(e, 160)}",
                     cooldown_seconds=AUTH_FAILURE_COOLDOWN_SECONDS,
                 )
-            # Innerhalb-Groq-Ausweichkette - siehe generate_with_usage() oben für den Docstring.
-            # Ein 404 (Modell existiert nicht mehr) wird genauso behandelt wie ein TPM-Fehler.
+            # Innerhalb-Groq-Ausweichkette, wie in generate_with_usage().
             if is_too_large or is_not_found:
                 next_model = _next_groq_fallback_model(self.model_name, _tried_groq_models)
                 if next_model:
@@ -1827,9 +1549,7 @@ class GroqClient:
                         _tried_groq_models=_tried_groq_models | {self.model_name},
                     )
             if not _allow_self_fallback:
-                # Siehe _is_tool_call_json_error-Docstring: ungültiges Tool-Call-JSON ist ein
-                # modellbedingter Generierungsfehler, keine Kontingent-Erschöpfung - hier auch
-                # innerhalb einer gepinnten Aufgabe failovern statt in einen Deadlock zu laufen.
+                # Ungültiges Tool-Call-JSON: auch gepinnt failovern (siehe _TOOL_CALL_JSON_ERROR_MARKERS).
                 if _is_tool_call_json_error(e):
                     return await _cross_provider_failover_with_tools("groq", messages, system_prompt, tools)
                 if is_rate_limit or is_auth_error or is_too_large or is_not_found:
@@ -1849,25 +1569,10 @@ _shared_anthropic_client_lock = threading.Lock()
 
 def _get_shared_anthropic_client() -> Any:
     """
-    EIN einziger, geteilter `anthropic.AsyncAnthropic()`-Client für ALLE `ClaudeClient`-
-    Instanzen im Prozess statt einem frisch konstruierten pro Instanz.
+    Ein geteilter `anthropic.AsyncAnthropic()`-Client für alle `ClaudeClient`-Instanzen.
 
-    Realer Fund (KI-Team-Gesamtanalyse, per cProfile verifiziert): `Orchestrator()` konstruiert
-    einen `ClaudeClient` für JEDEN Agenten, der auf ein Claude-Tier-Modell konfiguriert ist
-    (bis zu ~15 Stück). Jede `anthropic.AsyncAnthropic()`-Instanz baut intern einen eigenen
-    `httpx.Client` mit einem KOMPLETT FRISCHEN SSL-Kontext -
-    `_ssl._SSLContext.load_verify_locations()` liest dabei jedes Mal das gesamte CA-Bundle neu
-    von der Platte. Auf diesem System gemessen: ~0,7s PRO Instanz, macht 15 × ~0,7s ≈ 10,5s
-    allein für redundantes SSL-Setup bei JEDER EINZELNEN `Orchestrator()`-Konstruktion
-    (Gesamt-Konstruktionszeit ohne diesen Fix: ~11-13s). Der Client selbst ist bezüglich des
-    Modellnamens zustandslos (der wird erst PRO AUFRUF an `messages.create()` übergeben) - ein
-    einziger geteilter Client ist deshalb unproblematisch und spart diese ~10s bei jeder
-    Konstruktion ein. Das ist kein rein kosmetischer Mikro-Fix: `interface/web_dashboard.py`
-    erzeugt für JEDEN Dashboard-Job eine frische `Orchestrator()`-Instanz (siehe deren
-    `_execute_job()`-Docstring) - jeder Job wartete dadurch bisher ~10s länger, bevor überhaupt
-    der erste echte LLM-Aufruf startete, und dieselbe Verzögerung ließ mehrere zeitkritische
-    Dashboard-Tests (Cancel/Concurrency, feste 5s-Timeouts) reproduzierbar fehlschlagen, obwohl
-    der jeweils getestete Mechanismus selbst korrekt arbeitete.
+    Jede Instanz lädt beim Anlegen das CA-Bundle neu (~0,7 s); bei ~15 Claude-Agenten pro
+    `Orchestrator()` summierte sich das auf ~10 s. Der Client ist modellneutral (Modell pro Aufruf).
     """
     global _shared_anthropic_client
     if _shared_anthropic_client is None:
@@ -1893,22 +1598,8 @@ class ClaudeClient:
     @staticmethod
     def _free_heavy_fallback_client():
         """
-        Kostenlose Ausweichstufe, wenn Claude nicht verfügbar ist (kein ANTHROPIC_API_KEY
-        oder Fehler): Anthropic bietet – anders als Gemini – kein dauerhaftes Gratis-Kontingent.
-        Bevorzugt daher Groq (echtes, kostenloses Rate-Limit-Kontingent mit einem starken
-        Open-Weight-Modell) statt direkt auf die schwächere Gemini-Standardstufe abzurutschen.
-
-        Kritischer Fund (KI-Team-Optimierungs-Session): dieser Hop prüfte bisher NUR, ob
-        GROQ_API_KEY überhaupt konfiguriert ist - nicht, ob Groqs eigenes Tageskontingent
-        gerade erschöpft ist (token_guard.is_model_exhausted). Ohne ANTHROPIC_API_KEY (dieses
-        Setup) läuft z.B. core/task_manager.py.TaskManager.decompose() über GENAU diesen Hop -
-        war Groq an einem Tag mit vielen echten Läufen bereits selbst am Tageslimit (real
-        beobachtet: "tokens per day (TPD): Limit 200000, Used 199342"), scheiterte JEDE
-        Aufgabenzerlegung sofort, obwohl DeepSeek (eigenes, unabhängiges Tageskontingent,
-        siehe core/llm_factory.py.MODEL_FALLBACKS) noch komplett unbenutzt war. Prüft jetzt
-        Groq, DeepSeek UND OpenRouter (dasselbe Muster, live verifiziert - siehe
-        MODEL_FALLBACKS-Docstring oben) auf tatsächliche Verfügbarkeit, bevor auf die
-        schwächere Gemini-Standardstufe zurückgefallen wird.
+        Ausweichstufe, wenn Claude nicht verfügbar ist: Groq, DeepSeek, OpenRouter (jeweils nur,
+        wenn Key vorhanden und nicht erschöpft), zuletzt die schwächere Gemini-Standardstufe.
         """
         if GROQ_API_KEY and not token_guard.is_model_exhausted(GROQ_HEAVY_MODEL):
             return GroqClient(model_name=GROQ_HEAVY_MODEL)
@@ -1925,13 +1616,8 @@ class ClaudeClient:
             if not _allow_self_fallback:
                 raise RuntimeError("Claude innerhalb einer Fallback-Kette nicht verfügbar (kein ANTHROPIC_API_KEY).")
             return await self._free_heavy_fallback_client().generate_with_usage(prompt, system_prompt)
-        # ki_team_verbesserungsanalyse.md, Stufe-0-#1: `self._client` existiert bereits bei jedem
-        # NUR unplausiblen (falschen/widerrufenen) Key - das erfuhr das Team bisher erst beim
-        # ersten echten Aufruf, JEDES MAL neu (jeder frisch instanziierte ClaudeClient prüft nur
-        # `bool(ANTHROPIC_API_KEY)`, siehe __init__). Ein bereits im laufenden Prozess erkannter
-        # Auth-Fehler (siehe except-Zweig unten, `is_authentication_error()`) landet jetzt in
-        # `token_guard` - GENAU wie OpenRouter/DeepSeek es schon lange tun - und wird hier VOR dem
-        # nächsten kostspieligen, garantiert erneut scheiternden Live-Aufruf abgefangen.
+        # `self._client` existiert auch bei ungültigem Key; bereits erkannte Auth-/Limit-Fehler
+        # aus token_guard vor dem nächsten, sicher scheiternden Live-Aufruf abfangen.
         if token_guard.is_model_exhausted(self.model_name):
             if not _allow_self_fallback:
                 raise _pinned_provider_failure(
@@ -1992,9 +1678,7 @@ class ClaudeClient:
                     cooldown_seconds=AUTH_FAILURE_COOLDOWN_SECONDS,
                 )
             elif is_billing_exhausted:
-                # Realer Fund pulseflow_gateway: 400 "API usage limits reached" ist weder ein
-                # Rate-Limit noch ein Auth-Fehler - ohne diesen Zweig blieb der Fehler unmarkiert
-                # und jeder Folgeagent zerschellte am selben Kontingent-Fehler erneut.
+                # 400 "API usage limits reached": weder Rate-Limit noch Auth-Fehler, gilt für alle Claude-Modelle.
                 reason = f"Claude Nutzungslimit erschöpft: {_short_error(e, 160)}"
                 mark_claude_billing_exhausted(reason)
                 token_guard.mark_model_exhausted(
@@ -2093,9 +1777,7 @@ class ClaudeClient:
                     cooldown_seconds=AUTH_FAILURE_COOLDOWN_SECONDS,
                 )
             elif is_billing_exhausted:
-                # Realer Fund pulseflow_gateway: 400 "API usage limits reached" ist weder ein
-                # Rate-Limit noch ein Auth-Fehler - ohne diesen Zweig blieb der Fehler unmarkiert
-                # und jeder Folgeagent zerschellte am selben Kontingent-Fehler erneut.
+                # Wie in generate_with_usage(): Nutzungslimit gilt für alle Claude-Modelle.
                 reason = f"Claude Nutzungslimit erschöpft: {_short_error(e, 160)}"
                 mark_claude_billing_exhausted(reason)
                 token_guard.mark_model_exhausted(
@@ -2164,11 +1846,7 @@ class LLMFactory:
     @staticmethod
     def create_for_model(model_name: str):
         """
-        Erkennt anhand des Modellnamens den richtigen Provider-Client. Zentrale Stelle,
-        damit ein beliebiger konfigurierter Modellname (Gemini ODER Claude ODER ein
-        Legacy-Provider) immer beim passenden Client landet – unabhängig davon, ob er
-        über config.AGENT_MODELS (create_for_agent) oder direkt (z.B. ORCHESTRATOR_MODEL
-        für TaskManager/ResultAggregator) übergeben wird.
+        Zentrale Zuordnung Modellname -> passender Provider-Client.
         """
         if model_name.startswith("huggingface:") or "huggingface" in model_name:
             return HuggingFaceClient(model_name=model_name)

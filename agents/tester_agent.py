@@ -116,6 +116,12 @@ Wie du arbeitest:
   pythonpath = .
   ```
   Ohne `pythonpath = .` scheitert pytest bei Testmodulen mit `ModuleNotFoundError: No module named 'app'`.
+  Achte dabei zwingend auf korrekte Zeilenumbrüche (`\\n`) zwischen der Sektions-Zeile `[pytest]`
+  und jedem einzelnen Konfigurationswert - niemals Sektion und Wert auf einer Zeile
+  zusammenschreiben und niemals einen Wert einrücken. Ein falsch formatierter Zeilenumbruch lässt
+  `configparser` beim Einlesen sofort mit `unexpected value continuation` abbrechen, bevor pytest
+  auch nur einen Test sammeln kann - dieselbe strikte Formatierung gilt für jede `.ini`- oder
+  `.toml`-Datei, die du schreibst (z. B. `pyproject.toml`).
 - Datenbank-Modelle in Test-Fixtures: Prüfe vor dem Anlegen von DB-Einträgen in Tests (z. B.
   `db.add(Webhook(...))`) exakt, welche Spalten im Modell `nullable=False` haben. Übergib für ALLE
   Pflichtfelder valide Testwerte (z. B. `hmac_secret="test-secret"`), um `IntegrityError: NOT NULL

@@ -39,7 +39,16 @@ _PYTEST_ASYNCIO_CONFIG_RULE = """- Nutzt das Projekt `asyncio`, FastAPI oder asy
   ```
   Ohne `asyncio_mode = auto` überspringt pytest jede asynchrone Testfunktion stillschweigend
   ("async def functions are not natively supported") - der generierte Code bleibt dann komplett
-  ungeprüft, selbst wenn er fehlerfrei ist."""
+  ungeprüft, selbst wenn er fehlerfrei ist.
+- Whitespace-/Formatierungs-Guard für `.ini`/`.toml`-Dateien: Zwischen der Sektions-Zeile
+  (z. B. `[pytest]`) und JEDEM Konfigurationswert steht IMMER ein echter Zeilenumbruch (`\\n`) -
+  niemals mehrere Werte oder eine Sektion und ihr erster Wert auf derselben Zeile
+  zusammengeschrieben (z. B. NIEMALS `[pytest] asyncio_mode = auto`). Jede Zeile beginnt zwingend
+  in Spalte 0, ohne führende Leerzeichen/Tabs vor dem Schlüssel - ein eingerückter oder an die
+  Vorzeile angehängter Wert lässt `configparser`/`tomllib` beim Einlesen mit
+  `configparser.ParsingError: ... unexpected value continuation` bzw. einem TOML-Parse-Fehler
+  abbrechen, bevor pytest überhaupt einen einzigen Test sammeln kann. Prüfe den erzeugten Inhalt
+  vor dem `write_file`-Aufruf zeilenweise gegen dieses Muster."""
 
 # Team-Optimierung (Fehleranalyse 2026-09-13, Vertrags-Synchronisation Tester ↔ Entwickler):
 # real beobachtet wurden Tests, die eine Bibliothek/ein SDK mockten, das im Projekt gar nicht
@@ -75,6 +84,44 @@ TESTER_MOCK_DEPENDENCY_SYNC_DIRECTIVE = """
   diesen HTTP-Aufruf (z. B. `respx`, `pytest-httpx`, `msw`) - nicht ein SDK-Objekt, das im
   Produktivcode gar nicht vorkommt. Nutzt der Code stattdessen wirklich ein SDK (z. B. `openai`,
   `stripe`), mockst du dessen Client/Methoden, nicht die rohe HTTP-Ebene darunter.
+"""
+
+# Team-Optimierung (`/goal`-Auftrag, Fehleranalyse `logs/FEHLERANALYSE_KI_TEAM_20260914.md`,
+# Schwachstelle 1 "Mock-/Contract-Desynchronisation"): reale Läufe zeigten Testdateien, die
+# Interfaces/Datenstrukturen/Hilfsklassen aus `src/`/`app/` NICHT importierten, sondern in der
+# Testdatei selbst ein zweites Mal (oft leicht abweichend) deklarierten - die Tests bestanden
+# dadurch gegen ihre eigene Kopie, während der echte Produktivcode nie durchlief. Dieselbe
+# Fund-Klasse wie TESTER_MOCK_SOURCE_INSPECTION_DIRECTIVE oben, hier als eigenständiges,
+# unmissverständliches Verbot statt nur implizit über die Mock-Regel abgedeckt.
+TESTER_NO_DUPLICATE_INTERFACE_DIRECTIVE = """
+## 🚫 Verbot von Duplikat-Klassen in Tests
+- Bevor du IRGENDEINE Testdatei schreibst, führst du zwingend `read_file` auf den echten
+  Modellen, Repositories oder Komponenten aus, die der Test prüfen soll (z. B. `src/models/*`,
+  `app/services/*`) - niemals raten, wie eine Schnittstelle aussieht.
+- Es ist STRIKT VERBOTEN, eine Schnittstelle, Datenstruktur oder Hilfsklasse in der Testdatei
+  selbst neu zu deklarieren (z. B. eine eigene `class UserDTO`/`interface Order` direkt in
+  `test_*.py`/`*.test.ts`), wenn das reale Gegenstück bereits in `src/` oder `app/` existiert.
+  Ein solches Duplikat testet nur seine eigene Kopie, nicht den echten Produktivcode - die
+  Testsuite kann dadurch dauerhaft grün bleiben, während das eigentliche Modul längst gebrochen
+  oder abweichend ist (Mock-/Contract-Desynchronisation).
+- Tests importieren das echte Quellmodul zwingend direkt (z. B. `from app.models.user import
+  UserDTO` / `import { Order } from '../src/models/order'`). Existiert das benötigte Symbol dort
+  noch nicht, ist das ein Befund für den zuständigen Entwickler-Agenten (Datei + Symbol nennen),
+  keine Rechtfertigung, es stattdessen lokal in der Testdatei nachzubauen.
+"""
+
+# Team-Optimierung (`/goal`-Auftrag, Fehleranalyse `logs/FEHLERANALYSE_KI_TEAM_20260914.md`,
+# Schwachstelle "Hard-Delivery-Gate-Absicherung"): im Auto-Fix-Loop (siehe FIX_LOOP_DIRECTIVE
+# unten) meldete der Tester-Agent vereinzelt eine reine Textantwort ("Der Fehler liegt an X,
+# das müsste in Datei Y geändert werden ...") ohne selbst edit_file/write_file aufzurufen - das
+# Hard Delivery Gate (core/agent_toolbox.py) wertet ausbleibende Datei-Änderungen bereits als
+# Totalausfall, aber der Tester wusste das bisher nicht explizit für den Fehlerbehebungs-Modus.
+TESTER_HARD_DELIVERY_GATE_DIRECTIVE = """
+## 🚧 Hard-Delivery-Gate im Fehlerbehebungs-Modus (VERBINDLICH)
+Wenn du zur Fehlerkorrektur aufgerufen wirst, MUSST du zwingend `edit_file` oder `write_file`
+aufrufen. Reine Textantworten ohne Datei-Änderungen gelten als Totalausfall - eine Erklärung, WAS
+zu ändern wäre, ersetzt niemals die tatsächliche Änderung. Analysiere die Ursache und wende die
+Korrektur SOFORT selbst per Werkzeug an, statt sie nur zu beschreiben.
 """
 
 # Team-Optimierung (Fehleranalyse 2026-09-13, Vertrags-Synchronisation mit TESTER_MOCK_
@@ -209,7 +256,9 @@ TESTER_CONTRACT_DIRECTIVE = f"""
   behebst du vor allem anderen.
 {_PYTEST_ASYNCIO_CONFIG_RULE}
 {TESTER_MOCK_SOURCE_INSPECTION_DIRECTIVE}
-{TESTER_MOCK_DEPENDENCY_SYNC_DIRECTIVE}"""
+{TESTER_MOCK_DEPENDENCY_SYNC_DIRECTIVE}
+{TESTER_NO_DUPLICATE_INTERFACE_DIRECTIVE}
+{TESTER_HARD_DELIVERY_GATE_DIRECTIVE}"""
 
 FRONTEND_CONTRACT_DIRECTIVE = f"""
 ## 📜 Contract First – Web-Assets sofort physisch speichern

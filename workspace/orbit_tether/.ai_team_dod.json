@@ -1,0 +1,88 @@
+{
+  "project_slug": "orbit_tether",
+  "timestamp": "2026-09-14T20:20:40+00:00",
+  "is_done": true,
+  "blocking": [],
+  "criteria": [
+    {
+      "key": "files_written",
+      "label": "Es wurde tatsächlich Code erzeugt",
+      "passed": true,
+      "required": true,
+      "detail": "13 Datei(en) geschrieben",
+      "applicable": true
+    },
+    {
+      "key": "tests_exist",
+      "label": "Eine echte Testsuite existiert",
+      "passed": true,
+      "required": true,
+      "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "tests_pass",
+      "label": "Die Testsuite läuft grün",
+      "passed": true,
+      "required": true,
+      "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "deps_installable",
+      "label": "Abhängigkeiten sind installierbar",
+      "passed": false,
+      "required": true,
+      "detail": "",
+      "applicable": false
+    },
+    {
+      "key": "app_starts",
+      "label": "Die Anwendung startet",
+      "passed": false,
+      "required": true,
+      "detail": "",
+      "applicable": false
+    },
+    {
+      "key": "secrets_clean",
+      "label": "Keine Secrets im Code",
+      "passed": false,
+      "required": true,
+      "detail": "",
+      "applicable": false
+    },
+    {
+      "key": "lint_clean",
+      "label": "Linter ohne Befund",
+      "passed": false,
+      "required": false,
+      "detail": "",
+      "applicable": false
+    },
+    {
+      "key": "ui_ok",
+      "label": "Frontend/UI-Check ohne Befund",
+      "passed": false,
+      "required": false,
+      "detail": "",
+      "applicable": false
+    },
+    {
+      "key": "missing_entrypoint",
+      "label": "Ein echter Anwendungs-Einstiegspunkt existiert",
+      "passed": true,
+      "required": true,
+      "detail": "gefunden: index.html",
+      "applicable": true
+    },
+    {
+      "key": "readme",
+      "label": "README vorhanden",
+      "passed": true,
+      "required": false,
+      "detail": "",
+      "applicable": true
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "modules": {
+    "src/core/StateStore.ts": { "StateStore": "class", "stateStore": "instance" },
+    "src/core/GameLoop.ts": { "GameLoop": "class" },
+    "src/core/InputHandler.ts": { "InputHandler": "class" },
+    "src/core/Renderer.ts": { "Renderer": "class" },
+    "src/services/HapticService.ts": { "HapticService": "class", "hapticService": "instance" },
+    "src/services/DeviceService.ts": { "DeviceService": "class", "deviceService": "instance" }
+  }
+}

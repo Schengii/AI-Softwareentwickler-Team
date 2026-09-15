@@ -1,0 +1,33 @@
+{
+  "appId": "com.orbittether.game",
+  "appName": "Orbit Tether",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https"
+  },
+  "ios": {
+    "contentInset": "automatic",
+    "allowsLinkPreview": false,
+    "scrollEnabled": false,
+    "backgroundColor": "#0b0e14"
+  },
+  "android": {
+    "backgroundColor": "#0b0e14",
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1500,
+      "launchAutoHide": true,
+      "backgroundColor": "#0b0e14",
+      "androidSplashResourceName": "splash",
+      "showSpinner": false
+    },
+    "StatusBar": {
+      "style": "DARK",
+      "backgroundColor": "#0b0e14",
+      "overlaysWebView": true
+    }
+  }
+}

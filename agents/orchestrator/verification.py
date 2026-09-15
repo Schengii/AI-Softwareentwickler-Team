@@ -2411,6 +2411,9 @@ class VerificationMixin:
                         "Versuch zu verbrauchen."
                     )
                     verification_ok = False
+                    _grund = f"{len(completeness_report.issues)} unveränderte(r) Vollständigkeits-Fund(e) nach Fixversuch (kein Fortschritt)."
+                    notify(f"  ❌ [bold red]Verifikations-Veto durch Completeness-Check:[/bold red] {_grund}")
+                    summary_lines.append(f"- ❌ **Verifikations-Veto durch Completeness-Check:** {_grund}")
                     break
                 previous_completeness_signature = current_completeness_signature
 
@@ -2422,6 +2425,9 @@ class VerificationMixin:
                     top += f" … und {len(completeness_report.issues) - 5} weitere"
                 notify(f"  🧩 [bold red]Vollständigkeits-Check: {len(completeness_report.issues)} Fund(e).[/bold red]")
                 verification_ok = False
+                _grund = f"{len(completeness_report.issues)} Vollständigkeits-Fund(e) (Stub-/Platzhalter-Code oder fehlende README-referenzierte Datei): {top}"
+                notify(f"  ❌ [bold red]Verifikations-Veto durch Completeness-Check:[/bold red] {_grund}")
+                summary_lines.append(f"- ❌ **Verifikations-Veto durch Completeness-Check:** {_grund}")
 
                 agents_to_fix: dict[str, list] = {}
                 for issue in completeness_report.issues:
@@ -2485,6 +2491,9 @@ class VerificationMixin:
                     notify(f"  📊 [bold red]Testabdeckung {coverage_report.percent}% UNTER der Schwelle von {MIN_TEST_COVERAGE}%.[/bold red]")
                     summary_lines.append(f"- 📊 ❌ Testabdeckung {coverage_report.percent}% UNTER der konfigurierten Schwelle (`MIN_TEST_COVERAGE={MIN_TEST_COVERAGE}%`).")
                     verification_ok = False
+                    _grund = f"Testabdeckung {coverage_report.percent}% liegt unter der konfigurierten Schwelle von {MIN_TEST_COVERAGE}%."
+                    notify(f"  ❌ [bold red]Verifikations-Veto durch Coverage-Check:[/bold red] {_grund}")
+                    summary_lines.append(f"- ❌ **Verifikations-Veto durch Coverage-Check:** {_grund}")
 
         # Runtime Smoke-Check: Prüft, ob die generierte App tatsächlich hochfährt / antwortet (Tests grün != App startet)
         #
@@ -2549,6 +2558,9 @@ class VerificationMixin:
                     notify(f"  🚀 [bold red]Runtime-Smoke-Test fehlgeschlagen:[/bold red] `{smoke_report.entrypoint}` [{smoke_report.app_type}]{err}.")
                     summary_lines.append(f"- 🚀 ❌ Runtime-Smoke-Test fehlgeschlagen: `{smoke_report.entrypoint}` [{smoke_report.app_type}] startet nicht{err}.")
                     verification_ok = False
+                    _grund = f"`{smoke_report.entrypoint}` [{smoke_report.app_type}] startet nicht{err}."
+                    notify(f"  ❌ [bold red]Verifikations-Veto durch Runtime-Smoke-Test:[/bold red] {_grund}")
+                    summary_lines.append(f"- ❌ **Verifikations-Veto durch Runtime-Smoke-Test:** {_grund}")
 
         # Lastentest: führt vom performance-Agenten geschriebene k6-/Locust-Skripte (tests/load/)
         # tatsächlich AUS statt sie nur unausgeführt im Projekt liegen zu lassen - startet die
@@ -2609,6 +2621,9 @@ class VerificationMixin:
                     notify(f"  🏋️ [bold red]Lastentest ({perf_report.tool}) fehlgeschlagen:[/bold red] `{perf_report.script}` [{stats}].")
                     summary_lines.append(f"- 🏋️ ❌ Lastentest ({perf_report.tool}) fehlgeschlagen: `{perf_report.script}` [{stats}].")
                     verification_ok = False
+                    _grund = f"Lastentest ({perf_report.tool}) fehlgeschlagen: `{perf_report.script}` [{stats}]."
+                    notify(f"  ❌ [bold red]Verifikations-Veto durch Lastentest:[/bold red] {_grund}")
+                    summary_lines.append(f"- ❌ **Verifikations-Veto durch Lastentest:** {_grund}")
 
         # Browser / Frontend UI-Check: Prüft statische Assets, Rendering und JS-Konsolenfehler.
         # Realer Fund (Pong-Projekt): ein Fehlschlag hier war bisher rein informativ und
@@ -2678,6 +2693,8 @@ class VerificationMixin:
                     notify(f"  🌐 [bold red]Frontend/UI-Check fehlgeschlagen:[/bold red] {err_details}.")
                     summary_lines.append(f"- 🌐 ❌ Frontend/UI-Check fehlgeschlagen: {err_details}.")
                     verification_ok = False
+                    notify(f"  ❌ [bold red]Verifikations-Veto durch Browser-UI-Check:[/bold red] {err_details}.")
+                    summary_lines.append(f"- ❌ **Verifikations-Veto durch Browser-UI-Check:** {err_details}.")
 
         # Accessibility-Check: echter axe-core-Scan (WCAG 2.x) gegen die gerenderte Seite -
         # ersetzt die rein LLM-basierte Einschätzung des accessibility-Agenten durch geparste

@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Orbit Tether</title>
+  <style>
+    :root {
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-right: env(safe-area-inset-right, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --safe-left: env(safe-area-inset-left, 0px);
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #050813;
+      color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    #app {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    canvas#game-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+      touch-action: none;
+      display: block;
+    }
+    #ui-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 10;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: calc(var(--safe-top) + 16px) calc(var(--safe-right) + 16px) calc(var(--safe-bottom) + 16px) calc(var(--safe-left) + 16px);
+    }
+    .hud-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      width: 100%;
+    }
+    .score-box {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8), 0 0 12px rgba(0, 200, 255, 0.4);
+      pointer-events: auto;
+      color: #38bdf8;
+    }
+    .status-box {
+      font-size: 0.9rem;
+      color: #94a3b8;
+      font-weight: 500;
+    }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      border: 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <canvas id="game-canvas" role="application" aria-label="Orbit Tether Spielfeld">
+      HTML5-Canvas für das 2D-Arcade-Spiel Orbit Tether.
+    </canvas>
+    <div id="ui-overlay" role="region" aria-label="Spielanzeige">
+      <header class="hud-header">
+        <div id="score-display" class="score-box" aria-live="polite" aria-atomic="true">Score: 0</div>
+        <div class="status-box" id="hint-display">Tippen zum Andocken</div>
+      </header>
+      <div id="sr-announcer" class="sr-only" aria-live="assertive" aria-atomic="true"></div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      // Canvas und Context initialisieren
+      const canvas = document.getElementById('game-canvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const scoreDisplay = document.getElementById('score-display');
+      const hintDisplay = document.getElementById('hint-display');
+
+      let width = window.innerWidth;
+      let height = window.innerHeight;
+      let dpr = window.devicePixelRatio || 1;
+
+      function resizeCanvas() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        dpr = window.devicePixelRatio || 1;
+        canvas.width = Math.floor(width * dpr);
+        canvas.height = Math.floor(height * dpr);
+        ctx.scale(dpr, dpr);
+      }
+      resizeCanvas();
+      window.addEventListener('resize', resizeCanvas);
+
+      // Spielzustand
+      let score = 0;
+      let isTethered = false;
+      let activeCenter = { x: width / 2, y: height / 2, radius: 45 };
+
+      // Raumschiff / Spieler-Zustand
+      const ship = {
+        x: width / 2,
+        y: height / 2 - 120,
+        vx: 3.5,
+        vy: 0,
+        radius: 8,
+        angle: 0,
+        trail: []
+      };
+
+      // Sternenhintergrund erzeugen
+      const stars = [];
+      for (let i = 0; i < 70; i++) {
+        stars.push({
+          x: Math.random() * 2000,
+          y: Math.random() * 2000,
+          r: Math.random() * 1.8 + 0.4,
+          alpha: Math.random() * 0.8 + 0.2
+        });
+      }
+
+      // Haptik-Fallback
+      function triggerHaptic() {
+        try {
+          if (window.navigator && window.navigator.vibrate) {
+            window.navigator.vibrate(15);
+          }
+        } catch (e) {
+          // Ignorieren falls nicht verfügbar
+        }
+      }
+
+      // Tethering-Steuerung
+      function toggleTether(active) {
+        if (active !== isTethered) {
+          isTethered = active;
+          if (isTethered) {
+            triggerHaptic();
+            score += 10;
+            if (scoreDisplay) scoreDisplay.textContent = 'Score: ' + score;
+            if (hintDisplay) hintDisplay.textContent = 'Orbit aktiv';
+          } else {
+            if (hintDisplay) hintDisplay.textContent = 'Freiflug';
+          }
+        }
+      }
+
+      window.addEventListener('pointerdown', function () { toggleTether(true); });
+      window.addEventListener('pointerup', function () { toggleTether(false); });
+      window.addEventListener('keydown', function (e) {
+        if (e.code === 'Space') toggleTether(true);
+      });
+      window.addEventListener('keyup', function (e) {
+        if (e.code === 'Space') toggleTether(false);
+      });
+
+      // Sofortige Initial-Zeichnung (damit Canvas vom ersten Moment an gezeichnet ist)
+      function renderScene() {
+        // 1. Hintergrund zeichnen
+        const bgGrad = ctx.createRadialGradient(width / 2, height / 2, 10, width / 2, height / 2, Math.max(width, height) * 0.8);
+        bgGrad.addColorStop(0, '#0d1527');
+        bgGrad.addColorStop(1, '#050813');
+        ctx.fillStyle = bgGrad;
+        ctx.fillRect(0, 0, width, height);
+
+        // 2. Sterne
+        ctx.fillStyle = '#ffffff';
+        stars.forEach(function (star) {
+          ctx.globalAlpha = star.alpha;
+          ctx.beginPath();
+          ctx.arc(star.x % width, star.y % height, star.r, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        ctx.globalAlpha = 1.0;
+
+        // 3. Gravitationszentrum / Planet
+        const planetGrad = ctx.createRadialGradient(activeCenter.x, activeCenter.y, 5, activeCenter.x, activeCenter.y, activeCenter.radius);
+        planetGrad.addColorStop(0, '#38bdf8');
+        planetGrad.addColorStop(0.7, '#0284c7');
+        planetGrad.addColorStop(1, '#082f49');
+        ctx.fillStyle = planetGrad;
+        ctx.beginPath();
+        ctx.arc(activeCenter.x, activeCenter.y, activeCenter.radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Gravitations-Ring
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.25)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([6, 6]);
+        ctx.beginPath();
+        ctx.arc(activeCenter.x, activeCenter.y, activeCenter.radius + 75, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // 4. Tether-Linie (falls aktiv)
+        if (isTethered) {
+          ctx.strokeStyle = '#38bdf8';
+          ctx.shadowColor = '#00f0ff';
+          ctx.shadowBlur = 12;
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.moveTo(activeCenter.x, activeCenter.y);
+          ctx.lineTo(ship.x, ship.y);
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+        }
+
+        // 5. Partikel-Schweif
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.4)';
+        ctx.lineWidth = 2;
+        if (ship.trail.length > 1) {
+          ctx.beginPath();
+          ctx.moveTo(ship.trail[0].x, ship.trail[0].y);
+          for (let i = 1; i < ship.trail.length; i++) {
+            ctx.lineTo(ship.trail[i].x, ship.trail[i].y);
+          }
+          ctx.stroke();
+        }
+
+        // 6. Raumschiff
+        ctx.save();
+        ctx.translate(ship.x, ship.y);
+        ctx.rotate(ship.angle);
+        ctx.fillStyle = '#f8fafc';
+        ctx.shadowColor = '#38bdf8';
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.moveTo(10, 0);
+        ctx.lineTo(-8, -6);
+        ctx.lineTo(-4, 0);
+        ctx.lineTo(-8, 6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // Physik-Update
+      function updatePhysics() {
+        activeCenter.x = width / 2;
+        activeCenter.y = height / 2;
+
+        if (isTethered) {
+          const dx = activeCenter.x - ship.x;
+          const dy = activeCenter.y - ship.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          const gravityForce = 4.2;
+          ship.vx += (dx / dist) * gravityForce;
+          ship.vy += (dy / dist) * gravityForce;
+
+          // Dämpfung/Geschwindigkeitsbegrenzung
+          const currentSpeed = Math.sqrt(ship.vx * ship.vx + ship.vy * ship.vy);
+          const maxSpeed = 7.5;
+          if (currentSpeed > maxSpeed) {
+            ship.vx = (ship.vx / currentSpeed) * maxSpeed;
+            ship.vy = (ship.vy / currentSpeed) * maxSpeed;
+          }
+        }
+
+        ship.x += ship.vx;
+        ship.y += ship.vy;
+        ship.angle = Math.atan2(ship.vy, ship.vx);
+
+        // Bildschirmgrenzen (Wrap-Around)
+        if (ship.x < -20) ship.x = width + 20;
+        if (ship.x > width + 20) ship.x = -20;
+        if (ship.y < -20) ship.y = height + 20;
+        if (ship.y > height + 20) ship.y = -20;
+
+        // Schweif aktualisieren
+        ship.trail.push({ x: ship.x, y: ship.y });
+        if (ship.trail.length > 20) ship.trail.shift();
+      }
+
+      // Haupt-GameLoop
+      function loop() {
+        updatePhysics();
+        renderScene();
+        requestAnimationFrame(loop);
+      }
+
+      // Sofort synchron rendern, damit Canvas im Headless-Browser direkt gezeichnete Pixel hat
+      renderScene();
+
+      // Animations-Loop starten
+      requestAnimationFrame(loop);
+    })();
+  </script>
+</body>
+</html>

@@ -250,13 +250,26 @@ async def run_backlog_poll_cycle(
     # Dubletten schließen und per Commit referenzierte Tickets erledigen (core/backlog_hygiene.py),
     # damit der Worker keine bereits behobenen oder doppelten Tickets erneut bearbeitet.
     try:
-        from core.backlog_hygiene import cancel_duplicates, close_tickets_referenced_in_commits, read_commit_messages
+        from core.backlog_hygiene import (
+            cancel_duplicates,
+            cancel_orphaned_project_tickets,
+            cancel_stale_open_tickets,
+            close_tickets_referenced_in_commits,
+            read_commit_messages,
+        )
         hygiene_closed = close_tickets_referenced_in_commits(list_tickets(), read_commit_messages())
         hygiene_cancelled = cancel_duplicates(list_tickets())
-        if (hygiene_closed or hygiene_cancelled) and status_callback:
+        # Backlog-Analyse 2026-09-16: 25 offene Tickets zeigten auf gelöschte Projekte und 45 lagen
+        # nie aufgegriffen herum - beides direkt hier abräumen, sonst wächst die Warteschlange mit
+        # jedem Poll-Zyklus weiter, ohne dass je jemand `--backlog-hygiene` von Hand aufruft.
+        hygiene_orphans = cancel_orphaned_project_tickets(list_tickets())
+        # `skip_ids`: die oben gerade wieder aufgegriffenen Tickets nicht im selben Zyklus schließen.
+        hygiene_stale = cancel_stale_open_tickets(list_tickets(), skip_ids=recovered_stale_tickets)
+        if (hygiene_closed or hygiene_cancelled or hygiene_orphans or hygiene_stale) and status_callback:
             status_callback(
                 f"🧹 Backlog-Hygiene: {len(hygiene_closed)} per Commit erledigt, "
-                f"{len(hygiene_cancelled)} Dublette(n) geschlossen."
+                f"{len(hygiene_cancelled)} Dublette(n), {len(hygiene_orphans)} ohne Projekt, "
+                f"{len(hygiene_stale)} liegengeblieben geschlossen."
             )
     except Exception as e:  # Hygiene darf den Worker nie blockieren
         logging.getLogger(__name__).warning("Backlog-Hygiene fehlgeschlagen: %r", e)

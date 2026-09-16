@@ -7,6 +7,36 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Team-Analyse 2026-09-16: Gates, die sich selbst abschalten, und ein Backlog, der nie leerlief
+
+Auswertung aller Workspace-Projekte, des Backlogs und der Eval-Historie. Drei Befunde, drei Fixes.
+
+**1 – Der Frontend-Wächter schaltete sich selbst ab.** `frontend_planned` stammte aus
+`any(r.agent_id == "frontend" for r in results)`, also daraus, WELCHE AGENTEN LIEFEN, steuerte aber
+`ui_ok.required` und `missing_frontend_ui.applicable`. Plante der Planer kein Frontend oder scheiterte
+der frontend-Agent, fielen beide Schutzkriterien weg. Belegt an `syncwave`: WebSocket-Dashboard
+beauftragt, UI-Check hart gescheitert, Verifikations-Veto - und trotzdem `is_done: true, blocking: []`.
+`core/definition_of_done.py._requires_frontend_ui()` leitet die Erwartung jetzt zusätzlich aus dem
+Auftragstext und aus deklarierten Frontend-Abhängigkeiten ab.
+
+**2 – "Nicht gemessen" galt als "nicht relevant".** `applicable = <wert> is not None` ließ jede
+Pflichtprüfung ohne Ergebnis (Absturz, Budget-Abbruch, Provider-Erschöpfung) lautlos aus der Bewertung
+fallen. Neues, per Voreinstellung inaktives Flag `verification_ran`: lief die Pipeline wirklich, dann
+blockiert ein fehlender Messwert - aber nur dort, wo die Messung geschuldet war (`app_starts` nur bei
+vorhandenem Einstiegspunkt, `deps_installable` nur bei vorhandener Abhängigkeitsdatei), denn der
+Verifier zeichnet `smoke`/`deps_install` in den anderen Fällen bewusst nicht auf.
+
+**3 – Der Backlog lief nie leer.** 54 von 200 Tickets offen, 45 davon mit `retries=0` (nie erneut
+versucht), 23 zeigten auf Workspace-Projekte, die es längst nicht mehr gibt. `core/backlog_hygiene.py`
+kannte nur hängende, doppelte und per Commit erledigte Tickets. Neu: Regel 4 schließt offene Tickets
+projektgebundener Quellen ohne existierendes Projektverzeichnis (kanonischer Namensvergleich wie
+`WorkspaceManager`, rein lesend - `get_project_dir()` würde das Verzeichnis anlegen), Regel 5 schließt
+offene Tickets, die seit über `STALE_OPEN_DAYS` (14) Tagen offen sind. Gemessen an `created_at`, weil
+ein Status- oder Hygiene-Kommentar `updated_at` erneuert, ohne Fortschritt zu sein. Beide Regeln laufen
+auch im autonomen Poll-Zyklus (`core/backlog_worker.py`), nicht nur bei `--backlog-hygiene`.
+
+---
+
 ## 🟢 Team-Analyse 2026-09-15 (Teil 2): saubere Lerndaten, Team-Kommunikation, Token-Effizienz, Qualitäts-Gates
 
 Auswertung von 200 Läufen, allen Workspace-Projekten, Backlog, Lektionen und Eval-Historie. Befunde:

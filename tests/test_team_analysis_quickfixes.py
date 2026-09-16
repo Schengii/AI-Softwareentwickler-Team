@@ -208,12 +208,109 @@ class TestBacklogHygiene(unittest.TestCase):
     def test_ticket_referenced_in_commit_is_closed_with_word_boundaries(self):
         from core.backlog_hygiene import run_backlog_hygiene
 
+        workspace = Path(tempfile.mkdtemp())
+        (workspace / "foo").mkdir()
         backlog_store.upsert_ticket("audit-foo", "Audit foo", "workspace_audit", "blocked", project_slug="foo")
         backlog_store.upsert_ticket("audit-foo-adr-duplicate", "ADR", "workspace_audit", "blocked", project_slug="foo")
-        report = run_backlog_hygiene(commit_messages="fix: DoD erkennt Dashboards\n\nCloses: audit-foo-adr-duplicate\n")
+        report = run_backlog_hygiene(commit_messages="fix: DoD erkennt Dashboards\n\nCloses: audit-foo-adr-duplicate\n",
+                                     workspace_dir=workspace)
         self.assertEqual(report.closed_by_commit, ["audit-foo-adr-duplicate"])
         self.assertEqual(backlog_store.get_ticket("audit-foo").status, "blocked")
         self.assertEqual(backlog_store.get_ticket("audit-foo-adr-duplicate").status, "done")
+
+
+class TestBacklogDrainsOut(unittest.TestCase):
+    """
+    Regel 4 und 5 aus core/backlog_hygiene.py: verwaiste Projekt-Tickets und dauerhaft
+    liegengebliebene Tickets müssen den Backlog verlassen, sonst läuft die Warteschlange nie leer.
+    """
+
+    def setUp(self):
+        self.file_path = Path(tempfile.mkdtemp()) / "backlog.json"
+        self._patcher = patch.object(backlog_store, "BACKLOG_FILE", self.file_path)
+        self._patcher.start()
+        self.workspace = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        self._patcher.stop()
+
+    def _age(self, ticket_id: str, days: float):
+        raw = json.loads(self.file_path.read_text(encoding="utf-8"))
+        for t in raw:
+            if t["id"] == ticket_id:
+                alt = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+                t["updated_at"] = alt
+                t["created_at"] = alt
+        self.file_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    def test_ticket_zu_geloeschtem_projekt_wird_geschlossen(self):
+        from core.backlog_hygiene import cancel_orphaned_project_tickets
+
+        (self.workspace / "ping_service").mkdir()
+        backlog_store.upsert_ticket("repair-logipulse", "Verifikations-Fehler: logipulse",
+                                    "orchestrator", "blocked", project_slug="logipulse")
+        backlog_store.upsert_ticket("repair-ping", "Verifikations-Fehler: ping_service",
+                                    "orchestrator", "blocked", project_slug="ping_service")
+        cancelled = cancel_orphaned_project_tickets(backlog_store.list_tickets(), workspace_dir=self.workspace)
+        self.assertEqual(cancelled, ["repair-logipulse"])
+        self.assertEqual(backlog_store.get_ticket("repair-logipulse").status, "cancelled")
+        self.assertEqual(backlog_store.get_ticket("repair-ping").status, "blocked")
+
+    def test_neuer_cli_auftrag_wird_nicht_als_verwaist_geschlossen(self):
+        from core.backlog_hygiene import cancel_orphaned_project_tickets
+
+        backlog_store.upsert_ticket("cli-neu0001", "Baue eine Notiz-App", "cli", "todo",
+                                    project_slug="notiz_app")
+        cancelled = cancel_orphaned_project_tickets(backlog_store.list_tickets(), workspace_dir=self.workspace)
+        self.assertEqual(cancelled, [])
+        self.assertEqual(backlog_store.get_ticket("cli-neu0001").status, "todo")
+
+    def test_projektname_wird_kanonisch_verglichen(self):
+        from core.backlog_hygiene import cancel_orphaned_project_tickets
+
+        (self.workspace / "webhook_shield").mkdir()
+        backlog_store.upsert_ticket("repair-webhookshield", "Fehler", "orchestrator", "blocked",
+                                    project_slug="WebhookShield")
+        self.assertEqual(
+            cancel_orphaned_project_tickets(backlog_store.list_tickets(), workspace_dir=self.workspace), [])
+
+    def test_unlesbarer_workspace_schliesst_nichts(self):
+        from core.backlog_hygiene import cancel_orphaned_project_tickets
+
+        backlog_store.upsert_ticket("repair-foo", "Fehler", "orchestrator", "blocked", project_slug="foo")
+        cancelled = cancel_orphaned_project_tickets(
+            backlog_store.list_tickets(), workspace_dir=self.workspace / "gibt-es-nicht")
+        self.assertEqual(cancelled, [])
+
+    def test_seit_wochen_offenes_ticket_wird_geschlossen(self):
+        from core.backlog_hygiene import cancel_stale_open_tickets
+
+        backlog_store.upsert_ticket("cli-alt00001", "Nie aufgegriffen", "cli", "todo")
+        backlog_store.upsert_ticket("cli-neu00001", "Frisch", "cli", "todo")
+        self._age("cli-alt00001", 20)
+        cancelled = cancel_stale_open_tickets(backlog_store.list_tickets())
+        self.assertEqual(cancelled, ["cli-alt00001"])
+        self.assertIn("Seit 20 Tagen offen", backlog_store.get_ticket("cli-alt00001").detail)
+        self.assertEqual(backlog_store.get_ticket("cli-neu00001").status, "todo")
+
+    def test_haengendes_in_progress_wird_wieder_aufgegriffen_statt_geschlossen(self):
+        from core.backlog_hygiene import run_backlog_hygiene
+
+        backlog_store.upsert_ticket("orch-alt00001", "Abgestürzter Lauf", "orchestrator", "in_progress")
+        self._age("orch-alt00001", 20)
+        report = run_backlog_hygiene(commit_messages="", workspace_dir=self.workspace)
+        self.assertEqual(report.recovered, ["orch-alt00001"])
+        self.assertEqual(report.stale_open_cancelled, [])
+        self.assertEqual(backlog_store.get_ticket("orch-alt00001").status, "todo")
+
+    def test_bereits_geschlossene_tickets_bleiben_unberuehrt(self):
+        from core.backlog_hygiene import run_backlog_hygiene
+
+        for tid, status in (("cli-done0001", "done"), ("cli-canc0001", "cancelled")):
+            backlog_store.upsert_ticket(tid, "Erledigt", "cli", status, project_slug="weg")
+            self._age(tid, 40)
+        report = run_backlog_hygiene(commit_messages="", workspace_dir=self.workspace)
+        self.assertEqual(report.changed, 0)
 
 
 if __name__ == "__main__":

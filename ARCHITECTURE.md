@@ -132,7 +132,7 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
 - **Token Guard, Prompt Caching & Quota-Management (`core/token_guard.py`, `core/quota_estimator.py`, `core/llm_factory.py`)**:
   - Hartes Budget-Limit (`MAX_RUN_TOKENS`) mit kontrolliertem, sicherem Abbruch vor Budget-Überschreitung.
   - Effizienz-Kennzahlen pro Lauf (`agents/orchestrator/efficiency.py`): Cache-Quote, eingesparter Kontext, Watchdog-Eingriffe und Modell-Abwertungen im Abschlussbericht und in `run_closed`.
-- **Saubere Lern-Datenbasis & Selbstheilung**: `core/telemetry_hygiene.py` (keine Test-Einträge in Lauf-/Benchmark-Historie), `core/backlog_hygiene.py` (hängende/doppelte Tickets, `Closes: <id>` in Commits), `core/red_project_repair.py` (rote Projekte als Nachbesserungs-Ticket für den Backlog-Worker).
+- **Saubere Lern-Datenbasis & Selbstheilung**: `core/telemetry_hygiene.py` (keine Test-Einträge in Lauf-/Benchmark-Historie), `core/backlog_hygiene.py` (hängende/doppelte Tickets, `Closes: <id>` in Commits, Tickets zu gelöschten Projekten, dauerhaft liegengebliebene Tickets), `core/red_project_repair.py` (rote Projekte als Nachbesserungs-Ticket für den Backlog-Worker).
   - Automatisches **Prompt-Caching** (Anthropic `cache_control: ephemeral`) und **Gemini Context Caching** für signifikante Kosten- und Latenzreduktion bei Multi-Turn-Tool-Loops.
 
 ---

@@ -642,14 +642,14 @@ class AgentToolbox:
         return detect_corrupted_manifest(path, content)
 
     @staticmethod
-    def _sanitize_toxic_dependencies(path: str, content: str) -> tuple[str, str | None]:
+    def _sanitize_toxic_dependencies(path: str, content: str, project_name: str = "") -> tuple[str, str | None]:
         """Entfernt toxische Paket-Kollisionen (z.B. `jwt` neben `pyjwt`, siehe
         core/manifest_guard.py) deterministisch VOR dem Schreiben, statt die Datei abzulehnen -
         ein Agent auf einem schwachen Modell würde sonst oft dieselbe Kollision erneut schreiben.
         Gibt den (ggf. bereinigten) Inhalt und einen Hinweis für den Agenten zurück."""
         from core.manifest_guard import describe_toxic_dependencies, sanitize_requirements
 
-        sanitized, findings = sanitize_requirements(path, content or "")
+        sanitized, findings = sanitize_requirements(path, content or "", project_name=project_name or None)
         if not findings:
             return content, None
         return sanitized, describe_toxic_dependencies(path, findings) + " Automatisch bereinigt."
@@ -737,7 +737,7 @@ class AgentToolbox:
         rejection = self._reject_if_corrupted_manifest(path, content)
         if rejection:
             return {"error": rejection}
-        content, sanitize_note = self._sanitize_toxic_dependencies(path, content)
+        content, sanitize_note = self._sanitize_toxic_dependencies(path, content, self.project_dir.name)
         new_content = content if content is not None else ""
 
         target = self._resolve(path)
@@ -836,7 +836,7 @@ class AgentToolbox:
         rejection = self._reject_if_corrupted_manifest(path, updated)
         if rejection:
             return {"error": rejection}
-        updated, sanitize_note = self._sanitize_toxic_dependencies(path, updated)
+        updated, sanitize_note = self._sanitize_toxic_dependencies(path, updated, self.project_dir.name)
         clean_rel = self._relative(target)
         rejection = self._reject_if_premature_reexport(clean_rel, updated) or check_contract_preserved(
             self.project_dir, clean_rel, current, updated,
@@ -882,7 +882,7 @@ class AgentToolbox:
         manifest_err = self._reject_if_corrupted_manifest(path, new_content)
         if manifest_err:
             return {"error": manifest_err}
-        new_content, sanitize_note = self._sanitize_toxic_dependencies(path, new_content)
+        new_content, sanitize_note = self._sanitize_toxic_dependencies(path, new_content, self.project_dir.name)
         rejection = check_contract_preserved(self.project_dir, clean_rel, current_content, new_content)
         if rejection:
             return {"error": rejection}

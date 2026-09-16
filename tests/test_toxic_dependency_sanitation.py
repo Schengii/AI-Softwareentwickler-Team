@@ -151,3 +151,40 @@ class TestSanitationIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSelfReferencingDependency(unittest.TestCase):
+    """Realer Fund (ping_service, 2026-09-16): `ping-service` stand in requirements-dev.txt.
+
+    `pip install -r` bricht daran komplett ab - die Verifikation meldete deps_installable=False,
+    obwohl Tests, Lint, Smoke-Test und Build grün waren.
+    """
+
+    def test_own_project_name_is_removed(self):
+        from core.manifest_guard import sanitize_requirements
+
+        content = "pytest\nping-service\nhttpx\n"
+        cleaned, findings = sanitize_requirements("requirements-dev.txt", content, project_name="ping_service")
+        self.assertEqual(cleaned, "pytest\nhttpx\n")
+        self.assertEqual([f.package for f in findings], ["ping-service"])
+        self.assertIn("Projekt selbst", findings[0].reason)
+
+    def test_other_packages_and_missing_project_name_are_untouched(self):
+        from core.manifest_guard import sanitize_requirements
+
+        content = "pytest\nping-service\n"
+        self.assertEqual(sanitize_requirements("requirements-dev.txt", content)[0], content)
+        self.assertEqual(sanitize_requirements("requirements.txt", "fastapi\n", project_name="ping_service")[0], "fastapi\n")
+
+    def test_toolbox_write_strips_self_reference(self):
+        import asyncio
+        import tempfile
+        from pathlib import Path
+
+        from core.agent_toolbox import AgentToolbox
+
+        root = Path(tempfile.mkdtemp()) / "ping_service"
+        box = AgentToolbox(project_dir=root, agent_id="tester")
+        result = asyncio.run(box._tool_write_file("requirements-dev.txt", "pytest\nping-service\n"))
+        self.assertEqual(result.get("status"), "ok")
+        self.assertEqual((root / "requirements-dev.txt").read_text(encoding="utf-8"), "pytest\n")

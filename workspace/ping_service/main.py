@@ -1,49 +1,43 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response: Response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Content-Security-Policy"] = "default-src 'self'"
+        return response
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup-Logik hier
+    # Startup
     yield
-    # Shutdown-Logik hier
+    # Shutdown
 
 app = FastAPI(title="Ping Service", lifespan=lifespan)
 
-# CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost", "http://localhost:8080", "http://127.0.0.1"],
-    allow_credentials=False,
+    allow_origins=["https://trusted.example.com"],
+    allow_credentials=True,
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+app.add_middleware(SecurityHeadersMiddleware)
 
-# Security Headers Middleware
-@app.middleware("http")
-async def add_security_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    response.headers["Content-Security-Policy"] = "default-src 'self'"
-    return response
-
-@app.get("/health", summary="Health Check")
-async def health_check():
-    """
-    Gibt den Status der Anwendung zurück.
-    """
+@app.get("/health")
+async def health():
     return {"status": "ok"}
 
-@app.get("/ping", summary="Ping Endpoint")
+@app.get("/ping")
 async def ping():
-    """
-    Gibt einen Pong-Status zurück.
-    """
     return {"status": "pong"}
 
 if __name__ == "__main__":

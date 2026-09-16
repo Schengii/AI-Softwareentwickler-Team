@@ -1,0 +1,15 @@
+[
+  {
+    "timestamp": "2026-09-16T08:40:12+00:00",
+    "task_summary": "Minimale FastAPI-App mit Ping-Endpunkt und Tests implementiert",
+    "verification_ok": true,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 8,
+    "success_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 📦 ✅ pip install -r requirements.txt (exit_code=0)\n- 🚦 ❌ Smoke-Test-Gate: `main.py` startet nicht – gezielter Fix vor der Testsuite.\n- 🚦 ⚠️ Startfehler durch `security` NICHT behoben – die reguläre Testschleife übernimmt.\n- 🧪 ✅ Testtiefe: 2/2 API-Routen in Tests aufgerufen (100%, Mindestwert 60%), 5 Testfunktionen\n… (gekürzt, vollständig in detail_file)",
+    "detail_file": ".ai_team_runs/20260916_083405_verification.md",
+    "failed_checks": [
+      "deps_install"
+    ]
+  }
+]

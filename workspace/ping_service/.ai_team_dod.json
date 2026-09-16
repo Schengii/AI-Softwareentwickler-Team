@@ -1,10 +1,9 @@
 {
   "project_slug": "ping_service",
-  "timestamp": "2026-09-16T08:14:09+00:00",
+  "timestamp": "2026-09-16T08:39:41+00:00",
   "is_done": false,
   "blocking": [
-    "deps_installable",
-    "verification_ok"
+    "deps_installable"
   ],
   "criteria": [
     {
@@ -12,7 +11,7 @@
       "label": "Es wurde tatsächlich Code erzeugt",
       "passed": true,
       "required": true,
-      "detail": "9 Datei(en) geschrieben",
+      "detail": "8 Datei(en) geschrieben",
       "applicable": true
     },
     {
@@ -106,9 +105,9 @@
     {
       "key": "verification_ok",
       "label": "Die Gesamt-Verifikation ist ohne Veto",
-      "passed": false,
+      "passed": true,
       "required": true,
-      "detail": "fehlgeschlagene Prüfungen: deps_install",
+      "detail": "",
       "applicable": true
     },
     {

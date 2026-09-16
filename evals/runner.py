@@ -7,6 +7,7 @@ erzeugte Dateien, um Versionen des Teams objektiv vergleichen zu können.
 """
 
 import json
+import os
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -100,6 +101,28 @@ class BenchmarkSuiteResult:
 
         md.append("")
         return "\n".join(md)
+
+
+_EXPECTED_SEARCH_SKIP_DIRS = frozenset({
+    ".venv", "venv", ".ai_team_venv", "node_modules", ".git", "__pycache__", "dist", "build", ".ai_team_runs",
+})
+
+
+def _expected_file_exists(project_dir: Path, expected: str) -> bool:
+    """True, wenn die erwartete Datei existiert - auch in einem Unterordner.
+
+    Realer Fund (fastapi_ping, 2026-09-16): das Team legte die Tests korrekt unter `tests/test_main.py`
+    an (so erzeugt es auch core/project_scaffold.py), der Benchmark suchte aber nur `test_main.py` im
+    Projekt-Wurzelverzeichnis und meldete den Lauf deshalb trotz grüner Verifikation als Fehlschlag.
+    """
+    if (project_dir / expected).exists():
+        return True
+    name = Path(expected).name
+    for _path, dirnames, filenames in os.walk(project_dir):
+        dirnames[:] = [d for d in dirnames if d not in _EXPECTED_SEARCH_SKIP_DIRS]
+        if name in filenames:
+            return True
+    return False
 
 
 def save_benchmark_result(suite_result: BenchmarkSuiteResult, history_path: Path | None = None) -> None:
@@ -227,8 +250,7 @@ async def run_single_task(
 
     if project_dir.exists():
         for expected in task.expected_files:
-            target = project_dir / expected
-            if target.exists():
+            if _expected_file_exists(project_dir, expected):
                 found_files.append(expected)
             else:
                 missing_files.append(expected)

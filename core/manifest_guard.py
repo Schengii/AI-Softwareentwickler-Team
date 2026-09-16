@@ -154,17 +154,33 @@ def _requirement_package_name(line: str) -> str | None:
     return normalize_package_name(match.group(1)) if match else None
 
 
-def find_toxic_dependencies(rel_path: str, content: str) -> list[ToxicDependencyFinding]:
-    """Findet bekannte toxische Paket-Kollisionen (siehe TOXIC_DEPENDENCY_RULES) in einem
-    Python-Requirements-Manifest. Andere Dateien liefern immer eine leere Liste."""
+SELF_REFERENCE_REASON = (
+    "verweist auf das Projekt selbst - ein solches Paket gibt es auf PyPI nicht, `pip install -r` "
+    "bricht damit komplett ab (realer Fund ping_service, 2026-09-16: `ping-service` in requirements-dev.txt)"
+)
+
+
+def find_toxic_dependencies(
+    rel_path: str, content: str, project_name: str | None = None,
+) -> list[ToxicDependencyFinding]:
+    """Findet bekannte toxische Paket-Kollisionen (siehe TOXIC_DEPENDENCY_RULES) sowie - mit
+    `project_name` - Selbstreferenzen auf das eigene Projekt. Andere Dateien liefern immer eine
+    leere Liste."""
     if PurePosixPath(rel_path.replace("\\", "/")).name not in _PYTHON_REQUIREMENTS_MANIFESTS:
         return []
 
     lines = (content or "").splitlines()
     declared = {name for line in lines if (name := _requirement_package_name(line))}
+    own_package = normalize_package_name(project_name) if project_name else ""
     findings: list[ToxicDependencyFinding] = []
     for line_number, line in enumerate(lines, start=1):
         package = _requirement_package_name(line)
+        if package and own_package and normalize_package_name(package) == own_package:
+            findings.append(ToxicDependencyFinding(
+                line_number=line_number, line=line, package=package, action="remove",
+                replacement=None, reason=SELF_REFERENCE_REASON,
+            ))
+            continue
         rule = TOXIC_DEPENDENCY_RULES.get(package) if package else None
         if rule is None or package is None:
             continue
@@ -182,10 +198,12 @@ def find_toxic_dependencies(rel_path: str, content: str) -> list[ToxicDependency
     return findings
 
 
-def sanitize_requirements(rel_path: str, content: str) -> tuple[str, list[ToxicDependencyFinding]]:
+def sanitize_requirements(
+    rel_path: str, content: str, project_name: str | None = None,
+) -> tuple[str, list[ToxicDependencyFinding]]:
     """Entfernt/ersetzt toxische Einträge deterministisch. Gibt den bereinigten Inhalt und die
     angewendeten Funde zurück - ohne Funde bleibt `content` byte-identisch."""
-    findings = find_toxic_dependencies(rel_path, content)
+    findings = find_toxic_dependencies(rel_path, content, project_name)
     if not findings:
         return content, []
 
@@ -217,7 +235,7 @@ def sanitize_requirements_file(path: Path) -> list[ToxicDependencyFinding]:
     die Datei nicht gelesen oder geschrieben werden kann - der Aufrufer entscheidet, ob das den
     Lauf blockiert."""
     text = path.read_text(encoding="utf-8", errors="ignore")
-    sanitized, findings = sanitize_requirements(path.name, text)
+    sanitized, findings = sanitize_requirements(path.name, text, project_name=path.parent.name)
     if findings:
         path.write_text(sanitized, encoding="utf-8")
     return findings

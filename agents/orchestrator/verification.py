@@ -550,8 +550,12 @@ class VerificationMixin:
         notify("🧪 [bold cyan]Verifikation:[/bold cyan] Installiere Abhängigkeiten in isolierter Umgebung...")
         install_log = await asyncio.to_thread(verifier.ensure_environment)
         if install_log:
-            notify(f"  📦 {install_log.splitlines()[0]}")
-            summary_lines.append(f"- 📦 {install_log.splitlines()[0]}")
+            # Alle Installationsschritte zeigen: ein fehlgeschlagener requirements-dev-Install stand
+            # sonst nur im strukturierten Ergebnis, während das Protokoll die erste (grüne) Zeile zeigte.
+            for line in install_log.splitlines():
+                if line.strip():
+                    notify(f"  📦 {line.strip()}")
+                    summary_lines.append(f"- 📦 {line.strip()}")
         install_exit_code = parse_install_exit_code(install_log or "")
         outcome.record(
             "deps_install",

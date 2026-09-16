@@ -163,6 +163,10 @@ def add_requirement(manifest: Path, spec: str) -> bool:
     name = requirement_name(spec)
     if name is None:
         raise ValueError(f"Ungültige Paketangabe: {spec!r}.")
+    # Das Projekt selbst ist kein PyPI-Paket - ein solcher Eintrag lässt `pip install -r` scheitern.
+    from core.known_pitfalls import normalize_package_name
+    if normalize_package_name(name) == normalize_package_name(manifest.parent.name):
+        return False
     with _write_lock:
         existing = manifest.read_text(encoding="utf-8", errors="ignore") if manifest.is_file() else ""
         if name in {n for line in existing.splitlines() if (n := requirement_name(line))}:

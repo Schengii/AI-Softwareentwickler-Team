@@ -183,3 +183,32 @@ class TestBenchmarkRunner(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestExpectedFileLookup(unittest.TestCase):
+    """Realer Fund (fastapi_ping, 2026-09-16): tests/test_main.py galt als fehlend."""
+
+    def test_file_in_subdirectory_counts_as_found(self):
+        import tempfile
+        from pathlib import Path
+
+        from evals.runner import _expected_file_exists
+
+        root = Path(tempfile.mkdtemp())
+        (root / "tests").mkdir()
+        (root / "tests" / "test_main.py").write_text("def test_x(): pass\n", encoding="utf-8")
+        (root / "main.py").write_text("x = 1\n", encoding="utf-8")
+        self.assertTrue(_expected_file_exists(root, "test_main.py"))
+        self.assertTrue(_expected_file_exists(root, "main.py"))
+        self.assertFalse(_expected_file_exists(root, "fehlt.py"))
+
+    def test_virtualenv_contents_do_not_count(self):
+        import tempfile
+        from pathlib import Path
+
+        from evals.runner import _expected_file_exists
+
+        root = Path(tempfile.mkdtemp())
+        (root / ".ai_team_venv" / "Lib").mkdir(parents=True)
+        (root / ".ai_team_venv" / "Lib" / "main.py").write_text("x = 1\n", encoding="utf-8")
+        self.assertFalse(_expected_file_exists(root, "main.py"))

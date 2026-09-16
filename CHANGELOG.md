@@ -53,8 +53,25 @@ konnten nicht miteinander sprechen, rote Projekte blieben liegen.
 - `failure_triage.load_interface_contract()` ignoriert Nicht-Python-Module (`GameLoop.ts` wurde
   zu `GameLoop/ts.py`).
 
+**6 – Wartbarkeit**
+- Governance-Fix-Schleife als eigenes `agents/orchestrator/governance.py` (verification.py: 2.800 -> 1.500 Zeilen).
+- Kommentar-/Docstring-Chroniken in den sechs groessten Dateien halbiert (rund 1.600 Zeilen weniger),
+  jede Aenderung per `scripts/check_comment_only_change.py` (AST-Vergleich) als reine Kommentar-Aenderung belegt.
+
+**Echter Validierungslauf** (`python main.py --eval --tasks fastapi_ping`, 2026-09-16): Verifikation gruen,
+401.669 Tokens, Cache-Quote 12,9 %; Team-Board, Contract-Review, Testtiefe (2/2 Routen), Watchdog und die
+neuen `run_closed`-Kennzahlen haben real gegriffen. Dabei gefunden und behoben:
+- `ping-service` stand als Abhaengigkeit in der eigenen `requirements-dev.txt`; `pip install -r` brach ab und
+  `deps_installable` blockierte trotz sonst gruener Pruefungen -> Selbstreferenz wird jetzt in
+  `core/manifest_guard.py` und `core/dependency_manifest.add_requirement()` deterministisch entfernt.
+- Das Protokoll zeigte nur die erste Installationszeile, der fehlgeschlagene Dev-Install blieb unsichtbar.
+- Starlette verlangt `httpx2` per `pip install`-Hinweis ohne ModuleNotFoundError ->
+  `packages_from_install_hints()` ergaenzt solche Pakete einmalig deterministisch.
+- Der Benchmark suchte `test_main.py` nur im Wurzelverzeichnis und meldete `tests/test_main.py` als fehlend.
+- Watchdog-Schwelle "Lesen ohne Schreiben" von 2 auf 3 Iterationen angehoben (feuerte in 7 von 12 Aufrufen).
+
 Verifikation: `tests/test_team_analysis_quickfixes.py`, `tests/test_team_communication.py`,
-`tests/test_token_efficiency.py`, `tests/test_quality_gates.py`, volle Testsuite und `ruff check`.
+`tests/test_token_efficiency.py`, `tests/test_quality_gates.py`, volle Testsuite (2.253 Tests) und `ruff check`.
 
 ---
 

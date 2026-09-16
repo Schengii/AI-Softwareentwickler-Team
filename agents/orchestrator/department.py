@@ -36,6 +36,13 @@ from core.token_guard import token_guard
 # nach der Entwicklung, aber VOR den teuren Content-/QA-/Governance-Phasen.
 _ENTRYPOINT_PREFLIGHT_PHASE_ID = "dev_lead"
 
+# Nach welcher Phase der Sicherheits-Übergabe-Checkpoint läuft: "qa_lead" (Fachbereich 5/6)
+# ist die einzige Phase, in der ein security-Agent tätig wird - siehe
+# IntegrationMixin._run_security_requirements_checkpoint() für den realen Fund, den dieser
+# späte Zeitpunkt behebt (der Integrations-Checkpoint oben lief bisher nur nach `dev_lead`,
+# lange BEVOR security überhaupt etwas prüfen konnte).
+_SECURITY_HANDOFF_CHECKPOINT_PHASE_ID = "qa_lead"
+
 _TEST_FIRST_NOTE = '## 🧪 Test-First (du arbeitest PARALLEL zu den Entwicklern)\nSchreibe die Testsuite jetzt aus den Akzeptanzkriterien und `interface_contract.json` - nicht erst, wenn der Code fertig ist. Teste das vereinbarte Verhalten (Endpunkte, Klassen, Funktionen laut Vertrag), nicht Implementierungsdetails. Existiert Code bereits, führe `run_tests` aus. Scheitert ein Test, weil der Code vom Vertrag abweicht, ist das ein gültiger Befund für die Entwickler - passe den Test NICHT an falsches Verhalten an.'
 
 
@@ -390,6 +397,18 @@ class DepartmentMixin:
                     self.last_integration_checkpoint_lines = await self._run_integration_checkpoint(
                         project_dir, all_results, file_owners, notify, run_start_tokens=run_start_tokens,
                     )
+
+            # ── Sicherheits-Übergabe-Checkpoint ──
+            # Nach der QA-/Security-Phase, nicht (wie der Integrations-Checkpoint oben) direkt
+            # nach der Entwicklung - der security-Agent hat bis hierher noch gar nicht gearbeitet.
+            if (
+                dept_id == _SECURITY_HANDOFF_CHECKPOINT_PHASE_ID
+                and not budget_aborted and not provider_exhausted_abort and not manually_cancelled
+                and "security" in self._agents
+            ):
+                await self._run_security_requirements_checkpoint(
+                    project_dir, all_results, file_owners, notify, run_start_tokens=run_start_tokens,
+                )
 
             self._trace_event(
                 "phase_finished",

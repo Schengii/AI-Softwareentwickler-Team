@@ -248,3 +248,47 @@ class TestFehlendeMessungBlockiert:
         (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
         dod = _dod(tmp_path, app_starts=None, deps_installable=None, verification_ok=None)
         assert _blocking(dod) == []
+
+
+class TestDarkModeKriterium:
+    """Regressionsschutz für den EventForge-Fund (KI-Team-Analyse 20260916_154524): der
+    Auftrag nannte "Dark-Mode-Dashboard" explizit, das ausgelieferte Dashboard hatte keine
+    einzige Dark-Mode-Referenz - kein bisheriges Kriterium prüfte das."""
+
+    def test_explizit_beauftragtes_dark_mode_ohne_umsetzung_blockiert(self, tmp_path):
+        (tmp_path / "static").mkdir()
+        (tmp_path / "static" / "index.html").write_text(
+            "<html><body>Hallo</body></html>", encoding="utf-8",
+        )
+        dod = _dod(
+            tmp_path, user_request="Baue ein Dark-Mode-Dashboard für Webhooks",
+            frontend_planned=True,
+        )
+        assert "dark_mode_delivered" in _blocking(dod)
+
+    def test_umgesetztes_dark_mode_blockiert_nicht(self, tmp_path):
+        (tmp_path / "static").mkdir()
+        (tmp_path / "static" / "style.css").write_text(
+            "@media (prefers-color-scheme: dark) { body { background: #111; } }",
+            encoding="utf-8",
+        )
+        (tmp_path / "static" / "index.html").write_text("<html></html>", encoding="utf-8")
+        dod = _dod(
+            tmp_path, user_request="Baue ein Dark-Mode-Dashboard für Webhooks",
+            frontend_planned=True,
+        )
+        assert "dark_mode_delivered" not in _blocking(dod)
+
+    def test_ohne_erwaehnung_im_auftrag_ist_das_kriterium_nicht_anwendbar(self, tmp_path):
+        (tmp_path / "static").mkdir()
+        (tmp_path / "static" / "index.html").write_text("<html></html>", encoding="utf-8")
+        dod = _dod(tmp_path, user_request="Baue ein Webhook-Dashboard", frontend_planned=True)
+        kriterium = next(c for c in dod.criteria if c.key == "dark_mode_delivered")
+        assert kriterium.applicable is False
+        assert "dark_mode_delivered" not in _blocking(dod)
+
+    def test_reines_backend_projekt_bleibt_unberuehrt_auch_bei_dark_mode_im_text(self, tmp_path):
+        (tmp_path / "main.py").write_text("app = 1\n", encoding="utf-8")
+        dod = _dod(tmp_path, user_request="Ein Dark-Mode-Client soll sich hierher verbinden")
+        kriterium = next(c for c in dod.criteria if c.key == "dark_mode_delivered")
+        assert kriterium.applicable is False

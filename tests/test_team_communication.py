@@ -244,3 +244,45 @@ class TestOrchestratorCommunication:
         messages: list[str] = []
         lines = asyncio.run(orchestrator._run_integration_checkpoint(str(tmp_path), [], {}, messages.append))
         assert any("Team-Board" in line and "/api/alerts" in line for line in lines)
+
+    def test_security_handoff_checkpoint_dispatches_fix_and_clears_when_resolved(self, orchestrator, tmp_path):
+        """Regressionsschutz für den EventForge-Fund (KI-Team-Analyse 20260916_154524): der
+        security-Agent forderte `app/core/security.py`, das NIE angelegt wurde - der bisherige
+        Integrations-Checkpoint lief nur nach der Entwicklungsphase, lange bevor security
+        überhaupt etwas prüfen konnte, und meldete den offenen Bedarf nur informativ."""
+        team_board.record_handoff(
+            tmp_path, team_board.Handoff(
+                agent_id="security",
+                requires=["Einbindung des SSRF-Schutzes `validate_relay_url` in app/core/security.py"],
+            ),
+        )
+
+        async def fake_fix(task):
+            _write(tmp_path / "app" / "core" / "security.py", "def validate_relay_url(url): return True\n")
+            return AgentResult(task_id=task.task_id, agent_id="backend", agent_name="Backend", success=True, content="Fix implementiert.")
+
+        orchestrator._agents["backend"].execute = fake_fix
+        messages: list[str] = []
+        asyncio.run(orchestrator._run_security_requirements_checkpoint(str(tmp_path), [], {}, messages.append))
+        assert orchestrator._security_unmet_requirements == []
+
+    def test_security_handoff_checkpoint_keeps_veto_when_unresolved(self, orchestrator, tmp_path):
+        team_board.record_handoff(
+            tmp_path, team_board.Handoff(
+                agent_id="security", requires=["Einbindung von app/core/security.py für SSRF-Schutz"],
+            ),
+        )
+
+        async def fake_noop_fix(task):
+            return AgentResult(task_id=task.task_id, agent_id="backend", agent_name="Backend", success=True, content="Nichts geändert.")
+
+        orchestrator._agents["backend"].execute = fake_noop_fix
+        messages: list[str] = []
+        asyncio.run(orchestrator._run_security_requirements_checkpoint(str(tmp_path), [], {}, messages.append))
+        assert len(orchestrator._security_unmet_requirements) == 1
+        assert orchestrator._security_unmet_requirements[0][0] == "security"
+
+    def test_security_handoff_checkpoint_noop_without_open_requirements(self, orchestrator, tmp_path):
+        messages: list[str] = []
+        asyncio.run(orchestrator._run_security_requirements_checkpoint(str(tmp_path), [], {}, messages.append))
+        assert orchestrator._security_unmet_requirements == []

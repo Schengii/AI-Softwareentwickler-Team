@@ -1,0 +1,20 @@
+{
+  "performance": {
+    "model": "gemini-3.1-flash-lite",
+    "previous_model": "gemini-3.8-flash",
+    "success_rate": 100.0,
+    "avg_tokens": 21153.0,
+    "applied_at": "2026-09-14T16:34:27+00:00",
+    "manual": false,
+    "reason": "Empirisch bessere Erfolgsquote (100.0% vs. 78.6% über 14 bzw. 14 Aufrufe) bei vertretbarem Tokenverbrauch (⌀21153 vs. ⌀30742 Tokens/Aufruf)."
+  },
+  "content_lead": {
+    "model": "gemini-3.1-flash-lite",
+    "previous_model": "gemini-3.8-flash",
+    "success_rate": 100.0,
+    "avg_tokens": 10275.0,
+    "applied_at": "2026-09-15T12:10:26+00:00",
+    "manual": false,
+    "reason": "Empirisch bessere Erfolgsquote (100.0% vs. 84.1% über 40 bzw. 44 Aufrufe) bei vertretbarem Tokenverbrauch (⌀10275 vs. ⌀15538 Tokens/Aufruf)."
+  }
+}

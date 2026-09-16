@@ -78,6 +78,14 @@ from core.verifier.models import (
 
 _logger = logging.getLogger(__name__)
 
+# Für _missing_audit_claimed_fixes(): Status-Wörter, die einen Fund als "erledigt" behaupten,
+# und die zwei unterstützten Referenz-Formate in Audit-/Security-Berichten.
+_AUDIT_STATUS_DONE_WORDS = ("behoben", "fixed", "resolved", "erledigt", "done", "implementiert")
+_BACKTICK_PATH_RE = re.compile(r"`([\w][\w./\\-]*\.\w{1,5})`")
+_AUDIT_IMPL_LINE_RE = re.compile(
+    r"\*\*Implementierung:?\*\*\s*`([A-Za-z_][\w]*)\(\)`\s*in\s*`([\w./\\-]+\.\w+)`",
+)
+
 
 class CompletenessMixin:
     """Erkennt Platzhalter-/Stub-Code, hartcodierte Fake-Daten statt echter Anbindung und
@@ -129,6 +137,7 @@ class CompletenessMixin:
                 issues.extend(self._scan_js_write_routes_missing_io(rel, text))
 
         issues.extend(self._missing_readme_referenced_files())
+        issues.extend(self._missing_audit_claimed_fixes())
         issues.extend(self._missing_frontend_entrypoints())
         issues.extend(self._missing_dependency_manifest(py_import_names))
         issues.extend(self._corrupted_dependency_manifests())
@@ -1162,3 +1171,97 @@ class CompletenessMixin:
                             f"aber die Datei existiert im Projekt nicht.",
                 ))
         return missing
+
+    def _missing_audit_claimed_fixes(self) -> list[CompletenessIssue]:
+        """Prüft, ob als "Behoben"/"Fixed" markierte Audit-Funde WIRKLICH im Code existieren.
+
+        Realer Fund (EventForge-Lauf entwickle_eventforge_ein_webhook, 20260916_154524):
+        `docs/SECURITY_AUDIT.md` listete SEC-01 bis SEC-06 als "Behoben" und verwies auf
+        `validate_relay_url()` in `app/core/security.py` - diese Datei existierte im gesamten
+        Projekt nicht, die als kritisch eingestufte SSRF-Lücke war ungefixt. Kein bisheriger
+        Check vergleicht eine Agenten-BEHAUPTUNG ("Behoben", Dateipfad X) mit dem tatsächlichen
+        Dateisystem: SAST/Lint scannen nur existierenden Code, ein Auditbericht über
+        nicht-existierenden Code fällt durch jedes bisherige Netz.
+
+        Bewusst nur für Dateien, deren Name "audit" enthält (z.B. SECURITY_AUDIT.md) - normale
+        Architektur-/Planungsdokumente (ADRs, README) beschreiben oft bewusst zukünftigen Code,
+        ohne "Behoben" zu behaupten; diese Prüfung soll ausschließlich abgeschlossene
+        Fix-Behauptungen gegen die Realität prüfen, keine Roadmaps als Stubs melden.
+        `file_path` zeigt bewusst auf die REFERENZIERTE Datei (nicht den Audit-Bericht selbst) -
+        nur so greift die Owner-Zuordnung in `_infer_owner_from_path()` (routet `.py`/`app/`
+        korrekt an `backend`, ein `.md`-Pfad würde dort auf `None` fallen).
+        """
+        issues: list[CompletenessIssue] = []
+        for md_file in self.project_dir.rglob("*.md"):
+            if any(part in _IGNORED_DIRS for part in md_file.relative_to(self.project_dir).parts):
+                continue
+            if "audit" not in md_file.name.lower():
+                continue
+            try:
+                text = md_file.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            audit_rel = str(md_file.relative_to(self.project_dir)).replace("\\", "/")
+            checked: set[str] = set()
+
+            # 1) Markdown-Tabellenzeilen, deren letzte Spalte einen Erledigt-Status trägt -
+            # jeder Backtick-Dateipfad in derselben Zeile wird gegen das Dateisystem geprüft.
+            for line in text.splitlines():
+                stripped = line.strip()
+                if not stripped.startswith("|"):
+                    continue
+                cells = [c.strip() for c in stripped.strip("|").split("|")]
+                if not cells or not any(w in cells[-1].lower() for w in _AUDIT_STATUS_DONE_WORDS):
+                    continue
+                status = cells[-1].strip("* ")
+                for cell in cells:
+                    for path_match in _BACKTICK_PATH_RE.finditer(cell):
+                        ref = path_match.group(1)
+                        if ref in checked or ("/" not in ref and "\\" not in ref):
+                            continue  # bloße Modulnamen ("security.py") sind zu unspezifisch
+                        checked.add(ref)
+                        if not (self.project_dir / ref).exists():
+                            issues.append(CompletenessIssue(
+                                file_path=ref,
+                                message=(
+                                    f"`{audit_rel}` markiert einen Fund als „{status}“ und verweist auf "
+                                    f"`{ref}`, aber diese Datei existiert im Projekt nicht - der Fix ist "
+                                    f"vermutlich nicht wirklich umgesetzt."
+                                ),
+                            ))
+
+            # 2) Narrative "Implementierung: `symbol()` in `datei`"-Zeilen - zusätzlich zur
+            # Existenz der Datei wird geprüft, ob das genannte Symbol dort auch definiert ist.
+            for impl_match in _AUDIT_IMPL_LINE_RE.finditer(text):
+                symbol, ref = impl_match.groups()
+                if ref in checked:
+                    continue
+                checked.add(ref)
+                target = self.project_dir / ref
+                if not target.exists():
+                    issues.append(CompletenessIssue(
+                        file_path=ref,
+                        message=(
+                            f"`{audit_rel}` verweist auf die Implementierung `{symbol}()` in `{ref}`, aber "
+                            f"diese Datei existiert im Projekt nicht - der Fix ist vermutlich nicht wirklich "
+                            f"umgesetzt."
+                        ),
+                    ))
+                    continue
+                try:
+                    target_text = target.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                if not any(
+                    marker in target_text
+                    for marker in (f"def {symbol}", f"function {symbol}", f"const {symbol}", f"async {symbol}")
+                ):
+                    issues.append(CompletenessIssue(
+                        file_path=ref,
+                        message=(
+                            f"`{audit_rel}` verweist auf die Implementierung `{symbol}()` in `{ref}`, aber "
+                            f"diese Funktion ist dort nicht definiert - der Fix ist vermutlich nicht wirklich "
+                            f"umgesetzt."
+                        ),
+                    ))
+        return issues

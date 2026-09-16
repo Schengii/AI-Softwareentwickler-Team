@@ -9,6 +9,7 @@ from pathlib import Path
 from core.contract_verifier import (
     extract_backend_endpoints,
     extract_frontend_api_calls,
+    find_response_field_mismatches,
     normalize_path,
     verify_api_contracts,
 )
@@ -160,6 +161,75 @@ fetch("/api/items", { method: "DELETE" });
         self.assertFalse(report.passed)
         self.assertEqual(len(report.mismatches), 1)
         self.assertEqual(report.mismatches[0].mismatch_type, "METHOD_MISMATCH")
+
+
+class TestResponseFieldMismatches(unittest.TestCase):
+    """Deckt den EventForge-Fund ab (KI-Team-Analyse 20260916_154524): Frontend liest
+    `b.target_url`, Backend liefert laut `response_model` aber `forward_url`."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_detects_field_renamed_in_backend(self):
+        backend_code = """
+from pydantic import BaseModel
+
+class BucketResponse(BaseModel):
+    id: str
+    name: str
+    forward_url: str | None = None
+
+@app.get("/api/buckets", response_model=list[BucketResponse])
+def list_buckets(): pass
+"""
+        frontend_code = """
+async function fetchBuckets() {
+    const res = await fetch('/api/buckets');
+    const data = await res.json();
+    list.innerHTML = data.map(b => `<span>${b.target_url}</span>`).join('');
+}
+"""
+        (self.project_dir / "main.py").write_text(backend_code, encoding="utf-8")
+        (self.project_dir / "app.js").write_text(frontend_code, encoding="utf-8")
+
+        findings = find_response_field_mismatches(self.project_dir)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].field, "target_url")
+        self.assertEqual(findings[0].model_name, "BucketResponse")
+        self.assertIn("forward_url", findings[0].available_fields)
+
+    def test_no_finding_when_field_matches(self):
+        backend_code = """
+from pydantic import BaseModel
+
+class BucketResponse(BaseModel):
+    id: str
+    forward_url: str | None = None
+
+@app.get("/api/buckets", response_model=list[BucketResponse])
+def list_buckets(): pass
+"""
+        frontend_code = """
+async function fetchBuckets() {
+    const res = await fetch('/api/buckets');
+    const data = await res.json();
+    list.innerHTML = data.map(b => `<span>${b.forward_url}</span>`).join('');
+}
+"""
+        (self.project_dir / "main.py").write_text(backend_code, encoding="utf-8")
+        (self.project_dir / "app.js").write_text(frontend_code, encoding="utf-8")
+
+        findings = find_response_field_mismatches(self.project_dir)
+        self.assertEqual(findings, [])
+
+    def test_no_response_model_means_no_findings(self):
+        (self.project_dir / "main.py").write_text("@app.get('/api/buckets')\ndef list_buckets(): pass\n", encoding="utf-8")
+        (self.project_dir / "app.js").write_text("fetch('/api/buckets').then(r => r.json());\n", encoding="utf-8")
+        self.assertEqual(find_response_field_mismatches(self.project_dir), [])
 
 
 if __name__ == "__main__":

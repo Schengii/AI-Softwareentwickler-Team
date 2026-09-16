@@ -26,6 +26,7 @@ CHECK_KEYS: frozenset[str] = frozenset({
     "import_check",
     "tests",
     "test_depth",
+    "test_regression",
     "docker_build",
     "frontend_build",
     "dependency_audit",
@@ -38,6 +39,8 @@ CHECK_KEYS: frozenset[str] = frozenset({
     "load_test",
     "browser_ui",
     "accessibility",
+    "interface_fields",
+    "security_handoff",
 })
 
 

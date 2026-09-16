@@ -23,6 +23,7 @@ from core.contract_verifier import extract_backend_endpoints, normalize_path
 _SKIP_DIRS = frozenset({".venv", "venv", ".ai_team_venv", "node_modules", ".git", "__pycache__", "dist", "build", ".ai_team_runs"})
 _PATH_LITERAL_RE = re.compile(r"""[`"'](/[^`"'\s]*)[`"']""")
 _PY_TEST_RE = re.compile(r"^\s*(?:async\s+)?def\s+test_\w+", re.MULTILINE)
+_PY_TEST_NAME_RE = re.compile(r"^\s*(?:async\s+)?def\s+(test_\w+)", re.MULTILINE)
 _JS_TEST_RE = re.compile(r"\b(?:it|test)\s*\(\s*[`'\"]")
 
 
@@ -99,6 +100,38 @@ def _collect_test_sources(project_dir: Path) -> tuple[list[str], int]:
             count += len(_PY_TEST_RE.findall(text)) if filename.endswith(".py") else len(_JS_TEST_RE.findall(text))
             literals.extend(normalize_path(m) for m in _PATH_LITERAL_RE.findall(text))
     return literals, count
+
+
+def collect_test_function_names(project_dir: str | Path) -> set[str]:
+    """Sammelt die Namen aller Python-Testfunktionen (`test_*`) im Projekt.
+
+    Analyse EventForge-Lauf (entwickle_eventforge_ein_webhook, 20260916_154524): Eine
+    HEAVY_MODEL-Eskalation nach zwei erfolglosen Fixversuchen meldete "Testsuite bestanden" -
+    tatsächlich hatte der Fix-Agent aber 3 der ursprünglich 7 Tests ERSATZLOS GELÖSCHT (u.a.
+    `test_forwarding_worker_mock`, den einzigen Test für die Kernfunktion des Projekts) statt
+    den zugrunde liegenden Fehler zu beheben. Eine grün werdende, aber schrumpfende Testsuite
+    ist kein Erfolg - siehe `_test_names_lost()`/den Aufrufer in verification.py, der diese
+    Funktion nutzt, um genau das zu erkennen, BEVOR ein Fix-Ergebnis als Erfolg gilt.
+    """
+    base = Path(project_dir)
+    names: set[str] = set()
+    if not base.is_dir():
+        return names
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for filename in filenames:
+            if not filename.endswith(".py"):
+                continue
+            path = Path(dirpath) / filename
+            rel = path.relative_to(base).as_posix()
+            if not _is_test_file(rel):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            names.update(_PY_TEST_NAME_RE.findall(text))
+    return names
 
 
 def _route_regex(route_path: str) -> re.Pattern[str]:

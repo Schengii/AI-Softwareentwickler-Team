@@ -92,6 +92,19 @@ class ContractMismatch:
 
 
 @dataclass
+class FieldMismatch:
+    """Frontend liest ein Feld aus einer API-Antwort, das das Response-Model des Backends unter
+    diesem Namen gar nicht liefert (z. B. `b.target_url` im Frontend, aber `forward_url` im
+    Pydantic-Response-Model)."""
+    field: str
+    endpoint_path: str
+    model_name: str
+    available_fields: list[str]
+    source_file: str
+    line_number: int = 0
+
+
+@dataclass
 class ContractReport:
     """Ergebnis der API-Contract Prüfung."""
     passed: bool = True
@@ -352,3 +365,155 @@ def verify_api_contracts(project_dir: Path | str) -> ContractReport:
             report.passed = False
 
     return report
+
+
+# ── Antwortfeld-Abgleich (response_model-Felder ↔ vom Frontend gelesene Felder) ─────────────
+#
+# Analyse EventForge-Lauf (entwickle_eventforge_ein_webhook, 20260916_154524): `verify_api_contracts()`
+# oben prüft nur PFAD und METHODE, nicht die tatsächlichen Feldnamen einer Antwort. Das Frontend
+# griff auf `b.target_url` zu, das Backend lieferte laut `BucketResponse` aber `forward_url` -
+# Pfad und Methode stimmten, jedes Bucket zeigte im UI trotzdem dauerhaft "Kein Relay". Dieser
+# Fund ist rein informativ (`interface_fields` in `verification_checks.py`, nicht blockierend):
+# die Heuristik unten (Regex statt vollem JS-/Python-AST) kann echte Aufrufmuster übersehen und
+# soll niemals einen sonst funktionierenden Lauf zu Fall bringen.
+_RESPONSE_MODEL_KWARG_RE = re.compile(
+    r'@(?:app|router|api|api_router)\.(get|post|put|delete|patch)\s*\([^)]*?response_model\s*=\s*'
+    r'(?:list\[|List\[)?(\w+)\]?[^)]*\)\s*\n\s*(?:async\s+)?def\s+\w+',
+    re.IGNORECASE,
+)
+_ROUTE_PATH_BEFORE_RESPONSE_MODEL_RE = re.compile(
+    r'@(?:app|router|api|api_router)\.(get|post|put|delete|patch)\s*\(\s*["\']([^"\']+)["\'][^)]*?'
+    r'response_model\s*=\s*(?:list\[|List\[)?(\w+)\]?[^)]*\)',
+    re.IGNORECASE | re.DOTALL,
+)
+_PYDANTIC_CLASS_RE = re.compile(r'^class\s+(\w+)\s*\([^)]*\):', re.MULTILINE)
+_PYDANTIC_FIELD_RE = re.compile(r'^\s{4}(\w+)\s*:\s*[\w\[\], "\'.|]+', re.MULTILINE)
+_JS_JSON_VAR_RE = re.compile(r'(?:const|let|var)\s+(\w+)\s*=\s*await\s+\w+\.json\s*\(\s*\)')
+_JS_MAP_PARAM_RE = re.compile(r'\.(?:map|forEach|filter|find)\s*\(\s*\(?(\w+)\)?\s*=>')
+_JS_FIELD_ACCESS_RE = re.compile(r'\b(\w+)\.(\w+)\b')
+_JS_BUILTIN_PROPS = frozenset({
+    "length", "then", "catch", "finally", "map", "forEach", "filter", "reduce", "find", "some",
+    "every", "join", "slice", "sort", "reverse", "includes", "indexOf", "keys", "values",
+    "entries", "toString", "valueOf", "json", "text", "blob", "status", "ok", "headers", "body",
+    "stringify", "parse", "log", "error", "warn", "getElementById", "querySelector",
+    "querySelectorAll", "addEventListener", "classList", "style", "innerHTML", "textContent",
+    "value", "target", "preventDefault", "push", "concat", "split", "trim", "replace", "toFixed",
+})
+
+
+def _extract_pydantic_models(project_dir: Path) -> dict[str, set[str]]:
+    """Grobe, indentationsbasierte Extraktion von `class X(BaseModel): feld: typ`-Feldnamen -
+    kein voller Python-Parser, reicht aber für den üblichen, flach eingerückten Fall."""
+    models: dict[str, set[str]] = {}
+    for py_file in project_dir.rglob("*.py"):
+        if any(part in _IGNORED_DIRS for part in py_file.relative_to(project_dir).parts):
+            continue
+        try:
+            content = py_file.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for cls_match in _PYDANTIC_CLASS_RE.finditer(content):
+            name = cls_match.group(1)
+            body_start = cls_match.end()
+            # Klassenkörper endet an der nächsten Zeile ohne Einrückung (oder Dateiende).
+            rest = content[body_start:]
+            end_match = re.search(r'\n(?=\S)', rest)
+            body = rest[: end_match.start()] if end_match else rest
+            fields = set(_PYDANTIC_FIELD_RE.findall(body))
+            fields.discard("model_config")
+            if fields:
+                models[name] = fields
+    return models
+
+
+def _extract_response_model_by_path(project_dir: Path) -> dict[str, tuple[str, set[str]]]:
+    """normalized_path -> (Modellname, Feldnamen) für Routen mit `response_model=`."""
+    models = _extract_pydantic_models(project_dir)
+    result: dict[str, tuple[str, set[str]]] = {}
+    for py_file in project_dir.rglob("*.py"):
+        if any(part in _IGNORED_DIRS for part in py_file.relative_to(project_dir).parts):
+            continue
+        try:
+            content = py_file.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for match in _ROUTE_PATH_BEFORE_RESPONSE_MODEL_RE.finditer(content):
+            _method, route_path, model_name = match.groups()
+            fields = models.get(model_name)
+            if not fields:
+                continue
+            result[normalize_path(route_path)] = (model_name, fields)
+    return result
+
+
+def find_response_field_mismatches(project_dir: Path | str) -> list[FieldMismatch]:
+    """Findet Frontend-Feldzugriffe (`obj.feld`), die im passenden Pydantic-`response_model` des
+    Backends unter diesem Namen nicht existieren - siehe Modul-Docstring oben für den realen Fund.
+
+    Bewusst konservativ: nur Aufrufe, bei denen sich Ergebnis-Variable (`const data = await
+    res.json()` bzw. ein `.map((x) => ...)`-Parameter) UND Ziel-Endpunkt eindeutig zuordnen
+    lassen, werden geprüft. Uneindeutige Fälle werden übersprungen statt geraten.
+    """
+    pdir = Path(project_dir).resolve()
+    response_models = _extract_response_model_by_path(pdir)
+    if not response_models:
+        return []
+
+    findings: list[FieldMismatch] = []
+    frontend_extensions = ("*.html", "*.js", "*.jsx", "*.ts", "*.tsx", "*.vue")
+    frontend_files: list[Path] = []
+    for ext in frontend_extensions:
+        frontend_files.extend(pdir.rglob(ext))
+
+    for f in frontend_files:
+        if any(part in _IGNORED_DIRS for part in f.relative_to(pdir).parts):
+            continue
+        try:
+            content = f.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        rel_path = str(f.relative_to(pdir)).replace("\\", "/")
+
+        for fetch_match in re.finditer(r'fetch\s*\(\s*(?:["\']([^"\'\r\n]+)["\']|`([^`]+)`)', content):
+            raw_path = (fetch_match.group(1) or fetch_match.group(2) or "").strip()
+            if not raw_path or raw_path.startswith(("http://", "https://", "//")):
+                continue
+            target_norm = normalize_path(raw_path)
+            model = response_models.get(target_norm)
+            if model is None:
+                continue
+            model_name, fields = model
+
+            # Suchfenster: vom fetch()-Aufruf bis zum nächsten fetch() oder max. 1500 Zeichen -
+            # deckt das übliche "await fetch(...).json()" + direkt folgende Verarbeitung ab, ohne
+            # in unabhängigen, späteren Code hineinzulesen.
+            window_start = fetch_match.end()
+            next_fetch = content.find("fetch(", window_start)
+            window_end = next_fetch if 0 <= next_fetch - window_start <= 1500 else window_start + 1500
+            window = content[window_start:window_end]
+
+            candidate_params: set[str] = set(_JS_JSON_VAR_RE.findall(window))
+            candidate_params.update(_JS_MAP_PARAM_RE.findall(window))
+            if not candidate_params:
+                continue
+
+            seen_fields: dict[str, int] = {}
+            for access_match in _JS_FIELD_ACCESS_RE.finditer(window):
+                obj_name, prop_name = access_match.groups()
+                if obj_name not in candidate_params or prop_name in _JS_BUILTIN_PROPS:
+                    continue
+                if prop_name not in fields and prop_name not in seen_fields:
+                    line_no = content[: window_start + access_match.start()].count("\n") + 1
+                    seen_fields[prop_name] = line_no
+
+            for prop_name, line_no in seen_fields.items():
+                findings.append(FieldMismatch(
+                    field=prop_name,
+                    endpoint_path=target_norm,
+                    model_name=model_name,
+                    available_fields=sorted(fields),
+                    source_file=rel_path,
+                    line_number=line_no,
+                ))
+
+    return findings

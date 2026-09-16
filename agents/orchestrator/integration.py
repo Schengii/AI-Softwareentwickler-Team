@@ -263,6 +263,80 @@ class IntegrationMixin:
         notify(f"  🤝 [bold yellow]Team-Board – unerfüllter Bedarf:[/bold yellow] {shown}")
         return [f"- 🤝 Team-Board: {len(unmet)} unerfüllte Anforderung(en) zwischen Kollegen – {shown}"]
 
+    async def _run_security_requirements_checkpoint(
+        self,
+        project_dir: str,
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        notify: Callable[[str], None],
+        run_start_tokens: int | None = None,
+    ) -> None:
+        """Gleicht die `requires`-Angaben des security-Agenten NACH der QA-/Security-Phase erneut
+        ab und dispatcht bei Bedarf EINE gezielte Fix-Runde - bleibt danach unerfüllt, blockiert
+        die Erkenntnis den Lauf über `_run_verification_loop_impl()` (verification.py).
+
+        Analyse EventForge-Lauf (entwickle_eventforge_ein_webhook, 20260916_154524): der
+        Integrations-Checkpoint (`_run_integration_checkpoint()` oben) lief bisher NUR direkt
+        nach der Entwicklungsphase (`dev_lead`, Fachbereich 3/6) - lange BEVOR der security-Agent
+        (Fachbereich 5/6, `qa_lead`) überhaupt tätig wurde. Dessen Handoff-Eintrag "requires:
+        Einbindung des SSRF-Validierungs- und Payload-Limits in app/main.py durch das
+        Backend-Team" konnte deshalb technisch gar nicht erfüllt sein, wurde aber nur als
+        informative Team-Board-Zeile im Abschlussbericht angezeigt ("1 unerfüllte
+        Anforderung(en)") statt den Lauf zu blockieren - der Bericht bezeichnete das Projekt
+        trotz offener, als "Kritisch" eingestuften SSRF-Lücke fälschlich als grün-nah.
+
+        Ergebnis wird auf `self._security_unmet_requirements` abgelegt (statt hier direkt in
+        `outcome` zu schreiben): diese Methode läuft in der Fachbereichs-Phasenschleife
+        (`department.py`), lange bevor `_run_verification_loop_impl()` sein eigenes
+        `VerificationOutcome` aufbaut.
+        """
+        self._security_unmet_requirements: list[tuple[str, str]] = []
+        if not ENABLE_TEAM_BOARD:
+            return
+        try:
+            unmet = await asyncio.to_thread(unmet_requirements, project_dir)
+        except Exception as e:  # noqa: BLE001 - Abgleich ist Frühwarnung, kein Blocker
+            logger.warning("Security-Handoff-Abgleich fehlgeschlagen: %r", e)
+            return
+        security_unmet = [(agent, req) for agent, req in unmet if agent == "security"]
+        if not security_unmet:
+            return
+
+        owner = next((a for a in _FALLBACK_OWNERS if a in self._agents), None)
+        if owner is None or run_start_tokens is not None and (
+            self._generation_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+        ):
+            self._security_unmet_requirements = security_unmet
+            return
+
+        req_text = "\n".join(f"- {req}" for _agent, req in security_unmet)
+        notify(f"  🛡️ [bold yellow]Sicherheits-Übergabe offen:[/bold yellow] beauftrage {owner}...")
+        fix_task = AgentTask(
+            task_id="security_handoff_fix",
+            agent_id=owner,
+            description=(
+                "Der security-Agent hat in seiner Übergabe (Team-Board) Anforderungen benannt, die "
+                "bisher NICHT umgesetzt wurden - u.a. Sicherheits-Fixes, die im Audit-Bericht als "
+                "'Behoben' gelten sollen. Implementiere sie WIRKLICH im Code (nicht nur im Bericht "
+                "erwähnen):\n\n" + req_text
+            ),
+            project_dir=project_dir,
+        )
+        fix_results = await self._run_agents_parallel([fix_task], notify=notify)
+        self._update_file_owners(file_owners, fix_results)
+        all_results.extend(fix_results)
+
+        try:
+            recheck = await asyncio.to_thread(unmet_requirements, project_dir)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Security-Handoff-Nachprüfung fehlgeschlagen: %r", e)
+            recheck = security_unmet
+        remaining = [(agent, req) for agent, req in recheck if agent == "security"]
+        self._security_unmet_requirements = remaining
+        status = "behoben" if not remaining else f"{len(remaining)} weiterhin offen"
+        log_decision(project_dir, "security_handoff_checkpoint", f"{len(security_unmet)} Anforderung(en) → {status}")
+        self._trace_event("security_handoff_checkpoint", unmet_before=len(security_unmet), unmet_after=len(remaining))
+
     async def _run_review_after_verification(
         self,
         *,

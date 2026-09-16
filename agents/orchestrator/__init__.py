@@ -1109,6 +1109,7 @@ class Orchestrator(
                 # als "nicht relevant" - siehe build_definition_of_done().
                 verification_ran=True,
                 user_request=user_request,
+                task_summary=task_summary,
                 # Macht das dateibasierte "missing_frontend_ui"-Kriterium nur verpflichtend,
                 # wenn ein frontend-Agent eingeplant war - unabhängig von dessen Erfolg, denn
                 # gerade ein gescheitertes Hard Delivery Gate soll hier sichtbar werden.

@@ -1400,5 +1400,83 @@ class TestCompletenessCheck(unittest.TestCase):
             self.assertTrue(report.passed)
 
 
+class TestAuditClaimedFixes(unittest.TestCase):
+    """Deckt den EventForge-Fund ab (KI-Team-Analyse 20260916_154524):
+    `docs/SECURITY_AUDIT.md` markierte SEC-01 als "Behoben" und verwies auf
+    `app/core/security.py`/`validate_relay_url()` - diese Datei existierte nie."""
+
+    def test_flags_table_row_referencing_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app.py").write_text("def real_function(): pass\n", encoding="utf-8")
+            (project_dir / "docs").mkdir()
+            (project_dir / "docs" / "SECURITY_AUDIT.md").write_text(
+                "| ID | Befund | Komponente | Schweregrad | Status |\n"
+                "|---|---|---|---|---|\n"
+                "| SEC-01 | SSRF via Forwarding-URL | `app/core/security.py`, `app/main.py` | Kritisch | Behoben |\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            missing = [i for i in report.issues if i.file_path == "app/core/security.py"]
+            self.assertEqual(len(missing), 1)
+            self.assertIn("existiert im Projekt nicht", missing[0].message)
+
+    def test_flags_implementation_line_referencing_missing_symbol(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app").mkdir()
+            (project_dir / "app" / "core").mkdir()
+            (project_dir / "app" / "core" / "security.py").write_text(
+                "def other_function():\n    pass\n", encoding="utf-8",
+            )
+            (project_dir / "docs").mkdir()
+            (project_dir / "docs" / "SECURITY_AUDIT.md").write_text(
+                "- **Implementierung:** `validate_relay_url()` in `app/core/security.py`.\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            hit = [i for i in report.issues if "validate_relay_url" in i.message]
+            self.assertEqual(len(hit), 1)
+            self.assertIn("nicht definiert", hit[0].message)
+
+    def test_does_not_flag_when_symbol_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app").mkdir()
+            (project_dir / "app" / "core").mkdir()
+            (project_dir / "app" / "core" / "security.py").write_text(
+                "def validate_relay_url(url: str) -> bool:\n    return True\n", encoding="utf-8",
+            )
+            (project_dir / "docs").mkdir()
+            (project_dir / "docs" / "SECURITY_AUDIT.md").write_text(
+                "- **Implementierung:** `validate_relay_url()` in `app/core/security.py`.\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            hit = [i for i in report.issues if "validate_relay_url" in i.message]
+            self.assertEqual(hit, [])
+
+    def test_does_not_flag_non_audit_docs(self):
+        """Ein normales README/ADR, das dieselben Muster enthält, aber nicht "audit" heißt,
+        wird bewusst NICHT geprüft (Architektur-/Planungsdokumente beschreiben oft Zukünftiges)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app.py").write_text("def real_function(): pass\n", encoding="utf-8")
+            (project_dir / "README.md").write_text(
+                "| SEC-01 | SSRF | `app/core/security.py` | Kritisch | Behoben |\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertEqual(
+                [i for i in report.issues if i.file_path == "app/core/security.py"], [],
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

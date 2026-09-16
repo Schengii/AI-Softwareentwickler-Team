@@ -32,7 +32,11 @@ from agents.orchestrator.failure_diagnosis import (
     _record_verification_learning,
     _route_failure_owners,
 )
-from agents.orchestrator.verification_checks import CheckContext, run_informational_checks
+from agents.orchestrator.verification_checks import (
+    CheckContext,
+    reconcile_verification_ok,
+    run_informational_checks,
+)
 from config import (
     ENABLE_COMPLETENESS_CHECK,
     ENABLE_LOAD_TEST_CHECK,
@@ -62,7 +66,7 @@ from core.failure_triage import (
 )
 from core.message_bus import AgentResult, AgentTask
 from core.pre_flight_check import PreFlightIssue, run_pre_flight_check
-from core.test_depth import analyze_test_depth
+from core.test_depth import analyze_test_depth, collect_test_function_names
 from core.verification_outcome import VerificationOutcome, parse_install_exit_code
 from core.verifier import ProjectVerifier, VerificationReport
 
@@ -382,6 +386,23 @@ class VerificationMixin:
         if not isinstance(outcome, VerificationOutcome):
             outcome = VerificationOutcome()
             self.last_verification_outcome = outcome
+
+        # Sicherheits-Übergabe-Checkpoint (department.py, nach der qa_lead-Phase) - siehe
+        # IntegrationMixin._run_security_requirements_checkpoint()-Docstring für den realen Fund
+        # (EventForge, SSRF-Fix als "Behoben" im Audit dokumentiert, aber nie an app/main.py
+        # zurückgespielt). Anders als der reine Team-Board-Hinweis in `_check_team_board_
+        # requirements()` (informativ) blockiert eine WEITERHIN unerfüllte Anforderung des
+        # security-Agenten hier explizit die Verifikation.
+        security_unmet = getattr(self, "_security_unmet_requirements", None) or []
+        if security_unmet:
+            shown = "; ".join(req for _agent, req in security_unmet[:5])
+            outcome.record("security_handoff", False, f"{len(security_unmet)} Anforderung(en): {shown}")
+            summary_lines.append(
+                f"- 🛡️ ❌ **Verifikations-Veto durch offene Sicherheits-Übergabe:** "
+                f"{len(security_unmet)} vom security-Agenten geforderte, weiterhin unerfüllte "
+                f"Anforderung(en): {shown}"
+            )
+
         pre_flight_report = None
         completeness_report = None
         # Bleibt None, wenn die Schleife nie durchläuft (MAX_VERIFICATION_ITERATIONS<=0).
@@ -1058,6 +1079,13 @@ class VerificationMixin:
             # gesichert und nach dem Fix-Schritt zurückgesetzt.
             structural_only = all(triages.get(id(f)) is not None for fails in agents_to_fix.values() for f in fails)
             manifest_snapshot = snapshot_dependency_manifests(project_dir) if project_dir and structural_only else None
+            # Test-Schrumpfungs-Wächter (EventForge-Analyse 2026-09-16): erfasst die Testnamen VOR
+            # dem Fix-Versuch, damit unten erkennbar ist, ob "tester" den Fehler wirklich behoben
+            # oder den fehlschlagenden Test ersatzlos entfernt hat - siehe
+            # `core.test_depth.collect_test_function_names()`-Docstring für den realen Fund.
+            _tests_before_fix = (
+                collect_test_function_names(project_dir) if "tester" in agents_to_fix else None
+            )
             fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
             restored_manifests = (
                 restore_dependency_manifests(project_dir, manifest_snapshot) if manifest_snapshot is not None else []
@@ -1074,6 +1102,38 @@ class VerificationMixin:
             if not restored_manifests:
                 await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
             summary_lines.append(f"- 🛠️ Versuch {attempt}: {len(report.failures)} echte Testfehler → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt.")
+
+            # Test-Schrumpfungs-Wächter: fehlten nach dem Fix Testfunktionen, die vorher da waren
+            # (und keine gleich große Ersatzmenge dazukam), wurde der Fehler wahrscheinlich durch
+            # LÖSCHEN des fehlschlagenden Tests "behoben" statt durch eine echte Korrektur. Das
+            # gilt als echter Verifikations-Fund - anders als Lint/SAST blockiert er den Lauf.
+            if _tests_before_fix is not None:
+                _tests_after_fix = collect_test_function_names(project_dir)
+                _tests_lost = _tests_before_fix - _tests_after_fix
+                if _tests_lost and len(_tests_after_fix) < len(_tests_before_fix):
+                    _lost_list = ", ".join(sorted(_tests_lost)[:10])
+                    outcome.record(
+                        "test_regression", False,
+                        f"{len(_tests_lost)} Test(s) entfernt statt behoben: {_lost_list}",
+                    )
+                    notify(
+                        f"  🧪 [bold red]Test-Schrumpfung erkannt:[/bold red] {len(_tests_lost)} Testfunktion(en) "
+                        f"nach dem Fixversuch verschwunden statt der Fehler behoben: {_lost_list}."
+                    )
+                    summary_lines.append(
+                        f"- 🧪 ❌ **Verifikations-Veto durch Test-Schrumpfung:** {len(_tests_lost)} Testfunktion(en) "
+                        f"entfernt statt den Fehler zu beheben ({_lost_list})."
+                    )
+                    if self.last_project_slug:
+                        try:
+                            upsert_ticket(
+                                ticket_id=f"test-regression-{self.last_project_slug}",
+                                title=f"Tests statt Fehler entfernt: {self.last_project_slug}",
+                                source="orchestrator", status="blocked", project_slug=self.last_project_slug,
+                                detail=f"Versuch {attempt}: {len(_tests_lost)} Testfunktion(en) verschwunden: {_lost_list}",
+                            )
+                        except Exception as e:
+                            notify(f"  ⚠️ [dim yellow]Ticket für Test-Schrumpfung konnte nicht angelegt werden: {e}[/dim yellow]")
 
             if attempt == MAX_VERIFICATION_ITERATIONS:
                 # Die Schleife testet nur am Anfang jedes Versuchs - ohne diese Abschlussprüfung würde
@@ -1098,6 +1158,19 @@ class VerificationMixin:
                                 notify("  🎫 [dim]Ticket für vorherigen Testfehlschlag als gelöst geschlossen.[/dim]")
                             except Exception as e:
                                 notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
+                        # Bug-Fix (EventForge-Analyse 2026-09-16): dieser Abschluss-Erfolgspfad (letzter
+                        # Versuch, z.B. HEAVY_MODEL-Eskalation) sprang direkt zum `break` und übersprang
+                        # dabei die Testtiefen-Prüfung weiter oben (die nur am SCHLEIFENANFANG steht,
+                        # hierher gelangt der Code erst NACH einem `continue`). Ein Projekt mit echten,
+                        # aber ungetesteten API-Routen zeigte dadurch in der Definition of Done
+                        # fälschlich "applicable: false" (nie gemessen) statt eines echten Befunds -
+                        # real beobachtet bei entwickle_eventforge_ein_webhook trotz 6 erkennbarer Routen.
+                        if ENABLE_TEST_DEPTH_GATE:
+                            depth = await asyncio.to_thread(analyze_test_depth, project_dir, MIN_ROUTE_TEST_RATIO)
+                            if depth.applicable:
+                                outcome.record("test_depth", depth.passed, "" if depth.passed else depth.format_summary())
+                                icon = "✅" if depth.passed else "⚠️"
+                                summary_lines.append(f"- 🧪 {icon} {depth.format_summary()}")
                         break
                     report = post_fix_report
 
@@ -1516,6 +1589,19 @@ class VerificationMixin:
                         top += f" … und {len(a11y_report.violations) - 5} weitere"
                     notify(f"  ♿ [bold red]Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße.[/bold red]")
                     summary_lines.append(f"- ♿ ⚠️ Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße: {top}")
+
+        # Rekonziliert `verification_ok` gegen `outcome` - siehe reconcile_verification_ok()-
+        # Docstring (agents/orchestrator/verification_checks.py) für den realen Fund und die
+        # Begründung. `None` (weder blockierender Fehlschlag noch bestandene Kern-Testsuite)
+        # lässt die bisherige Mitschrift unverändert.
+        if not (budget_aborted or manually_cancelled):
+            _reconciled_ok = reconcile_verification_ok(
+                outcome,
+                tests_ran=bool(report is not None and report.ran),
+                tests_passed=bool(report is not None and report.passed),
+            )
+            if _reconciled_ok is not None:
+                verification_ok = _reconciled_ok
 
         # Hat die Kern-Testsuite bestanden und kein nachgelagerter Check verification_ok zurückgesetzt,
         # gilt der Lauf als erfolgreich - auch wenn eine optionale Prüfung danach noch das Budget

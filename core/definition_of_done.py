@@ -197,6 +197,50 @@ _FRONTEND_REQUEST_WORD_RE = re.compile(
 )
 
 
+# Analyse EventForge-Lauf (entwickle_eventforge_ein_webhook, 20260916_154524): der Auftrag
+# ("...Dark-Mode-Dashboard...") UND der eigene `task_summary` des Laufs ("EventForge
+# Webhook-Gateway und Dark-Mode-Dashboard implementiert") nannten Dark-Mode explizit - das
+# ausgelieferte Dashboard hatte keine einzige Dark-Mode-Referenz (weißer Hintergrund, kein
+# `prefers-color-scheme`, keine `dark`-Klasse). Kein bisheriges Kriterium prüft, ob ein im
+# Auftragstext EXPLIZIT benanntes visuelles Merkmal tatsächlich geliefert wurde - `ui_ok`
+# (Browser-Check) prüft nur, ob die Seite fehlerfrei RENDERT, nicht WELCHE Merkmale sie zeigt.
+_DARK_MODE_REQUEST_RE = re.compile(r"dark[\s-]?mode|dunkel[\s-]?modus|dunkles?\s+design", re.IGNORECASE)
+_DARK_MODE_SIGNAL_RE = re.compile(
+    r"prefers-color-scheme|data-theme\s*=\s*[\"']dark|class\s*=\s*[\"'][^\"']*\bdark\b"
+    r"|\.dark(?:-mode|-theme)?\s*\{|darkMode|dark-theme",
+    re.IGNORECASE,
+)
+_DARK_MODE_SCAN_EXTENSIONS = (".html", ".css", ".js", ".jsx", ".ts", ".tsx", ".vue")
+
+
+def _requires_dark_mode(user_request: str, task_summary: str = "") -> bool:
+    """Erkennt, ob der Auftrag (oder die eigene Zusammenfassung des Laufs) Dark-Mode explizit
+    benennt - unabhängig davon, ob ein Agent es tatsächlich umgesetzt hat."""
+    text = f"{user_request or ''} {task_summary or ''}"
+    return bool(_DARK_MODE_REQUEST_RE.search(text))
+
+
+def _has_dark_mode_signal(project_dir: Path, max_files: int = 500) -> bool:
+    """True, wenn irgendeine Frontend-Datei ein erkennbares Dark-Mode-Signal enthält
+    (`prefers-color-scheme`, eine `dark`-CSS-Klasse/-Regel, `data-theme="dark"`, ...)."""
+    seen = 0
+    for f in project_dir.rglob("*"):
+        if not f.is_file() or f.suffix.lower() not in _DARK_MODE_SCAN_EXTENSIONS:
+            continue
+        if any(part in _SERVED_UI_SKIP_DIRS or part.startswith(".") for part in f.relative_to(project_dir).parts):
+            continue
+        seen += 1
+        if seen > max_files:
+            return False
+        try:
+            text = f.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if _DARK_MODE_SIGNAL_RE.search(text):
+            return True
+    return False
+
+
 def _requires_frontend_ui(user_request: str, project_dir: Path) -> bool:
     """
     Erkennt, ob zu diesem Auftrag eine Oberflaeche gehoert - unabhaengig davon, ob ein
@@ -382,6 +426,7 @@ def build_definition_of_done(
     verification_skipped: bool = False,
     verification_ran: bool = False,
     user_request: str = "",
+    task_summary: str = "",
     frontend_planned: bool = False,
     build_passes: bool | None = None,
     test_depth_ok: bool | None = None,
@@ -573,6 +618,25 @@ def build_definition_of_done(
                  "Delivery Gate gescheitert oder hat keine UI-Dateien geschrieben"
         ),
     ))
+    # Explizit im Auftrag benannte visuelle Merkmale (aktuell: Dark-Mode) - siehe Modul-Docstring
+    # dieses Abschnitts oben für den realen Fund. Nur `applicable`, wenn der Auftragstext (oder
+    # die eigene Zusammenfassung des Laufs) Dark-Mode wirklich nennt UND überhaupt ein Frontend
+    # erwartet wird - ein reines Backend-Projekt mit "dark" irgendwo im Freitext soll nicht
+    # blockieren.
+    dark_mode_erwartet = frontend_erwartet and _requires_dark_mode(user_request, task_summary)
+    hat_dark_mode = dark_mode_erwartet and _has_dark_mode_signal(pfad)
+    kriterien.append(Criterion(
+        key="dark_mode_delivered",
+        label="Explizit beauftragtes Dark-Mode-Design wurde geliefert",
+        passed=hat_dark_mode,
+        applicable=dark_mode_erwartet,
+        detail=(
+            "" if hat_dark_mode or not dark_mode_erwartet
+            else "Auftrag nennt Dark-Mode, aber keine Frontend-Datei enthält ein erkennbares "
+                 "Dark-Mode-Signal (prefers-color-scheme, dark-Klasse/-CSS-Regel, data-theme=\"dark\")"
+        ),
+    ))
+
     if min_coverage > 0:
         erreicht = coverage_percent is not None and coverage_percent >= min_coverage
         kriterien.append(Criterion(

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EventForge Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <nav class="bg-blue-600 text-white p-4 shadow-lg">
+        <h1 class="text-xl font-bold">EventForge Dashboard</h1>
+    </nav>
+    
+    <main class="container mx-auto p-6">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- Bucket Verwaltung -->
+            <section class="bg-white p-6 rounded-lg shadow">
+                <h2 class="text-lg font-semibold mb-4">Buckets</h2>
+                <div id="bucket-list" class="space-y-2"></div>
+            </section>
+
+            <!-- Event Inspektor -->
+            <section class="bg-white p-6 rounded-lg shadow">
+                <h2 class="text-lg font-semibold mb-4">Event Inspektor</h2>
+                <pre id="event-details" class="bg-gray-800 text-green-400 p-4 rounded overflow-x-auto text-sm">Wähle ein Event aus...</pre>
+            </section>
+        </div>
+    </main>
+
+    <script>
+        async function fetchBuckets() {
+            const res = await fetch('/api/buckets');
+            const data = await res.json();
+            const list = document.getElementById('bucket-list');
+            list.innerHTML = data.map(b => `
+                <div class="p-3 border rounded hover:bg-gray-50 cursor-pointer" onclick="fetchEvents('${b.id}')">
+                    <span class="font-medium">${b.name}</span>
+                    <span class="text-xs text-gray-500 block">${b.target_url || 'Kein Relay'}</span>
+                </div>
+            `).join('');
+        }
+
+        async function fetchEvents(bucketId) {
+            const res = await fetch(`/api/buckets/${bucketId}/events`);
+            const data = await res.json();
+            const details = document.getElementById('event-details');
+            details.textContent = JSON.stringify(data, null, 2);
+        }
+
+        fetchBuckets();
+    </script>
+</body>
+</html>

@@ -1,17 +1,12 @@
 """
 core/agent_toolbox.py – Echte, projektgebundene Werkzeuge für den agentischen Loop
 
-Die AgentToolbox ist die operative Umsetzung des Werkzeug-Zugriffs (ein früheres,
-nie tatsächlich aufgerufenes core/tool_registry.py mit rein statischen
-Tool-Deklarationen wurde als toter Code entfernt): Jede Aufgabe mit gesetztem
-AgentTask.project_dir bekommt
-in agents/base_agent.py eine eigene AgentToolbox-Instanz, die der Agent während
-seines Function-Calling-Loops tatsächlich verwendet, um:
+Jede Aufgabe mit gesetztem AgentTask.project_dir bekommt in agents/base_agent.py
+eine eigene AgentToolbox-Instanz für ihren Function-Calling-Loop:
 
-- bestehenden Code wirklich zu lesen, bevor er ihn ändert (read_file, list_files)
-- Änderungen direkt im Projektverzeichnis zu speichern (write_file, edit_file)
-- den Code semantisch zu durchsuchen (search_code)
-- Abhängigkeiten zu installieren und Tests wirklich auszuführen (run_command, run_tests)
+- Code lesen (read_file, list_files, search_code)
+- Änderungen im Projektverzeichnis speichern (write_file, edit_file, patch_file)
+- Abhängigkeiten installieren und Tests ausführen (run_command, run_tests)
 
 Alle Datei-Operationen sind strikt auf project_dir beschränkt (kein Directory
 Traversal), und run_command ist auf eine Sicherheits-Whitelist begrenzt.
@@ -51,10 +46,9 @@ SANDBOX_COMMAND_TIMEOUT_SECONDS = 300.0
 def split_command_line(command: str, *, windows: bool | None = None) -> list[str]:
     """Zerlegt eine Agenten-Befehlszeile in Argumente, ohne Windows-Pfade zu zerstören.
 
-    Realer Fund (Framework-Analyse 2026-09-10): `shlex.split()` im POSIX-Modus behandelt `\\`
-    als Escape-Zeichen - `pytest tests\\test_auth.py` wurde auf Windows zu `teststest_auth.py`,
-    der Agent bekam ein irreführendes "file not found". Auf Windows deshalb `posix=False` und
-    nur umschließende Anführungszeichen entfernen.
+    `shlex.split()` behandelt im POSIX-Modus `\\` als Escape-Zeichen, wodurch Windows-Pfade
+    wie `tests\\test_auth.py` zu `teststest_auth.py` verstümmelt werden. Auf Windows deshalb
+    `posix=False` und nur umschließende Anführungszeichen entfernen.
     """
     if windows is None:
         windows = os.name == "nt"
@@ -289,13 +283,10 @@ TOOL_SPECS: list[dict[str, Any]] = [
 READ_ONLY_TOOL_NAMES = {
     "read_file", "list_files", "search_code",
     "find_symbol_definition", "find_symbol_references", "analyze_code_impact",
-    # ask_human_for_clarification verändert kein Projekt-Dateisystem (reine Aufzeichnung, siehe
-    # _tool_ask_human_for_clarification) - auch ein NUR-LESE-Agent (z.B. eine reine Review-
-    # Rolle) muss auf eine echte Blockade hinweisen können, nicht nur schreibende Rollen.
+    # Reine Aufzeichnung ohne Dateisystem-Zugriff - auch ein Nur-Lese-Agent muss auf eine
+    # echte Blockade hinweisen können.
     "ask_human_for_clarification",
-    # search_component_library liest ausschließlich memory/component_library/ (außerhalb von
-    # project_dir, siehe _tool_search_component_library) - unabhängig vom Nur-Lese-Modus des
-    # AKTUELLEN Projekts genauso ungefährlich wie search_code.
+    # Liest ausschließlich memory/component_library/, also außerhalb von project_dir.
     "search_component_library",
 }
 
@@ -316,23 +307,18 @@ class AgentToolbox:
         "npm ", "npx ", "node ",
         "ruff", "mypy", "flake8", "black --check",
     )
-    # Werkzeug-Ergebnisse werden bei JEDER weiteren Loop-Iteration erneut an das Modell
-    # mitgesendet (kein serverseitiger State bei den LLM-APIs) – ein zu hoher Wert hier
-    # multipliziert sich also mit der Anzahl der Iterationen. 8.000 Zeichen (~2.000 Tokens)
-    # reichen für die meisten Quelldateien, ohne den Kontext unnötig aufzublähen.
+    # Werkzeug-Ergebnisse werden bei jeder weiteren Loop-Iteration erneut mitgesendet (kein
+    # serverseitiger State bei den LLM-APIs) - der Wert multipliziert sich also mit der Zahl
+    # der Iterationen. 8.000 Zeichen (~2.000 Tokens) reichen für die meisten Quelldateien.
     MAX_TOOL_RESULT_CHARS = 8_000
     MAX_LISTED_FILES = 300
-    # Innerhalb dieses Fensters gilt ein erneuter voller read_file-Aufruf auf denselben,
-    # unveränderten Inhalt als Wiederholung "vor wenigen Iterationen" (siehe _read_history) -
-    # groß genug für einen intensiven Fix-Loop innerhalb einer Aufgabe, aber kein permanenter
-    # Cache über die gesamte Sitzung hinweg.
+    # Fenster, in dem ein erneuter voller read_file-Aufruf auf unveränderten Inhalt als
+    # Wiederholung gilt: groß genug für einen Fix-Loop, aber kein Sitzungs-Cache.
     READ_CACHE_REPEAT_WINDOW_SECONDS = 300.0
 
-    # project_dir zeigt normalerweise auf einen generierten Sandbox-Ordner unter workspace/,
-    # der strukturell nie Secrets enthält. Seit /audit-projekt kann project_dir aber auch auf
-    # das Framework-Root selbst zeigen (echtes .env mit echten API-Keys!) – diese Sperre gilt
-    # deshalb IMMER, nicht nur im Nur-Lese-Modus, und blockiert read_file/write_file/edit_file
-    # gleichermaßen (verhindert nebenbei auch ein versehentliches Überschreiben von .env).
+    # project_dir kann (z.B. bei /audit-projekt) auch auf das Framework-Root mit echtem .env
+    # zeigen. Die Sperre gilt deshalb immer, nicht nur im Nur-Lese-Modus, und blockiert Lesen
+    # wie Schreiben gleichermaßen.
     SENSITIVE_NAME_PATTERNS = (
         ".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", "*credentials*", "*secret*",
     )
@@ -354,28 +340,22 @@ class AgentToolbox:
         self.context_chars_compacted = 0
         self.watchdog_events: list[str] = []
         self.call_log: list[dict[str, Any]] = []
-        # Gefüllt von _tool_ask_human_for_clarification() - agents/base_agent.py liest das nach
-        # dem Loop-Ende zurück in AgentResult.clarification_questions (dasselbe Muster wie
-        # files_written oben).
+        # agents/base_agent.py liest das nach dem Loop-Ende in
+        # AgentResult.clarification_questions zurück (wie files_written oben).
         self.clarification_requests: list[str] = []
         # Normalisierter absoluter Pfad -> Inhalts-Hash des zuletzt von DIESEM Agenten gesehenen
         # Stands (gelesen oder selbst geschrieben), Grundlage für _reject_if_stale().
         self._seen_digests: dict[str, str] = {}
-        # Team-Optimierung (Goal 20260913, Aufgabe 3): normalisierter absoluter Pfad -> (Inhalts-
-        # Hash, monotone Zeit) des zuletzt vollständig (kein line_start/line_end, kein force)
-        # gelesenen Stands - Grundlage für den Cache-Hinweis in _tool_read_file(). Realer Befund
-        # aus intensiven Fix-Loops: Agenten riefen read_file wiederholt auf dieselbe große,
-        # UNVERÄNDERTE Quelldatei auf, wodurch derselbe 500+-Zeilen-Inhalt mehrfach identisch im
-        # Nachrichtenverlauf landete und den Kontext des Werkzeug-Loops unnötig aufblähte. Der
-        # Inhalts-Hash (nicht Pfad allein) entscheidet über "unverändert" - ein zwischenzeitliches
-        # write_file/edit_file ändert automatisch den Hash, ohne dass dieser Cache separat
-        # invalidiert werden müsste.
+        # Normalisierter absoluter Pfad -> (Inhalts-Hash, monotone Zeit) des zuletzt VOLLSTÄNDIG
+        # gelesenen Stands; Grundlage für den Cache-Hinweis in _tool_read_file(), damit derselbe
+        # unveränderte Dateiinhalt nicht mehrfach den Loop-Kontext aufbläht. Der Inhalts-Hash
+        # (nicht der Pfad) entscheidet über "unverändert" - ein write_file/edit_file invalidiert
+        # den Eintrag dadurch automatisch.
         self._read_history: dict[str, tuple[str, float]] = {}
 
     async def list_files_snapshot(self, subdir: str = "") -> list[str]:
-        """Wie das `list_files`-Werkzeug, aber OHNE call_count/call_log zu erhöhen – für einen
-        harness-seitigen Blick auf den Dateibaum (siehe agents/base_agent.py), der nicht als
-        vom Agenten selbst initiierter Werkzeug-Aufruf in den Kennzahlen auftauchen soll."""
+        """Wie `list_files`, aber ohne call_count/call_log zu erhöhen - dieser Blick auf den
+        Dateibaum kommt vom Harness, nicht vom Agenten, und darf die Kennzahlen nicht verzerren."""
         result = await self._tool_list_files(subdir=subdir)
         return result.get("files") or []
 
@@ -388,10 +368,8 @@ class AgentToolbox:
         return TOOL_SPECS
 
     def _normalize_relative_path(self, clean: str) -> str:
-        """Entfernt redundante Präfixe, die Agenten versehentlich voranstellen.
-        Realer Fund: Agenten riefen write_file mit 'workspace/feature_pilot/app/main.py'
-        oder 'feature_pilot/app/main.py' auf, wodurch Dateien in doppelt verschachtelten
-        Ordnern (z.B. feature_pilot/workspace/feature_pilot/...) landeten."""
+        """Entfernt redundante Präfixe wie 'workspace/<projekt>/' oder '<projekt>/', die Agenten
+        versehentlich voranstellen - sonst landen Dateien doppelt verschachtelt."""
         proj_name = self.project_dir.name
         if clean.startswith(f"workspace/{proj_name}/"):
             return clean[len(f"workspace/{proj_name}/"):]
@@ -488,7 +466,7 @@ class AgentToolbox:
     def _check_read_cache(self, target: Path, content: str) -> dict | None:
         """Gibt einen kompakten Cache-Hinweis zurück, wenn DIESELBE Datei mit demselben Inhalt
         bereits vor wenigen Iterationen (READ_CACHE_REPEAT_WINDOW_SECONDS) vollständig gelesen
-        wurde - sonst None (normaler Lesevorgang). Siehe _read_history-Docstring in __init__."""
+        wurde - sonst None (normaler Lesevorgang). Siehe _read_history in __init__."""
         cached = self._read_history.get(self._digest_key(target))
         if cached is None:
             return None
@@ -528,15 +506,10 @@ class AgentToolbox:
         """Gibt eine Fehlermeldung zurück (statt None), wenn `path` auf .py endet und `content`
         kein gültiges Python ist – None bedeutet "in Ordnung, schreiben erlaubt".
 
-        Realer Fund aus einem echten Lauf: ein Agent überschrieb main.py per write_file mit
-        Inhalt, der versehentlich ALLE Zeilenumbrüche/Anführungszeichen als literale `\\n`/`\\"`
-        statt echter Escape-Sequenzen enthielt (vermutlich doppelt JSON-serialisiert) - eine
-        einzige, syntaktisch komplett kaputte Zeile. Die Datei landete unbemerkt auf der Platte,
-        der komplette Rest des Frameworks (main.py + interface/cli.py) war danach nicht mehr
-        lauffähig, bis die eigentliche Testverifikation (Minuten später, nach mehreren weiteren
-        Werkzeug-Aufrufen) das erst über einen Test-Fehlschlag bemerkte. Diese Prüfung fängt es
-        SOFORT am Werkzeug selbst ab, bevor überhaupt etwas auf die Platte geschrieben wird -
-        nutzt dieselbe ast.parse()-Validierung wie core/code_sandbox.py (Sandbox-Validierung).
+        Fängt insbesondere doppelt serialisierten Modell-Output ab (alle Zeilenumbrüche als
+        literale `\\n`), der sonst unbemerkt auf der Platte landet und erst Minuten später
+        über einen Testfehlschlag auffällt. Nutzt dieselbe ast.parse()-Validierung wie
+        core/code_sandbox.py.
         """
         if not path.lower().endswith(".py"):
             return None
@@ -565,9 +538,8 @@ class AgentToolbox:
     def _reject_if_premature_reexport(self, clean_rel: str, content: str) -> str | None:
         """Lehnt `__init__.py`-Re-Exporte aus noch nicht existierenden Projektmodulen ab.
 
-        Analyse 2026-09-15 (nexus_resilience_gateway): der security-Agent schrieb Importe aus
-        `app/core/security.py` in `app/core/__init__.py`, bevor die Datei existierte - jedes
-        `import app.core` brach danach mit ImportError, mehrere Reparaturrunden folgten.
+        Ein Re-Export auf ein noch fehlendes Modul bricht JEDEN Import des Pakets und kostet
+        mehrere Reparaturrunden.
         """
         if not clean_rel.endswith("__init__.py"):
             return None
@@ -592,15 +564,11 @@ class AgentToolbox:
         )
 
     def _check_test_import_phantoms(self, path: str, content: str) -> str | None:
-        """Gibt eine Warnung zurück (kein Schreibschutz), wenn eine gerade geschriebene Testdatei
-        ein Symbol aus einem lokalen Projektmodul importiert, das dort laut echtem Code gar nicht
-        exportiert wird - realer Fund (vaultguard-Projekt): der tester-Agent erfand
-        `from app.core.encryption import encrypt`, obwohl das Modul nur `EncryptionService.encrypt()`
-        als Methode anbot; pytest brach beim Einsammeln mit ImportError ab. Nutzt dieselbe AST-
-        Modul-Oberflächen-Analyse wie der Fix-Loop (core/failure_triage.py), aber PROAKTIV vor dem
-        Speichern statt erst nach einem roten Testlauf. Bewusst nur eine Warnung im Ergebnis-Dict
-        (kein "error"): False Positives (z. B. bedingte Re-Exports über `__init__.py`, dynamisch
-        gesetzte Attribute) dürfen den Tester nicht am Speichern hindern, nur darauf hinweisen."""
+        """Warnt (ohne zu blockieren), wenn eine Testdatei ein Symbol importiert, das das lokale
+        Modul laut AST gar nicht exportiert - z.B. eine Methode, die als Modulfunktion importiert
+        wird. Nutzt dieselbe Oberflächen-Analyse wie der Fix-Loop (core/failure_triage.py), aber
+        proaktiv vor dem Speichern. Bewusst nur eine Warnung: False Positives (bedingte
+        Re-Exports, dynamisch gesetzte Attribute) dürfen das Speichern nicht verhindern."""
         if not path.lower().endswith(".py") or not is_test_file(path):
             return None
         try:
@@ -637,28 +605,20 @@ class AgentToolbox:
             return None
         return "⚠️ Mögliches Phantomsymbol – prüfe mit read_file, ob der Import zur echten Schnittstelle passt: " + "; ".join(problems)
 
-    # Endungen, für die es (anders als .py mit ast.parse in _reject_if_invalid_python) keinen
-    # eingebauten Parser gibt, der literale `\n`-Ketten zuverlässig als Syntaxfehler erkennt -
-    # siehe _reject_if_literal_newline_corruption() für den vollen Kontext des realen Funds.
+    # Endungen ohne eingebauten Parser, der literale `\n`-Ketten als Syntaxfehler erkennt
+    # (.py deckt bereits _reject_if_invalid_python über ast.parse ab).
     _LITERAL_NEWLINE_CHECK_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".json", ".html", ".css")
     _MIN_LITERAL_NEWLINE_HITS = 3
 
     @classmethod
     def _reject_if_literal_newline_corruption(cls, path: str, content: str) -> str | None:
-        """Gibt eine Fehlermeldung zurück, wenn `content` erkennbar der in
-        `_reject_if_invalid_python()` beschriebenen Korruption entspricht (literale `\\n`-Zeichen
-        statt echter Zeilenumbrüche), aber die Endung KEINEN eigenen Parser hat, der das schon
-        als Syntaxfehler abfangen würde (.py läuft bereits über ast.parse, JSON-Dateien über
-        `_reject_if_corrupted_manifest`/den eigentlichen JSON-Parser an anderer Stelle - hier
-        zusätzlich als Netz, falls eine solche Datei kein gültiges JSON sein muss).
+        """Gibt eine Fehlermeldung zurück, wenn `content` literale `\\n`-Zeichen statt echter
+        Zeilenumbrüche enthält und die Endung keinen eigenen Parser hat, der das abfangen würde.
 
-        Heuristik bewusst konservativ, um normale Quelldateien mit vereinzelten, ECHTEN
-        Escape-Sequenzen in String-Literalen (z.B. `console.log("a\\nb")`) nicht fälschlich
-        abzulehnen: nur wenn die Datei praktisch NUR aus einer einzigen physischen Zeile besteht
-        (kein oder kaum ein echter Zeilenumbruch) UND gleichzeitig mehrfach die literale
-        Zwei-Zeichen-Folge `\\n` enthält, deutet das auf eine komplett flachgeklopfte Datei hin -
-        genau das reale Muster (vermutlich doppelt JSON-serialisierter LLM-Output), nicht auf
-        normalen, mehrzeiligen Code mit ein paar Escape-Sequenzen darin."""
+        Heuristik bewusst konservativ, damit normaler Code mit echten Escape-Sequenzen in
+        String-Literalen (z.B. `console.log("a\\nb")`) nicht abgelehnt wird: nur eine Datei aus
+        praktisch einer einzigen physischen Zeile MIT mehreren literalen `\\n` gilt als
+        flachgeklopfter, doppelt serialisierter Output."""
         if not content or not path.lower().endswith(cls._LITERAL_NEWLINE_CHECK_EXTENSIONS):
             return None
         real_newlines = content.count("\n")
@@ -675,10 +635,8 @@ class AgentToolbox:
     @staticmethod
     def _reject_if_corrupted_manifest(path: str, content: str) -> str | None:
         """Gibt eine Fehlermeldung zurück, wenn `path` ein Dependency-Manifest (requirements.txt,
-        package.json, ...) ist und `content` typische Merge-/Diff-Korruption zeigt – None bedeutet
-        "in Ordnung, schreiben erlaubt". Siehe core/manifest_guard.py für den realen Fund, der
-        diese Prüfung ausgelöst hat (roh übernommener Diff-Hunk statt gemergter requirements.txt,
-        pip install schlug dadurch fehl)."""
+        package.json, ...) ist und `content` typische Merge-/Diff-Korruption zeigt (z.B. ein roh
+        übernommener Diff-Hunk) – None bedeutet "in Ordnung, schreiben erlaubt"."""
         from core.manifest_guard import detect_corrupted_manifest
 
         return detect_corrupted_manifest(path, content)
@@ -731,8 +689,8 @@ class AgentToolbox:
 
     def _reject_if_stale(self, target: Path, clean_rel: str, current: str) -> str | None:
         """Ein vollständiges Überschreiben ist nur erlaubt, wenn dieser Agent den AKTUELLEN Stand
-        der Datei kennt (gelesen oder selbst geschrieben) – sonst gewinnt still der letzte von
-        mehreren parallelen Agenten (realer Fund: requirements.txt, 6 Überschreibungen in 73 s)."""
+        der Datei kennt (gelesen oder selbst geschrieben) – sonst gewinnt bei parallel
+        arbeitenden Agenten still der letzte Schreiber."""
         key = self._digest_key(target)
         seen = self._seen_digests.get(key)
         if seen == content_digest(current):
@@ -756,11 +714,8 @@ class AgentToolbox:
         """Union-Merge für requirements*.txt: Pakete, die ein anderer Agent bereits eingetragen
         hat und die im neuen Inhalt fehlen, werden automatisch beibehalten statt still gelöscht.
 
-        Realer Fund (OmniQueue-Lauf 12.09.2026, Befund 3): `backend` und `database` schrieben
-        beide `requirements.txt`; der zweite Schreibvorgang kannte `starlette` nicht und löschte
-        es. Die bestehende Kollisionserkennung (agents/orchestrator.py) meldet so etwas zwar,
-        aber erst NACH dem Datenverlust - dieser Merge verhindert ihn deterministisch und ohne
-        eine zusätzliche LLM-Iteration.
+        Die bestehende Kollisionserkennung meldet so etwas erst NACH dem Datenverlust; dieser
+        Merge verhindert ihn deterministisch und ohne zusätzliche LLM-Iteration.
         """
         if not (target.name.lower().startswith("requirements") and target.suffix.lower() == ".txt"):
             return new_content, None
@@ -951,25 +906,21 @@ class AgentToolbox:
 
         from core.embedding_index import semantic_search
 
-        # semantic_search versucht echte Gemini-Embeddings (persistenter Cache pro Projekt,
-        # embeddet nur geänderte Dateien neu) und faellt automatisch auf BM25 zurueck.
-        # In einen Thread ausgelagert, da sync() blockierende Datei-I/O + API-Aufrufe macht
-        # und dieser Aufruf sonst den Event-Loop waehrend parallel laufender Agenten blockiert.
+        # semantic_search nutzt Embeddings (persistenter Cache pro Projekt) und faellt auf BM25
+        # zurueck. In einen Thread ausgelagert, da es blockierende Datei-I/O + API-Aufrufe macht
+        # und sonst den Event-Loop paralleler Agenten blockiert.
         results = await asyncio.to_thread(semantic_search, self.project_dir, query, max(1, min(top_k, 15)))
         if not results:
             return {"results": [], "note": "Keine relevanten Treffer (oder noch keine durchsuchbaren Dateien im Projekt)."}
         return {"results": [{"file": r["file"], "line_start": r["line_start"], "chunk": r["chunk"][:1500]} for r in results]}
 
     async def _tool_search_component_library(self, query: str, category: str = "") -> dict:
-        """Sucht in der PROJEKTÜBERGREIFENDEN Bibliothek (memory/component_library/, außerhalb
-        von self.project_dir) statt im aktuellen Projekt - siehe core/component_library.py für
-        die vollständige Begründung (Gesamtsystem-Analyse 2026-09-14, Punkt 3.2).
+        """Sucht in der projektübergreifenden Bibliothek (memory/component_library/) statt im
+        aktuellen Projekt, siehe core/component_library.py.
 
-        Liefert den vollständigen (gedeckelten) Code direkt im Ergebnis mit, statt nur einen
-        Pfad zu nennen: _resolve() beschränkt read_file/write_file/edit_file strikt auf
-        self.project_dir (Sicherheitsgrenze, siehe dort) - ein snippet_file unter
-        memory/component_library/ liegt AUSSERHALB davon und wäre über den regulären
-        read_file-Aufruf gar nicht erreichbar."""
+        Liefert den (gedeckelten) Code direkt mit, statt nur einen Pfad zu nennen: _resolve()
+        beschränkt read_file strikt auf self.project_dir, die Bibliothek liegt außerhalb und
+        wäre so gar nicht erreichbar."""
         from core.component_library import get_snippet_content
         from core.component_library import search as search_library
 
@@ -980,10 +931,8 @@ class AgentToolbox:
                 "note": "Kein passender Baustein in der Bibliothek gefunden - implementiere regulär selbst.",
             }
         return {
-            # max_chars=1500 je Treffer - dieselbe Obergrenze wie das bereits bestehende
-            # search_code-Werkzeug (chunk[:1500]) direkt darüber, damit ein voller
-            # 5-Treffer-Ergebnissatz den Werkzeug-Loop-Kontext nicht übermäßig aufbläht (siehe
-            # MAX_TOOL_RESULT_CHARS-Docstring oben).
+            # max_chars=1500 je Treffer - dieselbe Obergrenze wie search_code darüber, damit ein
+            # voller Ergebnissatz den Loop-Kontext nicht aufbläht (siehe MAX_TOOL_RESULT_CHARS).
             "results": [
                 {
                     "category": r["category"], "class_name": r["class_name"],
@@ -1171,12 +1120,8 @@ class AgentToolbox:
         }
 
     def _split_command(self, command: str) -> list[str]:
-        """Zerlegt den Befehl und bindet `python`/`pip` an die Projekt-venv.
-
-        Realer Fund (Framework-Analyse 2026-09-10): `pip`/`python` wurden bisher auf
-        `sys.executable` gemappt - den Interpreter des FRAMEWORKS. CodeSandbox.run_command()
-        übernimmt einen absoluten Pfad unverändert, die venv-Auflösung griff also nie: jedes
-        `pip install` eines Agenten landete in der globalen Python-Installation des Nutzers.
+        """Zerlegt den Befehl und bindet `python`/`pip` an die Projekt-venv - sonst landet jedes
+        `pip install` eines Agenten im Interpreter des Frameworks.
         """
         parts = split_command_line(command)
         if not parts:

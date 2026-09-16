@@ -1,15 +1,11 @@
 """
 agents/base_agent.py – Abstrakte Basisklasse für alle Unteragenten
 
-Jeder spezialisierte Agent erbt von dieser Klasse. Ist ein Projektverzeichnis
-gesetzt (AgentTask.project_dir) und Werkzeuge erlaubt, durchläuft der Agent
-einen ECHTEN agentischen Loop: Er bekommt Zugriff auf read_file, write_file,
-edit_file, list_files, search_code, run_command und run_tests, ruft sie über
-natives Function-Calling der jeweiligen LLM-API auf und sieht die realen
-Ergebnisse (Dateiinhalte, Testausgaben) – statt nur einen einzelnen Text zu
-generieren, der hinterher per Regex nach Codeblöcken durchsucht wird.
+Mit Projektverzeichnis (AgentTask.project_dir) und erlaubten Werkzeugen läuft ein
+echter agentischer Loop: Das Modell ruft die Werkzeuge der AgentToolbox über
+natives Function-Calling auf und sieht deren reale Ergebnisse.
 
-Ohne project_dir (z.B. für reine Text-/Synthese-Aufgaben) bleibt der einfache
+Ohne project_dir (reine Text-/Synthese-Aufgaben) bleibt der einfache
 Ein-Schuss-Aufruf über generate_with_usage() erhalten.
 """
 
@@ -44,14 +40,10 @@ from core.workspace import extract_file_blocks, text_has_extractable_file_blocks
 
 logger = logging.getLogger(__name__)
 
-# Realer Fund aus einem echten Lauf: Groq (häufig der Fallback für HEAVY-Rollen ohne
-# ANTHROPIC_API_KEY, siehe config.py) lehnte einen rein lesenden Konsolidierungs-Aufruf
-# (tools_read_only=True, also KEIN write_file im deklarierten Tool-Set) hart mit 400 ab,
-# weil das Modell selbst trotzdem versuchte, `write_file` aufzurufen – der Request war
-# korrekt, nur die Modell-AUSGABE nicht. Bewusst an der konkreten Fehler-Signatur erkannt
-# (nicht jede Exception), um echte Rate-Limits/Auth-Fehler NICHT versehentlich mitzufangen
-# und blind zu wiederholen – die haben bereits eigene, spezifischere Behandlung
-# (core/llm_factory.py Cooldown/Fallback-Kette).
+# Provider lehnen einen Request mit 400 ab, wenn das Modell ein Werkzeug aufruft, das gar nicht
+# im deklarierten Tool-Set steht. Bewusst nur an dieser konkreten Signatur erkannt, damit echte
+# Rate-Limit-/Auth-Fehler nicht mitgefangen und blind wiederholt werden – die haben eigene
+# Behandlung in core/llm_factory.py (Cooldown/Fallback-Kette).
 _DISALLOWED_TOOL_CALL_ERROR_MARKERS = (
     "tool_use_failed",
     "which was not in request.tools",
@@ -63,38 +55,20 @@ def _is_disallowed_tool_call_error(exc: Exception) -> bool:
     return any(marker in text for marker in _DISALLOWED_TOOL_CALL_ERROR_MARKERS)
 
 
-# Rollen, deren eigentlicher Auftrag darin besteht, echte Artefakte im Projekt zu hinterlassen
-# (nicht nur Planungs-/Analyse-Text). Realer Fund aus einem echten Lauf: der backend-Agent
-# meldete success=True, verbrauchte echte 36.000+ Tokens und lieferte fertigen Code – aber
-# AUSSCHLIESSLICH als Markdown-Codeblock im Antworttext statt über write_file/edit_file, sodass
-# git status danach komplett leer war (0 Dateien geändert). Ohne Gegenmaßnahme sieht ein
-# solcher Lauf im Report identisch zu einem echten Erfolg aus und der komplette
-# Tokenverbrauch verpufft, ohne dass irgendetwas Nutzbares im Projekt ankommt. Bewusst NUR
-# die Rollen mit eindeutigem Artefakt-Auftrag (kein product_owner/architect/ui_ux/etc. –
-# deren Aufgabe legitim reiner Text sein kann), um Fehlalarme gering zu halten. Lebt hier
-# (nicht in agents/orchestrator.py, das die Konstante nur noch importiert), weil
-# _run_agentic_loop() unten sie direkt für einen Korrektur-Retry braucht.
+# Rollen, deren Auftrag echte Artefakte im Projekt hinterlassen muss (nicht nur Planungs-/
+# Analyse-Text). Grundlage für das "Hard Delivery Gate" unten: ein Lauf ohne eine einzige
+# gespeicherte Datei sieht im Report sonst wie ein Erfolg aus, obwohl der Tokenverbrauch
+# verpufft ist. Bewusst nur Rollen mit eindeutigem Artefakt-Auftrag, um Fehlalarme zu
+# vermeiden; compliance/code_reviewer fehlen absichtlich, weil ihr Befund-TEXT vom
+# Governance-Fix-Loop direkt aus AgentResult.content konsumiert wird.
 CODE_WRITING_AGENT_IDS = {
     "backend", "frontend", "database", "api_integration", "data_engineer",
     "mobile", "ml", "devops", "tester", "resilience_guard", "refactoring",
     "readme", "documentation", "security", "performance",
 }
-# HINWEIS (`/goal`-Auftrag, Schwachstelle 3): compliance und code_reviewer werden BEWUSST NICHT
-# hier aufgenommen - beide sind laut agents/orchestrator/constants.py.REVIEW_ONLY_AGENT_IDS
-# etablierte reine Text-Review-Rollen, deren Befund-Text der Governance-Fix-Loop (agents/
-# orchestrator/verification.py._run_governance_fix_loop) direkt aus `AgentResult.content`
-# konsumiert, KEIN write_file-Aufruf nötig oder erwartet. Ein Test schützt genau das
-# (tests/test_error_visibility.py::test_metrics_summary_does_not_flag_review_only_or_planning_
-# roles) - beide hier aufzunehmen würde legitime, dateilose Review-Abschlüsse fälschlich als
-# "Hard Delivery Gate"-Fehlschlag markieren.
 
-# Team-Optimierung (`/goal`-Auftrag, Schwachstelle 3): Ziel-Dateivorschlag je Analyse-Rolle für
-# den Korrektur-Hinweis unten (_analysis_target_file_hint()) - ein generischer "ruf write_file
-# auf"-Hinweis lässt das Modell erneut raten, WELCHE Datei gemeint ist; der konkrete Pfad
-# (identisch zu dem, den der jeweilige Agenten-System-Prompt selbst als Standard-Ausgabeziel
-# nennt, siehe security_agent.py) nimmt genau dieses Raten weg. compliance/code_reviewer bleiben
-# hier trotz der REVIEW_ONLY-Ausnahme oben gelistet, falls ein zukünftiger Aufrufer (außerhalb
-# des Hard Delivery Gate) denselben Zieldatei-Hinweis für diese Rollen braucht.
+# Ziel-Dateivorschlag je Analyse-Rolle für den Korrektur-Hinweis unten: ein generischer
+# "ruf write_file auf" lässt das Modell raten, WELCHE Datei gemeint ist.
 _ANALYSIS_AGENT_TARGET_FILES = {
     "security": "docs/SECURITY_AUDIT.md",
     "compliance": "docs/COMPLIANCE_REPORT.md",
@@ -104,39 +78,27 @@ _ANALYSIS_AGENT_TARGET_FILES = {
 
 
 def _analysis_target_file_hint(agent_id: str) -> str:
-    """Rollenspezifischer Zusatzsatz für den Hard-Delivery-Gate-Korrekturhinweis: nennt
-    Analyse-Rollen (security/compliance/code_reviewer/documentation) explizit die Zieldatei,
-    statt sie nur pauschal zu write_file/edit_file aufzufordern."""
+    """Nennt Analyse-Rollen im Hard-Delivery-Gate-Hinweis explizit ihre Zieldatei."""
     target = _ANALYSIS_AGENT_TARGET_FILES.get(agent_id)
     if not target:
         return ""
     return f" Speichere deine Analyse jetzt SOFORT per write_file(\"{target}\", ...)."
 
-# Realer Fund aus einem echten End-to-End-Testlauf: architect wurde korrekt eingeplant und
-# explizit mit "erstelle ADR" beauftragt (core/task_manager.py DECOMPOSE_SYSTEM_PROMPT-Regel),
-# hat aber trotz eigener System-Prompt-Anweisung (agents/architect_agent.py) NIE
-# record_architecture_decision aufgerufen - die Entscheidung stand nur im Fließtext. Diese
-# Marker erkennen genau den Abschnitt, den architect_agent.py's fixes Ausgabeformat IMMER
-# verlangt ("## 6. Technologie-Entscheidungen (ADRs)") - kein Codeblock-Check wie bei
-# CODE_WRITING_AGENT_IDS, da architect legitim Code-Fences für Mermaid-Diagramme liefert, ohne
-# dass "kein write_file aufgerufen" dort ein Problem wäre.
+# Erkennt den ADR-Abschnitt, den das feste Ausgabeformat von agents/architect_agent.py verlangt.
+# Für architect ist ein Codeblock-Check (wie bei CODE_WRITING_AGENT_IDS) untauglich, da er
+# legitim Code-Fences für Mermaid-Diagramme liefert, ohne eine Datei schreiben zu müssen.
 _ADR_TEXT_MARKERS = ("Technologie-Entscheidung", "Architektur-Entscheidung", "ADR")
 
-# `/goal`-Auftrag ("Hard Delivery Gate"-Optimierung, echter Fund nexus_resilience_gateway-Lauf):
-# der frontend-Agent lieferte ein komplettes HTML-Dokument als reinen Markdown-Codeblock, ohne
-# jeden Dateipfad-Hinweis davor (kein "Datei:", kein "# Dateipfad:", ...) - core/workspace.py's
-# _find_file_blocks() erkennt so einen Block grundsätzlich NICHT, da ihm jeder Pfad-Anker fehlt.
-# Für GENAU diese eine Rolle ist der Zielpfad aber eindeutig erratbar: ein Fence, dessen Inhalt
-# mit einem vollständigen HTML-Dokument beginnt (<!DOCTYPE html> oder <html>), ist praktisch
-# immer die Haupt-UI-Seite.
+# Fällt ein Codeblock ohne jeden Dateipfad-Anker an, erkennt ihn core/workspace.py nicht. Nur für
+# die frontend-Rolle ist das Ziel eindeutig erratbar: ein Fence mit vollständigem HTML-Dokument
+# ist praktisch immer die Haupt-UI-Seite.
 _GENERIC_FENCE_RE = re.compile(r'```([a-zA-Z0-9_\-]*)\r?\n(.*?)```', re.DOTALL)
 _HTML_DOCUMENT_MARKERS = ("<!doctype html", "<html")
 
 
 def _extract_recoverable_frontend_html(text: str) -> str | None:
-    """Erster Fence-Block in `text`, dessen Inhalt wie ein vollständiges HTML-Dokument aussieht -
-    None, wenn keiner gefunden wurde. Nur als LETZTE Rettungsstufe gedacht, wenn
-    `extract_file_blocks()` (mit explizitem Dateipfad-Anker) bereits leer zurückkam."""
+    """Erster Fence-Block in `text`, der wie ein vollständiges HTML-Dokument aussieht - sonst
+    None. Nur als letzte Rettungsstufe, wenn `extract_file_blocks()` bereits leer zurückkam."""
     for _lang, content in _GENERIC_FENCE_RE.findall(text):
         lowered = content.strip().lower()
         if lowered and any(lowered.startswith(marker) or f"\n{marker}" in lowered for marker in _HTML_DOCUMENT_MARKERS):
@@ -145,8 +107,8 @@ def _extract_recoverable_frontend_html(text: str) -> str | None:
 
 
 def _frontend_html_target_path(toolbox: AgentToolbox) -> str:
-    """Zielpfad für einen so geretteten HTML-Block: folgt der bereits im Projekt etablierten
-    Konvention (`static/` vs. `public/`), statt blind IMMER denselben Pfad zu wählen."""
+    """Zielpfad für einen geretteten HTML-Block: folgt der im Projekt etablierten Konvention
+    (`static/` vs. `public/`), statt blind immer denselben Pfad zu wählen."""
     if (toolbox.project_dir / "static").is_dir():
         return "static/index.html"
     return "public/index.html"
@@ -185,19 +147,10 @@ class BaseAgent(ABC):
         try:
             from memory.agent_knowledge_base import agent_knowledge_base
 
-            # Cache-stabile Reihenfolge (KI-Team-Masterplan, Stufe 3): STATISCHE Bestandteile
-            # zuerst, VOLATILE zuletzt.
-            #
-            # Zuvor lautete die Reihenfolge: Basis-Prompt → Learnings → Werkzeug-Anweisungen. Der
-            # Learnings-Block ändert sich aber, sobald der Agent etwas Neues lernt - er stand
-            # damit MITTEN im Prompt und entwertete alles, was danach kam. Da Prompt-Caching
-            # ausschließlich über ein gemeinsames PRÄFIX funktioniert, wurde dadurch bei jeder
-            # neuen Lernregel auch der vollkommen unveränderte, große Werkzeugkatalog aus dem
-            # Cache geworfen. Passend dazu der reale Befund: 21,08 Mio. Prompt-Tokens gegenüber
-            # 0,84 Mio. Completion-Tokens (25:1) bei nur 12% Cache-Trefferquote.
-            #
-            # Jetzt: Basis-Prompt + Werkzeug-Anweisungen (beide über viele Läufe hinweg
-            # bytegleich) bilden das stabile Präfix, die Learnings hängen hinten an.
+            # Cache-stabile Reihenfolge: STATISCHE Bestandteile zuerst, VOLATILE zuletzt.
+            # Prompt-Caching greift nur über ein gemeinsames Präfix - stünden die Learnings
+            # (ändern sich bei jeder neuen Lernregel) vor dem Werkzeugkatalog, würde dieser
+            # unverändert große Block bei jeder Regeländerung mit aus dem Cache fallen.
             hard_delivery_gate_failed = False
             if use_tools:
                 toolbox = AgentToolbox(project_dir=task.project_dir, agent_id=self.agent_id, read_only=task.tools_read_only)
@@ -217,13 +170,10 @@ class BaseAgent(ABC):
                 prompt_tokens, completion_tokens = response.prompt_tokens, response.completion_tokens
 
             duration = time.monotonic() - start_time
-            # Hard Delivery Gate (KI-Team-Härtung, echter Fund keygate_service-Lauf): ein
-            # Code-schreibender Agent, der trotz des expliziten Korrektur-Retries in
-            # _run_agentic_loop() KEINE einzige Datei speichert, gilt NIEMALS als success=True -
-            # sonst verpufft der komplette Tokenverbrauch unbemerkt und der Orchestrator hält den
-            # Schritt für "Fertig!". success=False lässt den Step wie jeden anderen echten
-            # Agentenfehler in die reguläre Eskalation/den Fix-Loop laufen (siehe
-            # agents/orchestrator/verification.py), statt separat behandelt werden zu müssen.
+            # Hard Delivery Gate: ein Code-schreibender Agent, der trotz Korrektur-Retry in
+            # _run_agentic_loop() keine einzige Datei speichert, gilt nie als success=True -
+            # sonst hält der Orchestrator den Schritt für fertig. success=False lässt den Step
+            # in die reguläre Eskalation/den Fix-Loop laufen (agents/orchestrator/verification.py).
             if hard_delivery_gate_failed:
                 return AgentResult(
                     task_id=task.task_id,
@@ -269,14 +219,9 @@ class BaseAgent(ABC):
 
         except Exception as e:
             duration = time.monotonic() - start_time
-            # Realer Fund (KI-Team-Masterplan-Analyse): hier stand bisher unbedingt
-            # `model_used=self._llm.model_name` - also das KONFIGURIERTE Modell. Scheiterte der
-            # Call, BEVOR überhaupt ein Provider antwortete (fehlender API-Key, erschöpftes
-            # Tageskontingent), wurde der Fehlschlag damit einem Modell zugeschrieben, das nie
-            # einen Call gemacht hat: memory/run_history.json zeigte 160 Fehler unter
-            # `claude-sonnet-5`, während memory/cost_history.json für dieses Modell null Calls
-            # kennt (ANTHROPIC_API_KEY war leer). Bei Infrastruktur-Ausfällen bleibt das Feld
-            # deshalb leer - ein nie kontaktiertes Modell darf keine Fehlerstatistik erben.
+            # Bei Infrastruktur-Ausfällen (fehlender API-Key, erschöpftes Kontingent) bleibt
+            # `model_used` leer: scheiterte der Call, bevor überhaupt ein Provider antwortete,
+            # darf das nur konfigurierte, nie kontaktierte Modell keine Fehlerstatistik erben.
             failure_class = classify_failure(str(e))
             return AgentResult(
                 task_id=task.task_id,
@@ -298,31 +243,15 @@ class BaseAgent(ABC):
 
     async def _attempt_auto_recovery_save(self, toolbox: AgentToolbox, response_text: str) -> list[str]:
         """
-        Auto-Recovery-Parser (`/goal`-Auftrag "Hard Delivery Gate"-Optimierung, echter Fund
-        nexus_resilience_gateway-Lauf): der frontend-Agent (bei gemini-3.8-flash reproduzierbar
-        auch backend) lieferte über 8.000 Tokens fertigen Code als Markdown-Codeblock im
-        Antworttext, rief aber write_file/edit_file NIE auf (tool_calls_count: 0) - das Hard
-        Delivery Gate schlug daraufhin an, das Projekt schloss mit `missing_frontend_ui` und
-        `verification_ok: false` ab, obwohl der Code inhaltlich bereits fertig formuliert war.
-
-        Bisher wertete `text_has_extractable_file_blocks()` einen solchen Block nur als Signal,
-        den finalen Fehlschlag NICHT zu setzen - die tatsächliche Rettung passierte (wenn
-        überhaupt) erst viele Schritte später im orchestrator-weiten Text-Fallback
-        (agents/orchestrator/__init__.py, AUTO_SAVE_WORKSPACE), und NUR wenn `res.success` schon
-        true war. Diese Methode speichert den erkannten Code STATTDESSEN sofort über denselben
-        validierten write_file-Pfad wie ein echter Tool-Aufruf (inkl. Python-Syntax-/Manifest-
-        Prüfung, siehe AgentToolbox._tool_write_file) - `toolbox.files_written` zeigt den
-        geretteten Pfad direkt danach, der Turn gilt unmittelbar als erfolgreich, und der Hard
-        Delivery Gate feuert nicht mehr fälschlich für tatsächlich gelieferten Code.
+        Rettet fertigen Code, den der Agent nur als Markdown-Codeblock in den Antworttext
+        geschrieben hat, statt write_file aufzurufen. Gespeichert wird über denselben
+        validierten write_file-Pfad wie bei einem echten Tool-Aufruf (inkl. Syntax-/Manifest-
+        Prüfung), damit der Hard Delivery Gate nicht für tatsächlich gelieferten Code feuert.
 
         Erkennt zwei Formate:
-        1. Ein Dateipfad-Anker direkt vor dem Codeblock (core/workspace.py.extract_file_blocks -
-           deckt u.a. "```python:app/main.py", "Datei: app/main.py", "# Dateipfad: ...",
-           "<!-- ... -->" und "// File: ..." ab).
-        2. NUR für den frontend-Agenten, wenn (1) nichts fand: ein Fence mit einem vollständigen
-           HTML-Dokument (<!DOCTYPE html>/<html>) ohne jeden Pfad-Hinweis - eindeutig als
-           public/index.html bzw. static/index.html identifizierbar (siehe
-           _frontend_html_target_path).
+        1. Ein Dateipfad-Anker vor dem Codeblock (core/workspace.py.extract_file_blocks).
+        2. Nur für den frontend-Agenten, wenn (1) nichts fand: ein Fence mit vollständigem
+           HTML-Dokument ohne Pfad-Hinweis (siehe _frontend_html_target_path).
         """
         recovered_paths: list[str] = []
         blocks = extract_file_blocks(response_text)
@@ -357,29 +286,19 @@ class BaseAgent(ABC):
         ihr reales Ergebnis wird als Folge-Nachricht zurückgespielt, bis das
         Modell eine finale Textantwort liefert oder das Iterationslimit erreicht ist.
 
-        Provider wird pro Aufgabe FESTGENAGELT, sobald ein Fallback-Hop tatsächlich
-        geantwortet hat (siehe active_llm unten). Realer Fund aus einem echten Lauf: Ohne
-        das löste jede Iteration die Fallback-Kette (core/llm_factory.py MODEL_FALLBACKS)
-        unabhängig neu auf. Antwortete z.B. Iteration 1 über Groq (kein Claude-Key) und
-        scheiterte Groq dann in Iteration 2 (z.B. Rate-Limit), sprang die Kette weiter zu
-        Gemini – das dann die BISHERIGE Historie inkl. eines von GROQ erzeugten function_call
-        sah, dem die von Gemini zwingend verlangte thought_signature fehlt, und lehnte mit
-        "400 INVALID_ARGUMENT: Function call is missing a thought_signature" komplett ab
-        (beobachtet bei den Agenten `backend` und `code_reviewer`). Einmal gepinnt, wird kein
-        weiterer Fallback mehr innerhalb DIESER Aufgabe zugelassen (_allow_self_fallback=False)
-        – schlägt der gepinnte Provider erneut fehl, ist ein klarer Fehlschlag (jetzt sichtbar,
-        siehe agents/orchestrator.py _status_notify_line) der sichereren Alternative vorzuziehen,
-        Historie stillschweigend über einen weiteren, ebenfalls fremden Provider zu beschädigen.
+        Der Provider wird pro Aufgabe festgenagelt, sobald ein Fallback-Hop geantwortet hat
+        (`active_llm`): Ein Providerwechsel mitten in der Historie scheitert, weil die
+        Werkzeug-Aufrufe des einen Providers für den nächsten ungültig sind (z.B. Gemini
+        verlangt eine thought_signature, die ein fremder function_call nicht hat). Einmal
+        gepinnt, ist kein weiterer Fallback mehr erlaubt (_allow_self_fallback=False) - ein
+        sichtbarer Fehlschlag ist besser als eine still beschädigte Historie.
         """
         max_iterations = task.max_tool_iterations or MAX_AGENT_TOOL_ITERATIONS
         initial_prompt = self._build_prompt(task)
 
-        # Aktuellen Dateibaum EINMALIG synchron voranstellen, statt darauf zu vertrauen, dass
-        # das Modell von sich aus zuerst list_files aufruft. Spart eine ganze Loop-Iteration
-        # (Prompt+Response-Tokens) UND verringert das Risiko, dass ein Agent unwissentlich eine
-        # bereits von einem anderen Teammitglied dieser Phase geschriebene Datei unter anderem
-        # Namen doppelt neu implementiert (real beobachtet: `app.py`/`test_app.py` UND separat
-        # `main.py`/`test_main.py` für denselben trivialen Health-Check-Endpoint).
+        # Dateibaum einmalig voranstellen, statt darauf zu vertrauen, dass das Modell zuerst
+        # list_files aufruft: spart eine Loop-Iteration und verhindert, dass ein Agent eine von
+        # einem Kollegen bereits geschriebene Datei unter anderem Namen doppelt implementiert.
         existing_files = await toolbox.list_files_snapshot()
         if existing_files:
             initial_prompt += (
@@ -404,22 +323,12 @@ class BaseAgent(ABC):
         no_file_written_retry_used = False
         no_adr_call_retry_used = False
         hard_delivery_gate_failed = False
-        # Realer Fund (KI-Team-Gesamtanalyse, hooksentinel-Lauf 12.09.2026, Schwachstelle 2 -
-        # "Contradictory Prompt"-Bug): bisher wurde JEDEM Agenten auf der letzten erlaubten
-        # Iteration hart verboten, überhaupt noch ein Werkzeug aufzurufen ("Rufe KEIN weiteres
-        # Werkzeug mehr auf") - ein Code-schreibender Agent, der bis dahin noch keine Datei
-        # gespeichert hatte, schrieb daraufhin brav gehorsam seinen fertigen Code als Text in
-        # die Antwort statt über write_file, und wurde direkt im Anschluss vom Hard Delivery
-        # Gate unten als fehlgeschlagen markiert - der Agent wurde also für genau das
-        # bestraft, was ihm das Framework selbst befohlen hatte (im HookSentinel-Lauf real der
-        # Ausfall des Frontend-Entwicklers, 43.401 verpuffte Tokens). `hard_limit` ersetzt
-        # `max_iterations` als tatsächliche Abbruchgrenze der Schleife: bleibt ein
-        # Code-schreibender Agent bis zur letzten Iteration ohne gespeicherte Datei, wird ihm
-        # dort STATT des Werkzeug-Verbots eine zwingende Aufforderung geschickt, JETZT
-        # write_file aufzurufen, und `hard_limit` einmalig um eine echte Rettungs-Iteration
-        # erhöht, damit ein tatsächlich zurückgegebener Werkzeug-Aufruf nicht wie bisher
-        # verworfen, sondern normal ausgeführt wird. Genau EINE solche Verlängerung pro
-        # Aufgabe (`write_rescue_grant_used`), damit die Schleife garantiert terminiert.
+        # `hard_limit` ist die tatsächliche Abbruchgrenze der Schleife (nicht `max_iterations`):
+        # Ein Code-schreibender Agent ohne gespeicherte Datei bekommt in der letzten Iteration
+        # statt des Werkzeug-Verbots die Aufforderung, JETZT write_file aufzurufen - sonst
+        # würde ihn das Werkzeug-Verbot in reinen Text drängen und der Hard Delivery Gate
+        # bestrafte ihn für genau das. Genau EINE Rettungs-Iteration pro Aufgabe
+        # (`write_rescue_grant_used`), damit die Schleife garantiert terminiert.
         hard_limit = max_iterations
         write_rescue_grant_used = False
         watchdog = AgentWatchdog(
@@ -444,17 +353,10 @@ class BaseAgent(ABC):
                 and not task.tools_read_only
                 and not toolbox.clarification_requests
             ):
-                # "Write First"-Vorwarnung (KI-Team-Gesamtanalyse, Befund 1 im CertPulse-Lauf
-                # vom 12.09.2026: ein Code-schreibender Agent verbrachte Iteration 1-4 komplett
-                # mit read_file auf bereits im Prompt zusammengefassten ADRs/Interface-Contracts
-                # und erreichte danach nur noch die erzwungene reine Textiteration, OHNE dass
-                # jemals ein write_file/edit_file-Aufruf stattfand. Die einzige bisherige
-                # Korrektur-Chance (der "keine Datei geschrieben"-Retry weiter unten) greift NUR,
-                # wenn der Agent von sich aus VORZEITIG mit reinem Text abschließt - bleibt er bis
-                # zur letzten Iteration im Tool-Loop, kommt diese Warnung nie zum Zug. Eine
-                # zusätzliche, frühere Warnung EINE Iteration vor der erzwungenen Text-Antwort
-                # gibt dem Agenten noch eine reale Chance, write_file aufzurufen, BEVOR ihm das
-                # Werkzeug in der letzten Iteration verboten wird.
+                # "Write First"-Vorwarnung eine Iteration vor der erzwungenen Textantwort: der
+                # "keine Datei geschrieben"-Retry weiter unten greift nur, wenn der Agent von
+                # sich aus vorzeitig mit Text abschließt. Bleibt er bis zuletzt im Tool-Loop,
+                # ist dies seine einzige Chance, doch noch write_file aufzurufen.
                 turns.append(AgentMessage(
                     role="user",
                     text=(
@@ -466,17 +368,10 @@ class BaseAgent(ABC):
                     ),
                 ))
             if iteration == hard_limit and max_iterations > 1:
-                # "Contradictory Prompt"-Bugfix (KI-Team-Gesamtanalyse, hooksentinel-Lauf
-                # 12.09.2026): ein Code-schreibender Agent, der bis zur letzten Iteration keine
-                # einzige Datei gespeichert hat, darf hier NICHT mehr pauschal jedes Werkzeug
-                # verboten bekommen - sonst gehorcht er dem Verbot, schreibt seinen Code als
-                # Text in die Antwort, und wird direkt danach vom Hard Delivery Gate unten als
-                # fehlgeschlagen markiert (bestraft für einen vom Framework selbst erzwungenen
-                # Zustand). Stattdessen wird er zwingend zu genau diesem Werkzeug-Aufruf
-                # aufgefordert; `write_rescue_grant_used` gewährt dafür EINMALIG eine echte
-                # zusätzliche Iteration (siehe `hard_limit`-Erhöhung unten, nach dem LLM-Call),
-                # statt einen tatsächlich zurückgegebenen write_file-Aufruf wie bisher zu
-                # verwerfen.
+                # Ein Code-schreibender Agent ohne gespeicherte Datei bekommt hier statt des
+                # Werkzeug-Verbots die zwingende Aufforderung zum write_file-Aufruf;
+                # `write_rescue_grant_used` gewährt dafür einmalig eine zusätzliche Iteration
+                # (siehe `hard_limit`-Erhöhung nach dem LLM-Call).
                 rescue_applicable = (
                     not write_rescue_grant_used
                     and self.agent_id in CODE_WRITING_AGENT_IDS
@@ -496,14 +391,10 @@ class BaseAgent(ABC):
                         ),
                     ))
                 else:
-                    # Realer Fund: auf der letzten erlaubten Iteration durfte das Modell bisher
-                    # weiterhin frei zwischen Werkzeug-Aufruf und Text wählen – entschied es sich
-                    # (real beobachtet bei zwei Fachbereichs-Teamleiter-Aufrufen in einem Lauf)
-                    # nochmal für ein Werkzeug, wurde dieser Aufruf VERWORFEN (die Schleife bricht
-                    # unten ab, bevor er ausgeführt wird) und der Nutzer sah nur die generische
-                    # "Maximale Werkzeug-Iterationen erreicht"-Notiz statt einer echten
-                    # Zusammenfassung. Eine explizite letzte Aufforderung erhöht die Chance auf
-                    # eine echte finale Antwort, statt die Iteration zu verschwenden.
+                    # Ein Werkzeug-Aufruf in der letzten Iteration würde unten verworfen (die
+                    # Schleife bricht ab, bevor er ausgeführt wird) und der Nutzer sähe nur die
+                    # generische "Maximale Werkzeug-Iterationen erreicht"-Notiz. Die explizite
+                    # Aufforderung erhöht die Chance auf eine echte finale Antwort.
                     turns.append(AgentMessage(
                         role="user",
                         text=(
@@ -535,11 +426,10 @@ class BaseAgent(ABC):
                         turns, system_prompt, toolbox.tool_specs(), _allow_self_fallback=allow_fallback,
                     )
             except Exception as e:
-                # Ein Retry verbraucht die aktuelle Iteration mit - auf der ohnehin letzten
-                # erlaubten Iteration NICHT mehr retryen, sonst bliebe `response` auf None
-                # (siehe assert unten). Echte Rate-Limit-/Auth-Fehler haben bereits eigene,
-                # spezifischere Behandlung in core/llm_factory.py und werden hier bewusst NICHT
-                # gefangen (_is_disallowed_tool_call_error grenzt gezielt ein).
+                # Ein Retry verbraucht die aktuelle Iteration mit - auf der letzten erlaubten
+                # NICHT mehr retryen, sonst bliebe `response` None (siehe assert unten). Echte
+                # Rate-Limit-/Auth-Fehler werden bewusst nicht gefangen (eigene Behandlung in
+                # core/llm_factory.py).
                 if iteration < hard_limit and not disallowed_tool_call_retry_used and _is_disallowed_tool_call_error(e):
                     disallowed_tool_call_retry_used = True
                     turns.append(AgentMessage(
@@ -561,11 +451,9 @@ class BaseAgent(ABC):
                 active_llm = LLMFactory.create_for_model(response.model_name)
 
             if rescue_applicable and response.tool_calls and not write_rescue_grant_used:
-                # Der Agent ist der Rettungs-Aufforderung gefolgt und hat tatsächlich ein
-                # Werkzeug (hoffentlich write_file/edit_file) aufgerufen, statt wie zuvor in
-                # reinen Text auszuweichen. `hard_limit` wird GENAU EINMAL pro Aufgabe erhöht,
-                # damit dieser Aufruf unten reell ausgeführt (nicht verworfen) wird und der
-                # Agent im Anschluss noch eine echte finale Textantwort liefern kann.
+                # Der Agent ist der Rettungs-Aufforderung gefolgt: `hard_limit` wird genau einmal
+                # pro Aufgabe erhöht, damit der Aufruf unten wirklich ausgeführt wird und danach
+                # noch eine finale Textantwort möglich ist.
                 write_rescue_grant_used = True
                 hard_limit += 1
 
@@ -587,28 +475,17 @@ class BaseAgent(ABC):
                     and not task.tools_read_only
                     and not toolbox.clarification_requests
                 ):
-                    # "Hard Delivery Gate" (KI-Team-Härtung, echter Fund keygate_service-Lauf:
-                    # backend/database/tester verbrauchten 400k+ Tokens, meldeten success=True,
-                    # aber toolbox.files_written blieb über die GESAMTE Aufgabe leer – das Projekt
-                    # schloss ohne main.py/Tests ab). Ursprünglich griff dieses Gate NUR, wenn
-                    # "```" (ein Code-Fence) im Abschlusstext stand - real beobachtet
-                    # (pulseflow_gateway, 20260911_095217) schloss ein backend-Agent aber auch
-                    # mit reinem Planungs-Fließtext OHNE Fence oder nach einem einzelnen
-                    # list_files-Aufruf mit files_written: [] und success: true ab. Das
-                    # Fence-Erfordernis wurde deshalb entfernt: JEDER Abschluss eines
-                    # Code-schreibenden Agenten ohne eine einzige gespeicherte Datei wird jetzt
-                    # verwarnt, unabhängig vom Antworttext. `not task.tools_read_only` schließt
-                    # weiterhin legitime Nur-Lese-Aufträge aus (z. B. Governance-Fix-Schleife),
-                    # `not toolbox.clarification_requests` legitime Rückfragen mitten in der
-                    # Aufgabe (`ask_human_for_clarification`). EIN gezielter Korrektur-Hinweis
-                    # statt die Antwort unkorrigiert zu akzeptieren; bleibt es dabei, eskaliert
-                    # der Post-Loop-Gate unten in execute() zu success=False, statt den
-                    # Fehlschlag als "Fertig!" zu verkaufen.
+                    # Hard Delivery Gate, erste Stufe: JEDER Abschluss eines Code-schreibenden
+                    # Agenten ohne eine einzige gespeicherte Datei wird verwarnt, unabhängig vom
+                    # Antworttext (ein Code-Fence-Check greift zu kurz - Abschlüsse mit reinem
+                    # Planungstext kommen genauso vor). `not task.tools_read_only` schließt
+                    # legitime Nur-Lese-Aufträge aus, `not toolbox.clarification_requests`
+                    # legitime Rückfragen. Bleibt es beim Nichts-Geschrieben, eskaliert der
+                    # Post-Loop-Gate in execute() zu success=False.
                     no_file_written_retry_used = True
                     turns.append(AgentMessage(role="assistant", text=response.text, tool_calls=[]))
-                    # Bei den Analyse-Rollen (security/compliance/code_reviewer/documentation)
-                    # nennt der Hinweis explizit die erwartete Zieldatei statt der generischen
-                    # "Code verpufft"-Formulierung, die für reinen Analyse-Fließtext unpassend ist.
+                    # Analyse-Rollen bekommen die konkrete Zieldatei genannt statt der generischen
+                    # "Code verpufft"-Formulierung, die für Analysetext unpassend ist.
                     analysis_hint = _analysis_target_file_hint(self.agent_id)
                     if analysis_hint:
                         gate_hint_text = (
@@ -633,18 +510,10 @@ class BaseAgent(ABC):
                     and not toolbox.files_written
                     and any(marker in response.text for marker in _ADR_TEXT_MARKERS)
                 ):
-                    # Realer Fund aus einem echten End-to-End-Testlauf: architect wurde diesmal
-                    # (dank der neuen decompose()-Pflichtregel, siehe core/task_manager.py)
-                    # korrekt eingeplant UND explizit mit "erstelle ADR" beauftragt – hat aber
-                    # trotz seines eigenen System-Prompt-Hinweises (agents/architect_agent.py)
-                    # NIE record_architecture_decision aufgerufen, die Entscheidung stand nur im
-                    # Fließtext. Der obige Code-Fence-Check (CODE_WRITING_AGENT_IDS) greift hier
-                    # NICHT: architect liefert legitim Code-Fences für Mermaid-Diagramme, ohne
-                    # dass "kein write_file aufgerufen" ein Problem wäre - er schreibt normalerweise
-                    # ohnehin keine Projektdateien. Eigene, gezielte Heuristik: Antwort erwähnt
-                    # Technologie-/Architektur-Entscheidungen (_ADR_TEXT_MARKERS, deckt das vom
-                    # architect-Prompt selbst vorgeschriebene Ausgabeformat ab), aber toolbox.
-                    # files_written ist über die GESAMTE Aufgabe leer (nicht mal ein ADR).
+                    # Eigene Heuristik für architect, da das Gate oben für ihn nicht gilt (er
+                    # schreibt normalerweise keine Projektdateien): Die Antwort nennt
+                    # Technologie-/Architektur-Entscheidungen (_ADR_TEXT_MARKERS), aber
+                    # files_written ist leer - nicht mal ein ADR wurde dokumentiert.
                     no_adr_call_retry_used = True
                     turns.append(AgentMessage(role="assistant", text=response.text, tool_calls=[]))
                     turns.append(AgentMessage(
@@ -690,61 +559,30 @@ class BaseAgent(ABC):
                     )
                 )
                 if gate_retry_exhausted:
-                    # Auto-Recovery-Parser (`/goal`-Auftrag "Hard Delivery Gate"-Optimierung):
-                    # BEVOR das Gate unten endgültig als Fehlschlag markiert, wird versucht, den
-                    # im Antworttext erkannten Code SOFORT über den validierten write_file-Pfad
-                    # zu retten (siehe _attempt_auto_recovery_save-Docstring). Gelingt das,
-                    # ist `toolbox.files_written` danach nicht mehr leer und die folgende
-                    # Bedingung greift gar nicht erst.
+                    # Letzter Rettungsversuch, bevor das Gate unten endgültig fehlschlägt:
+                    # gelingt er, ist `toolbox.files_written` danach nicht mehr leer und die
+                    # folgende Bedingung greift gar nicht erst.
                     await self._attempt_auto_recovery_save(toolbox, response.text)
                 if (
                     gate_retry_exhausted
                     and not toolbox.files_written
                     and not text_has_extractable_file_blocks(response.text)
                 ):
-                    # Hard Delivery Gate, zweite Stufe: der obige Korrektur-Hinweis wurde bereits
-                    # EINMAL gegeben (no_file_written_retry_used) und der Agent liefert trotzdem
-                    # keine einzige Datei - execute() unten wertet das NIEMALS als success=True,
-                    # damit der Orchestrator sofort eskaliert statt den DoD-Fehler erst Minuten
-                    # später über einen leeren `git status` zu bemerken.
+                    # Hard Delivery Gate, zweite Stufe: der Korrektur-Hinweis wurde bereits
+                    # gegeben und der Agent liefert trotzdem keine Datei - execute() wertet das
+                    # nie als success=True, damit der Orchestrator sofort eskaliert.
                     #
-                    # Bugfix (KI-Team-Gesamtanalyse, fehleranalyse_ki_team.md Befund 2, CertPulse-
-                    # Lauf 12.09.2026): `no_file_written_retry_used` allein reichte NICHT, um diese
-                    # Stufe auszulösen, wenn der Agent Iterationen 1..max_iterations-1 durchgängig
-                    # MIT Tool-Aufrufen (z.B. nur read_file) verbrachte und erst in der letzten,
-                    # erzwungenen Text-Iteration (oben: "LETZTE Gelegenheit") ohne jede geschriebene
-                    # Datei abschloss - der "keine Datei geschrieben"-Korrektur-Retry weiter oben
-                    # verlangt zwingend `iteration < max_iterations` und kam dadurch NIE zum Zug,
-                    # `no_file_written_retry_used` blieb `False`, und dieses Gate feuerte ebenfalls
-                    # nicht: der Agent meldete `success=True, files_written=[]`, obwohl 300k+ Tokens
-                    # verpufften. Die zusätzliche Bedingung `iteration == max_iterations and
-                    # max_iterations > 1 and not response.tool_calls` deckt genau diesen Fall ab,
-                    # OHNE zwei bewusst weiterhin erwünschte Fälle zu treffen: (a)
-                    # `max_iterations == 1` (siehe test_no_retry_when_no_iterations_remain: bei
-                    # nur EINER erlaubten Iteration gab es nie eine reale Korrekturchance) und
-                    # (b) der Agent ruft in der letzten Iteration weiterhin AKTIV ein Werkzeug auf
-                    # (`response.tool_calls` nicht leer) - dann greift bereits der obige
-                    # "Maximale Werkzeug-Iterationen erreicht"-Fallback-Text, und das ist ein
-                    # ehrlicher Abbruch mangels Zeit, kein "premature final answer" (real
-                    # reproduziert: test_max_iterations_reached_yields_honest_fallback_message
-                    # brach ohne diese Einschränkung fälschlich mit Hard-Fail ab, obwohl der Agent
-                    # bis zur letzten Sekunde fleißig weiterarbeiten wollte).
+                    # `gate_retry_exhausted` deckt zusätzlich den Fall ab, dass der Agent alle
+                    # Iterationen mit Tool-Aufrufen (z.B. nur read_file) verbrachte und erst in
+                    # der erzwungenen Text-Iteration ohne Datei abschloss - dort kam der Retry
+                    # oben (verlangt `iteration < hard_limit`) nie zum Zug. Bewusst ausgenommen:
+                    # `max_iterations == 1` (nie eine reale Korrekturchance) und ein aktiver
+                    # Werkzeug-Aufruf in der letzten Iteration (ehrlicher Abbruch mangels Zeit).
                     #
-                    # Bugfix (bei der KI-Team-Gesamtanalyse gefunden): `not text_has_extractable_
-                    # file_blocks(response.text)` ergänzt - enthält der Antworttext trotz allem
-                    # einen Codeblock, den core/workspace.py.parse_and_save_files() (Text-
-                    # Fallback) erkennen und speichern WÜRDE, ist der Tokenverbrauch NICHT
-                    # "verpufft": der Orchestrator rettet die Datei gleich im Anschluss über
-                    # genau diesen Fallback-Pfad (agents/orchestrator/__init__.py,
-                    # `AUTO_SAVE_WORKSPACE`, greift nur für `res.success and res.content`). Ohne
-                    # diese Ausnahme erstickte das Gate den Text-Fallback-Mechanismus faktisch,
-                    # indem es den Agenten schon VOR dessen Aufruf als gescheitert markierte -
-                    # real reproduziert: tests/test_text_fallback_report_visibility.py (exakt die
-                    # Fixture, die Text-Fallback ursprünglich absichern sollte, schlug dadurch
-                    # selbst fehl). Der Korrektur-Hinweis oben bleibt unverändert bestehen - ein
-                    # nativer write_file-Aufruf ist robuster als Regex-Extraktion aus Freitext
-                    # (siehe parse_and_save_files()-Docstring), nur die ENDGÜLTIGE
-                    # Fehlschlag-Markierung wird softened, wenn eine Rettung noch möglich ist.
+                    # `not text_has_extractable_file_blocks(...)`: enthält der Antworttext einen
+                    # Codeblock, den der orchestrator-weite Text-Fallback (AUTO_SAVE_WORKSPACE)
+                    # noch speichern würde, ist nichts verpufft - der greift aber nur für
+                    # `res.success`, also darf das Gate ihn nicht vorher abwürgen.
                     hard_delivery_gate_failed = True
                 break
 
@@ -818,15 +656,10 @@ class BaseAgent(ABC):
             return None
 
     def _augment_with_tool_instructions(self, system_prompt: str, read_only: bool = False) -> str:
-        # Realer Fund aus einem echten Lauf: der architect-Agent wird vom Hauptagenten bei
-        # kleineren, gut umrissenen Aufgaben oft gar nicht erst eingeplant (siehe
-        # core/task_manager.py DECOMPOSE_SYSTEM_PROMPT) - selbst wenn die Aufgabe explizit
-        # eine Technologie-Abwägung mit echter Alternative verlangte. Code-schreibende Agenten
-        # (CODE_WRITING_AGENT_IDS) treffen solche Entscheidungen dann selbst, ohne sie je zu
-        # dokumentieren, obwohl ihnen dasselbe record_architecture_decision-Werkzeug wie dem
-        # architect zur Verfügung steht. Zweite Verteidigungslinie zusätzlich zur decompose()-
-        # Regel: der Hinweis geht an genau diese Rollen, nicht an alle (z.B. copywriter/i18n
-        # treffen legitim keine Architektur-Entscheidungen).
+        # Bei kleinen Aufgaben wird architect oft gar nicht eingeplant; Code-schreibende Rollen
+        # treffen Technologie-Entscheidungen dann selbst, ohne sie zu dokumentieren. Zweite
+        # Verteidigungslinie zur decompose()-Regel - nur für diese Rollen, da z.B.
+        # copywriter/i18n legitim keine Architektur-Entscheidungen treffen.
         adr_note = (
             "\n\nTriffst du dabei eine Entscheidung mit einer echten Alternative (z.B. "
             "'PostgreSQL statt In-Memory-Liste', 'REST statt GraphQL'), dokumentiere sie "
@@ -835,16 +668,10 @@ class BaseAgent(ABC):
             "bereits wieder vergessen."
             if self.agent_id in CODE_WRITING_AGENT_IDS else ""
         )
-        # Realer Fund (omnichat-Projekt): der security-Agent identifizierte ein echtes
-        # kritisches Problem, hatte aber in diesem Aufruf keine Schreibrechte (`read_only`)
-        # und fragte per `ask_human_for_clarification` "Wie erhalte ich Schreibrechte...?" -
-        # eine Frage, die nie beantwortet wurde, obwohl core/review_gate.py.
-        # find_critical_findings() genau für diesen Fall bereits eine automatische Fix-
-        # Schleife bereitstellt (siehe agents/orchestrator/verification.py.
-        # _run_governance_fix_loop). Der Agent kannte diesen Mechanismus schlicht nicht und
-        # griff zur einzig ihm bekannten Eskalation. Diese Zeile macht den fehlenden
-        # Schreibzugriff für BEIDE Fälle explizit: nutzbar (schreib es einfach) oder wirklich
-        # nicht nutzbar (melde es normal, kein `ask_human_for_clarification` dafür).
+        # Ohne diesen Hinweis fragen Nur-Lese-Rollen per `ask_human_for_clarification` nach
+        # Schreibrechten - eine Frage, die nie beantwortet wird, obwohl der Governance-Fix-Loop
+        # (agents/orchestrator/verification.py) kritische Funde ohnehin automatisch weiterreicht.
+        # Macht den Schreibzugriff für beide Fälle explizit.
         write_access_note = (
             "\n\n⚠️ WICHTIG: Du hast in dieser Aufgabe KEINEN Schreibzugriff (nur `list_files`/`read_file`/"
             "`search_code`). Ein gefundenes Problem, das Code-Änderungen braucht, behebst du NICHT selbst und "
@@ -858,17 +685,10 @@ class BaseAgent(ABC):
             "du ein konkretes, technisch behebbares Problem im Code, behebe es DIREKT selbst über diese "
             "Werkzeuge - frage NICHT per `ask_human_for_clarification` nach Schreibrechten, die du bereits hast."
         )
-        # Team-Retrospektive (Verbesserungsvorschlag "Fehlende Struktur selbst anlegen als
-        # Standard-Policy"): dieselbe Rückfrage ("Ich sehe kein `app/`-Verzeichnis / das
-        # Projektverzeichnis ist leer - soll ich von Grund auf neu aufsetzen?") trat in
-        # mehreren unabhängigen realen Läufen auf (incidentpilot, omnichat, webhookshield),
-        # jedes Mal NACHDEM der Agent schon eine Aufgabe angenommen hatte. Bisher gab es dafür
-        # nur eine REAKTIVE Korrektur NACH dem Lauf (agents/orchestrator/verification.py.
-        # _run_scope_clarification_autofix) - die kostet jedes Mal eine komplette zusätzliche
-        # Fix-Runde (Tokens + Zeit), bevor überhaupt losgebaut wird. Dieser Hinweis macht
-        # dieselbe Annahme jetzt PROAKTIV zum Standardverhalten, nur für code-schreibende
-        # Rollen (nicht z.B. copywriter/i18n, für die eine leere Struktur keine sinnvolle
-        # Handlungsanweisung ist).
+        # Macht "fehlende Struktur selbst anlegen" proaktiv zum Standardverhalten. Die
+        # reaktive Korrektur nach dem Lauf (_run_scope_clarification_autofix) kostet sonst
+        # jedes Mal eine komplette zusätzliche Fix-Runde. Nur für code-schreibende Rollen,
+        # für die eine leere Struktur eine sinnvolle Handlungsanweisung ist.
         empty_scope_note = (
             "\n\n⚠️ WICHTIG: Findest du nicht die erwartete Projektstruktur vor (z.B. kein `app/`-Verzeichnis, "
             "leeres Projektverzeichnis, referenzierte Dateien fehlen komplett), obwohl der Auftrag von "
@@ -879,17 +699,10 @@ class BaseAgent(ABC):
             "README-Abschnitt)."
             if self.agent_id in CODE_WRITING_AGENT_IDS else ""
         )
-        # Team-Optimierung (Retrospektive: wiederkehrende ruff-Funde BLE001 "Do not catch blind
-        # exception: `Exception`" über mehrere Projekte hinweg) - core/project_status.py.
-        # has_repeated_lint_finding() eröffnet nach zwei Läufen mit identischem Lint-Fund ein
-        # "recurring-lint-"-Ticket für menschliche Prüfung, das NIE automatisch wieder schließt,
-        # solange derselbe Fund bestehen bleibt. `except Exception:` als pauschaler Fallback
-        # (z.B. um einen Hintergrund-Task nicht abstürzen zu lassen) ist oft bewusst gewollt,
-        # nicht versehentlich - der Fund selbst ist dann kein echter Bug, sondern reines
-        # Dauer-Rauschen im Verifikationsprotokoll UND im Backlog. Diese Regel setzt vor dem
-        # Fund an (spezifischere Exception ODER ein dokumentiertes bewusstes noqa-Kommentar),
-        # statt ihn erst hinterher als Ticket zu melden. Nur für Code-schreibende Rollen (nicht
-        # z.B. copywriter/i18n, die keinen fehleranfälligen Code erzeugen).
+        # Setzt vor dem wiederkehrenden ruff-Fund BLE001 an: ein bewusst breiter
+        # `except Exception:` ist oft gewollt, erzeugt aber Dauer-Rauschen im
+        # Verifikationsprotokoll und ein Backlog-Ticket, das nie automatisch schließt. Besser
+        # gleich spezifischer fangen oder das noqa begründen. Nur für Code-schreibende Rollen.
         exception_handling_note = (
             "\n\n⚠️ FEHLERBEHANDLUNG: Fange NIEMALS pauschal `except Exception:` (oder gar "
             "`except:`) ohne Weiterbehandlung ab, wenn eine spezifischere Exception (z.B. "
@@ -957,15 +770,11 @@ deiner finalen Antwort ehrlich zusammen, was bereits erledigt ist und was durch 
 
         if task.context:
             prompt_parts.insert(0, f"**PROJEKT-KONTEXT:**\n{task.context}\n")
-            # Realer Fund (KI-Team-Gesamtanalyse, hooksentinel/certpulse-Läufe 12.09.2026):
-            # ADRs und Schnittstellen-Verträge stecken bereits vollständig im obigen
-            # PROJEKT-KONTEXT (siehe agents/orchestrator/department.py), trotzdem verbrachten
-            # backend/frontend/database ihre ersten 1-2 Werkzeug-Iterationen fast immer damit,
-            # dieselben Dateien nochmal per read_file zu laden - das kostet pro Agent
-            # 20.000-30.000 Tokens, ohne neue Information zu liefern, und drängt das echte
-            # write_file in Richtung der knapp bemessenen letzten Iterationen. Nur für
-            # Code-schreibende Rollen, da nur deren Aufträge typischerweise ADRs/Contracts im
-            # Kontext enthalten.
+            # ADRs und Schnittstellen-Verträge stecken bereits vollständig im PROJEKT-KONTEXT
+            # (siehe agents/orchestrator/department.py); ohne diesen Hinweis laden Agenten
+            # dieselben Dateien in den ersten Iterationen nochmal per read_file und verdrängen
+            # das eigentliche write_file ans knappe Ende. Nur für Code-schreibende Rollen, da
+            # nur deren Aufträge typischerweise ADRs/Contracts im Kontext enthalten.
             if self.agent_id in CODE_WRITING_AGENT_IDS:
                 prompt_parts.append(
                     "**KONTEXT-HINWEIS:** Alle ADRs, Schnittstellen-Verträge (`interface_contract.json`) "

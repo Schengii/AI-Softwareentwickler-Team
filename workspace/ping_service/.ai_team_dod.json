@@ -1,17 +1,15 @@
 {
   "project_slug": "ping_service",
-  "timestamp": "2026-09-16T08:56:59+00:00",
-  "is_done": false,
-  "blocking": [
-    "verification_ok"
-  ],
+  "timestamp": "2026-09-16T09:12:05+00:00",
+  "is_done": true,
+  "blocking": [],
   "criteria": [
     {
       "key": "files_written",
       "label": "Es wurde tatsächlich Code erzeugt",
       "passed": true,
       "required": true,
-      "detail": "8 Datei(en) geschrieben",
+      "detail": "6 Datei(en) geschrieben",
       "applicable": true
     },
     {
@@ -105,9 +103,9 @@
     {
       "key": "verification_ok",
       "label": "Die Gesamt-Verifikation ist ohne Veto",
-      "passed": false,
+      "passed": true,
       "required": true,
-      "detail": "fehlgeschlagene Prüfungen: pre_flight, sast",
+      "detail": "",
       "applicable": true
     },
     {

@@ -1,2 +1,2 @@
-{"timestamp": "2026-09-16T08:50:55.831335+00:00", "event": "project_scaffold_applied", "detail": "Stack fastapi: pytest.ini, requirements.txt, requirements-dev.txt, .env.example"}
-{"timestamp": "2026-09-16T08:55:57.885815+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 1: 1 kritische(r) Befund(e) → backend"}
+{"timestamp": "2026-09-16T09:07:52.091076+00:00", "event": "project_scaffold_applied", "detail": "Stack fastapi: pytest.ini, requirements.txt, requirements-dev.txt, .env.example"}
+{"timestamp": "2026-09-16T09:10:25.955715+00:00", "event": "test_depth_fix_dispatched", "detail": "Testtiefe: 1/2 API-Routen in Tests aufgerufen (50%, Mindestwert 60%), 2 Testfunktionen – ungetestet: GET /health (main.py)"}

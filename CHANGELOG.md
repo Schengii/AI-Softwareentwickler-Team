@@ -69,6 +69,12 @@ neuen `run_closed`-Kennzahlen haben real gegriffen. Dabei gefunden und behoben:
   `packages_from_install_hints()` ergaenzt solche Pakete einmalig deterministisch.
 - Der Benchmark suchte `test_main.py` nur im Wurzelverzeichnis und meldete `tests/test_main.py` als fehlend.
 - Watchdog-Schwelle "Lesen ohne Schreiben" von 2 auf 3 Iterationen angehoben (feuerte in 7 von 12 Aufrufen).
+- `from ping_service.main import app` in `tests/` galt als fehlendes PyPI-Paket; der deterministische Fix
+  trug `ping-service` ins Manifest ein und `pip install -r` scheiterte daran -> `_is_local_module()` erkennt
+  das Projektverzeichnis mit `__init__.py` jetzt als eigenes lokales Paket.
+
+Bestaetigungslauf nach diesen Fixes: Benchmark 1/1 bestanden, `verification_ok=true`, Definition of Done
+ohne Blocker, 341.802 Tokens (vorher 401.669), Cache-Quote 10,4 %, 2 Watchdog-Eingriffe, keine Modell-Abwertung.
 
 Verifikation: `tests/test_team_analysis_quickfixes.py`, `tests/test_team_communication.py`,
 `tests/test_token_efficiency.py`, `tests/test_quality_gates.py`, volle Testsuite (2.253 Tests) und `ruff check`.

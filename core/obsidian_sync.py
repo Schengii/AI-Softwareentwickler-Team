@@ -177,7 +177,6 @@ tags:
 
 ## 🎯 Schnelleinstieg für Claude
 - **Architektur & Agenten-Hierarchie:** [[ARCHITECTURE.md]] (Erklärt die 6 Fachbereiche & 33 Rollen)
-- **Letzter Entwicklungs- & Teststand:** [[ZWISCHENSTAND_KI_TEAM_PROJEKT.md]] (Detaillierter Lauf-Status)
 - **Projekt-Handbuch & CLI-Befehle:** [[README.md]]
 - **Umgebungsvariablen-Vorlage (KEINE echten Secrets):** [[.env.example.md]]
 - **Changelog & Historie realer Bugfixes:** [[CHANGELOG.md]]

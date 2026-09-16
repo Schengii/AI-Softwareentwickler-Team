@@ -105,24 +105,6 @@ class CodeSandbox:
         return None
 
     @staticmethod
-    def ensure_project_venv(project_dir: Path | str, timeout_seconds: float = 60.0) -> tuple[bool, str]:
-        """Erstellt eine isolierte virtuelle Umgebung im Projektverzeichnis, falls nicht vorhanden."""
-        pdir = Path(project_dir).resolve()
-        target_venv = pdir / ".venv"
-        if target_venv.exists():
-            return True, f"Virtuelle Umgebung existiert bereits: {target_venv}"
-
-        res = CodeSandbox.run_command(
-            [sys.executable, "-m", "venv", str(target_venv)],
-            cwd=pdir,
-            timeout_seconds=timeout_seconds,
-            restrict_env=True,
-        )
-        if res.exit_code == 0:
-            return True, f"Virtuelle Umgebung erfolgreich erstellt: {target_venv}"
-        return False, f"Fehler beim Erstellen der venv: {res.stderr or res.stdout}"
-
-    @staticmethod
     def run_command(
         command: list[str],
         cwd: Path | str | None = None,

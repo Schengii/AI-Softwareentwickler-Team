@@ -350,11 +350,6 @@ def contract_status(project_dir: str | Path) -> tuple[list[str], list[str]]:
     return implemented, planned
 
 
-def planned_modules(project_dir: str | Path) -> set[str]:
-    """Modulpfade aus dem Vertrag, die noch nicht (vollständig) existieren."""
-    return {entry.split(" (", 1)[0] for entry in contract_status(project_dir)[1]}
-
-
 # ── Sicht für den Agenten ─────────────────────────────────────────────────────────────────────
 
 def format_for_agent(project_dir: str | Path, agent_id: str, max_chars: int = DEFAULT_PROMPT_CHARS) -> str:

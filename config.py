@@ -1047,7 +1047,7 @@ OBSIDIAN_SYNC_FILES: list[str] = [
         # Projekt nicht kontrolliert wird. ".env.example" enthält dieselbe Struktur/
         # Dokumentation für das Gedächtnis, aber nie echte Secrets (nur leere Platzhalter).
         "OBSIDIAN_SYNC_FILES",
-        ".env.example,README.md,ZWISCHENSTAND_KI_TEAM_PROJEKT.md,.gitignore,ARCHITECTURE.md,CHANGELOG.md,CLAUDE.md,.claudeignore",
+        ".env.example,README.md,.gitignore,ARCHITECTURE.md,CHANGELOG.md,CLAUDE.md,.claudeignore",
     ).split(",")
     if f.strip()
 ]

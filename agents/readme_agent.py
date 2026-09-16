@@ -5,10 +5,7 @@ Spezialisierter Agent, der die README.md des Projekts aktuell hält.
 Wird vom Orchestrator aufgerufen, wenn Änderungen am Projekt vorgenommen wurden.
 """
 
-import os
-
 from agents.base_agent import BaseAgent
-from config import BASE_DIR
 
 
 class ReadmeAgent(BaseAgent):
@@ -47,21 +44,3 @@ Ausgabe-Format:
 - Antworte auf Deutsch (README-Inhalte können auf Englisch sein)
 
 Du bist sehr präzise und vergisst nie, alle betroffenen Abschnitte zu aktualisieren."""
-
-    def get_current_readme(self) -> str:
-        """Liest die aktuelle README.md des Projekts."""
-        readme_path = os.path.join(BASE_DIR, "README.md")
-        if os.path.exists(readme_path):
-            with open(readme_path, encoding="utf-8") as f:
-                return f.read()
-        return ""
-
-    def write_readme(self, content: str) -> bool:
-        """Schreibt den neuen README-Inhalt."""
-        readme_path = os.path.join(BASE_DIR, "README.md")
-        try:
-            with open(readme_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            return True
-        except Exception:
-            return False

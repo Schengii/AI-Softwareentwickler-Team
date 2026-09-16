@@ -19,10 +19,11 @@ from unittest.mock import patch
 
 from agents.orchestrator import Orchestrator
 from core import team_memory
-from core.llm_factory import LLMResponse, ToolCall
+from core.llm_factory import LLMResponse
 from core.message_bus import AgentTask
 from core.verifier import VerificationReport
 from core.workspace import WorkspaceManager
+from tests.helpers import ScriptedWriteFileLLM as _ScriptedLLM
 
 CRITICAL_CODE_REVIEWER_REPORT = """## Code-Review Report
 
@@ -38,26 +39,6 @@ Hartcodiertes Secret in `backend/config.py`: der API-Key steht im Klartext im Qu
 """
 
 
-class _ScriptedLLM:
-    def __init__(self, text: str = "Fertig.", written_file: str | None = None):
-        self._text = text
-        self._written_file = written_file
-        self._call_count = 0
-        self.model_name = "fake-model"
-
-    async def generate_with_tools(self, messages, system_prompt, tools, _allow_self_fallback=True):
-        self._call_count += 1
-        tool_calls = []
-        if self._written_file and self._call_count == 1:
-            tool_calls = [ToolCall(id="call_1", name="write_file",
-                                    arguments={"path": self._written_file, "content": "# fix\n"})]
-        text = "" if tool_calls else self._text
-        return LLMResponse(text=text, model_name=self.model_name,
-                            prompt_tokens=10, completion_tokens=5, total_tokens=15, tool_calls=tool_calls)
-
-    async def generate_with_usage(self, prompt, system_prompt=None):
-        return LLMResponse(text=self._text, model_name=self.model_name,
-                            prompt_tokens=10, completion_tokens=5, total_tokens=15)
 
 
 class _FakeToolCapableLLM:

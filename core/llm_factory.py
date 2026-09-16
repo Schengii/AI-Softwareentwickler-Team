@@ -1824,26 +1824,6 @@ class LLMFactory:
         return GeminiClient(model_name=model_name)
 
     @staticmethod
-    def create_groq(model_name: str = "openai/gpt-oss-120b") -> GroqClient:
-        return GroqClient(model_name=model_name)
-
-    @staticmethod
-    def create_deepseek(model_name: str = "deepseek-chat") -> DeepSeekClient:
-        return DeepSeekClient(model_name=model_name)
-
-    @staticmethod
-    def create_openrouter(model_name: str = "openrouter/auto") -> OpenRouterClient:
-        return OpenRouterClient(model_name=model_name)
-
-    @staticmethod
-    def create_huggingface(model_name: str = "huggingface:auto") -> HuggingFaceClient:
-        return HuggingFaceClient(model_name=model_name)
-
-    @staticmethod
-    def create_claude(model_name: str = "claude-sonnet-5") -> ClaudeClient:
-        return ClaudeClient(model_name=model_name)
-
-    @staticmethod
     def create_for_model(model_name: str):
         """
         Zentrale Zuordnung Modellname -> passender Provider-Client.

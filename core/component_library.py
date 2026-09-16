@@ -41,7 +41,6 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -322,19 +321,3 @@ def get_snippet_content(entry_id: str, max_chars: int = 4000) -> str:
         return Path(entry["snippet_file"]).read_text(encoding="utf-8", errors="ignore")[:max_chars]
     except (OSError, KeyError):
         return ""
-
-
-@dataclass
-class LibraryStats:
-    total_entries: int
-    by_category: dict[str, int]
-
-
-def get_stats() -> LibraryStats:
-    """Für Status-/Dashboard-Anzeigen (wie viele Bausteine sind bereits gesammelt)."""
-    manifest = _load_manifest()
-    by_category: dict[str, int] = {}
-    for entry in manifest:
-        cat = entry.get("category", "?")
-        by_category[cat] = by_category.get(cat, 0) + 1
-    return LibraryStats(total_entries=len(manifest), by_category=by_category)

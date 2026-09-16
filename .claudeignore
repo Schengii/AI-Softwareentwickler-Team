@@ -2,10 +2,6 @@
 # Verhindert, dass riesige Log-Dateien, Caches oder generierte Subprojekte
 # das Context-Window von Claude Code unnötig füllen.
 
-# 1. Übergroße Dokumentations- & Log-Dateien (1.8 MB+, 46.000+ Zeilen)
-# Für historischen Kontext stattdessen CHANGELOG.md oder Obsidian-Gedächtnis nutzen!
-ZWISCHENSTAND_KI_TEAM_PROJEKT.md
-
 # 2. Generierte Zielprojekte im Workspace (22+ separate Codebases)
 # Nur bei expliziter Aufforderung gezielt öffnen, nicht bei globalen Repo-Suchen!
 workspace/

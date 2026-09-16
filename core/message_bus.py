@@ -1,34 +1,18 @@
 """
-core/message_bus.py – Interner Nachrichtenbus für die Agentenkommunikation
+core/message_bus.py – Gemeinsame Datenstrukturen der Agentenkommunikation
 
-Ermöglicht asynchrone, entkoppelte Kommunikation zwischen Agenten und Metriken-Tracking.
+Definiert die beiden Datenklassen, über die Orchestrator und Unteragenten Aufgaben und
+Ergebnisse austauschen: `AgentTask` (Auftrag hinein) und `AgentResult` (Ergebnis inklusive
+Token-, Modell- und Fehlermetriken heraus).
+
+Hinweis zum Namen: Eine echte Publish/Subscribe-Klasse (`MessageBus` mit asyncio-Queues)
+existierte hier ursprünglich, wurde aber von keinem Modul je genutzt - die Kommunikation läuft
+direkt über `agents/orchestrator/dispatch.py` und, für den Austausch zwischen Agenten, über
+`core/team_board.py`. Sie wurde deshalb entfernt; der Modulname bleibt vorerst bestehen, weil
+über 60 Module `from core.message_bus import AgentTask, AgentResult` importieren.
 """
 
-import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime
-from enum import Enum
-from typing import Any
-
-
-class MessageType(Enum):
-    TASK_ASSIGNED    = "task_assigned"      # Orchestrator → Unteragent
-    TASK_COMPLETED   = "task_completed"     # Unteragent → Orchestrator
-    TASK_FAILED      = "task_failed"        # Unteragent → Orchestrator (Fehler)
-    STATUS_UPDATE    = "status_update"      # Statusmeldung
-    LOG              = "log"                # Protokoll-Eintrag
-
-
-@dataclass
-class Message:
-    """Eine Nachricht im System."""
-    type: MessageType
-    sender: str                          # Agent-ID des Absenders
-    recipient: str                       # Agent-ID des Empfängers
-    content: Any                         # Nachrichteninhalt
-    task_id: str | None = None        # Zugehörige Task-ID
-    timestamp: datetime = field(default_factory=datetime.now)
-    metadata: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -67,7 +51,7 @@ class AgentResult:
     # Annahme. Das `ask_human_for_clarification`-Werkzeug (core/agent_toolbox.py) füllt diese
     # beiden Felder, wenn ein Agent MITTEN in der Aufgabe auf eine echte, für die Aufgabe
     # entscheidende Unklarheit trifft - success bleibt dabei True (der Agent liefert trotzdem
-    # eine ehrliche Teil-Zusammenfassung), aber agents/orchestrator.py behandelt einen solchen
+    # eine ehrliche Teil-Zusammenfassung), aber agents/orchestrator/ behandelt einen solchen
     # Lauf NICHT als abgeschlossen "Fertig!".
     needs_human_input: bool = False
     clarification_questions: list[str] = field(default_factory=list)
@@ -82,42 +66,3 @@ class AgentResult:
     # Eingriffe des Agenten-Watchdogs (core/agent_watchdog.py) während dieser Aufgabe.
     watchdog_events: list[str] = field(default_factory=list)
 
-
-class MessageBus:
-    """
-    Zentraler Nachrichtenbus für das Agentensystem.
-    Verwaltet die Kommunikation zwischen Orchestrator und Unteragenten.
-    """
-
-    def __init__(self):
-        self._log: list[Message] = []
-        self._listeners: list[asyncio.Queue] = []
-
-    def send(self, message: Message) -> None:
-        """Sendet eine Nachricht und benachrichtigt alle Listener."""
-        self._log.append(message)
-        for queue in self._listeners:
-            queue.put_nowait(message)
-
-    def subscribe(self) -> asyncio.Queue:
-        """Abonniert den Nachrichtenbus und gibt eine Queue zurück."""
-        queue: asyncio.Queue = asyncio.Queue()
-        self._listeners.append(queue)
-        return queue
-
-    def unsubscribe(self, queue: asyncio.Queue) -> None:
-        """Kündigt ein Abonnement."""
-        if queue in self._listeners:
-            self._listeners.remove(queue)
-
-    def get_log(self) -> list[Message]:
-        """Gibt alle Nachrichten zurück."""
-        return list(self._log)
-
-    def clear_log(self) -> None:
-        """Löscht das Nachrichtenprotokoll."""
-        self._log.clear()
-
-
-# Globale Singleton-Instanz
-message_bus = MessageBus()

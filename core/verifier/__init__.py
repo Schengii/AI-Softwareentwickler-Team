@@ -148,7 +148,3 @@ class ProjectVerifier(
 ):
     """Installiert Abhängigkeiten isoliert und führt die reale Testsuite eines Projekts aus."""
 
-    def check_api_contracts(self) -> ContractReport:
-        """Gleicht Backend-Endpunkte statisch mit Frontend-API-Aufrufen ab."""
-        return verify_api_contracts(self.project_dir)
-

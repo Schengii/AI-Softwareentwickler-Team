@@ -169,12 +169,6 @@ def record_downgrade(requested: str, actual: str, reason: str = "") -> None:
         )
 
 
-def drain_downgrade_events() -> list[DowngradeEvent]:
-    events = list(_downgrade_events)
-    _downgrade_events.clear()
-    return events
-
-
 def describe_degraded_results(results: Iterable[Any]) -> list[str]:
     """Report-Zeilen für erfolgreiche Aufgaben kritischer Rollen, die auf einem schwächeren als
     dem konfigurierten Modell liefen (erwartet Objekte mit agent_id/model_used/success)."""

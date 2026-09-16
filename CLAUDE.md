@@ -50,7 +50,7 @@ AI-Softwareentwickler-Team/
 ## 🪙 Token-Optimierung & Best Practices für Claude Code
 
 1. **Kein Einlesen von Riesendateien:**
-   - Lies **niemals** `ZWISCHENSTAND_KI_TEAM_PROJEKT.md` komplett ein (1.8 MB / 46.000 Zeilen). Nutze stattdessen `CHANGELOG.md`, `git log` oder das Obsidian-Gedächtnis.
+   - `CHANGELOG.md` (255 KB / 3.500 Zeilen) und `README.md` (78 KB) nie komplett einlesen – gezielt mit `grep`/`Grep` auf Überschriften oder Stichworte suchen. Für historischen Kontext zusätzlich `git log` oder das Obsidian-Gedächtnis nutzen.
 2. **`workspace/` schonen:**
    - Suche bei allgemeinen Code-Fragen nicht in `workspace/`, da dort über 20 generierte Projekte liegen.
 3. **Präzise Edits:**

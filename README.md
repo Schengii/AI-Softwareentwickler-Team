@@ -130,7 +130,7 @@ damit dieses README als aktuelle Funktionsübersicht schlank bleibt.
 ## 🔄 Kommunikations- & Delegations-Workflow
 
 Was die Grafik oben zeigt, läuft technisch über zwei einfache Datenstrukturen
-(`core/message_bus.py`) und einen festen 5-Phasen-Ablauf (`agents/orchestrator.py`):
+(`core/message_bus.py`) und einen festen 5-Phasen-Ablauf (`agents/orchestrator/`):
 
 1. **Zerlegung:** `TaskManager.decompose()` lässt den Hauptagenten die Nutzeranfrage in eine
    Liste von `AgentTask`-Objekten (Agent-ID + präzise Teilaufgabe) aufteilen – nur die
@@ -166,7 +166,7 @@ Was die Grafik oben zeigt, läuft technisch über zwei einfache Datenstrukturen
    Punkt 3). Eine `file_owners`-Map merkt sich dabei, welcher Agent welche Datei geschrieben
    hat – die Grundlage für die gezielte Fehlerbehebung in der Verifikationsphase (siehe unten).
 7. **Governance-Fix-Loop:** `code_reviewer`/`security`/`compliance` kategorisieren Befunde in
-   ihren Reports selbst nach Schweregrad ("Kritisch") – `agents/orchestrator.py._run_governance_fix_loop()`
+   ihren Reports selbst nach Schweregrad ("Kritisch") – `agents/orchestrator/governance.py._run_governance_fix_loop()`
    (`core/review_gate.py`) erkennt diese Befunde per Text-Heuristik und spielt sie GEZIELT an
    den laut `file_owners` zuständigen Agenten zur Korrektur zurück, BEVOR die echte
    Testverifikation läuft – ein "Kritisch" im Review ist bei einem echten Team ein Blocker,
@@ -605,7 +605,7 @@ Zwei unabhängige Prüfebenen, die sich ergänzen:
 
 1. **Statische Validierung** (`core/code_sandbox.py`): Prüft Python-Code per `ast.parse()`
    auf Syntaxfehler, JSON per `json.loads()`, YAML auf grobe Formatierungsfehler – schnell, ohne Ausführung.
-2. **Echte dynamische Multi-Sprachen-Verifikation** (`core/verifier.py`, `ProjectVerifier`):
+2. **Echte dynamische Multi-Sprachen-Verifikation** (`core/verifier/`, `ProjectVerifier`):
    - **Python:** Isolierte venv, echte Testausführung (`pytest` / `unittest`), Testabdeckungsschwelle (`pytest-cov`), Linting (`ruff`), Security-Audit (`pip-audit`), Runtime-Smoke-Test.
    - **Node / TypeScript:** Echte Installation (`npm ci`/`npm install`), Testläufe (`npm test`), Linting (`eslint`, `tsc`), Security-Audit (`npm audit`).
    - **Rust:** `Cargo.toml`-Erkennung, Build-Check (`cargo check`), echte Tests (`cargo test`), Linting (`cargo clippy`), Security-Audit (`cargo audit`).
@@ -633,7 +633,7 @@ bekommt so keine echten API-Keys zu sehen.
 
 `core/quota_estimator.py` zeigt den Tokenverbrauch live an – vorher aber nur als Anzeige,
 ohne dass ein außer Kontrolle geratener Lauf (z. B. durch mehrere Verifikations-Fixversuche
-mit kostenpflichtigen Heavy-Modellen wie Claude) je automatisch gestoppt wurde. `agents/orchestrator.py`
+mit kostenpflichtigen Heavy-Modellen wie Claude) je automatisch gestoppt wurde. `agents/orchestrator/`
 bricht Läufe jetzt tatsächlich ab, sobald das per `.env` konfigurierte `MAX_RUN_TOKENS`
 (Standard: `0` = deaktiviert, bestehende Läufe bleiben unangetastet) erreicht wird:
 
@@ -837,7 +837,7 @@ in ihrer `.ai_team_status.json`, wurden aber seit dem letzten Lauf nie erneut ge
 Zustand noch aktuell ist. `core/workspace_audit.py` führt `ProjectVerifier.run_tests()` erneut
 gegen JEDES Workspace-Projekt aus (unabhängig von aktiver Entwicklung) und öffnet bei einem
 echten Fehlschlag ein Backlog-Ticket – dasselbe On-Call-Prinzip wie `--check-dependencies`, nur
-für Verifikations-Drift statt neuer CVEs. `core/verifier.py` erkennt dabei zusätzlich zwei
+für Verifikations-Drift statt neuer CVEs. `core/verifier/` erkennt dabei zusätzlich zwei
 konkret beobachtete Muster als echten Fehlschlag statt als harmloses "keine Tests gefunden":
 ein mehrteiliges Backend-Projekt mit `requirements.txt`/`pyproject.toml`, aber ohne jeden
 Einstiegspunkt (`main.py`/`app.py`/…), sowie ein `tests/`-Ordner mit `conftest.py`, aber ohne
@@ -856,7 +856,7 @@ Schritt ist statt eines automatischen Laufs.
 Läuft ein Fachbereich mit 3+ Mitgliedern parallel (`asyncio.gather`), sehen sich die Agenten
 nie gegenseitig (jeder bekommt nur den Dateibaum zu seinem eigenen Startzeitpunkt) –
 schreiben zwei von ihnen dieselbe Datei (z.B. `requirements.txt`), überschrieb das bisher
-unbemerkt die zuerst geschriebene Version. `agents/orchestrator.py._detect_file_write_collisions()`
+unbemerkt die zuerst geschriebene Version. `agents/orchestrator/integration.py._detect_file_write_collisions()`
 erkennt das jetzt nach jedem parallelen Ausführungs-Batch und macht es per Live-Warnung sowie
 einem eigenen `### ⚠️ Datei-Kollisionen`-Abschnitt im Abschlussbericht sichtbar, statt es
 stillschweigend zu verwerfen – automatisch entscheidbar, welche Version richtig ist, ist es
@@ -930,7 +930,7 @@ bleiben bewusst ein manueller, gezielter Schritt und sind nicht Teil der CI.
 gemockte Suite prüft nur die Logik-Zweige, die ein Mock auch tatsächlich durchläuft – ein
 realer Fund beim Code-Review zeigte genau die Lücke: ein `NameError` in
 `core/browser_verifier.py` (fehlendes `import sys`) und ein stiller, nicht gemeldeter
-Runtime-Smoke-Test-Fehlschlag in `agents/orchestrator.py` blieben unbemerkt, weil kein Mock
+Runtime-Smoke-Test-Fehlschlag in `agents/orchestrator/` blieben unbemerkt, weil kein Mock
 je den echten, dynamischen Codepfad ausgeführt hat. Ein einmaliger, gezielter Lauf mit
 echten Provider-Keys fängt genau solche Lücken auf, die reine Mocks strukturell nicht
 sehen können:

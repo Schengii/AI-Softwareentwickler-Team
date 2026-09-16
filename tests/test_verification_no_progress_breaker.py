@@ -16,10 +16,11 @@ import unittest
 from unittest.mock import patch
 
 from agents.orchestrator import Orchestrator
-from core.llm_factory import LLMResponse, ToolCall
+from core.llm_factory import LLMResponse
 from core.message_bus import AgentTask
 from core.verifier import TestFailure, VerificationReport
 from core.workspace import WorkspaceManager
+from tests.helpers import ScriptedWriteFileLLM as _ScriptedLLM
 
 _FAILURE = TestFailure(test_id="tests/test_app.py::test_x", message="AssertionError: boom", files=["backend/app.py"])
 
@@ -54,31 +55,6 @@ class _FakeToolCapableLLM:
                             prompt_tokens=10, completion_tokens=5, total_tokens=15)
 
 
-class _ScriptedLLM:
-    """Schreibt beim ERSTEN generate_with_tools()-Aufruf `written_file` per write_file, liefert
-    danach `text` als finale Antwort - macht file_owners für `written_file` bekannt (nötig,
-    damit die Test-Fix-Schleife den Traceback-Fund überhaupt einem Agenten zuordnen kann;
-    dieselbe Konvention wie in test_governance_fix_loop.py/test_preimport_check.py)."""
-
-    def __init__(self, text: str = "Fertig.", written_file: str | None = None):
-        self._text = text
-        self._written_file = written_file
-        self._call_count = 0
-        self.model_name = "fake-model"
-
-    async def generate_with_tools(self, messages, system_prompt, tools, _allow_self_fallback=True):
-        self._call_count += 1
-        tool_calls = []
-        if self._written_file and self._call_count == 1:
-            tool_calls = [ToolCall(id="call_1", name="write_file",
-                                    arguments={"path": self._written_file, "content": "# fix\n"})]
-        text = "" if tool_calls else self._text
-        return LLMResponse(text=text, model_name=self.model_name,
-                            prompt_tokens=10, completion_tokens=5, total_tokens=15, tool_calls=tool_calls)
-
-    async def generate_with_usage(self, prompt, system_prompt=None):
-        return LLMResponse(text=self._text, model_name=self.model_name,
-                            prompt_tokens=10, completion_tokens=5, total_tokens=15)
 
 
 class TestVerificationNoProgressBreaker(unittest.TestCase):

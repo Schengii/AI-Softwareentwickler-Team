@@ -734,13 +734,6 @@ Du bist präzise und folgst immer den Conventional Commits Standards."""
             return False, str(e)
         return result.returncode == 0, (result.stdout + result.stderr).strip()
 
-    def add_remote(self, name: str, url: str) -> tuple[bool, str]:
-        """Fügt ein Remote-Repository hinzu."""
-        result = run_git(["remote", "add", name, url], cwd=BASE_DIR)
-        success = result.returncode == 0
-        output = result.stdout + result.stderr
-        return success, output.strip()
-
     def _run_git(self, *args: str) -> str:
         """Führt ein Git-Kommando aus und gibt die Ausgabe zurück (nicht-interaktiv, mit Timeout)."""
         result = run_git(args, cwd=BASE_DIR)

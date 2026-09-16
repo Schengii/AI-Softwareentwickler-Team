@@ -104,7 +104,7 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
    - **Design & Content, Qualität & Security**: optionale Fachbereiche werden übersprungen, wenn ihr Budget-Anteil (`PHASE_TOKEN_SHARES`) die Kernphasen gefährden würde. Teamleiter koordinieren nur Fachbereiche mit mindestens `DEPARTMENT_LEAD_MIN_MEMBERS` Mitgliedern.
    - **Echte Verifikation** (siehe 4.) – läuft auch nach einem Budget-Abbruch der Generierung (0 LLM-Tokens, ohne Fix-Agenten).
    - **Review & Governance NACH der Verifikation** (`ENABLE_REVIEW_AFTER_VERIFICATION`): Reviewer sehen den echten Teststatus; Review-Fixes werden durch einen **Regressionstest** bestätigt.
-4. **Dynamische Verifikations-Schleife (`core/verifier.py`)**:
+4. **Dynamische Verifikations-Schleife (`core/verifier/`)**:
    - **Multi-Sprachen-Unterstützung**: Echte isolierte Testumgebungen für Python (`pytest`/`unittest`), Node/TS (`npm test`), Rust (`cargo test`) und Go (`go test`).
    - **Testabdeckungs-Messung**: Automatische Prüfung der Codeabdeckung (`pytest-cov`) gegen konfigurierte Schwellen (`MIN_TEST_COVERAGE`).
    - **Testtiefe (`core/test_depth.py`)**: Anteil der Backend-Routen, die in Tests aufgerufen werden (`MIN_ROUTE_TEST_RATIO`). Eine grüne, aber flache Suite bekommt eine gezielte tester-Runde; bleibt sie flach, blockiert das DoD-Kriterium `test_depth`.

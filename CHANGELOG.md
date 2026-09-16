@@ -7,6 +7,75 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔴 Team-Audit 2026-09-16: `browser_verifier` startete Backends im falschen Python
+
+Auslöser: gezielte Durchsicht des Frameworks nach den eigenen `root_cause_analysis`-Lektionen in
+`memory/team_lessons.jsonl` (nicht aus einer neuen Einzelfehler-Meldung, sondern aus zwei
+bereits vom Team selbst diagnostizierten, aber nie behobenen Befunden derselben Fehlerklasse:
+Läufe `syncwave` am 15.09. und `logstream_sentinel` am 16.09., beide mit demselben Symptom
+`Error during WebSocket handshake: 'Connection' header is missing`).
+
+**Root Cause:** `core/browser_verifier.py._start_backend()` startete den erkannten
+FastAPI-Entrypoint per `subprocess.Popen([sys.executable, "-m", "uvicorn", ...])` – also im
+globalen Python-Interpreter des FRAMEWORKS, nicht in der isolierten Projekt-`.ai_team_venv`, in
+die `core/verifier/environment.py` zuvor per `pip install -r requirements.txt` die tatsächlichen
+Laufzeit-Abhängigkeiten des Projekts installiert hat (`aiosqlite`, `pydantic-settings`,
+projekteigene Pakete, …). Sind diese im globalen Framework-Interpreter nicht vorhanden, crasht
+der uvicorn-Subprozess sofort beim Modul-Import. `_start_backend()` erkennt das nur als
+generischen Timeout (`proc.poll() is not None`) und liefert `None, None` zurück – der Aufrufer
+fällt daraufhin **unbemerkt** auf reines statisches Serving zurück (`http.server`).
+
+Ein reiner statischer Dateiserver kann aber grundsätzlich keinen WebSocket-Upgrade-Handshake
+durchführen. Ruft die Frontend-JS also `new WebSocket(...)` auf einen Pfad wie `/ws/live` auf,
+antwortet der statische Server mit einer normalen HTTP-Antwort ohne `Connection: Upgrade` –
+exakt die beobachtete Fehlermeldung. Frontend- UND Backend-Code waren in beiden Läufen korrekt;
+der Fehler lag ausschließlich im Verifier selbst. Der Frontend-Agent korrigierte in mehreren
+Runden funktionierenden Code, ohne die Ursache beheben zu können, weil sie außerhalb seiner
+Reichweite lag.
+
+**Fix:** Neue Methode `BrowserVerifier._backend_python()` verwendet die Projekt-`.ai_team_venv`
+(`Scripts/python.exe` bzw. `bin/python`), sofern sie existiert, und fällt nur ohne sie auf
+`sys.executable` zurück. `_start_backend()` startet uvicorn jetzt darüber – identisch zu dem
+Interpreter, mit dem bereits Tests und Dependency-Installation laufen.
+Regressionstests: `tests/test_browser_verifier.py::TestBackendUsesProjectVenv` (3 Fälle: Venv
+wird bevorzugt, Fallback ohne Venv, tatsächlicher `subprocess.Popen`-Aufruf nutzt den
+Venv-Interpreter).
+
+---
+
+## 🔴 Lauf-Analyse 2026-09-16 (`logstream_sentinel`): Die Stolperfallen-Warnung kam nie an
+
+Auswertung des letzten Laufs (`logs/runs/20260916_173734_logstream_sentinel.jsonl`,
+`logs/verification/20260916_173734_logstream_sentinel.log`). Auftrag: FastAPI-Dashboard mit
+WebSocket-Live-Streaming. Ergebnis: `verification_ok: false`, Veto durch `browser_ui` – exakt
+mit der Fehlermeldung, die `core/known_pitfalls.py` als „websocket-native-client"-Regel bereits
+seit einem früheren Lauf kennt: *„Socket.IO-Client gegen FastAPI-WebSocket: 'Connection' header
+is missing"*. Der Frontend-Agent machte also einen bereits dokumentierten Fehler ein zweites Mal.
+
+**Ursache 1 – `core/project_scaffold.py` gab nur das grobe Stack-Label weiter:**
+`ScaffoldReport.format_for_agents()` rief `format_pitfalls_for_agents(self.stack)` auf, wobei
+`self.stack` einer von drei groben Werten ist (`"fastapi"`, `"python"`, `"unknown"`). Der
+eigentliche Auftragstext ("WebSocket-Streaming", "Dashboard") ging dabei verloren. Die
+"frontend"-Stichwortgruppe in `format_pitfalls_for_agents` (`dashboard`, `frontend`, `ui`,
+`websocket`, `html`) konnte dadurch nie aktiviert werden – sie sucht in genau diesem Label.
+
+**Ursache 2 – `limit=8` schnitt die Regel trotzdem ab:** Weil praktisch jede Regel im Katalog
+auch auf den generischen Stack `"python"` passt, matchten bei einem FastAPI-Auftrag 12 von 13
+Regeln gleichzeitig. Die Katalog-Reihenfolge entschied, welche der ersten 8 gezeigt wurden – die
+spezifische, hier tatsächlich einschlägige `websocket-native-client`-Regel stand an Position 12
+und fiel unabhängig von Ursache 1 aus der Liste.
+
+**Fix:** `apply_scaffold()` reicht den vollen `user_request`-Text jetzt über ein neues
+`ScaffoldReport.user_request`-Feld an `format_for_agents()` weiter, das ihn zusammen mit dem
+Stack-Label an `format_pitfalls_for_agents()` gibt. Zusätzlich sortiert `format_pitfalls_for_agents()`
+die Treffer jetzt so, dass Regeln mit einem spezifischen aktiven Stack (nicht nur `"python"`/
+`"all"`) vor den generischen Python-Regeln stehen, bevor `limit` greift – eine stabile Sortierung
+erhält dabei die bisherige Reihenfolge innerhalb jeder Gruppe.
+Regressionstests: `tests/test_p2_self_optimization.py::test_pitfalls_prompt_surfaces_websocket_hint_despite_limit`,
+`::test_scaffold_report_passes_full_task_text_to_pitfalls`.
+
+---
+
 ## 🟠 Historien-Analyse 2026-09-16: Der Selbstoptimierer verglich gegen das falsche Modell
 
 Auswertung von `memory/run_history.json` (134 Läufe) und der `.ai_team_dod.json` der letzten 20

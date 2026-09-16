@@ -27,6 +27,7 @@ from core.known_pitfalls import (
 )
 from core.manifest_guard import TOXIC_DEPENDENCY_RULES as GUARD_RULES
 from core.manifest_guard import sanitize_requirements
+from core.project_scaffold import ScaffoldReport
 from core.run_logger import RunLogger
 from core.run_trace import (
     MAX_RUN_ARTIFACTS_KEPT,
@@ -126,6 +127,25 @@ class TestKnownPitfallsRegistry:
         fastapi = format_pitfalls_for_agents("FastAPI Backend mit SQLAlchemy")
         assert "PyJWT" in fastapi and "greenlet" in fastapi
         assert "write_file" in format_pitfalls_for_agents("")
+
+    def test_pitfalls_prompt_surfaces_websocket_hint_despite_limit(self):
+        # Regression (Lauf logstream_sentinel, 2026-09-16): Bei einem FastAPI-Auftrag
+        # matchen fast alle Python-Regeln auf "python"/"all", sodass die spezifische
+        # "websocket-native-client"-Regel bei limit=8 aus der Liste fiel. Der Frontend-
+        # Agent nutzte daraufhin erneut einen Socket.IO-Client gegen die native
+        # FastAPI-WebSocket-Route ('Connection'-Header fehlt) und der Browser-UI-Check
+        # scheiterte - genau das Symptom, vor dem die Regel warnt.
+        prompt = format_pitfalls_for_agents(
+            "fastapi FastAPI-Dashboard mit WebSocket-Streaming und Live-Ansicht"
+        )
+        assert "Connection" in prompt and "header is missing" in prompt
+
+    def test_scaffold_report_passes_full_task_text_to_pitfalls(self):
+        # Nur das grobe Stack-Label ("fastapi") an format_pitfalls_for_agents zu geben
+        # aktiviert die "frontend"-Stichworte (dashboard/websocket/ui) nie, weil diese
+        # Wörter im Label selbst nicht vorkommen - der Auftragstext muss mitgegeben werden.
+        report = ScaffoldReport(stack="fastapi", user_request="WebSocket-Dashboard für Live-Logs")
+        assert "websocket" in report.format_for_agents().lower()
 
     def test_transitive_provides(self):
         assert {"starlette", "pydantic"} <= provided_import_names({"fastapi"})

@@ -59,6 +59,7 @@ class ScaffoldReport:
     created: list[str] = field(default_factory=list)
     skipped_existing: list[str] = field(default_factory=list)
     error: str = ""
+    user_request: str = ""
 
     def format_for_agents(self) -> str:
         """Kontextabschnitt für die Entwicklungs-Agenten (Konventionen + angelegte Dateien)."""
@@ -76,7 +77,10 @@ class ScaffoldReport:
             "- `pytest.ini` existiert (pythonpath = ., asyncio_mode = auto) - keine zweite Pytest-Konfiguration anlegen.",
             "- Module exakt unter den Pfaden aus `interface_contract.json` anlegen; Re-Exporte in `__init__.py` erst, wenn das Zielmodul existiert.",
         ]
-        pitfalls = format_pitfalls_for_agents(self.stack)
+        # Volltext des Auftrags mitgeben, nicht nur das grobe Stack-Label ("fastapi"/
+        # "python") - sonst aktiviert z. B. ein WebSocket-Dashboard-Auftrag nie die
+        # "frontend"-Stolperfallen, weil das Wort "websocket" nirgends im Stack-Label steht.
+        pitfalls = format_pitfalls_for_agents(f"{self.stack} {self.user_request}")
         if pitfalls:
             lines += ["", pitfalls]
         return "\n".join(lines)
@@ -249,7 +253,7 @@ def apply_scaffold(project_dir: str | Path, user_request: str = "") -> ScaffoldR
     if not is_safe_project_dir(base):
         return ScaffoldReport(stack=STACK_UNKNOWN, error="Framework-Verzeichnis ist kein Zielprojekt - Gerüst übersprungen.")
     stack = detect_stack(base, user_request)
-    report = ScaffoldReport(stack=stack)
+    report = ScaffoldReport(stack=stack, user_request=user_request)
     if stack == STACK_UNKNOWN:
         return report
     try:

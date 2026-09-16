@@ -1,0 +1,33 @@
+[
+  {
+    "timestamp": "2026-09-16T17:59:20+00:00",
+    "task_summary": "CLI-Dashboard-Modus und WebSocket-Streaming im LogStream Sentinel finalisiert",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "cancelled": true,
+    "files_written_count": 0,
+    "lint_signature": [
+      "ruff:app/core/security.py:TRY004"
+    ],
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 🚫 Übersprungen: Lauf wurde bereits während der Fachbereichs-Phasen oder der Governance-Fix-Schleife manuell abgebrochen.",
+    "detail_file": ".ai_team_runs/20260916_175920_verification.md",
+    "failed_checks": []
+  },
+  {
+    "timestamp": "2026-09-16T17:44:53+00:00",
+    "task_summary": "LogStream-Sentinel-Plattform mit WebSocket-Streaming und Dashboard implementiert",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 10,
+    "lint_signature": [
+      "ruff:app/core/security.py:TRY004"
+    ],
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 📦 ✅ pip install -r requirements.txt (exit_code=0)\n- 📦 ✅ pip install -r requirements-dev.txt (exit_code=0)\n- 🚦 Smoke-Test-Gate bestanden (`main.py` startet).\n- 🧪 ✅ Testtiefe: 6/8 API-Routen in Tests aufgerufen (75%, Mindestwert 60%), 6 Testfunktionen – ungetestet: GET /health (main.py); POST /api/incidents/{incident_id}/resolve (main.py)\n… (gekürzt, vollständig in detail_file)",
+    "detail_file": ".ai_team_runs/20260916_173734_verification.md",
+    "failed_checks": [
+      "browser_ui",
+      "lint"
+    ]
+  }
+]

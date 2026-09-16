@@ -1,0 +1,13 @@
+/* ... (vorherige Styles) ... */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+
+button:focus-visible, input:focus-visible, select:focus-visible {
+    outline: 3px solid #4a90e2;
+    outline-offset: 2px;
+}
+
+/* Kontrast-Optimierung für Text */
+.log-INFO { color: #81c784; } /* Helleres Grün für besseren Kontrast auf Schwarz */
+.log-WARN { color: #ffb74d; } /* Helleres Orange */
+.log-ERROR { color: #e57373; } /* Helleres Rot */
+.log-CRITICAL { color: #f06292; } /* Angepasstes Pink/Rot für Kontrast */

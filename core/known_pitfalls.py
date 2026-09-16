@@ -304,6 +304,15 @@ def format_pitfalls_for_agents(stack_hints: str = "", limit: int = 8) -> str:
     relevant = [r for r in PITFALL_CATALOG if active.intersection(r.stacks)]
     if not relevant:
         return ""
+    # Fast jede Python-Regel trifft auf "python"/"all" zu und würde bei einem harten
+    # Catalog-Reihenfolge-Cut die spezifischeren, für diesen Auftrag eigentlich
+    # relevanten Regeln (z. B. "frontend"-Stolperfallen) aus dem `limit` verdrängen.
+    # Deshalb zuerst die Regeln zeigen, die auf einen SPEZIFISCHEN aktiven Stack
+    # (nicht nur "python"/"all") passen; stabile Sortierung erhält sonst die Reihenfolge.
+    def specificity(rule: PitfallRule) -> int:
+        return 0 if active.intersection(rule.stacks) - {"python", "all"} else 1
+
+    relevant = sorted(relevant, key=specificity)
     lines = ["### ⚠️ Bekannte Stolperfallen (aus früheren Läufen gelernt)"]
     lines += [f"- {r.symptom} → {r.fix}" for r in relevant[:limit]]
     return "\n".join(lines)

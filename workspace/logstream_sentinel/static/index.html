@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LogStream Sentinel</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <h1>LogStream Sentinel</h1>
+        <div id="status-indicator" role="status">● Verbunden</div>
+    </header>
+
+    <main>
+        <section id="controls" aria-label="Filter- und Steuerungsoptionen">
+            <label for="search-input" class="sr-only">Suche in Logs</label>
+            <input type="text" id="search-input" placeholder="Suche in Logs...">
+            
+            <label for="level-filter" class="sr-only">Log-Level filtern</label>
+            <select id="level-filter">
+                <option value="">Alle Level</option>
+                <option value="INFO">INFO</option>
+                <option value="WARN">WARN</option>
+                <option value="ERROR">ERROR</option>
+                <option value="CRITICAL">CRITICAL</option>
+            </select>
+            
+            <button id="pause-btn" aria-pressed="false">Pause</button>
+        </section>
+
+        <section id="log-console" aria-label="Live-Log-Stream">
+            <ul id="log-output" aria-live="polite" aria-relevant="additions"></ul>
+        </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

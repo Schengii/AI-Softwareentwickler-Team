@@ -277,6 +277,27 @@ class BrowserVerifier:
                 return module
         return None
 
+    def _backend_python(self) -> str:
+        """Interpreter zum Start des Backends: bevorzugt die isolierte Projekt-`.ai_team_venv`
+        (siehe `core/verifier/models.VENV_DIRNAME`), NICHT `sys.executable`.
+
+        Realer Fund (Läufe `syncwave`/`logstream_sentinel`): `_start_backend` startete uvicorn
+        bisher im globalen Python-Interpreter des FRAMEWORKS. Projektspezifische Laufzeit-
+        Abhängigkeiten (`aiosqlite`, `pydantic-settings`, `sqlalchemy`-Async-Extras, …) sind dort
+        nicht installiert - nur in der Projekt-venv, in die `core/verifier/environment.py` sie per
+        `pip install -r requirements.txt` gelegt hat. Der uvicorn-Subprozess crashte deshalb
+        sofort beim Import, `_start_backend` gab `None, None` zurück und der Verifier fiel
+        unbemerkt auf rein statisches Serving zurück - inklusive WebSocket-Endpunkten, die der
+        reine `http.server`-Fallback grundsätzlich nicht upgraden kann. Das erzeugte exakt den
+        Browser-Fehler `Error during WebSocket handshake: 'Connection' header is missing`, obwohl
+        Frontend- UND Backend-Code korrekt waren - der Frontend-Agent korrigierte daraufhin
+        wiederholt funktionierenden Code, ohne den eigentlichen Verifier-Bug zu beheben."""
+        venv_dir = self.project_dir / ".ai_team_venv"
+        venv_python = venv_dir / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+        if venv_python.exists():
+            return str(venv_python)
+        return sys.executable
+
     def _start_backend(self, timeout_seconds: float = 5.0) -> tuple[subprocess.Popen | None, int | None]:
         """Startet ein erkanntes FastAPI-Backend per uvicorn; None/None bei jedem Fehlschlag
         (fehlendes uvicorn, kein Entrypoint, Startup-Timeout) - der Aufrufer fällt dann einfach
@@ -284,9 +305,10 @@ class BrowserVerifier:
         module = self._find_backend_entrypoint()
         if not module:
             return None, None
+        python = self._backend_python()
         try:
             import importlib.util
-            if not importlib.util.find_spec("uvicorn"):
+            if python == sys.executable and not importlib.util.find_spec("uvicorn"):
                 return None, None
         except Exception:
             return None, None
@@ -294,7 +316,7 @@ class BrowserVerifier:
         port = self._find_free_port()
         try:
             proc = subprocess.Popen(
-                [sys.executable, "-m", "uvicorn", module, "--host", "127.0.0.1", "--port", str(port), "--log-level", "error"],
+                [python, "-m", "uvicorn", module, "--host", "127.0.0.1", "--port", str(port), "--log-level", "error"],
                 cwd=str(self.project_dir),
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )

@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from core.browser_verifier import BrowserVerifier
 
@@ -103,6 +103,54 @@ class TestPlaywrightSysExecutableRegression(unittest.TestCase):
         mock_run.assert_called_once()
         called_command = mock_run.call_args[0][0]
         self.assertEqual(called_command[0], sys.executable)
+
+
+class TestBackendUsesProjectVenv(unittest.TestCase):
+    """Regression (Läufe `syncwave`/`logstream_sentinel`, 2026-09-16): `_start_backend` startete
+    uvicorn bisher immer mit `sys.executable` (Framework-Interpreter). Projektspezifische
+    Laufzeit-Abhängigkeiten (z.B. `aiosqlite`, `pydantic-settings`) fehlen dort und existieren
+    nur in der isolierten `.ai_team_venv` - der Backend-Subprozess crashte deshalb sofort beim
+    Import, der Verifier fiel unbemerkt auf reines statisches Serving zurück (kein Backend, kein
+    WebSocket-Upgrade möglich) und meldete einen irreführenden `'Connection' header is missing`-
+    Fehler, obwohl Frontend- und Backend-Code beide korrekt waren."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_dir = Path(self.temp_dir)
+        (self.project_dir / "main.py").write_text(
+            "from fastapi import FastAPI\napp = FastAPI()\n", encoding="utf-8",
+        )
+        self.verifier = BrowserVerifier(self.project_dir)
+
+    def test_uses_project_venv_python_when_present(self):
+        venv_dir = self.project_dir / ".ai_team_venv"
+        venv_bin = venv_dir / ("Scripts" if sys.platform == "win32" else "bin")
+        venv_bin.mkdir(parents=True)
+        venv_python = venv_bin / ("python.exe" if sys.platform == "win32" else "python")
+        venv_python.write_text("", encoding="utf-8")
+
+        self.assertEqual(self.verifier._backend_python(), str(venv_python))
+
+    def test_falls_back_to_sys_executable_without_project_venv(self):
+        self.assertEqual(self.verifier._backend_python(), sys.executable)
+
+    def test_start_backend_launches_with_venv_python(self):
+        venv_dir = self.project_dir / ".ai_team_venv"
+        venv_bin = venv_dir / ("Scripts" if sys.platform == "win32" else "bin")
+        venv_bin.mkdir(parents=True)
+        venv_python = venv_bin / ("python.exe" if sys.platform == "win32" else "python")
+        venv_python.write_text("", encoding="utf-8")
+
+        fake_proc = MagicMock()
+        fake_proc.poll.return_value = None
+        with patch("core.browser_verifier.subprocess.Popen", return_value=fake_proc) as mock_popen, \
+             patch("core.browser_verifier.socket.create_connection"):
+            self.verifier._start_backend(timeout_seconds=1.0)
+
+        mock_popen.assert_called_once()
+        called_command = mock_popen.call_args[0][0]
+        self.assertEqual(called_command[0], str(venv_python))
+        self.assertNotEqual(called_command[0], sys.executable)
 
 
 class TestBlankCanvasDetection(unittest.TestCase):

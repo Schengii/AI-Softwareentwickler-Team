@@ -12,6 +12,16 @@ Ein autonomes Multi-Agenten-System (33 Fachrollen, 6 Fachbereichs-Leiter) für d
 
 ---
 
+## 🧭 Orientierung zu Beginn einer Session (Neuester Stand)
+
+Bevor du mit neuen Aufgaben, Optimierungen oder Analysen startest, orientiere dich immer anhand dieser Quellen:
+1. **Aktueller Code-Stand:** `git log -n 5 --oneline` (zeigt die letzten Commits und den aktuellen Branch).
+2. **Neueste Optimierungen & Historie:** Die obersten Zeilen von `CHANGELOG.md` lesen (nur die ersten ~60 Zeilen via Head/View, nicht die ganze Datei einlesen!).
+3. **Letzte Fehleranalysen & Traces:** Prüfe die neuesten Berichte in `logs/FEHLERANALYSE_*.md` sowie die letzten Ausführungs-Traces in `logs/runs/` bzw. `logs/verification/`.
+4. **Projektgedächtnis:** Bei architektonischen Grundsatzentscheidungen `00_PROJEKT_GEDAECHTNIS.md` im Obsidian-Vault konsultieren.
+
+---
+
 ## ⚡ Wichtige Entwicklungs- & Testbefehle
 
 | Aufgabe | Befehl |

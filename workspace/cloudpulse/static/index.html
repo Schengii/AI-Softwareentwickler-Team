@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="de" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CloudPulse - Microservice & API Monitoring</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+</head>
+<body>
+  <div class="app-container">
+    <header class="navbar" role="banner">
+      <div class="brand">
+        <span class="logo-icon" aria-hidden="true">⚡</span>
+        <div class="brand-text">
+          <h1>CloudPulse</h1>
+          <span class="badge badge-subtle">Live Monitoring</span>
+        </div>
+      </div>
+      <nav class="nav-actions" aria-label="Hauptnavigation">
+        <button id="refreshBtn" class="btn btn-secondary" aria-label="Daten jetzt aktualisieren">
+          <span class="icon" aria-hidden="true">🔄</span> Aktualisieren
+        </button>
+        <button id="themeToggleBtn" class="btn btn-icon" aria-label="Theme wechseln">
+          <span id="themeIcon" aria-hidden="true">🌙</span>
+        </button>
+      </nav>
+    </header>
+
+    <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+    <main class="main-content" id="main">
+      <section class="metrics-grid" aria-label="Systemmetriken">
+        <div class="metric-card" id="cardSystemStatus">
+          <div class="metric-header">
+            <span class="metric-title">Systemstatus</span>
+            <span class="metric-icon" id="systemStatusIcon" aria-hidden="true">🟢</span>
+          </div>
+          <div class="metric-value" id="systemStatusText">--</div>
+          <div class="metric-footer" id="operationalRatio">0 / 0 Operational</div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-header">
+            <span class="metric-title">Ø Latenz</span>
+            <span class="metric-icon" aria-hidden="true">⏱️</span>
+          </div>
+          <div class="metric-value" id="avgLatencyVal">-- ms</div>
+          <div class="metric-footer">Globale Antwortzeit</div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-header">
+            <span class="metric-title">Uptime (24h)</span>
+            <span class="metric-icon" aria-hidden="true">📈</span>
+          </div>
+          <div class="metric-value" id="uptimeVal">-- %</div>
+          <div class="metric-footer">Verfügbarkeit aggregiert</div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-header">
+            <span class="metric-title">Monitore</span>
+            <span class="metric-icon" aria-hidden="true">📡</span>
+          </div>
+          <div class="metric-value" id="totalMonitorsVal">0</div>
+          <div class="metric-footer" id="incidentSummary">0 Ausfälle aktiv</div>
+        </div>
+      </section>
+
+      <div class="content-grid">
+        <section class="card monitors-section">
+          <div class="card-header">
+            <div class="card-header-titles">
+              <h2>Überwachte Dienste</h2>
+              <p class="subtitle">Echtzeitstatus aller registrierten Endpunkte</p>
+            </div>
+            <div class="table-search-box">
+              <label for="searchInput" class="sr-only">Monitore durchsuchen</label>
+              <input type="text" id="searchInput" placeholder="Dienst oder URL filtern...">
+            </div>
+          </div>
+
+          <div class="table-responsive">
+            <table class="monitors-table">
+              <thead>
+                <tr>
+                  <th scope="col">Status</th>
+                  <th scope="col">Dienstname</th>
+                  <th scope="col">Ziel-URL</th>
+                  <th scope="col">Intervall</th>
+                  <th scope="col">Latenz</th>
+                  <th scope="col">Letzter Check</th>
+                  <th scope="col" class="text-right">Aktionen</th>
+                </tr>
+              </thead>
+              <tbody id="monitorsTableBody">
+                <tr>
+                  <td colspan="7" class="loading-cell">
+                    <span class="spinner" aria-hidden="true"></span> Daten werden geladen...
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card form-section">
+          <div class="card-header">
+            <h2>Neuen Monitor anlegen</h2>
+          </div>
+
+          <form id="addMonitorForm" novalidate>
+            <div class="form-group">
+              <label for="monitorName">Name des Dienstes <span class="required" aria-hidden="true">*</span></label>
+              <input type="text" id="monitorName" name="name" required maxlength="100" aria-describedby="nameError">
+              <span class="form-error" id="nameError" aria-live="assertive"></span>
+            </div>
+
+            <div class="form-group">
+              <label for="monitorUrl">Endpunkt-URL <span class="required" aria-hidden="true">*</span></label>
+              <input type="url" id="monitorUrl" name="url" required aria-describedby="urlError">
+              <span class="form-error" id="urlError" aria-live="assertive"></span>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="monitorInterval">Intervall (Sekunden) <span class="required" aria-hidden="true">*</span></label>
+                <input type="number" id="monitorInterval" name="interval_seconds" value="60" min="5" max="3600" required>
+              </div>
+
+              <div class="form-group">
+                <label for="expectedStatus">Erwarteter Statuscode</label>
+                <input type="number" id="expectedStatus" name="expected_status" value="200" min="100" max="599">
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="monitorTimeout">Timeout (Sekunden)</label>
+              <input type="number" id="monitorTimeout" name="timeout_seconds" value="5" min="1" max="60">
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary" id="submitMonitorBtn">
+                <span class="btn-text">Monitor speichern</span>
+              </button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </main>
+
+    <footer class="app-footer">
+      <p>CloudPulse v1.0.0 &bull; High-Performance Microservice Health Monitoring</p>
+    </footer>
+  </div>
+
+  <dialog id="deleteModal" class="confirm-modal" aria-labelledby="modalTitle">
+    <div class="modal-body">
+      <h3 id="modalTitle">Monitor löschen?</h3>
+      <p id="deleteConfirmText">Möchtest du diesen Dienst wirklich aus der Überwachung entfernen?</p>
+      <div class="modal-actions">
+        <button id="cancelDeleteBtn" class="btn btn-secondary">Abbrechen</button>
+        <button id="confirmDeleteBtn" class="btn btn-danger">Unwiderruflich löschen</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

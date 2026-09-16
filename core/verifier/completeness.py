@@ -217,7 +217,17 @@ class CompletenessMixin:
 
         Eine wirklich leere Datei (z.B. ein bewusst leeres `__init__.py` als reiner
         Package-Marker) bleibt unauffällig: ohne jede Kommentarzeile gibt es nichts zu melden.
+
+        Fehlalarm aus dem cloudpulse-Lauf (2026-09-16): genau derselbe Package-Marker mit einer
+        einzigen erklärenden Kommentarzeile (`# Core package`) in `app/core/__init__.py` kippte
+        die gesamte Verifikation auf `verification_ok: false`. Ein `__init__.py` ist per
+        Konvention leer oder enthält nur Re-Exporte/Kommentare - es ist kein Ort, an dem eine
+        Implementierung "fehlen" könnte. Ein Kommentar darin darf deshalb nicht schlechter
+        gestellt sein als gar kein Inhalt (Datei leer = unauffällig, Datei mit Kommentar =
+        Veto war schlicht widersprüchlich).
         """
+        if Path(rel).name == "__init__.py":
+            return []
         prefix = _LINE_COMMENT_PREFIX_BY_EXTENSION.get(suffix)
         if not prefix:
             return []

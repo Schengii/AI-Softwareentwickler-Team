@@ -178,16 +178,39 @@ class TestRedProjectRepair:
 
 
 class TestWatchdog:
-    def test_read_without_write_fires_once_for_code_roles(self):
+    def test_read_without_write_escalates_for_code_roles(self):
         dog = AgentWatchdog(agent_id="backend", code_writing=True, read_streak_limit=2)
         read = [("read_file", {"path": "a.py"})]
         assert dog.observe(prompt_tokens=10, completion_tokens=1, tool_calls=read, tool_results=[{}], files_written_count=0) == []
         second = dog.observe(prompt_tokens=10, completion_tokens=1, tool_calls=read, tool_results=[{}], files_written_count=0)
         assert [i.kind for i in second] == ["read_without_write"]
-        assert dog.observe(prompt_tokens=10, completion_tokens=1, tool_calls=read, tool_results=[{}], files_written_count=0) == []
+        # cloudpulse 2026-09-16: der Hinweis verstummte nach dem ersten Mal - ein Agent, der
+        # weiterliest, muss erneut (und mit Kontext-Verdichtung) gestoppt werden.
+        third = dog.observe(prompt_tokens=10, completion_tokens=1, tool_calls=read, tool_results=[{}], files_written_count=0)
+        assert [i.kind for i in third] == ["read_without_write#3"]
+        assert third[0].compact
         reviewer = AgentWatchdog(agent_id="code_reviewer", code_writing=False)
         for _ in range(3):
             assert reviewer.observe(prompt_tokens=10, completion_tokens=1, tool_calls=read, tool_results=[{}], files_written_count=0) == []
+
+    def test_prompt_explosion_refires_on_further_growth(self):
+        dog = AgentWatchdog(agent_id="tester", code_writing=True, max_prompt_tokens=1_000, task_token_cap=10**9)
+        first = dog.observe(prompt_tokens=1_500, completion_tokens=1, tool_calls=[], tool_results=[], files_written_count=1)
+        assert [i.kind for i in first] == ["prompt_explosion"]
+        # Leichtes Wachstum meldet sich nicht erneut, eine Verdopplung schon.
+        assert dog.observe(prompt_tokens=1_600, completion_tokens=1, tool_calls=[], tool_results=[], files_written_count=1) == []
+        again = dog.observe(prompt_tokens=3_200, completion_tokens=1, tool_calls=[], tool_results=[], files_written_count=1)
+        assert len(again) == 1 and again[0].kind.startswith("prompt_explosion#") and again[0].compact
+
+    def test_tool_call_budget_forces_write_before_token_cap(self):
+        dog = AgentWatchdog(agent_id="backend", code_writing=True, tool_call_soft_limit=4, task_token_cap=10**9)
+        search = [("search_code", {"query": "x"}), ("list_files", {"path": "."})]
+        dog.observe(prompt_tokens=10, completion_tokens=1, tool_calls=search, tool_results=[{}, {}], files_written_count=0)
+        kinds = [i.kind for i in dog.observe(prompt_tokens=10, completion_tokens=1, tool_calls=search, tool_results=[{}, {}], files_written_count=0)]
+        assert "tool_call_budget" in kinds
+        # Sobald etwas gespeichert wurde, schweigt der Deckel.
+        written = AgentWatchdog(agent_id="backend", code_writing=True, tool_call_soft_limit=1)
+        assert [i.kind for i in written.observe(prompt_tokens=10, completion_tokens=1, tool_calls=search, tool_results=[{}, {}], files_written_count=2)] == []
 
     def test_repeated_rewrite_repeated_error_explosion_and_cap(self):
         dog = AgentWatchdog(agent_id="tester", code_writing=True, max_prompt_tokens=1000, task_token_cap=5000)

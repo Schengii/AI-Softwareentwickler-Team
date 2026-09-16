@@ -1,0 +1,30 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/db/database.py": {
+      "get_db": "function",
+      "Base": "class",
+      "engine": "instance"
+    },
+    "app/db/models.py": {
+      "Monitor": "class",
+      "PingResult": "class"
+    },
+    "app/schemas/monitor.py": {
+      "MonitorCreate": "class",
+      "MonitorResponse": "class",
+      "MonitorUpdate": "class",
+      "StatsResponse": "class"
+    },
+    "app/services/checker.py": {
+      "start_background_checker": "function",
+      "stop_background_checker": "function"
+    },
+    "app/api/routes.py": {
+      "router": "instance"
+    }
+  }
+}

@@ -1,0 +1,241 @@
+{
+  "run_id": "20260916_134711",
+  "handoffs": [
+    {
+      "agent_id": "architect",
+      "task_id": "1ea6fa41",
+      "files": [
+        "docs/adr/0001-native-asyncio-tasks-f-r-background-heal.md",
+        "docs/adr/0002-sqlite-als-prim-rer-datenspeicher-statt.md",
+        "docs/adr/0003-vanilla-js-html-css-f-r-das-web-dashboar.md"
+      ],
+      "provides": [],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-16T13:48:10+00:00"
+    },
+    {
+      "agent_id": "frontend",
+      "task_id": "38a39f80",
+      "files": [
+        "static/index.html"
+      ],
+      "provides": [],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-16T13:49:15+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "c5557df6",
+      "files": [
+        "requirements-dev.txt",
+        "tests/__init__.py",
+        "tests/test_api.py"
+      ],
+      "provides": [
+        "`tests/test_api.py`, `tests/__init__.py`, `pytest-cov` in `requirements-dev.txt`",
+        "tests/test_api.py: client, test_app_starts_and_docs_available, test_static_index_page, test_get_monitors_empty_initially, test_get_stats_initial_format, test_create_monitor_success_and_roundtrip, test_get_monitor_not_found, test_delete_moni"
+      ],
+      "requires": [
+        "backend (`app/main.py`, `app/api/endpoints.py`, `app/db/base.py`)"
+      ],
+      "open_issues": [],
+      "timestamp": "2026-09-16T13:50:35+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "f04f8f65",
+      "files": [
+        "app/__init__.py",
+        "app/api/__init__.py",
+        "app/api/endpoints.py",
+        "app/checker.py",
+        "app/db/__init__.py",
+        "app/db/base.py",
+        "app/db/models.py",
+        "app/main.py",
+        "app/schemas.py",
+        "requirements.txt"
+      ],
+      "provides": [
+        "`app/main.py` (FastAPI App), `app/api/endpoints.py` (CRUD & Stats), `app/checker.py` (Background Task), `app/db/models.py` (SQLite Models)",
+        "app/api/endpoints.py: get_monitors, create_monitor, get_monitor, delete_monitor, get_stats, router",
+        "DELETE /monitors/{monitor_id} (app/api/endpoints.py)",
+        "GET /monitors (app/api/endpoints.py)",
+        "GET /monitors/{monitor_id} (app/api/endpoints.py)",
+        "GET /stats (app/api/endpoints.py)",
+        "POST /monitors (app/api/endpoints.py)",
+        "app/checker.py: BackgroundChecker, checker",
+        "app/db/base.py: Base, get_db, DATABASE_URL, SYNC_DATABASE_URL, engine, async_session",
+        "app/db/models.py: Monitor",
+        "app/main.py: lifespan, health_check, sync_engine, app",
+        "GET /health (app/main.py)"
+      ],
+      "requires": [
+        "`static/app.js` und `static/style.css` (werden vom Frontend-Agenten bereitgestellt, da `index.html` sie referenziert)"
+      ],
+      "open_issues": [
+        "keine (Testsuite ist grün)"
+      ],
+      "timestamp": "2026-09-16T13:51:31+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "integration_checkpoint_fix_backend",
+      "files": [
+        "app/main.py"
+      ],
+      "provides": [
+        "Bereinigte `app/main.py` mit rein asynchronem DB-Setup",
+        "app/main.py: lifespan, health_check, app",
+        "GET /health (app/main.py)"
+      ],
+      "requires": [
+        "Test-Suite muss den FastAPI-Lifespan triggern (z.B. via `httpx.AsyncClient(transport=ASGITransport(app=app))`), da die Tabellen nun korrekt beim App-Start angelegt werden."
+      ],
+      "open_issues": [
+        "`SYNC_DATABASE_URL` in `app/db/base.py` wird nicht mehr verwendet und kann bei Gelegenheit entfernt werden."
+      ],
+      "timestamp": "2026-09-16T13:52:24+00:00"
+    },
+    {
+      "agent_id": "security",
+      "task_id": "416a896e",
+      "files": [
+        "app/api/endpoints.py",
+        "app/core/__init__.py",
+        "app/core/security.py",
+        "app/main.py",
+        "docs/SECURITY_AUDIT.md"
+      ],
+      "provides": [
+        "`docs/SECURITY_AUDIT.md` (Audit Report), `app/core/security.py` (Security Module), SSRF-Protection in `app/api/endpoints.py`, CORS-Fix in `app/main.py`",
+        "app/api/endpoints.py: get_monitors, create_monitor, get_monitor, delete_monitor, get_stats, router",
+        "DELETE /monitors/{monitor_id} (app/api/endpoints.py)",
+        "GET /monitors (app/api/endpoints.py)",
+        "GET /monitors/{monitor_id} (app/api/endpoints.py)",
+        "GET /stats (app/api/endpoints.py)",
+        "POST /monitors (app/api/endpoints.py)",
+        "app/core/security.py: Settings, validate_ssrf_safe_url, settings",
+        "app/main.py: lifespan, health_check, app",
+        "GET /health (app/main.py)"
+      ],
+      "requires": [],
+      "open_issues": [
+        "Rate-Limiting und Authentifizierung für das Dashboard (als zukünftige Erweiterung im Audit-Report empfohlen)."
+      ],
+      "timestamp": "2026-09-16T13:54:25+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "verify_fix_tester_1",
+      "files": [
+        "pytest.ini"
+      ],
+      "provides": [
+        "Korrigierte, valide `pytest.ini` (ohne Einrückung) und lauffähige Testsuite `tests/test_api.py` (10/10 Tests grün)"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-16T13:56:48+00:00"
+    },
+    {
+      "agent_id": "security",
+      "task_id": "verify_fix_completeness_security_1",
+      "files": [
+        "app/core/__init__.py"
+      ],
+      "provides": [
+        "Re-Exporte für Security-Funktionen (`app/core/__init__.py`)"
+      ],
+      "requires": [],
+      "open_issues": [
+        "Der Security-Audit-Bericht (`docs/SECURITY_AUDIT.md`) konnte aufgrund eines Dateikonflikts im letzten Schritt nicht erfolgreich gespeichert/aktualisiert werden."
+      ],
+      "timestamp": "2026-09-16T13:58:00+00:00"
+    },
+    {
+      "agent_id": "frontend",
+      "task_id": "verify_fix_browser_frontend_1",
+      "files": [
+        "static/style.css"
+      ],
+      "provides": [
+        "`static/style.css` (Dark Theme & Dashboard Styles)"
+      ],
+      "requires": [],
+      "open_issues": [
+        "`static/app.js` sollte bei Bedarf zur dynamischen Anbindung der `/api/monitors` und `/api/stats` Endpunkte weiter vervollständigt werden."
+      ],
+      "timestamp": "2026-09-16T13:58:42+00:00"
+    },
+    {
+      "agent_id": "frontend",
+      "task_id": "verify_fix_browser_frontend_2",
+      "files": [
+        "static/app.js"
+      ],
+      "provides": [
+        "`static/app.js` (Dashboard-Client-Logik für CloudPulse Monitoring)"
+      ],
+      "requires": [
+        "Backend API unter `/api/monitors` und `/api/stats` (bereitgestellt von `app/api/endpoints.py`)"
+      ],
+      "open_issues": [],
+      "timestamp": "2026-09-16T13:59:30+00:00"
+    },
+    {
+      "agent_id": "frontend",
+      "task_id": "verify_fix_browser_frontend_3",
+      "files": [
+        "static/index.html"
+      ],
+      "provides": [
+        "`static/index.html`, `static/style.css`, `static/app.js` (Web-Dashboard mit relativer Asset-Auflösung)"
+      ],
+      "requires": [
+        "Backend FastAPI-Static-Mount unter `/static` und `/` (`app/main.py`)"
+      ],
+      "open_issues": [],
+      "timestamp": "2026-09-16T14:00:17+00:00"
+    }
+  ],
+  "claims": {
+    "static/index.html": "frontend",
+    "requirements.txt": "backend",
+    "app/db/base.py": "backend",
+    "app/db/models.py": "backend",
+    "app/schemas.py": "backend",
+    "app/api/endpoints.py": "backend",
+    "requirements-dev.txt": "tester",
+    "app/checker.py": "backend",
+    "app/main.py": "backend",
+    "app/__init__.py": "backend",
+    "app/db/__init__.py": "backend",
+    "app/api/__init__.py": "backend",
+    "tests/test_api.py": "tester",
+    "tests/__init__.py": "tester",
+    "docs/SECURITY_AUDIT.md": "security",
+    "app/core/security.py": "security",
+    "app/core/__init__.py": "security",
+    "pytest.ini": "tester",
+    "static/style.css": "frontend",
+    "static/app.js": "frontend"
+  },
+  "foreign_changes": [
+    {
+      "path": "app/main.py",
+      "owner": "backend",
+      "changed_by": "security",
+      "timestamp": "2026-09-16T13:53:59+00:00"
+    },
+    {
+      "path": "app/api/endpoints.py",
+      "owner": "backend",
+      "changed_by": "security",
+      "timestamp": "2026-09-16T13:53:59+00:00"
+    }
+  ],
+  "questions": []
+}

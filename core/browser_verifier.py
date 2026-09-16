@@ -201,15 +201,32 @@ class BrowserVerifier:
                 return candidate
         return None
 
+    # Verzeichnisnamen, die ein Web-Framework üblicherweise selbst als Web-Root ausliefert
+    # (FastAPI: `app.mount("/", StaticFiles(directory="static", html=True))`, Flask: `static/`,
+    # Express: `express.static("public")`).
+    _STATIC_ROOT_DIRNAMES = ("static", "public", "www", "htdocs", "webroot", "assets")
+
     def _serve_root_for(self, entry_html: Path) -> Path:
         """Web-Root für `entry_html`: bei einem erkannten Build-Output (dist/build, siehe
         _find_build_output_entrypoint) dessen EIGENES Verzeichnis, sonst project_dir wie bisher.
         Bundler wie Vite erzeugen standardmäßig root-relative Asset-Pfade (`/assets/...`), die
         nur auflösen, wenn genau dieses Verzeichnis die Web-Server-Root ist (project_dir als
         Root würde `project_dir/assets/...` erwarten, tatsächlich liegt die Datei aber unter
-        `project_dir/dist/assets/...`)."""
+        `project_dir/dist/assets/...`).
+
+        Realer Fund (cloudpulse, 2026-09-16, P0): dieselbe Verwechslung entsteht ohne jeden
+        Build-Schritt, sobald das Frontend in `static/` liegt und das Backend genau dieses
+        Verzeichnis als `/` mountet. `static/index.html` verweist dann völlig korrekt auf
+        `<script src="/app.js">`, der Verifier servierte aber project_dir als Root und suchte
+        `project_dir/app.js` statt `project_dir/static/app.js` - der frontend-Agent drehte
+        daraufhin drei fruchtlose Korrekturrunden gegen einen Fehler im Prüfwerkzeug. Ein
+        Einstiegs-HTML, das direkt in einem solchen Auslieferungsverzeichnis liegt, bekommt
+        deshalb dieses Verzeichnis als Web-Root - genau wie zur Laufzeit."""
         if entry_html == self._find_build_output_entrypoint():
             return entry_html.parent
+        parent = entry_html.parent
+        if parent != self.project_dir and parent.name.lower() in self._STATIC_ROOT_DIRNAMES:
+            return parent
         return self.project_dir
 
     def _find_html_entrypoints(self) -> list[Path]:
@@ -429,10 +446,18 @@ class BrowserVerifier:
             if not ref_clean:
                 continue
 
-            # Relativ zum Verzeichnis der HTML-Datei oder Projekt-Root
-            candidate1 = html_file.parent / ref_clean
-            candidate2 = root / ref_clean.lstrip("/")
-            if not (candidate1.exists() or candidate2.exists()):
+            # Relativ zum Verzeichnis der HTML-Datei oder zur Web-Root.
+            # WICHTIG: `Path(dir) / "/app.js"` verwirft unter pathlib das gesamte
+            # Elternverzeichnis und ergibt den Laufwerks-Root (`C:\app.js`) - der führende
+            # Slash MUSS vor jeder Division entfernt werden, sonst prüft der Check einen Pfad,
+            # der mit dem Projekt nichts mehr zu tun hat (realer Fund cloudpulse, 2026-09-16).
+            relative_ref = ref_clean.lstrip("/")
+            candidates = [
+                html_file.parent / relative_ref,   # relativ zur HTML-Datei
+                root / relative_ref,               # relativ zur Web-Root (dist/, static/, ...)
+                self.project_dir / relative_ref,   # Projekt-Root als letzte Rückfalloption
+            ]
+            if not any(c.exists() for c in candidates):
                 missing.append(f"Fehlendes Asset: '{ref}' in {html_file.name}")
 
         # Prüfe auf fehlende Title oder Doctype

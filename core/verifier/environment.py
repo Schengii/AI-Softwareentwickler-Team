@@ -249,7 +249,7 @@ class EnvironmentMixin:
     def _ensure_pytest_ini(self) -> str:
         pytest_ini = self.project_dir / "pytest.ini"
         if pytest_ini.exists():
-            return ""
+            return self._repair_malformed_pytest_ini(pytest_ini)
         if not any(
             "async def test_" in src or "pytest.mark.asyncio" in src
             for src in self._read_python_test_sources()
@@ -262,6 +262,63 @@ class EnvironmentMixin:
         except OSError as e:
             return f"⚠️ Konnte pytest.ini nicht deterministisch anlegen: {e}"
         return "✅ pytest.ini (asyncio_mode=auto, pythonpath=.) deterministisch angelegt - Projekt enthaelt async-Tests, aber keine eigene pytest.ini."
+
+    # Realer Fund (cloudpulse, 2026-09-16, Schwachstelle 3): ein Agent schrieb eine `pytest.ini`,
+    # deren Zeilen eingerueckt waren. pytest bricht darauf mit Exit-Code 4 ab
+    # ("pytest.ini:1: unexpected value continuation") - KEIN einziger Test wird gesammelt, und
+    # der Fehler sieht in den Logs wie ein Testfehler aus. Das kostete einen vollstaendigen
+    # Tester-Agentenaufruf (61 s, 103k Tokens) fuer eine reine Whitespace-Korrektur. Eine
+    # eingerueckte Sektionsueberschrift bzw. eine eingerueckte Zeile VOR der ersten Sektion hat
+    # in einer INI-Datei nie eine gueltige Bedeutung; sie laesst sich deshalb gefahrlos
+    # deterministisch geradeziehen. Echte Mehrzeilen-Werte (z.B. ein eingeruecktes `addopts`-
+    # Fortsetzungsfragment NACH einem Schluessel) bleiben dabei unangetastet.
+    _INI_OPTION_RE = re.compile(r"^[A-Za-z_][\w.\-]*\s*=")
+
+    def _repair_malformed_pytest_ini(self, pytest_ini: Path) -> str:
+        try:
+            original = pytest_ini.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        repaired: list[str] = []
+        changed = False
+        # Eine eingerueckte Zeile ist nur dann eine gueltige Wert-Fortsetzung, wenn davor
+        # ueberhaupt ein Schluessel steht (`addopts =` plus eingerueckte Folgezeilen). Direkt
+        # nach einer Sektionsueberschrift oder am Dateianfang gibt es keinen Wert, der
+        # fortgesetzt werden koennte - dort ist die Einrueckung immer ein Formatierungsfehler
+        # des Modells und wird entfernt.
+        continuation_allowed = False
+        for line in original.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                repaired.append(line)
+                continue
+            is_indented = line[:1] in (" ", "\t")
+            is_section = stripped.startswith("[") and stripped.endswith("]")
+            is_comment = stripped.startswith(("#", ";"))
+            # Eine eingerueckte Zeile, die selbst wie `schluessel = wert` aussieht, ist nie
+            # eine Wert-Fortsetzung, sondern eine verrutschte Option (`    asyncio_mode = auto`).
+            # Echte Fortsetzungen sind Werte-Fragmente (`-q`, `--strict-markers`,
+            # `slow: langsame Tests`) und bleiben deshalb unangetastet.
+            looks_like_option = bool(self._INI_OPTION_RE.match(stripped))
+            if is_indented and not is_comment and (looks_like_option or not continuation_allowed):
+                repaired.append(stripped)
+                changed = True
+            else:
+                repaired.append(line)
+            if is_section:
+                continuation_allowed = False
+            elif not is_comment and ("=" in stripped or ":" in stripped):
+                continuation_allowed = True
+        if not changed:
+            return ""
+        try:
+            pytest_ini.write_text('\n'.join(repaired) + '\n', encoding="utf-8")
+        except OSError as e:
+            return f"⚠️ Konnte fehlerhafte pytest.ini nicht reparieren: {e}"
+        return (
+            "✅ pytest.ini deterministisch repariert - eingerueckte Zeilen haetten pytest mit "
+            "'unexpected value continuation' (Exit-Code 4) abbrechen lassen, bevor ein Test laeuft."
+        )
 
     # Team-Optimierung (NexusForge-Lauf, Schwachstelle 3): _ensure_pytest_available()/
     # _ensure_pytest_ini() oben sichern nur die LAUFZEIT-Umgebung der eigenen Sandbox ab, wenn

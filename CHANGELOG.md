@@ -7,6 +7,54 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔴 Lauf-Analyse cloudpulse 2026-09-16: Der Verifier suchte das Frontend am falschen Ort
+
+Auswertung von `logs/FEHLERANALYSE_KI_TEAM_20260916.md` zum Lauf `cloudpulse` (FastAPI-Backend plus
+Dashboard in `static/`). Das Team lieferte ein vollstaendiges System, 10/10 Tests gruen - der Lauf
+endete trotzdem mit `verification_ok: false`. Fuenf Befunde, fuenf Fixes.
+
+**1 - Root-relative Asset-Pfade in einem `static/`-Frontend brachen den Browser-Check (P0).**
+`static/index.html` verwies korrekt auf `<script src="/app.js">`, weil FastAPI genau dieses
+Verzeichnis als `/` mountet. `_serve_root_for()` kannte diesen Fall aber nur fuer Build-Ausgaben
+(`dist/`, `build/`) und servierte sonst das Projekt-Root, sodass `cloudpulse/app.js` statt
+`cloudpulse/static/app.js` gesucht wurde. In `_validate_static_assets()` verschaerfte pathlib das:
+`Path(".../static") / "/app.js"` verwirft das gesamte Elternverzeichnis und ergibt den
+Laufwerks-Root `C:\app.js`. Der frontend-Agent drehte daraufhin drei fruchtlose Korrekturrunden
+gegen einen Fehler im Pruefwerkzeug. `core/browser_verifier.py` behandelt ein Einstiegs-HTML in
+einem Auslieferungsverzeichnis (`static/`, `public/`, `www/`, ...) jetzt wie zur Laufzeit als
+Web-Root und entfernt den fuehrenden Slash vor jeder Pfad-Division.
+
+**2 - Der Watchdog verstummte nach dem ersten Hinweis.** `read_without_write` und
+`prompt_explosion` feuerten pro Aufgabe genau einmal; ein Agent, der danach weiterlas, bekam nie
+wieder ein Signal (tester: 208k Tokens in einem Aufruf, backend: 273k, Lauf gesamt 1,04 Mio,
+`budget_aborted: true`). `core/agent_watchdog.py` eskaliert beide Eingriffe jetzt und kennt
+zusaetzlich ein Werkzeug-Budget: 15 Aufrufe ohne eine einzige gespeicherte Datei erzwingen das
+Persistieren des Zwischenstands.
+
+**3 - Eine eingerueckte `pytest.ini` kostete einen kompletten Agentenaufruf.** pytest brach mit
+`pytest.ini:1: unexpected value continuation` (Exit-Code 4) ab, bevor ein Test gesammelt wurde -
+repariert wurde das von einem Tester-Aufruf fuer 61 Sekunden und 103k Tokens. `core/
+pre_flight_check.py` meldet diese Variante jetzt deterministisch, und `core/verifier/
+environment.py._repair_malformed_pytest_ini()` zieht verrutschte Zeilen selbst gerade. Echte
+Mehrzeilen-Werte (`addopts =` plus eingerueckte Fragmente) bleiben unangetastet.
+
+**4 - Der security-Agent hatte keine Schreibgrenze.** Er ueberschrieb `app/main.py` und
+`app/api/endpoints.py` (Eigentuemer: backend), um Middleware zu injizieren; ein Import landete
+mitten im Modulrumpf, und sein eigener Bericht `docs/SECURITY_AUDIT.md` liess sich wegen des
+Dateikonflikts nicht mehr speichern. `config.AGENT_WRITE_SCOPES` enthaelt jetzt einen Eintrag fuer
+`security` (eigene Security-/Auth-Module, Berichte, Manifeste, Paket-Marker) - Aenderungen an
+fremden Backend-Dateien beschreibt die Rolle im Bericht.
+
+**5 - Ein `__init__.py` mit einer Kommentarzeile kippte die Verifikation.** Der
+Completeness-Check wertete `app/core/__init__.py` mit dem Inhalt `# Core package` als
+unvollstaendigen Stub - waehrend dieselbe Datei komplett LEER unauffaellig geblieben waere. Ein
+Paket-Marker ist kein Ort, an dem eine Implementierung fehlen kann; `core/verifier/
+completeness.py` nimmt `__init__.py` von dieser Heuristik aus.
+
+Regressionen: `tests/test_cloudpulse_regressions.py`, erweitert in `tests/test_quality_gates.py`.
+
+---
+
 ## 🟢 Team-Analyse 2026-09-16: Gates, die sich selbst abschalten, und ein Backlog, der nie leerlief
 
 Auswertung aller Workspace-Projekte, des Backlogs und der Eval-Historie. Drei Befunde, drei Fixes.

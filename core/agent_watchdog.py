@@ -40,10 +40,13 @@ class AgentWatchdog:
     task_token_cap: int = 250_000
     read_streak_limit: int = 2
     rewrite_limit: int = 3
+    tool_call_soft_limit: int = 15
     events: list[str] = field(default_factory=list)
     _fired: set[str] = field(default_factory=set)
     _read_only_streak: int = 0
     _total_tokens: int = 0
+    _tool_calls: int = 0
+    _last_prompt_alarm: int = 0
     _writes: Counter = field(default_factory=Counter)
     _last_error: str = ""
 
@@ -72,10 +75,18 @@ class AgentWatchdog:
         elif any(n in WRITE_TOOLS for n in names):
             self._read_only_streak = 0
         if self._read_only_streak >= self.read_streak_limit:
+            # Realer Fund (cloudpulse, 2026-09-16): der Hinweis feuerte pro Aufgabe nur EIN
+            # einziges Mal. Ein Agent, der danach weiterliest, bekam nie wieder ein Signal -
+            # der Lauf lief mit 1,04 Mio Tokens ins Budget-Aus. Jede WEITERE reine Lese-
+            # Iteration nach dem ersten Hinweis meldet sich deshalb erneut, jetzt mit
+            # erzwungener Kontext-Verdichtung.
+            escalated = self._read_only_streak > self.read_streak_limit
             interventions.append(self._fire(
-                "read_without_write",
+                f"read_without_write#{self._read_only_streak}" if escalated else "read_without_write",
                 f"Du hast {self._read_only_streak} Iterationen nur gelesen und noch keine Datei gespeichert. "
-                "Du hast genug Kontext - schreibe JETZT deine erste Zieldatei per write_file.",
+                "Du hast genug Kontext - schreibe JETZT deine erste Zieldatei per write_file."
+                + (" Weiteres Lesen ohne Schreiben wird als Fehlschlag der Aufgabe gewertet." if escalated else ""),
+                compact=escalated,
             ))
 
         for (name, args), result in zip(tool_calls, tool_results, strict=False):
@@ -101,11 +112,32 @@ class AgentWatchdog:
             elif name:
                 self._last_error = ""
 
+        # Eskalierend statt einmalig: bisher verdichtete der Watchdog den Kontext genau einmal.
+        # Wuchs der Prompt danach weiter (tester: 208k, backend: 273k Tokens in EINEM Aufruf,
+        # cloudpulse 2026-09-16), passierte nichts mehr. Jede weitere Verdopplung der
+        # Überschreitung löst deshalb eine erneute Verdichtung aus.
         if prompt_tokens and prompt_tokens > self.max_prompt_tokens:
+            threshold = max(self._last_prompt_alarm * 2, self.max_prompt_tokens)
+            if prompt_tokens >= threshold:
+                self._last_prompt_alarm = prompt_tokens
+                interventions.append(self._fire(
+                    "prompt_explosion" if threshold == self.max_prompt_tokens else f"prompt_explosion#{prompt_tokens}",
+                    f"Der Kontext ist auf {prompt_tokens:,} Tokens angewachsen. Ältere Werkzeug-Ergebnisse wurden gekürzt; "
+                    "lies nur noch gezielt (line_start/line_end) und komm zum Abschluss.",
+                    compact=True,
+                ))
+
+        # Werkzeug-Budget: ein Agent, der nach vielen Aufrufen noch nichts gespeichert hat,
+        # dreht erfahrungsgemäß im Kreis (backend: 22 Tool-Calls / 273k Tokens). Der Deckel
+        # greift unabhängig vom Tokenzähler, weil viele kleine Lesezugriffe den Token-Deckel
+        # erst spät erreichen, den Kontext aber längst aufgebläht haben.
+        self._tool_calls += len(names)
+        if self._tool_calls >= self.tool_call_soft_limit and files_written_count == 0:
             interventions.append(self._fire(
-                "prompt_explosion",
-                f"Der Kontext ist auf {prompt_tokens:,} Tokens angewachsen. Ältere Werkzeug-Ergebnisse wurden gekürzt; "
-                "lies nur noch gezielt (line_start/line_end) und komm zum Abschluss.",
+                "tool_call_budget",
+                f"Du hast bereits {self._tool_calls} Werkzeugaufrufe gemacht, ohne eine einzige Datei zu speichern. "
+                "Persistiere JETZT deinen bisherigen Zwischenstand per write_file - unfertige, aber gespeicherte "
+                "Arbeit ist wertvoller als ein weiterer Lesedurchgang.",
                 compact=True,
             ))
 

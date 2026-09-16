@@ -311,6 +311,22 @@ AGENT_WRITE_SCOPES: dict[str, dict[str, tuple[str, ...]]] = {
     "ui_ux": {"allow": _DOC_WRITE_SCOPE + _FRONTEND_WRITE_SCOPE + ("design*",), "deny": ("*.py",)},
     "accessibility": {"allow": _DOC_WRITE_SCOPE + _FRONTEND_WRITE_SCOPE, "deny": ("*.py",)},
     "frontend": {"allow": _DOC_WRITE_SCOPE + _FRONTEND_WRITE_SCOPE, "deny": ("*.py",)},
+    # Realer Fund cloudpulse 2026-09-16 (foreign_changes): der security-Agent hatte keinen
+    # Eintrag und damit freie Hand - er ueberschrieb `app/main.py` und `app/api/endpoints.py`
+    # (Eigentuemer: backend), um Middleware zu injizieren. Ergebnis: ein Import landete mitten
+    # im Modulrumpf, und sein EIGENER Bericht (docs/SECURITY_AUDIT.md) liess sich wegen des
+    # dadurch ausgeloesten Dateikonflikts nicht mehr speichern. Er darf weiterhin alles anlegen,
+    # was ihm selbst gehoert (Audit-Berichte, eigene Security-Module, Secrets-Vorlagen,
+    # Abhaengigkeiten) - Aenderungen an fremden Backend-Dateien beschreibt er ab jetzt im
+    # Bericht, statt sie parallel zum Eigentuemer hineinzuschreiben.
+    # `*__init__.py` bleibt bewusst erlaubt: ein reiner Paket-Marker/Re-Export gehoert zum
+    # eigenen Security-Modul und ist keine fremde Implementierung.
+    "security": {"allow": _DOC_WRITE_SCOPE + (
+        "*security*", "*/security/*", "*auth*", "*/auth/*", "*__init__.py",
+        "*.env.example", ".env.example",
+        "requirements*.txt", "*.cfg", "*.ini", "*.toml", "*.yml", "*.yaml",
+        "tests/*security*", "tests/*auth*",
+    )},
 }
 
 # Fachbereichs-Zuweisungen für bereichsweite Modell-Konfiguration

@@ -603,6 +603,35 @@ def _check_ini_section_indentation(project_dir: Path) -> list[PreFlightIssue]:
             lines = ini_file.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
+        # Realer Fund (cloudpulse, 2026-09-16): eine `pytest.ini`, deren ERSTE inhaltliche Zeile
+        # eingerückt war, ließ pytest sofort mit Exit-Code 4 abbrechen
+        # ("pytest.ini:1: unexpected value continuation"). Anders als bei der eingerückten
+        # Sektionsüberschrift unten ist das kein stiller Konfigurationsverlust, sondern ein
+        # harter Abbruch JEDES Testlaufs im Projekt - das kostete einen kompletten
+        # Tester-Agentenaufruf (61 s, 103k Tokens) für eine einzige Zeile Whitespace.
+        first_content_index = next(
+            (i for i, line in enumerate(lines) if line.strip() and not line.lstrip().startswith(("#", ";"))),
+            None,
+        )
+        if first_content_index is not None and lines[first_content_index][:1] in (" ", '\t'):
+            first_line = lines[first_content_index]
+            issues.append(PreFlightIssue(
+                file=ini_file.name,
+                line=first_content_index + 1,
+                issue_type="malformed_ini_continuation",
+                message=(
+                    f"Zeile {first_content_index + 1} (`{first_line.strip()}`) ist eingerückt, "
+                    "obwohl davor keine Sektion und kein Schlüssel steht. configparser deutet "
+                    "eine eingerückte Zeile als Fortsetzung eines vorherigen Werts - hier gibt "
+                    "es keinen, weshalb das Einlesen hart fehlschlägt (pytest bricht mit "
+                    "'unexpected value continuation' und Exit-Code 4 ab, bevor auch nur ein "
+                    "Test gesammelt wird)."
+                ),
+                suggestion=(
+                    f"Entferne die führenden Leerzeichen/Tabs in {ini_file.name}; die Datei muss "
+                    "mit einer Sektionsüberschrift (z.B. `[pytest]`) in Spalte 1 beginnen."
+                ),
+            ))
         for lineno, line in enumerate(lines, start=1):
             if _INDENTED_INI_SECTION_RE.match(line):
                 rel_path = ini_file.name

@@ -7,6 +7,96 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟠 Historien-Analyse 2026-09-16: Der Selbstoptimierer verglich gegen das falsche Modell
+
+Auswertung von `memory/run_history.json` (134 Läufe) und der `.ai_team_dod.json` der letzten 20
+Projekte – nicht aus einer einzelnen Fehleranalyse, sondern aus den aggregierten Zahlen selbst.
+Ausgangslage: 14,2 % bestandene Verifikationen über alle Läufe, 26,7 % über die letzten 30, bei
+einem Median von 765.843 Tokens pro Lauf.
+
+### Der Modell-Vergleich maß die Vergangenheit statt die Gegenwart
+
+`core/optimization_advisor.py.analyze()` bestimmte das „aktuelle" Modell einer Rolle als das in
+der Historie **meistgenutzte** – der Docstring hielt ausdrücklich fest, ein Blick in `config.py`
+sei dafür nicht nötig. Das stimmt genau so lange, wie sich die Zuweisung nie ändert. Wurde eine
+Rolle innerhalb des Auswertungsfensters umgestellt, sammelte das ALTE Modell weiter die meisten
+Aufrufe; `best == current` traf zu und die Funktion brach mit „das meistgenutzte Modell ist
+bereits das beste" ab.
+
+Betroffen waren fünf Rollen gleichzeitig, alle in dieselbe Richtung – und in allen fünf Fällen
+war der nie erzeugte Vorschlag gleichzeitig **zuverlässiger und billiger**:
+
+| Rolle | aktiv laut `config.py` | Erfolg | ⌀Tokens | empirisch besser | Erfolg | ⌀Tokens |
+| :--- | :--- | ---: | ---: | :--- | ---: | ---: |
+| `tester` | gemini-3.8-flash | 66,2 % | 50.716 | gemini-3.1-flash-lite | 100 % | 41.486 |
+| `frontend` | gemini-3.8-flash | 72,3 % | 34.084 | gemini-3.1-flash-lite | 100 % | 33.003 |
+| `qa_lead` | gemini-3.8-flash | 70,7 % | 16.350 | gemini-3.1-flash-lite | 100 % | 15.082 |
+| `api_integration` | gemini-3.8-flash | 66,7 % | 28.904 | gemini-3.1-flash-lite | 100 % | 28.933 |
+| `design_lead` | gemini-3.8-flash | 57,1 % | 6.846 | gemini-3.1-flash-lite | 100 % | 6.402 |
+
+`tester` ist mit 4,21 Mio. Tokens über die letzten 30 Läufe der größte Einzelverbraucher des
+Teams. Die Vergleichsbasis kommt jetzt aus `config.get_model_for_agent()`
+(`core/optimization_advisor.py._current_model_entry()`). Der Zufallsarm eines laufenden
+A/B-Tests wird dabei ausgeklammert – sonst wäre die Basis bei jedem Aufruf eine andere und die
+Auswertung nicht reproduzierbar; dafür hat `config.get_model_for_agent()` den neuen Parameter
+`include_ab_trial`. Liegen zum konfigurierten Modell keine ausreichend geprüften Messwerte vor,
+bleibt das meistgenutzte Modell die Notlösung: Ein Vergleich braucht auf beiden Seiten Zahlen.
+
+### Der Circuit Breaker sah immer nur einen Ausschnitt
+
+Zwei Wächter gegen Kontingent-Engpässe existierten bereits: eine Quote **innerhalb einer Welle**
+(`PROVIDER_EXHAUSTION_ABORT_RATIO`, 60 %) und ein Limit für Fehlschläge **in Folge**
+(`PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT`, 2). Beide haben denselben blinden Fleck: Verteilen sich
+die Ausfälle gleichmäßig und von Erfolgen durchsetzt über viele kleine Wellen, bleibt jede Welle
+unter der Schwelle und es stehen nie zwei Fehlschläge hintereinander.
+
+Realer Fund `sentinelgrid`: 5 von 15 Aufrufen (33 %) scheiterten an erschöpften Kontingenten,
+kein Wächter sprach an, der Lauf arbeitete alle Phasen ab, verbrauchte 105.972 Tokens und endete
+rot. Dasselbe Muster bei `certpulse` (20 %, 115.117 Tokens). Alle vier Läufe des
+Auswertungsfensters mit Kontingent-Ausfällen endeten ohne bestandene Verifikation.
+
+Neu ist deshalb eine dritte Sicht, die über den **gesamten Lauf** kumuliert
+(`core/provider_exhaustion.py.should_trip_run_breaker()`, verdrahtet in
+`agents/orchestrator/dispatch.py`): `PROVIDER_EXHAUSTION_RUN_ABORT_RATIO` (0,30) greift ab
+`PROVIDER_EXHAUSTION_RUN_MIN_SAMPLE` (6) aufgezeichneten Aufrufen. Die Mindeststichprobe
+verhindert den umgekehrten Fehler – im Lauf `ai_team_framework` war 1 von 2 Aufrufen erschöpft,
+also nominell 50 %, aber keine Aussage über den Lauf.
+
+### Parallele Wellen liefen am Budget vorbei
+
+Das Token-Budget wurde am Phasenkopf und nach jedem **sequenziellen** Mitglied geprüft; der
+parallele Zweig war ausgenommen, mit der Begründung, ein Zwischenstopp mitten in einem
+`asyncio.gather` sei nicht sinnvoll möglich. Das stimmt – aber bei `MAX_CONCURRENT_AGENTS=2`
+arbeitet eine Phase mit sechs Mitgliedern drei Blöcke nacheinander ab, und zwischen diesen
+Blöcken lag keine einzige Prüfung. Genau dort fallen die größten Einzelposten an: im Lauf
+`cloudpulse` allein 273.468 Tokens für einen einzigen backend-Aufruf.
+
+`_run_agents_parallel()` nimmt jetzt ein optionales `should_stop`, das direkt **vor dem Start**
+jeder einzelnen Aufgabe ausgewertet wird. Eine noch nicht gestartete Aufgabe zu überspringen ist
+problemlos möglich; ein laufendes `gather` wird weiterhin nicht unterbrochen. Übersprungene
+Aufrufe erzeugen bewusst **kein** `AgentResult`: Als Fehlschlag gezählt würden sie die
+Erfolgsquoten in `memory/run_history.json` und die Infrastruktur-Quote des Circuit Breakers
+verfälschen, als Erfolg gezählt würden sie Arbeit vortäuschen.
+
+### Die Verifikations-Trendwarnung konnte praktisch nicht auslösen
+
+`VERIFICATION_TREND_WINDOW` stand auf 10 Läufen bei einer ausschließenden Grenze
+(`rate < 50.0`). Über die letzten 10 Läufe lag die Quote bei exakt 50,0 % – die Warnung blieb
+aus, während sie über alle 134 Läufe bei 14,2 % lag. Ein Fenster von 10 Läufen ist für ein
+Signal, das strukturelle Probleme aufdecken soll, ohnehin zu verrauscht: Ein einzelner grüner
+Lauf verschiebt die Quote um 10 Prozentpunkte. Fenster jetzt 25, Grenze einschließend. Damit
+meldet die Auswertung den tatsächlichen Stand von 32,0 % statt zu schweigen.
+
+### Tests
+
+`tests/test_optimization_advisor.py` (Vergleichsbasis, Notlösung ohne Messwerte, Ausklammern des
+A/B-Arms, Grenzfall exakt auf der Schwelle, Fenstergröße) und
+`tests/test_provider_exhaustion.py` (laufweite Quote inklusive `sentinelgrid`-Muster,
+Mindeststichprobe, Budget-Stopp vor dem Start, keine Verfälschung der Quoten durch übersprungene
+Aufrufe).
+
+---
+
 ## 🔴 Lauf-Analyse cloudpulse 2026-09-16: Der Verifier suchte das Frontend am falschen Ort
 
 Auswertung von `logs/FEHLERANALYSE_KI_TEAM_20260916.md` zum Lauf `cloudpulse` (FastAPI-Backend plus

@@ -63,8 +63,15 @@ SIGNIFICANT_SUCCESS_RATE_GAP = 30.0
 # aufgezeichneten Läufen wäre jede Quote (0% oder 100%) noch reines Rauschen, ab 3 wird ein
 # durchgehendes Scheitern aussagekräftig genug für einen Hinweis.
 MIN_VERIFICATION_SAMPLE_SIZE = 3
+# Laufanalyse 2026-09-16: Die Warnung konnte praktisch nicht auslösen. Über die letzten 10 Läufe
+# lag die Quote bei exakt 50,0% - und `rate < 50.0` ist damit False. Gleichzeitig lag sie über
+# alle 134 aufgezeichneten Läufe bei 14,2% und über die letzten 30 bei 26,7%. Ein Fenster von 10
+# Läufen ist für ein Signal, das STRUKTURELLE Probleme aufdecken soll, zu verrauscht: ein
+# einziger grüner Lauf verschiebt die Quote um 10 Prozentpunkte. Fenster deshalb auf 25 (das
+# entspricht bei der bisherigen Laufkadenz gut zwei Wochen) und die Grenze einschließend, damit
+# ein Team, das jeden zweiten Lauf nicht grün bekommt, nicht unbemerkt bleibt.
 VERIFICATION_SUCCESS_RATE_THRESHOLD = 50.0
-VERIFICATION_TREND_WINDOW = 10
+VERIFICATION_TREND_WINDOW = 25
 # Punkt 5 der Team-Retrospektive (2026-09-06): wie oft dieselbe Lektionen-Kategorie am selben
 # Projekt in core/team_memory.py.team_lessons.jsonl wiederkehrt, bevor das als strukturelles
 # Muster gemeldet wird (statt als isolierter Einzelfund, den record_lesson() ohnehin schon
@@ -199,6 +206,36 @@ class OptimizationReport:
         )
 
 
+def _current_model_entry(agent_id: str, eligible: list[dict]) -> dict:
+    """
+    Das Modell, mit dem diese Rolle aktuell TATSÄCHLICH läuft - als Vergleichsbasis für einen
+    Modell-Vorschlag.
+
+    Realer Fund (Laufanalyse 2026-09-16): Als "aktuell" galt hier das in der Historie
+    MEISTGENUTZTE Modell. Das ist etwas anderes als die geltende Zuweisung, sobald diese sich
+    innerhalb des Auswertungsfensters geändert hat - und dann kippt die Auswertung ins
+    Gegenteil. Konkret lief `tester` laut config.py auf gemini-3.8-flash (66,2% Erfolg,
+    ⌀50.716 Tokens), während gemini-3.1-flash-lite aus älteren Läufen mehr Aufrufe gesammelt
+    hatte (100% Erfolg, ⌀41.486 Tokens). Damit war `best == current`, die Funktion brach mit
+    "das meistgenutzte Modell ist bereits das beste" ab - und der eine Vorschlag, der die Rolle
+    gleichzeitig zuverlässiger UND billiger gemacht hätte, wurde nie erzeugt. Dasselbe Muster
+    traf `frontend` (72,3% statt 100%).
+
+    Die Zuweisung kommt deshalb aus config.get_model_for_agent() - ohne den Zufallsarm eines
+    laufenden A/B-Tests, der die Basis sonst bei jedem Aufruf verschieben würde. Nur wenn zu
+    diesem Modell keine ausreichend geprüften Messwerte vorliegen, bleibt das meistgenutzte
+    Modell die Notlösung: Ein Vergleich braucht auf BEIDEN Seiten Zahlen.
+    """
+    try:
+        konfiguriert = config.get_model_for_agent(agent_id, include_ab_trial=False)
+    except Exception:  # noqa: BLE001 - eine Auswertung darf nie an der Modellauflösung scheitern
+        konfiguriert = ""
+    for eintrag in eligible:
+        if eintrag["model"] == konfiguriert:
+            return eintrag
+    return max(eligible, key=lambda e: e["calls"])
+
+
 def analyze(limit_runs: int = 100) -> OptimizationReport:
     """
     Wertet die letzten `limit_runs` Läufe aus (memory/run_history.py) und erkennt zwei Arten
@@ -207,9 +244,10 @@ def analyze(limit_runs: int = 100) -> OptimizationReport:
     1. Modell-Vergleich je Agent: Läuft ein Agent bereits mit MEHREREN unterschiedlichen
        Modellen in der Historie (z.B. nach einem manuellen .env-Wechsel), wird das empirisch
        beste vorgeschlagen – NUR wenn beide Modelle die Mindest-Stichprobengröße erreichen UND
-       der Unterschied deutlich genug ist (siehe MIN_SUCCESS_RATE_GAP). "Aktuell" ist dabei das
-       unter den ausreichend geprüften Modellen am häufigsten genutzte – die Historie spiegelt
-       bereits wider, was tatsächlich lief, ein Blick in config.py ist dafür nicht nötig. Ist das
+       der Unterschied deutlich genug ist (siehe MIN_SUCCESS_RATE_GAP). "Aktuell" ist dabei die
+       geltende Zuweisung aus config.get_model_for_agent() und NICHT das meistgenutzte Modell
+       der Historie – siehe _current_model_entry() für den Lauf, an dem dieser Unterschied
+       auffiel. Ist das
        vorgeschlagene Modell spürbar teurer (siehe TOKEN_COST_INCREASE_TOLERANCE), muss der
        Erfolgsquoten-Vorsprung den größeren SIGNIFICANT_SUCCESS_RATE_GAP erreichen.
     2. Auffällig niedrige Erfolgsquote: ein Agent, dessen Erfolgsquote deutlich unter dem
@@ -228,9 +266,9 @@ def analyze(limit_runs: int = 100) -> OptimizationReport:
         if len(eligible) < 2:
             continue  # nur EIN Modell in der Historie ausreichend geprüft - kein Vergleich möglich
         best = max(eligible, key=lambda e: e["success_rate"])
-        current = max(eligible, key=lambda e: e["calls"])
+        current = _current_model_entry(agent_id, eligible)
         if best["model"] == current["model"]:
-            continue  # das häufigst genutzte Modell ist bereits das beste
+            continue  # das tatsächlich zugewiesene Modell ist bereits das beste
         gap = best["success_rate"] - current["success_rate"]
         if gap < MIN_SUCCESS_RATE_GAP:
             continue
@@ -262,7 +300,7 @@ def analyze(limit_runs: int = 100) -> OptimizationReport:
                 ))
 
     verification = get_verification_success_rate(VERIFICATION_TREND_WINDOW)
-    if verification["runs"] >= MIN_VERIFICATION_SAMPLE_SIZE and verification["rate"] < VERIFICATION_SUCCESS_RATE_THRESHOLD:
+    if verification["runs"] >= MIN_VERIFICATION_SAMPLE_SIZE and verification["rate"] <= VERIFICATION_SUCCESS_RATE_THRESHOLD:
         report.verification_trend = VerificationTrend(
             runs=verification["runs"], passed=verification["passed"], rate=verification["rate"],
         )
@@ -376,7 +414,7 @@ def format_report_for_humans(report: OptimizationReport) -> str:
     ]
     for s in report.model_suggestions:
         lines.append(
-            f"- **{s.agent_id}**: aktuell überwiegend `{s.current_model}` "
+            f"- **{s.agent_id}**: aktuell zugewiesen `{s.current_model}` "
             f"({s.current_success_rate}% Erfolgsquote, ⌀{s.current_avg_tokens:.0f} Tokens/Aufruf, "
             f"{s.current_calls} Aufrufe) – `{s.suggested_model}` lief historisch besser "
             f"({s.suggested_success_rate}% Erfolgsquote, ⌀{s.suggested_avg_tokens:.0f} Tokens/Aufruf, "
@@ -458,7 +496,7 @@ def record_suggestions_as_lessons(report: OptimizationReport) -> None:
             detail=(
                 f"Agent '{s.agent_id}' lief mit '{s.suggested_model}' empirisch besser "
                 f"({s.suggested_success_rate}% Erfolgsquote, ⌀{s.suggested_avg_tokens:.0f} Tokens/Aufruf) "
-                f"als mit dem aktuell überwiegend genutzten '{s.current_model}' "
+                f"als mit dem aktuell zugewiesenen '{s.current_model}' "
                 f"({s.current_success_rate}%, ⌀{s.current_avg_tokens:.0f} Tokens/Aufruf) - Modellzuweisung prüfen."
             ),
         )

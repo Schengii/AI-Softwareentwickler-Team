@@ -255,6 +255,8 @@ class Orchestrator(
         # von Aufrufern genutzt werden, die nicht über process() gehen (core/backlog_worker.py).
         self._provider_exhausted_this_run: bool = False
         self._provider_breaker_tripped: bool = False
+        # Speicher hinter DispatchMixin._infra_results_this_run (laufweite Breaker-Quote).
+        self._infra_results_store: list = []
         # True, wenn department.py die Generierungsphase NUR wegen der
         # VERIFICATION_TOKEN_RESERVE_RATIO-Reserve gestoppt hat, nicht wegen des vollen
         # Budgets. Dieses Flag darf die Verifikation NICHT überspringen lassen - genau dafür
@@ -619,6 +621,7 @@ class Orchestrator(
         # diesen neuen Lauf fälschlich als betroffen kennzeichnen.
         self._provider_exhausted_this_run = False
         self._provider_breaker_tripped = False
+        self._infra_results_store = []
         self._generation_budget_reached_this_run = False
 
         # Pro-Projekt-Kostenbudget (siehe __init__), bereits VOR dem ersten Agenten-Aufruf

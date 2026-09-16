@@ -372,8 +372,15 @@ def get_model_env_key(agent_id: str) -> str:
     return AGENT_MODEL_ENV_KEYS.get(agent_id, f"{agent_id.upper()}_MODEL")
 
 
-def get_model_for_agent(agent_id: str) -> str:
-    """Ermittelt das konfigurierte LLM-Modell für einen Agenten unter Berücksichtigung von Overrides."""
+def get_model_for_agent(agent_id: str, include_ab_trial: bool = True) -> str:
+    """
+    Ermittelt das konfigurierte LLM-Modell für einen Agenten unter Berücksichtigung von Overrides.
+
+    `include_ab_trial=False` klammert Schritt 3b (den Zufallsarm eines laufenden A/B-Tests) aus
+    und liefert damit die STABILE Zuweisung dieser Rolle. Genau die braucht
+    core/optimization_advisor.py als Vergleichsbasis: Mit dem Zufallsarm wäre die "aktuelle"
+    Zuweisung bei jedem Aufruf eine andere und die Auswertung nicht reproduzierbar.
+    """
     # 1. Spezifischer Rollen-Override
     if agent_id in AGENT_MODELS and os.getenv(get_model_env_key(agent_id)):
         return AGENT_MODELS[agent_id]
@@ -413,6 +420,8 @@ def get_model_for_agent(agent_id: str) -> str:
             return model
 
     # 3b. Laufender A/B-Test: ein Anteil der Läufe nutzt das Kandidatenmodell.
+    if not include_ab_trial:
+        return AGENT_MODELS.get(agent_id, DEFAULT_AGENT_MODEL)
     try:
         from core.model_ab_trials import trial_model_for_agent
 
@@ -625,6 +634,22 @@ DEPLOY_TIMEOUT_SECONDS: float = float(os.getenv("DEPLOY_TIMEOUT_SECONDS", "300")
 # Anteil (0.0-1.0) infrastrukturbedingt gescheiterter Aufrufe EINER Welle, ab dem der Lauf
 # sauber beendet wird. 0 schaltet den Breaker ab (altes Verhalten).
 PROVIDER_EXHAUSTION_ABORT_RATIO: float = float(os.getenv("PROVIDER_EXHAUSTION_ABORT_RATIO", "0.6"))
+
+# Laufanalyse 2026-09-16: Die Wellenschwelle oben und PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT unten
+# haben denselben blinden Fleck - beide sehen nur einen AUSSCHNITT. Verteilen sich die
+# Kontingent-Ausfälle gleichmäßig und von Erfolgen durchsetzt über viele kleine Wellen, bleibt
+# jede Welle unter 60% und keine zwei Fehlschläge stehen hintereinander. Im Lauf `sentinelgrid`
+# scheiterten so 5 von 15 Aufrufen (33%), ohne dass ein Breaker ansprach: 105.972 Tokens für
+# einen Lauf, der rot endete. Diese dritte Sicht kumuliert über den GESAMTEN Lauf.
+# Anteil (0.0-1.0) infrastrukturbedingt gescheiterter Aufrufe seit Laufbeginn; 0 schaltet ab.
+# 0.30: knapp unter den 33% aus `sentinelgrid`, damit genau dieses Muster erfasst wird. Ein Lauf,
+# dem fast ein Drittel aller Agenten-Aufrufe an der Infrastruktur wegbricht, hat effektiv ein
+# Drittel des Teams verloren - weiterzulaufen kostet dann nur noch Tokens.
+PROVIDER_EXHAUSTION_RUN_ABORT_RATIO: float = float(os.getenv("PROVIDER_EXHAUSTION_RUN_ABORT_RATIO", "0.30"))
+# Mindestzahl aufgezeichneter Aufrufe, bevor die laufweite Quote überhaupt zählt - bei 2
+# Aufrufen ist ein einzelner 429er bereits 50% und trotzdem keine Aussage (realer Fall
+# `ai_team_framework`: 1 von 2 Aufrufen, ein Abbruch wäre dort falsch gewesen).
+PROVIDER_EXHAUSTION_RUN_MIN_SAMPLE: int = int(os.getenv("PROVIDER_EXHAUSTION_RUN_MIN_SAMPLE", "6"))
 
 # Team-Optimierung (chronos_queue-Retrospektive, 20260911): PROVIDER_EXHAUSTION_ABORT_RATIO oben
 # greift nur INNERHALB einer einzelnen parallelen Welle (asyncio.gather, siehe

@@ -28,6 +28,8 @@ from core.optimization_advisor import (
     MIN_TEAMWIDE_LESSON_RECURRENCE,
     MIN_TOTAL_RUNS_FOR_UNUSED_CHECK,
     MIN_VERIFICATION_SAMPLE_SIZE,
+    VERIFICATION_SUCCESS_RATE_THRESHOLD,
+    VERIFICATION_TREND_WINDOW,
     LowPerformingAgent,
     ModelSuggestion,
     OptimizationReport,
@@ -89,6 +91,47 @@ class TestOptimizationAdvisor(unittest.TestCase):
         self.assertEqual(s.current_model, "model-a")
         self.assertEqual(s.suggested_model, "model-b")
         self.assertGreaterEqual(s.suggested_success_rate - s.current_success_rate, MIN_SUCCESS_RATE_GAP)
+
+    def test_baseline_is_the_configured_model_not_the_most_used_one(self):
+        """
+        Realer Fund (Laufanalyse 2026-09-16): Als Vergleichsbasis galt das MEISTGENUTZTE Modell
+        der Historie. Wurde die Zuweisung innerhalb des Auswertungsfensters umgestellt, sammelte
+        das ALTE (bessere) Modell weiter die meisten Aufrufe - `best == current`, und der
+        Vorschlag, der zurück auf das bessere Modell geführt hätte, entfiel stillschweigend.
+        Betroffen waren gleichzeitig tester, frontend, qa_lead, api_integration und design_lead.
+        """
+        # "alt" ist besser UND hat mehr Aufrufe; "neu" ist die tatsächlich geltende Zuweisung.
+        self._record("tester", "alt", success=True, calls=10)
+        self._record("tester", "neu", success=True, calls=2)
+        self._record("tester", "neu", success=False, calls=4)
+
+        with patch.object(config, "get_model_for_agent", return_value="neu"):
+            report = analyze()
+
+        self.assertEqual(len(report.model_suggestions), 1)
+        s = report.model_suggestions[0]
+        self.assertEqual(s.current_model, "neu")
+        self.assertEqual(s.suggested_model, "alt")
+
+    def test_baseline_falls_back_to_most_used_when_configured_model_unmeasured(self):
+        """Ohne Messwerte zum konfigurierten Modell fehlt eine Vergleichsseite - dann bleibt das
+        meistgenutzte Modell die Basis, statt den Vergleich ganz aufzugeben."""
+        self._record("backend", "model-a", success=False, calls=4)
+        self._record("backend", "model-a", success=True, calls=6)
+        self._record("backend", "model-b", success=True, calls=5)
+
+        with patch.object(config, "get_model_for_agent", return_value="nie-gemessen"):
+            report = analyze()
+
+        self.assertEqual(len(report.model_suggestions), 1)
+        self.assertEqual(report.model_suggestions[0].current_model, "model-a")
+
+    def test_baseline_ignores_running_ab_trial_arm(self):
+        """Die Basis muss reproduzierbar sein - der Zufallsarm eines laufenden A/B-Tests darf sie
+        nicht bei jedem Aufruf verschieben."""
+        with patch.object(config, "AGENT_MODELS", {"tester": "stabil"}),                 patch("core.model_ab_trials.trial_model_for_agent", return_value="kandidat"):
+            self.assertEqual(config.get_model_for_agent("tester", include_ab_trial=False), "stabil")
+            self.assertEqual(config.get_model_for_agent("tester"), "kandidat")
 
     def test_no_suggestion_when_only_one_model_used(self):
         self._record("backend", "model-a", success=True, calls=MIN_SAMPLE_SIZE)
@@ -793,6 +836,36 @@ class TestVerificationTrendWarning(unittest.TestCase):
         warning = get_recent_verification_trend_warning()
 
         self.assertIn("Verifikations-Trend", warning)
+
+    def test_exactly_at_threshold_still_warns(self):
+        """
+        Realer Fund (Laufanalyse 2026-09-16): Die Grenze war ausschließend (`rate < 50.0`). Über
+        die letzten 10 Läufe lag die Quote bei exakt 50,0% - die Warnung blieb aus, obwohl über
+        alle 134 aufgezeichneten Läufe nur 14,2% grün wurden. Genau jeder zweite Lauf zu
+        scheitern ist kein akzeptabler Zustand, den das Team stillschweigend hinnehmen sollte.
+        """
+        for ok in (True, False) * 5:
+            record_run(project_slug="p", task_summary="x", verification_ok=ok, total_tokens=1, duration_seconds=1, agent_results=[])
+
+        trend = analyze().verification_trend
+
+        self.assertIsNotNone(trend)
+        self.assertEqual(trend.rate, VERIFICATION_SUCCESS_RATE_THRESHOLD)
+        self.assertIn("Verifikations-Trend", get_recent_verification_trend_warning())
+
+    def test_single_green_run_does_not_mask_a_failing_window(self):
+        """Das alte Fenster von 10 Läufen war so klein, dass ein einzelner grüner Lauf die Quote
+        um 10 Prozentpunkte verschob. Bei 25 Läufen bleibt ein strukturell rotes Bild sichtbar."""
+        for _ in range(20):
+            record_run(project_slug="p", task_summary="x", verification_ok=False, total_tokens=1, duration_seconds=1, agent_results=[])
+        for _ in range(5):
+            record_run(project_slug="p", task_summary="x", verification_ok=True, total_tokens=1, duration_seconds=1, agent_results=[])
+
+        trend = analyze().verification_trend
+
+        self.assertIsNotNone(trend)
+        self.assertEqual(trend.runs, VERIFICATION_TREND_WINDOW)
+        self.assertEqual(trend.rate, 20.0)
 
 
 if __name__ == "__main__":

@@ -263,7 +263,31 @@ class DepartmentMixin:
             if effective_run_mode == "parallel":
                 for task in member_tasks:
                     notify(f"  ▶️ [yellow]Fachteam arbeitet:[/yellow] {self._agents[task.agent_id].name}...")
-                member_results = await self._run_agents_parallel(member_tasks, notify=notify)
+
+                def _budget_stop_reason() -> str | None:
+                    """Vor JEDEM Start dieser Welle geprüft - siehe _run_agents_parallel().
+                    Bei MAX_CONCURRENT_AGENTS=2 arbeitet eine größere Phase mehrere Blöcke
+                    nacheinander ab; ohne diese Prüfung liefe der letzte Block auch dann noch,
+                    wenn das Budget im ersten längst gerissen wurde."""
+                    if run_start_tokens is None:
+                        return None
+                    if self._generation_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens):
+                        if self._generation_reserve_is_hard_abort(run_start_tokens):
+                            return self._budget_exceeded_label(run_start_tokens) + " erreicht"
+                        return "Generierungsreserve erreicht"
+                    return None
+
+                member_results = await self._run_agents_parallel(
+                    member_tasks, notify=notify, should_stop=_budget_stop_reason,
+                )
+                # Die Welle kann Aufrufe übersprungen haben - dann gilt dieselbe
+                # Hard-Abort-/Reserve-Unterscheidung wie im sequenziellen Zweig unten, damit der
+                # Lauf nicht mit der nächsten Phase weitermacht, als wäre nichts gewesen.
+                if len(member_results) < len(member_tasks):
+                    if run_start_tokens is not None and self._generation_reserve_is_hard_abort(run_start_tokens):
+                        budget_aborted = True
+                    else:
+                        self._generation_budget_reached_this_run = True
                 # Folge desselben Problems: parallele Agenten können dieselbe Datei schreiben
                 # (z.B. requirements.txt), wobei der letzte Schreiber still gewinnt. Welche
                 # Version richtig ist, lässt sich nicht automatisch entscheiden - der Fund wird

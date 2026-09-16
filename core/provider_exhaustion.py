@@ -156,3 +156,24 @@ def should_trip_breaker(results: list, threshold: float) -> bool:
     if threshold <= 0 or not results:
         return False
     return infrastructure_failure_ratio(results) >= threshold
+
+
+def should_trip_run_breaker(results: list, threshold: float, min_sample: int) -> bool:
+    """
+    Dasselbe über ALLE bisherigen Aufrufe eines Laufs statt nur über die aktuelle Welle.
+
+    Realer Fund (Laufanalyse 2026-09-16): should_trip_breaker() oben sieht immer nur EINE Welle.
+    Verteilt sich der Kontingent-Engpass gleichmäßig über viele kleine Wellen, bleibt jede
+    einzelne unter der Schwelle, obwohl der Lauf als Ganzes längst ausblutet. Im Lauf
+    `sentinelgrid` scheiterten 5 von 15 Aufrufen (33%) an erschöpften Kontingenten - keine Welle
+    erreichte die 60%-Wellenschwelle, der Lauf arbeitete alle Phasen ab, verbrauchte 105.972
+    Tokens und endete trotzdem rot. Dasselbe Muster bei `certpulse` (20%, 115.117 Tokens). Alle
+    Läufe des Auswertungsfensters mit Kontingent-Ausfällen endeten ohne bestandene Verifikation.
+
+    `min_sample` verhindert den umgekehrten Fehler: Bei zwei Aufrufen ist ein einzelner
+    429er-Ausfall bereits eine Quote von 50%, aber keine Aussage über den Lauf (realer Fall
+    `ai_team_framework`: 1 von 2). Erst ab genug Aufrufen ist die Quote belastbar.
+    """
+    if threshold <= 0 or len(results) < max(min_sample, 1):
+        return False
+    return infrastructure_failure_ratio(results) >= threshold

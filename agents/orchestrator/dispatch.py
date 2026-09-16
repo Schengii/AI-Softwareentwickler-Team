@@ -8,17 +8,32 @@ import asyncio
 import logging
 from collections.abc import Callable
 
-from config import MAX_CONCURRENT_AGENTS, PROVIDER_EXHAUSTION_ABORT_RATIO
+from config import (
+    MAX_CONCURRENT_AGENTS,
+    PROVIDER_EXHAUSTION_ABORT_RATIO,
+    PROVIDER_EXHAUSTION_RUN_ABORT_RATIO,
+    PROVIDER_EXHAUSTION_RUN_MIN_SAMPLE,
+)
 from core.message_bus import AgentResult, AgentTask
 from core.provider_exhaustion import (
     all_failed_on_provider_exhaustion,
     infrastructure_failure_ratio,
     should_trip_breaker,
+    should_trip_run_breaker,
 )
 
 
 class DispatchMixin:
     """Routet AgentTasks an den zuständigen Agenten und führt sie einzeln/parallel aus."""
+
+    @property
+    def _infra_results_this_run(self) -> list:
+        """Alle Agenten-Ergebnisse seit Laufbeginn - Grundlage der laufweiten Breaker-Quote.
+        Als Property mit Lazy-Initialisierung, damit der Mixin auch in Tests ohne vollständiges
+        Orchestrator-Setup (agents/orchestrator/__init__.py) nutzbar bleibt."""
+        if getattr(self, "_infra_results_store", None) is None:
+            self._infra_results_store: list = []
+        return self._infra_results_store
 
     def _provider_exhaustion_ticket_note(self) -> str:
         """Kurzer Hinweistext für ein Backlog-Ticket, das während eines Laufs eröffnet wurde,
@@ -78,7 +93,21 @@ class DispatchMixin:
         self,
         agent_tasks: list[AgentTask],
         notify: Callable[[str], None] | None = None,
+        should_stop: Callable[[], str | None] | None = None,
     ) -> list[AgentResult]:
+        """
+        Führt eine Welle von Agenten-Aufgaben aus, gedrosselt durch MAX_CONCURRENT_AGENTS.
+
+        `should_stop` wird direkt VOR dem Start jeder einzelnen Aufgabe ausgewertet (nicht nur
+        einmal zu Wellenbeginn) und liefert einen Grundtext, wenn nicht mehr gestartet werden
+        soll - sonst None. Laufanalyse 2026-09-16: Das Budget wurde bisher nur am Phasenkopf und
+        nach jedem SEQUENZIELLEN Mitglied geprüft. Bei MAX_CONCURRENT_AGENTS=2 arbeitet eine
+        parallele Phase mit sechs Mitgliedern aber drei Blöcke nacheinander ab - dazwischen lag
+        keine einzige Prüfung, obwohl genau dort Tokens im sechsstelligen Bereich anfallen (im
+        Lauf `cloudpulse` allein 273.468 für den backend-Agenten). Ein Abbruch mitten in einem
+        laufenden `asyncio.gather` ist weiterhin nicht sinnvoll möglich - eine noch gar nicht
+        gestartete Aufgabe zu überspringen dagegen schon.
+        """
         # Thundering-Herd-Schutz (siehe config.MAX_CONCURRENT_AGENTS-Docstring): begrenzt, wie
         # viele Agenten-Aufrufe INNERHALB dieser Welle wirklich gleichzeitig laufen, statt alle
         # Mitglieder eines Fachbereichs auf einmal gegen dieselben TPM-/RPM-Provider-Limits
@@ -87,8 +116,18 @@ class DispatchMixin:
         # im Orchestrator ohnehin sequenziell (nicht parallel zueinander) laufen.
         semaphore = asyncio.Semaphore(max(1, MAX_CONCURRENT_AGENTS))
 
-        async def _wrapped(task: AgentTask) -> AgentResult:
+        skipped: list[str] = []
+
+        async def _wrapped(task: AgentTask) -> AgentResult | None:
             async with semaphore:
+                grund = should_stop() if should_stop is not None else None
+                if grund:
+                    # Bewusst KEIN AgentResult: ein nie gestarteter Aufruf ist weder ein Erfolg
+                    # noch ein Fehlschlag. Als Fehlschlag gezählt würde er die Erfolgsquoten in
+                    # memory/run_history.py und die Infrastruktur-Quote des Circuit Breakers
+                    # verfälschen; als Erfolg gezählt würde er Arbeit vortäuschen.
+                    skipped.append(self._agents[task.agent_id].name if task.agent_id in self._agents else task.agent_id)
+                    return None
                 res = await self._run_single_agent(task)
             if notify:
                 notify(self._status_notify_line("✅ [green]Abgeschlossen[/green]", "❌ [red]Fehler[/red]", res.agent_name, res.duration_seconds, res.success, res.error))
@@ -98,7 +137,13 @@ class DispatchMixin:
             *[_wrapped(task) for task in agent_tasks],
             return_exceptions=False,
         )
-        results = list(results)
+        results = [r for r in results if r is not None]
+        if skipped and notify:
+            grund = (should_stop() if should_stop is not None else None) or "Budget erschöpft"
+            notify(
+                f"  ⏭️ [yellow]{grund} – {len(skipped)} noch nicht gestartete(r) Agenten-Aufruf(e) "
+                f"dieser Welle übersprungen: {', '.join(skipped)}.[/yellow]"
+            )
 
         # Team-Optimierung (KI-Team-Weiterentwicklung, echter Fund: memory/history_default.json,
         # 2026-09-09 - 11 von 32 Agenten-Aufrufen scheiterten am Ende eines Laufs in Folge mit
@@ -134,5 +179,26 @@ class DispatchMixin:
                     f"🛑 [red]{anteil:.0%} der Agenten dieser Welle scheiterten an fehlenden API-"
                     "Kontingenten/Schlüsseln. Der Lauf wird sauber beendet, statt weiter Tokens "
                     "für einen Lauf zu verbrauchen, der nichts produzieren kann.[/red]"
+                )
+
+        # Dritte Sicht neben Welle (oben) und Folge-Fehlschlägen (department.py): die Quote über
+        # den GESAMTEN Lauf. Nur so fällt ein Engpass auf, der sich gleichmäßig und von Erfolgen
+        # durchsetzt über viele kleine Wellen verteilt - siehe should_trip_run_breaker() für den
+        # Lauf, an dem das auffiel.
+        self._infra_results_this_run.extend(results)
+        if not getattr(self, "_provider_breaker_tripped", False) and should_trip_run_breaker(
+            self._infra_results_this_run,
+            PROVIDER_EXHAUSTION_RUN_ABORT_RATIO,
+            PROVIDER_EXHAUSTION_RUN_MIN_SAMPLE,
+        ):
+            self._provider_exhausted_this_run = True
+            self._provider_breaker_tripped = True
+            anteil = infrastructure_failure_ratio(self._infra_results_this_run)
+            if notify:
+                notify(
+                    f"🛑 [red]Seit Laufbeginn scheiterten {anteil:.0%} aller Agenten-Aufrufe "
+                    f"({len(self._infra_results_this_run)} insgesamt) an fehlenden API-Kontingenten/"
+                    "Schlüsseln - keine einzelne Welle fiel dabei auf. Der Lauf wird sauber "
+                    "beendet, statt weiter Tokens zu verbrauchen.[/red]"
                 )
         return results

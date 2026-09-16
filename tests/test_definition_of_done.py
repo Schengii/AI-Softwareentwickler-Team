@@ -20,6 +20,10 @@ from core.definition_of_done import (
 )
 
 
+def _blocking(dod):
+    return [c.key for c in dod.blocking_criteria]
+
+
 def _dod(tmp_path, **kwargs):
     basis = {"files_written": 3, "tests_ran": True, "tests_passed": True}
     basis.update(kwargs)
@@ -162,3 +166,85 @@ class TestZusammenfassung:
     def test_symbole_unterscheiden_nicht_geprueft_von_durchgefallen(self, tmp_path, symbol, kwargs):
         text = _dod(tmp_path, **kwargs).format_summary()
         assert f"- {symbol} Die Anwendung startet" in text
+
+
+class TestFrontendErwartungAusAuftrag:
+    """
+    Regressionsschutz für den syncwave-Fund (2026-09-16): `frontend_planned` wurde daraus
+    abgeleitet, WELCHE AGENTEN LIEFEN, steuerte aber `ui_ok.required` und
+    `missing_frontend_ui.applicable` – der Wächter für ein fehlendes oder kaputtes Frontend
+    schaltete sich also genau dann ab, wenn der Planer keinen frontend-Agenten einplante.
+    syncwave stand dadurch mit `is_done: true, blocking: []` auf der Platte, obwohl der
+    Browser-UI-Check hart gescheitert war.
+    """
+
+    def test_gescheiterter_ui_check_blockiert_auch_ohne_frontend_agent(self, tmp_path):
+        (tmp_path / "main.py").write_text("app = 1\n", encoding="utf-8")
+        dod = _dod(
+            tmp_path,
+            user_request="FastAPI-Log-Monitoring-Plattform mit WebSocket-Dashboard",
+            frontend_planned=False,
+            ui_ok=False,
+        )
+        assert "ui_ok" in _blocking(dod)
+
+    def test_fehlende_ui_dateien_blockieren_bei_beauftragter_oberflaeche(self, tmp_path):
+        (tmp_path / "main.py").write_text("app = 1\n", encoding="utf-8")
+        dod = _dod(
+            tmp_path,
+            user_request="Baue ein Dashboard mit Diagrammen im Browser",
+            frontend_planned=False,
+        )
+        assert "missing_frontend_ui" in _blocking(dod)
+
+    def test_reines_backend_projekt_bleibt_unberuehrt(self, tmp_path):
+        (tmp_path / "main.py").write_text("app = 1\n", encoding="utf-8")
+        dod = _dod(
+            tmp_path,
+            user_request="Baue eine Notizen-REST-API mit FastAPI und SQLite, CRUD-Endpunkte",
+            frontend_planned=False,
+            ui_ok=None,
+        )
+        assert "ui_ok" not in _blocking(dod)
+        assert "missing_frontend_ui" not in _blocking(dod)
+
+
+class TestFehlendeMessungBlockiert:
+    """
+    Regressionsschutz: `applicable=<wert> is not None` behandelte "nicht gemessen" wie "nicht
+    relevant". `VerificationOutcome.status()` liefert `None` aber sowohl für bewusst
+    übersprungene als auch für nie aufgezeichnete Prüfungen – eine abgebrochene Start- oder
+    Installationsprüfung wurde dadurch stillschweigend zu "fertig".
+    """
+
+    def test_fehlender_startmesswert_blockiert_wenn_die_pipeline_lief(self, tmp_path):
+        (tmp_path / "main.py").write_text("app = 1\n", encoding="utf-8")
+        dod = _dod(tmp_path, verification_ran=True, app_starts=None)
+        assert "app_starts" in _blocking(dod)
+
+    def test_ohne_einstiegspunkt_bleibt_der_startcheck_nicht_anwendbar(self, tmp_path):
+        dod = _dod(tmp_path, verification_ran=True, app_starts=None)
+        assert "app_starts" not in _blocking(dod)
+
+    def test_fehlende_installationsmessung_blockiert_nur_mit_manifest(self, tmp_path):
+        ohne = _dod(tmp_path, verification_ran=True, deps_installable=None)
+        assert "deps_installable" not in _blocking(ohne)
+        (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+        mit = _dod(tmp_path, verification_ran=True, deps_installable=None)
+        assert "deps_installable" in _blocking(mit)
+
+    def test_fehlendes_gesamturteil_blockiert(self, tmp_path):
+        dod = _dod(tmp_path, verification_ran=True, verification_ok=None)
+        assert "verification_ok" in _blocking(dod)
+
+    def test_uebersprungene_verifikation_blockiert_nicht(self, tmp_path):
+        (tmp_path / "main.py").write_text("app = 1\n", encoding="utf-8")
+        dod = _dod(tmp_path, verification_ran=True, verification_skipped=True,
+                   app_starts=None, verification_ok=None)
+        assert _blocking(dod) == []
+
+    def test_ohne_flag_bleibt_das_alte_verhalten(self, tmp_path):
+        (tmp_path / "main.py").write_text("app = 1\n", encoding="utf-8")
+        (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+        dod = _dod(tmp_path, app_starts=None, deps_installable=None, verification_ok=None)
+        assert _blocking(dod) == []

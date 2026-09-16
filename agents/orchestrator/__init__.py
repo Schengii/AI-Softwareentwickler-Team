@@ -1101,6 +1101,10 @@ class Orchestrator(
                 verification_ok=verification_ok,
                 failed_checks=_outcome.failed_checks,
                 verification_skipped=bool(budget_aborted or manually_cancelled),
+                # Die Verifikations-Pipeline lief hier immer (`_outcome` stammt aus ihr).
+                # Damit gilt ein fehlender Messwert bei einer Pflichtprüfung als Blocker statt
+                # als "nicht relevant" - siehe build_definition_of_done().
+                verification_ran=True,
                 user_request=user_request,
                 # Macht das dateibasierte "missing_frontend_ui"-Kriterium nur verpflichtend,
                 # wenn ein frontend-Agent eingeplant war - unabhängig von dessen Erfolg, denn

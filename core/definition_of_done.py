@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -164,6 +165,60 @@ _BACKEND_HINT_KEYWORDS = (
     "fastapi", "flask", "django", "uvicorn", "webhook", "microservice",
 )
 _BACKEND_HINT_DEP_MARKERS = ("fastapi", "flask", "django", "uvicorn", "starlette", "aiohttp")
+
+# Analyse 2026-09-16 (syncwave): `frontend_planned` wurde in agents/orchestrator/__init__.py aus
+# `any(r.agent_id == "frontend" for r in results)` abgeleitet - also daraus, WELCHE AGENTEN
+# TATSAECHLICH LIEFEN. Dieser Wert steuerte aber `ui_ok.required` UND
+# `missing_frontend_ui.applicable`: Plante der Planer keinen frontend-Agenten ein, schalteten
+# sich genau die beiden Kriterien ab, die einen fehlenden oder kaputten Frontend-Teil finden
+# sollen. Der Waechter deaktivierte sich also in exakt dem Fall, fuer den er gebaut wurde.
+#
+# Realer Beleg: syncwave ("FastAPI-Log-Monitoring-Plattform mit WebSocket-Dashboard") scheiterte
+# hart am Browser-UI-Check (WebSocket-Handshake ohne 'Connection'-Header) und bekam ein
+# Verifikations-Veto - aber `ui_ok` stand auf `required=False`, weil kein frontend-Agent lief.
+# Ergebnis auf der Platte: `is_done: true, blocking: []` trotz gescheiterter Oberflaeche.
+#
+# Die Erwartung "hier gehoert eine Oberflaeche dazu" stammt deshalb jetzt zusaetzlich aus dem
+# Auftragstext. Kurze Token stehen bewusst mit Wortgrenzen in der Liste: "ui" als reine
+# Teilzeichenkette trifft sonst "build", "requirements" oder "guide".
+_FRONTEND_REQUEST_KEYWORDS = (
+    "frontend", "dashboard", "oberfläche", "oberflaeche", "web-app", "webapp", "web app",
+    "single-page", "browser", "benutzeroberfläche", "benutzeroberflaeche",
+    "svelte", "tailwind", "dark mode", "responsive",
+    "diagramm", "formular", "login-screen", "ui/ux",
+)
+# Nur mit Wortgrenze pruefbar: als reine Teilzeichenkette trifft "lit" sonst "sqlite",
+# "spa" trifft "spalte", "ui" trifft "build"/"requirements"/"guide" und "chart" trifft "charta".
+_FRONTEND_REQUEST_WORDS = (
+    "ui", "html", "css", "seite", "seiten", "lit", "spa", "react", "vue", "chart", "charts",
+)
+_FRONTEND_REQUEST_WORD_RE = re.compile(
+    r"(?<![\w])(" + "|".join(_FRONTEND_REQUEST_WORDS) + r")(?![\w])", re.IGNORECASE,
+)
+
+
+def _requires_frontend_ui(user_request: str, project_dir: Path) -> bool:
+    """
+    Erkennt, ob zu diesem Auftrag eine Oberflaeche gehoert - unabhaengig davon, ob ein
+    frontend-Agent eingeplant war oder Erfolg hatte.
+
+    Zwei Belege gelten: der Auftragstext nennt eine Oberflaeche, oder im Projekt ist bereits
+    eine rein clientseitige Frontend-Abhaengigkeit deklariert (dann war ein Frontend
+    unstrittig gewollt, auch wenn die Dateien fehlen).
+    """
+    text = (user_request or "").lower()
+    if any(kw in text for kw in _FRONTEND_REQUEST_KEYWORDS):
+        return True
+    if text and _FRONTEND_REQUEST_WORD_RE.search(text):
+        return True
+    pkg_json = Path(project_dir) / "package.json"
+    if pkg_json.is_file():
+        try:
+            inhalt = pkg_json.read_text(encoding="utf-8", errors="ignore").lower()
+        except OSError:
+            return False
+        return any(marker in inhalt for marker in _FRONTEND_ONLY_DEP_MARKERS)
+    return False
 _BACKEND_HINT_JS_MARKERS = ("express", "fastify", "koa", "nestjs", "@nestjs/core")
 _FRONTEND_ONLY_DEP_MARKERS = ("lit", "react", "vue", "svelte")
 _PYTHON_BACKEND_FILE_CANDIDATES = (
@@ -325,6 +380,7 @@ def build_definition_of_done(
     coverage_percent: float | None = None,
     min_coverage: float = 0.0,
     verification_skipped: bool = False,
+    verification_ran: bool = False,
     user_request: str = "",
     frontend_planned: bool = False,
     build_passes: bool | None = None,
@@ -339,12 +395,53 @@ def build_definition_of_done(
     Kriterien blockieren bewusst nicht. Das ist der Unterschied zu "geprüft und durchgefallen"
     (False), den der bisherige Prosa-Status nie machen konnte.
 
+    Ausnahme davon ist `verification_ran=True`: lief die Verifikations-Pipeline wirklich, dann
+    ist ein fehlender Messwert bei einer PFLICHT-Prüfung kein "nicht relevant", sondern ein
+    "hätte gemessen werden müssen, wurde es aber nicht" - z.B. weil die Prüfung abgebrochen ist.
+    Solche Kriterien blockieren dann und tragen `nicht gemessen` als Detail. Ohne dieses Flag
+    (Voreinstellung) bleibt das alte, nachsichtige Verhalten erhalten.
+
     `verification_ok=False` (Gesamtergebnis der Verifikation) blockiert immer, sofern die
     Verifikation nicht übersprungen wurde - ein Projekt kann nie gleichzeitig "fertig" und
     "Verifikation fehlgeschlagen" sein. `failed_checks` benennt die gescheiterten Prüfungen.
     """
     pfad = Path(project_dir)
     kriterien: list[Criterion] = []
+
+    # Siehe `_requires_frontend_ui()`: `frontend_planned` allein sagt nur, WELCHE AGENTEN LIEFEN,
+    # und schaltete damit genau die Frontend-Waechter ab, wenn kein frontend-Agent eingeplant war.
+    # Die Erwartung stammt deshalb zusaetzlich aus dem Auftragstext bzw. aus bereits deklarierten
+    # Frontend-Abhaengigkeiten im Projekt.
+    frontend_erwartet = frontend_planned or _requires_frontend_ui(user_request, pfad)
+
+    # Analyse 2026-09-16: `applicable=<wert> is not None` behandelte "nicht gemessen" wie "nicht
+    # relevant". Fuer die Pflichtpruefungen unten ist das genau falsch, sobald die Verifikation
+    # tatsaechlich lief: `core/verification_outcome.py` liefert `status() is None` sowohl fuer
+    # bewusst uebersprungene ALS AUCH fuer nie aufgezeichnete Pruefungen (z.B. nach einem Abbruch).
+    # Eine abgebrochene Installations- oder Startpruefung wurde dadurch stillschweigend zu
+    # "fertig". Lief die Pipeline, gilt ein fehlender Messwert deshalb als Blocker.
+    # Ein fehlender Messwert blockiert aber nur dort, wo die Messung ueberhaupt geschuldet war:
+    # `smoke` wird bewusst nicht aufgezeichnet, wenn es keinen startbaren Einstiegspunkt gibt, und
+    # `deps_install` nicht, wenn es keine Abhaengigkeitsdatei zu installieren gibt. Diese beiden
+    # Faelle sind echte "nicht anwendbar" und duerfen nicht zu Blockern werden.
+    fehlmessung_blockt = verification_ran and not verification_skipped
+    hat_dependency_manifest = any(
+        (pfad / name).is_file()
+        for name in ("requirements.txt", "requirements-dev.txt", "pyproject.toml", "setup.py",
+                     "Pipfile", "package.json")
+    )
+
+    def _gemessen(wert: bool | None, geschuldet: bool) -> tuple[bool, str]:
+        """
+        Liefert (applicable, detail) fuer eine Pflichtpruefung. Fehlt der Messwert, obwohl die
+        Pipeline lief und die Pruefung fuer dieses Projekt faellig war, wird das Kriterium
+        anwendbar - und damit (weil `passed=False`) zum Blocker.
+        """
+        if wert is not None:
+            return True, ""
+        if fehlmessung_blockt and geschuldet:
+            return True, "nicht gemessen - die Prüfung lief nicht zu Ende"
+        return False, ""
 
     # Das grundlegendste Kriterium überhaupt - und genau das, was im Lauf event_ticket_api
     # fehlte, ohne dass der Projektstatus es benannt hätte.
@@ -398,13 +495,15 @@ def build_definition_of_done(
         key="deps_installable",
         label="Abhängigkeiten sind installierbar",
         passed=bool(deps_installable),
-        applicable=deps_installable is not None,
+        applicable=_gemessen(deps_installable, hat_dependency_manifest)[0],
+        detail=_gemessen(deps_installable, hat_dependency_manifest)[1],
     ))
     kriterien.append(Criterion(
         key="app_starts",
         label="Die Anwendung startet",
         passed=bool(app_starts),
-        applicable=app_starts is not None,
+        applicable=_gemessen(app_starts, _find_entrypoint_file(pfad) is not None)[0],
+        detail=_gemessen(app_starts, _find_entrypoint_file(pfad) is not None)[1],
     ))
     kriterien.append(Criterion(
         key="secrets_clean",
@@ -428,12 +527,13 @@ def build_definition_of_done(
     # bekommt hier ein EIGENES, nicht-verpflichtendes Kriterium, damit er sichtbar bleibt, ohne
     # die Backend-Testsuite mit in den Abgrund zu ziehen.
     # Für ein beauftragtes Frontend ist ein fehlgeschlagener UI-Check ein echter Mangel (die
-    # Oberfläche funktioniert nicht) - nur ohne eingeplanten frontend-Agenten bleibt er ein Hinweis.
+    # Oberfläche funktioniert nicht) - nur wo gar keine Oberfläche beauftragt war, bleibt er ein
+    # Hinweis.
     kriterien.append(Criterion(
         key="ui_ok",
         label="Frontend/UI-Check ohne Befund",
         passed=bool(ui_ok),
-        required=frontend_planned,
+        required=frontend_erwartet,
         applicable=ui_ok is not None,
     ))
     kriterien.append(Criterion(
@@ -457,8 +557,8 @@ def build_definition_of_done(
     # edit_file gespeichert"). Ein komplett ausgefallenes Frontend blieb dadurch unbemerkt -
     # `ui_ok=None` ("nicht anwendbar") statt eines echten, blockierenden Befunds. Dieses
     # Kriterium prüft NUR dateibasiert (kein LLM/Browser nötig) und ist ausschließlich
-    # `applicable`, wenn ein frontend-Agent tatsächlich eingeplant war (`frontend_planned`) -
-    # ein Projekt ohne beauftragtes Frontend blockiert dadurch nie.
+    # `applicable`, wenn zu diesem Auftrag ueberhaupt eine Oberflaeche gehoert
+    # (`frontend_erwartet`) - ein Projekt ohne beauftragtes Frontend blockiert dadurch nie.
     hat_web_entrypoint_datei = (
         any((pfad / rel).is_file() for rel in _WEB_ENTRYPOINT_CANDIDATES) or has_served_html_ui(pfad)
     )
@@ -466,9 +566,9 @@ def build_definition_of_done(
         key="missing_frontend_ui",
         label="Beauftragtes Frontend wurde tatsächlich geliefert",
         passed=hat_web_entrypoint_datei,
-        applicable=frontend_planned,
+        applicable=frontend_erwartet,
         detail=(
-            "" if hat_web_entrypoint_datei or not frontend_planned
+            "" if hat_web_entrypoint_datei or not frontend_erwartet
             else "kein index.html/src/main.tsx/... gefunden - Frontend-Agent ist am Hard "
                  "Delivery Gate gescheitert oder hat keine UI-Dateien geschrieben"
         ),
@@ -501,13 +601,15 @@ def build_definition_of_done(
         ),
     ))
 
-    if verification_ok is not None and not verification_skipped:
+    if not verification_skipped and (verification_ok is not None or fehlmessung_blockt):
         offene_checks = ", ".join(failed_checks or [])
         kriterien.append(Criterion(
             key="verification_ok",
             label="Die Gesamt-Verifikation ist ohne Veto",
             passed=bool(verification_ok),
             detail="" if verification_ok else (
+                "kein Gesamtergebnis der Verifikation vorhanden - die Pipeline lief, "
+                "hat aber kein Urteil hinterlassen" if verification_ok is None else
                 f"fehlgeschlagene Prüfungen: {offene_checks}" if offene_checks
                 else "mindestens eine Verifikations-Prüfung ist fehlgeschlagen"
             ),

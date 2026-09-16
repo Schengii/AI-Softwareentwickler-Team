@@ -1,9 +1,9 @@
 {
   "project_slug": "ping_service",
-  "timestamp": "2026-09-16T08:39:41+00:00",
+  "timestamp": "2026-09-16T08:56:59+00:00",
   "is_done": false,
   "blocking": [
-    "deps_installable"
+    "verification_ok"
   ],
   "criteria": [
     {
@@ -33,7 +33,7 @@
     {
       "key": "deps_installable",
       "label": "Abhängigkeiten sind installierbar",
-      "passed": false,
+      "passed": true,
       "required": true,
       "detail": "",
       "applicable": true
@@ -105,9 +105,9 @@
     {
       "key": "verification_ok",
       "label": "Die Gesamt-Verifikation ist ohne Veto",
-      "passed": true,
+      "passed": false,
       "required": true,
-      "detail": "",
+      "detail": "fehlgeschlagene Prüfungen: pre_flight, sast",
       "applicable": true
     },
     {

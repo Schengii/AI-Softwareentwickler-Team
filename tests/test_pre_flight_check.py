@@ -682,3 +682,41 @@ class TestUnresolvedImportName(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOwnProjectPackage(unittest.TestCase):
+    """Realer Fund (fastapi_ping, 2026-09-16): `from ping_service.main import app` in tests/ galt als
+    fehlendes PyPI-Paket; der deterministische Fix trug `ping-service` in requirements-dev.txt ein und
+    `pip install -r` scheiterte daran - die Verifikation blieb dauerhaft rot."""
+
+    def test_import_of_own_package_is_local_not_a_missing_dependency(self):
+        import tempfile
+        from pathlib import Path
+
+        root = Path(tempfile.mkdtemp()) / "ping_service"
+        (root / "tests").mkdir(parents=True)
+        (root / "__init__.py").write_text("", encoding="utf-8")
+        (root / "main.py").write_text("app = 1\n", encoding="utf-8")
+        (root / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+        (root / "tests" / "__init__.py").write_text("", encoding="utf-8")
+        (root / "tests" / "test_ping.py").write_text(
+            "from ping_service.main import app\n\n\ndef test_app():\n    assert app\n", encoding="utf-8",
+        )
+
+        report = run_pre_flight_check(str(root))
+        self.assertEqual([i.issue_type for i in report.issues], [])
+
+    def test_without_init_py_the_project_name_is_still_reported(self):
+        import tempfile
+        from pathlib import Path
+
+        root = Path(tempfile.mkdtemp()) / "ping_service"
+        (root / "tests").mkdir(parents=True)
+        (root / "main.py").write_text("app = 1\n", encoding="utf-8")
+        (root / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+        (root / "tests" / "test_ping.py").write_text(
+            "from ping_service.main import app\n\n\ndef test_app():\n    assert app\n", encoding="utf-8",
+        )
+
+        report = run_pre_flight_check(str(root))
+        self.assertIn("missing_dependency", [i.issue_type for i in report.issues])

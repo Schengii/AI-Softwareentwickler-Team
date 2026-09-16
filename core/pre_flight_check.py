@@ -489,8 +489,19 @@ def _get_top_level_import(module: str) -> str:
     return module.split(".")[0]
 
 
+def _same_package_name(a: str, b: str) -> bool:
+    """Vergleicht Paket-/Ordnernamen tolerant gegen `-`/`_` und Groß-/Kleinschreibung."""
+    return a.strip().lower().replace("-", "_") == b.strip().lower().replace("-", "_")
+
+
 def _is_local_module(top: str, project_dir: Path) -> bool:
     """True, wenn der Top-Level-Name ein lokales Modul/Paket im Projektordner ist."""
+    # Das Projektverzeichnis selbst ist ein Paket, wenn es eine __init__.py hat: `from ping_service.main
+    # import app` in tests/ ist dann ein LOKALER Import, kein fehlendes PyPI-Paket. Realer Fund
+    # (fastapi_ping, 2026-09-16): der Pre-Flight forderte `ping-service` als Abhängigkeit, der
+    # deterministische Fix trug es ein, `pip install -r` scheiterte daran und die Verifikation blieb rot.
+    if _same_package_name(top, project_dir.name) and (project_dir / "__init__.py").is_file():
+        return True
     if (project_dir / top).is_dir():
         return True
     if (project_dir / f"{top}.py").is_file():

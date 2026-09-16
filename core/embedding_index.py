@@ -34,7 +34,20 @@ EMBED_BATCH_SIZE = 50
 MAX_CHARS_PER_CHUNK = 6000  # Sicherheitsnetz gegen die Token-Obergrenze der Embedding-API
 
 VALID_EXTENSIONS = {".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".md", ".yml", ".yaml", ".sql", ".html", ".css"}
-IGNORED_DIR_PARTS = {".venv", "venv", ".ai_team_venv", CACHE_DIRNAME, "__pycache__", ".git", "node_modules", "dist", "build"}
+# Realer Fund (2026-09-16): Der Index am Framework-Root (project_dir="." über /audit-projekt,
+# siehe SENSITIVE_NAME_PATTERNS unten) wuchs auf 300 MB / 24.323 Chunks an - 4.482 der 5.367
+# indexierten Dateien stammten aus `.claude/` (Sitzungsdaten von Claude Code), weitere 464 aus
+# `workspace/` (fremde, generierte Zielprojekte) und der Rest aus `logs/`, `.ai_team_runs/` und
+# den Caches. Für jeden dieser Chunks wurde ein kostenpflichtiger Embedding-Aufruf bezahlt,
+# ohne dass der Inhalt für eine Code-Suche im Projekt je nützlich war. Die Liste deckt sich
+# bewusst mit `core/write_guard.py._IGNORED_DIRS` plus den Verzeichnissen, die nur am
+# Framework-Root vorkommen.
+IGNORED_DIR_PARTS = {
+    ".venv", "venv", ".ai_team_venv", CACHE_DIRNAME, "__pycache__", ".git", "node_modules",
+    "dist", "build", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    # Nur am Framework-Root relevant: Fremddaten, die kein Teil des indexierten Projekts sind.
+    ".claude", ".ai-team-worktrees", ".ai_team_runs", "workspace", "logs", ".github",
+}
 
 # Konsistent mit core/agent_toolbox.py::AgentToolbox.SENSITIVE_NAME_PATTERNS – project_dir
 # kann seit /audit-projekt auch auf das Framework-Root (echtes .env) zeigen, nicht nur auf

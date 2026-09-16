@@ -1,0 +1,4 @@
+{"timestamp": "2026-09-16T07:59:35.179187+00:00", "event": "project_scaffold_applied", "detail": "Stack fastapi: pytest.ini, requirements.txt, requirements-dev.txt, .env.example"}
+{"timestamp": "2026-09-16T08:04:06.563132+00:00", "event": "smoke_test_gate_failed", "detail": ""}
+{"timestamp": "2026-09-16T08:11:16.890494+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 1: 1 kritische(r) Befund(e) → security"}
+{"timestamp": "2026-09-16T08:12:39.703608+00:00", "event": "governance_fix_dispatched", "detail": "Versuch 2: 1 kritische(r) Befund(e) → backend"}

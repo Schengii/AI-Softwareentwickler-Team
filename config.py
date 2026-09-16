@@ -1025,6 +1025,7 @@ ENABLE_AGENT_WATCHDOG: bool = _env_flag("ENABLE_AGENT_WATCHDOG", True)
 
 # Review-Paar Frontend ↔ Backend im Integrations-Checkpoint (core/contract_verifier.py).
 ENABLE_CONTRACT_REVIEW: bool = _env_flag("ENABLE_CONTRACT_REVIEW", True)
+WATCHDOG_READ_STREAK_LIMIT: int = int(os.getenv("WATCHDOG_READ_STREAK_LIMIT", "3"))
 WATCHDOG_MAX_PROMPT_TOKENS: int = int(os.getenv("WATCHDOG_MAX_PROMPT_TOKENS", "80000"))
 WATCHDOG_TASK_TOKEN_CAP: int = int(os.getenv("WATCHDOG_TASK_TOKEN_CAP", "250000"))
 

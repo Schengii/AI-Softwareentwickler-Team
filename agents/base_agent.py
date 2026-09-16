@@ -26,6 +26,7 @@ from config import (
     MAX_AGENT_TOOL_ITERATIONS,
     MAX_HANDOFF_RETRIES,
     WATCHDOG_MAX_PROMPT_TOKENS,
+    WATCHDOG_READ_STREAK_LIMIT,
     WATCHDOG_TASK_TOKEN_CAP,
 )
 from core.agent_toolbox import AgentToolbox
@@ -336,6 +337,7 @@ class BaseAgent(ABC):
             code_writing=self.agent_id in CODE_WRITING_AGENT_IDS and not task.tools_read_only,
             max_prompt_tokens=WATCHDOG_MAX_PROMPT_TOKENS,
             task_token_cap=WATCHDOG_TASK_TOKEN_CAP,
+            read_streak_limit=WATCHDOG_READ_STREAK_LIMIT,
         ) if ENABLE_AGENT_WATCHDOG else None
         # Übergabe-Prüfung (core/handoff_check.py): wie oft der Agent bereits aufgefordert wurde,
         # statische Fehler in seinen eigenen Dateien vor der Abgabe zu beheben.

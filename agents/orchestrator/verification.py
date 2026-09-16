@@ -50,6 +50,7 @@ from core.dependency_manifest import (
     add_requirement,
     manifest_for_package,
     package_from_finding,
+    packages_from_install_hints,
     primary_python_manifest,
 )
 from core.failure_triage import (
@@ -267,6 +268,24 @@ class VerificationMixin:
             Path(f).name.lower() in cls._DEPENDENCY_MANIFEST_NAMES
             for r in fix_results for f in r.files_written
         )
+
+    @staticmethod
+    def _apply_pip_install_hints(project_dir: str, output: str) -> list[tuple[str, str]]:
+        """Trägt Pakete aus `pip install <paket>`-Hinweisen ins passende Manifest ein.
+
+        Liefert (Paket, Manifestname) je tatsächlich ergänztem Paket - leer, wenn nichts zu tun war.
+        """
+        added: list[tuple[str, str]] = []
+        for package in packages_from_install_hints(output):
+            target = manifest_for_package(Path(project_dir), package, "tests/")
+            if target is None:
+                continue
+            try:
+                if add_requirement(target, package):
+                    added.append((package, target.name))
+            except (ValueError, OSError):
+                continue
+        return added
 
     async def _resync_environment_if_dependencies_changed(
         self, verifier: ProjectVerifier, fix_results: list[AgentResult],
@@ -638,6 +657,7 @@ class VerificationMixin:
             summary_lines.extend(smoke_gate_summary)
 
         test_depth_fix_attempted = False
+        pip_hint_fix_attempted = False
         for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
             if cancel_requested and cancel_requested():
                 manually_cancelled = True
@@ -663,6 +683,23 @@ class VerificationMixin:
 
             notify(f"  🧪 [yellow]Testlauf {attempt}/{MAX_VERIFICATION_ITERATIONS}:[/yellow] Führe echte Tests aus...")
             report = await self._run_tests_logged(verifier, "erstlauf")
+
+            # Deterministisch: explizite "pip install <paket>"-Hinweise aus der Testausgabe (z. B.
+            # Starlettes TestClient-Hinweis auf httpx2) einmalig ins passende Manifest eintragen.
+            if not report.passed and not pip_hint_fix_attempted and project_dir:
+                added = self._apply_pip_install_hints(project_dir, f"{report.stdout}\n{report.stderr}")
+                if added:
+                    pip_hint_fix_attempted = True
+                    names = ", ".join(f"{pkg} ({manifest})" for pkg, manifest in added)
+                    notify(f"  📦 [green]Deterministisch ergänzt:[/green] {names} (Hinweis aus der Testausgabe).")
+                    summary_lines.append(f"- 📦 Versuch {attempt}: {len(added)} Paket(e) aus expliziten pip-Hinweisen ergänzt: {names}.")
+                    await self._resync_environment_if_dependencies_changed(
+                        verifier,
+                        [AgentResult(task_id="pip_hint", agent_id="refactoring", agent_name="deterministisch",
+                                     success=True, content="", files_written=[m for _, m in added])],
+                        notify, summary_lines,
+                    )
+                    continue
 
             if not report.ran:
                 if not report.passed:

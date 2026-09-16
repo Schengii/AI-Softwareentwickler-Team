@@ -179,7 +179,7 @@ class TestRedProjectRepair:
 
 class TestWatchdog:
     def test_read_without_write_fires_once_for_code_roles(self):
-        dog = AgentWatchdog(agent_id="backend", code_writing=True)
+        dog = AgentWatchdog(agent_id="backend", code_writing=True, read_streak_limit=2)
         read = [("read_file", {"path": "a.py"})]
         assert dog.observe(prompt_tokens=10, completion_tokens=1, tool_calls=read, tool_results=[{}], files_written_count=0) == []
         second = dog.observe(prompt_tokens=10, completion_tokens=1, tool_calls=read, tool_results=[{}], files_written_count=0)
@@ -215,10 +215,10 @@ class TestWatchdog:
             async def generate_with_tools(self, messages, system_prompt, tools, _allow_self_fallback=True):
                 seen.extend(m.text or "" for m in messages if m.role == "user")
                 calls["n"] += 1
-                if calls["n"] <= 2:
+                if calls["n"] <= 3:
                     return LLMResponse(text="", model_name="m", prompt_tokens=1, completion_tokens=1, total_tokens=2,
                                        tool_calls=[ToolCall(id=str(calls["n"]), name="read_file", arguments={"path": "app/a.py", "force": True})])
-                if calls["n"] == 3:
+                if calls["n"] == 4:
                     return LLMResponse(text="", model_name="m", prompt_tokens=1, completion_tokens=1, total_tokens=2,
                                        tool_calls=[ToolCall(id="w", name="write_file", arguments={"path": "app/b.py", "content": "B = 2\n"})])
                 return LLMResponse(text="Fertig.", model_name="m", prompt_tokens=1, completion_tokens=1, total_tokens=2, tool_calls=[])
@@ -319,3 +319,28 @@ class TestFrontendBackendContractReview:
         assert _is_contract_false_positive(dynamic, endpoints)
         assert _is_contract_false_positive(prefixed, endpoints)
         assert not _is_contract_false_positive(real, endpoints)
+
+
+class TestPipInstallHintFix:
+    """Realer Fund (ping_service, 2026-09-16): Starlette verlangt httpx2 - ohne ModuleNotFoundError."""
+
+    def test_hint_packages_are_added_to_dev_manifest(self, tmp_path):
+        from agents.orchestrator import Orchestrator
+
+        _write(tmp_path / "requirements.txt", "fastapi\n")
+        _write(tmp_path / "requirements-dev.txt", "pytest\n")
+        output = (
+            "E   RuntimeError: The starlette.testclient module requires the httpx2 package to be installed.\n"
+            "E   You can install this with:\n"
+            "E       $ pip install httpx2\n"
+        )
+        added = Orchestrator._apply_pip_install_hints(str(tmp_path), output)
+        assert added == [("httpx2", "requirements-dev.txt")]
+        assert "httpx2" in (tmp_path / "requirements-dev.txt").read_text(encoding="utf-8")
+        assert Orchestrator._apply_pip_install_hints(str(tmp_path), output) == []
+
+    def test_generic_install_commands_are_ignored(self, tmp_path):
+        from agents.orchestrator import Orchestrator
+
+        _write(tmp_path / "requirements.txt", "fastapi\n")
+        assert Orchestrator._apply_pip_install_hints(str(tmp_path), "pip install -r requirements.txt") == []

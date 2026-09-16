@@ -64,6 +64,25 @@ _PACKAGE_HINT_RES: tuple[re.Pattern[str], ...] = (
 )
 
 
+_PIP_INSTALL_HINT_RE = re.compile(r"(?:\$\s*)?pip3?\s+install\s+([A-Za-z][A-Za-z0-9._-]{1,48})")
+
+
+def packages_from_install_hints(text: str) -> list[str]:
+    """Pakete aus expliziten `pip install <paket>`-Hinweisen in einer Fehlerausgabe.
+
+    Realer Fund (ping_service, 2026-09-16): Starlette meldet beim TestClient-Import
+    "requires the httpx2 package ... $ pip install httpx2". Kein ModuleNotFoundError, also griff
+    keine der bestehenden Heuristiken - die Testsuite blieb rot, bis ein LLM-Agent es erriet.
+    """
+    seen: list[str] = []
+    for match in _PIP_INSTALL_HINT_RE.finditer(text or ""):
+        package = match.group(1).strip().strip(".,;:'\"")
+        if package.lower() in ("-r", "pip", "requirements.txt") or package in seen:
+            continue
+        seen.append(package)
+    return seen
+
+
 def package_from_finding(text: str) -> str | None:
     """Exakt benanntes PyPI-Paket aus einem Verifier-Befund, sonst None (dann entscheidet ein Agent)."""
     for pattern in _PACKAGE_HINT_RES:

@@ -1,0 +1,24 @@
+{
+  "modules": {
+    "app/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/database.py": {
+      "get_db": "function",
+      "init_db": "function",
+      "AsyncSessionLocal": "instance",
+      "engine": "instance"
+    },
+    "app/engine/executor.py": {
+      "ExecutionEngine": "class",
+      "execution_engine": "instance"
+    },
+    "app/services.py": {
+      "PipelineService": "class",
+      "RunService": "class",
+      "pipeline_service": "instance",
+      "run_service": "instance"
+    }
+  }
+}

@@ -18,7 +18,8 @@ Bevor du mit neuen Aufgaben, Optimierungen oder Analysen startest, orientiere di
 1. **Aktueller Code-Stand:** `git log -n 5 --oneline` (zeigt die letzten Commits und den aktuellen Branch).
 2. **Neueste Optimierungen & Historie:** Die obersten Zeilen von `CHANGELOG.md` lesen (nur die ersten ~60 Zeilen via Head/View, nicht die ganze Datei einlesen!).
 3. **Letzte Fehleranalysen & Traces:** Prüfe die neuesten Berichte in `logs/FEHLERANALYSE_*.md` sowie die letzten Ausführungs-Traces in `logs/runs/` bzw. `logs/verification/`.
-4. **Projektgedächtnis:** Bei architektonischen Grundsatzentscheidungen `00_PROJEKT_GEDAECHTNIS.md` im Obsidian-Vault konsultieren.
+4. **Bereits diagnostizierte, aber noch nicht behobene Befunde:** `memory/team_lessons.jsonl` (Einträge mit `"category": "root_cause_analysis"`) enthält Root-Cause-Analysen aus echten Läufen, die noch keinem Fix zugeordnet wurden – oft die ergiebigste Quelle für echte, bereits belegte Framework-Bugs statt Spekulation.
+5. **Projektgedächtnis:** Bei architektonischen Grundsatzentscheidungen `00_PROJEKT_GEDAECHTNIS.md` im Obsidian-Vault konsultieren.
 
 ---
 

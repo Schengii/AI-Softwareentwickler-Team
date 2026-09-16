@@ -1,0 +1,131 @@
+{
+  "project_slug": "pipeline_pilot",
+  "timestamp": "2026-09-16T18:59:13+00:00",
+  "is_done": false,
+  "blocking": [
+    "test_depth",
+    "verification_ok"
+  ],
+  "criteria": [
+    {
+      "key": "files_written",
+      "label": "Es wurde tatsächlich Code erzeugt",
+      "passed": true,
+      "required": true,
+      "detail": "18 Datei(en) geschrieben",
+      "applicable": true
+    },
+    {
+      "key": "tests_exist",
+      "label": "Eine echte Testsuite existiert",
+      "passed": true,
+      "required": true,
+      "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "tests_pass",
+      "label": "Die Testsuite läuft grün",
+      "passed": true,
+      "required": true,
+      "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "deps_installable",
+      "label": "Abhängigkeiten sind installierbar",
+      "passed": true,
+      "required": true,
+      "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "app_starts",
+      "label": "Die Anwendung startet",
+      "passed": true,
+      "required": true,
+      "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "secrets_clean",
+      "label": "Keine Secrets im Code",
+      "passed": true,
+      "required": true,
+      "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "lint_clean",
+      "label": "Linter ohne Befund",
+      "passed": false,
+      "required": false,
+      "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "ui_ok",
+      "label": "Frontend/UI-Check ohne Befund",
+      "passed": true,
+      "required": true,
+      "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "test_depth",
+      "label": "Die API-Routen werden in Tests tatsächlich aufgerufen",
+      "passed": false,
+      "required": true,
+      "detail": "zu viele Backend-Routen ohne Test (core/test_depth.py)",
+      "applicable": true
+    },
+    {
+      "key": "build_passes",
+      "label": "Der Produktions-Build läuft durch",
+      "passed": false,
+      "required": true,
+      "detail": "",
+      "applicable": false
+    },
+    {
+      "key": "missing_frontend_ui",
+      "label": "Beauftragtes Frontend wurde tatsächlich geliefert",
+      "passed": true,
+      "required": true,
+      "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "dark_mode_delivered",
+      "label": "Explizit beauftragtes Dark-Mode-Design wurde geliefert",
+      "passed": true,
+      "required": true,
+      "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "missing_entrypoint",
+      "label": "Ein echter Anwendungs-Einstiegspunkt existiert",
+      "passed": true,
+      "required": true,
+      "detail": "gefunden: main.py",
+      "applicable": true
+    },
+    {
+      "key": "verification_ok",
+      "label": "Die Gesamt-Verifikation ist ohne Veto",
+      "passed": false,
+      "required": true,
+      "detail": "fehlgeschlagene Prüfungen: lint, pre_flight, sast, test_depth, test_regression",
+      "applicable": true
+    },
+    {
+      "key": "readme",
+      "label": "README vorhanden",
+      "passed": false,
+      "required": false,
+      "detail": "",
+      "applicable": true
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PipelinePilot | CI/CD Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="dark-mode">
+    <nav>
+        <h1>PipelinePilot</h1>
+        <button id="add-pipeline-btn">Neue Pipeline</button>
+    </nav>
+    <main>
+        <section id="pipeline-list">
+            <h2>Pipelines</h2>
+            <div id="pipelines-container"></div>
+        </section>
+    </main>
+
+    <!-- Modal für neue Pipeline -->
+    <div id="modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Neue Pipeline erstellen</h3>
+            <input type="text" id="pipeline-name" placeholder="Name">
+            <textarea id="pipeline-desc" placeholder="Beschreibung"></textarea>
+            <button id="save-pipeline">Speichern</button>
+            <button id="close-modal">Abbrechen</button>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,45 +1,16 @@
 """
-agents/orchestrator/ – Der Hauptagent (Orchestrator) mit Fachbereichs-Teamleiter-Hierarchie
+agents/orchestrator/ – Der Hauptagent (Orchestrator) mit Fachbereichs-Teamleiter-Hierarchie.
 
-Workflow:
-1. Der Nutzer übergibt die Gesamtaufgabe an den Hauptagenten (Orchestrator).
-2. Der Hauptagent teilt die Gesamtaufgabe in 6 Fachbereiche auf:
-   - 🔵 Planung, Analyse & Architektur (geführt von Planning Lead)
-   - 🎨 Vorab-Design, UI/UX & Media (geführt von Design Lead)
-   - 🟢 Kern-Entwicklung (geführt von Dev Lead)
-   - 📚 Content, Doku & Barrierefreiheit (geführt von Content & Doc Lead)
-   - 🟡 Qualität, DevOps & Security (geführt von QA & Operations Lead)
-   - 🔴 Excellence, Hygiene & Evolution (geführt von Governance Lead)
-3. Jeder Fachbereichs-Teamleiter delegiert per ECHTEM LLM-Aufruf konkrete
-   Arbeitsanweisungen an sein Fachteam, lässt es arbeiten (die Mitglieder haben
-   dabei echten Datei-/Werkzeugzugriff auf das Projektverzeichnis – siehe
-   agents/base_agent.py) und konsolidiert die Ergebnisse anschließend per
-   weiterem echten LLM-Aufruf zu einem geprüften Fachbereichsbericht.
-4. Nach der QA-Phase installiert der Hauptagent Abhängigkeiten in einer
-   isolierten Umgebung und führt die ECHTE Testsuite aus (core/verifier.py).
-   Bei Fehlschlägen wird anhand der realen Tracebacks ermittelt, welcher
-   Agent die betroffene Datei geschrieben hat – nur dieser bekommt den
-   gezielten Korrekturauftrag (statt blind alle Dev-Agenten neu zu starten).
-5. Der Hauptagent sammelt alle Fachbereichsberichte und präsentiert dem
-   Nutzer das geprüfte Gesamtergebnis.
+Ablauf: Die Nutzeraufgabe wird zerlegt und auf 6 Fachbereichsleiter verteilt. Jeder Leiter
+delegiert per echtem LLM-Aufruf an sein Fachteam (mit Datei-/Werkzeugzugriff, siehe
+agents/base_agent.py) und konsolidiert die Ergebnisse zu einem Fachbereichsbericht. Danach
+laufen echte Dependency-Installation und Testsuite (core/verifier.py); anhand der Tracebacks
+bekommt gezielt der Agent den Fix-Auftrag, der die betroffene Datei geschrieben hat.
+Abschließend werden alle Berichte zum Gesamtergebnis synthetisiert.
 
----
-
-Struktur-Refactoring (dieses Paket ersetzt das frühere monolithische
-agents/orchestrator.py, keine Verhaltensänderung): die Orchestrierungs-Logik ist nach
-fachlichen Verantwortlichkeiten in Mixins aufgeteilt, die die Orchestrator-Klasse hier
-zusammensetzt:
-
-- department.py     – DepartmentMixin: Fachbereichs-Hierarchie (Delegation/Konsolidierung)
-- verification.py   – VerificationMixin: Governance-Fix-Schleife & echte Test-/Deployment-Verifikation
-- dispatch.py        – DispatchMixin: Agenten-Dispatch/Routing (einzeln & parallel)
-- budget.py          – BudgetMixin: Budget-/Kosten-Tracking (Lauf- & Projekt-Budget)
-- retrospective.py  – RetrospectiveMixin: Retrospektive & Agent-Trainer-Selbstoptimierung
-- reporting.py       – ReportingMixin: deterministische Berichts-/Statusbausteine
-- constants.py       – gemeinsame Modul-Konstanten (PHASE_ORDER, REVIEW_ONLY_AGENT_IDS, ...)
-
-Alle bisherigen Importpfade (`from agents.orchestrator import Orchestrator, ...`) bleiben
-unverändert nutzbar – siehe Re-Exports unten.
+Die Logik ist auf Mixins verteilt (department, verification, dispatch, budget, retrospective,
+reporting, constants ...), die diese Orchestrator-Klasse zusammensetzt. Alle bisherigen
+Importpfade (`from agents.orchestrator import Orchestrator, ...`) bleiben nutzbar.
 """
 
 import asyncio
@@ -183,13 +154,9 @@ class Orchestrator(
 
     def __init__(self, escalate_models: bool = False):
         """
-        escalate_models: Team-Optimierung (Retrospektive 2026-09-04) - core/backlog_worker.py
-        setzt dies ab dem ZWEITEN automatischen Versuch eines Governance-/Verifikations-Retry-
-        Tickets (core/backlog_worker.py._governance_retry_pool()). Realer Fund: fast jedes der
-        zuletzt bearbeiteten Projekte (sentinelproxy, taskpulse, webhook_shield, mockforge,
-        zeiterfassung_app) blieb nach den standardmäßigen 2 Fixversuchen (MAX_VERIFICATION_
-        ITERATIONS) rot, der automatische Backlog-Retry griff DANACH mit exakt demselben
-        Agenten/Modell erneut an - ohne jede Eskalation. Siehe _escalate_agent_models().
+        escalate_models: Von core/backlog_worker.py ab dem ZWEITEN automatischen Versuch eines
+        Governance-/Verifikations-Retry-Tickets gesetzt. Ohne das würde der Retry mit exakt
+        demselben Agenten/Modell erneut scheitern. Siehe _escalate_agent_models().
         """
         # 1. Fachbereichs-Teamleiter (Department Leads)
         self._dept_leads: dict[str, DepartmentLeadAgent] = {
@@ -251,110 +218,69 @@ class Orchestrator(
         self._history = ConversationHistory()
         self._workspace = WorkspaceManager()
 
-        # Vom TaskManager erzeugte, kurze Zusammenfassung der zuletzt verarbeiteten Aufgabe
-        # (nicht die rohe Nutzereingabe) – von interface/cli.py für die Commit-Message
-        # verwendet, siehe _ask_for_git_push(). Leer, solange noch kein Lauf abgeschlossen ist.
+        # Vom TaskManager erzeugte Kurzfassung der letzten Aufgabe (nicht die rohe
+        # Nutzereingabe) – von interface/cli.py als Commit-Message genutzt.
         self.last_task_summary: str = ""
-        # Kurzer, garantiert saniertes Projekt-Slug (siehe core/workspace.py) des letzten Laufs -
-        # zuverlässiger Fallback fuer die Commit-Message, falls last_task_summary trotz
-        # verschärftem DECOMPOSE_SYSTEM_PROMPT (core/task_manager.py) doch nur ein Echo der
-        # rohen, oft konversationellen Nutzereingabe ist (real beobachtet, z.B. "Ich möchte
-        # das ihr ein neues Projekt erstellt. Es" als Commit-Betreff).
+        # Sanitisierter Projekt-Slug des letzten Laufs – Commit-Message-Fallback, falls
+        # last_task_summary doch nur ein Echo der rohen Nutzereingabe ist.
         self.last_project_slug: str = ""
-        # Zuletzt für einen Selbstverbesserungslauf angelegter, isolierter Git-Worktree (siehe
-        # core/git_isolation.py) – None, solange noch kein solcher Lauf stattfand. Wird NICHT
+        # Zuletzt angelegter isolierter Git-Worktree (core/git_isolation.py). Wird NICHT
         # automatisch entfernt; der Mensch reviewt/merged/löscht ihn bewusst selbst.
         self.last_isolated_worktree = None
-        # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08, echte PR-Review-Kommentare):
-        # ReviewFinding-Objekte (core/review_gate.py) aus kritischen Governance-/Permission-
-        # Blocked-Befunden, die auch nach dem gezielten Fix-Loop UND dem verpflichtenden
-        # Re-Review noch bestehen (siehe agents/orchestrator/verification.py._run_governance_
-        # fix_loop()/_run_permission_blocked_clarification_fix()) - dieselben Befunde, die als
-        # unresolved-governance-critical-<slug>/unresolved-permission-blocked-<slug>-Tickets
-        # landen. interface/cli.py._ask_for_git_push()/core/backlog_worker.py lesen dieses
-        # Attribut NACH einem erfolgreichen create_pull_request() und hinterlassen echte,
-        # dateibezogene GitHub-Review-Kommentare (agents/github_agent.py.post_pr_review())
-        # statt den Befund nur im PR-Body zu verstecken. Leer im Normalfall (keine unbehobenen
-        # kritischen Funde).
+        # ReviewFinding-Objekte (core/review_gate.py), die auch nach Fix-Loop und Re-Review
+        # noch bestehen. interface/cli.py bzw. core/backlog_worker.py machen daraus nach einem
+        # erfolgreichen PR echte, dateibezogene GitHub-Review-Kommentare, statt den Befund nur
+        # im PR-Body zu verstecken. Leer im Normalfall.
         self.last_unresolved_review_findings: list = []
-        # True NUR, wenn die echte Testsuite des letzten Laufs tatsächlich gelaufen UND
-        # bestanden ist (siehe _run_verification_loop) – von interface/cli.py genutzt, um vor
-        # dem Git-Push-Gate zu warnen, statt unkommentiert "fertig" wirken zu lassen.
+        # True NUR, wenn die echte Testsuite des letzten Laufs gelaufen UND bestanden ist –
+        # interface/cli.py warnt damit vor dem Git-Push-Gate.
         self.last_verification_ok: bool = False
-        # Das vollständige Verifikations-Protokoll des letzten Laufs (dieselbe Markdown-Sektion,
-        # die auch final_output/den Chat-Verlauf ergänzt) - realer Fund am Pong-Projekt:
-        # last_verification_ok allein warnte zwar VOR dem Push im Terminal, aber der
-        # tatsächlich auf GitHub erstellte Pull Request trug KEINE dieser Information - ein
-        # Reviewer, der nur den PR sieht (nicht die Terminal-Session, in der er entstand),
-        # hatte keine Chance zu erkennen, dass die echte Testsuite nie bestätigt bestanden
-        # hatte. interface/cli.py._ask_for_git_push() bettet das jetzt direkt in den PR-Body ein.
+        # Vollständiges Verifikations-Protokoll des letzten Laufs. interface/cli.py bettet es
+        # in den PR-Body ein, damit ein Reviewer ohne Terminal-Session erkennt, ob die
+        # Testsuite je bestätigt bestanden hat.
         self.last_verification_summary: str = ""
-        # True, wenn mindestens eine Fachrolle im letzten Lauf `ask_human_for_clarification`
-        # genutzt hat (core/agent_toolbox.py) - eine echte, für die Aufgabe entscheidende
-        # Unklarheit, die NICHT geraten wurde. Getrennt von last_verification_ok: eine
-        # fehlgeschlagene Testsuite und eine offene Rückfrage sind verschiedene Gründe, einem
-        # Ergebnis nicht blind zu vertrauen, und verdienen unterschiedlichen Klartext im
-        # Push-Gate (interface/cli.py) bzw. in autonomen Läufen (core/backlog_worker.py).
+        # True, wenn eine Fachrolle `ask_human_for_clarification` genutzt hat. Bewusst getrennt
+        # von last_verification_ok: eine offene Rückfrage ist ein anderer Grund zum Misstrauen
+        # als ein Testfehler und verdient eigenen Klartext im Push-Gate.
         self.last_needs_human_input: bool = False
         self.last_clarification_questions: list[str] = []
-        # True, wenn MAX_RUN_TOKENS oder das Pro-Projekt-Budget (/constitution) im letzten Lauf
-        # überschritten wurde und deshalb verbleibende Fachbereiche/Mitglieder übersprungen
-        # wurden (siehe process(), lokale budget_aborted-Variable) - von interface/cli.py
-        # genutzt, um einen so vorzeitig beendeten Lauf im PR (Titel/Label/Body) genauso
-        # unübersehbar zu machen wie eine fehlgeschlagene Verifikation, statt dass nur
-        # .ai_team_status.json davon weiß.
+        # True, wenn MAX_RUN_TOKENS oder das Pro-Projekt-Budget überschritten wurde und deshalb
+        # Fachbereiche übersprungen wurden – interface/cli.py macht das im PR genauso sichtbar
+        # wie eine fehlgeschlagene Verifikation.
         self.last_budget_aborted: bool = False
-        # Strukturiertes Lauf-Protokoll (core/run_logger.py). Erst in process() gesetzt,
-        # sobald der Projektname feststeht - bis dahin None, damit jeder Aufrufer (z.B.
-        # agents/orchestrator/dispatch.py) defensiv auf Vorhandensein prüfen muss.
+        # Strukturiertes Lauf-Protokoll (core/run_logger.py). Erst in process() gesetzt, sobald
+        # der Projektname feststeht - Aufrufer müssen defensiv auf None prüfen.
         self._run_logger: RunLogger | None = None
-        # Beide Provider-Flags werden zu Beginn jedes process()-Laufs zurückgesetzt, hier aber
-        # zusätzlich vorbelegt: agents/orchestrator/dispatch.py kann auch von Aufrufern genutzt
-        # werden, die nicht über process() gehen (z.B. core/backlog_worker.py). Ohne Vorbelegung
-        # existierte das Attribut dann bis zum ersten Setzen gar nicht.
+        # Pro process()-Lauf zurückgesetzt, hier zusätzlich vorbelegt: dispatch.py kann auch
+        # von Aufrufern genutzt werden, die nicht über process() gehen (core/backlog_worker.py).
         self._provider_exhausted_this_run: bool = False
         self._provider_breaker_tripped: bool = False
-        # "Verification Reserve Paradox"-Fix (ChronosPulse-Analyse, 20260913): True, wenn
-        # agents/orchestrator/department.py die Code-Generierungsphase NUR wegen der
-        # VERIFICATION_TOKEN_RESERVE_RATIO-Reserve (config.py) gestoppt hat, NICHT wegen des
-        # vollen Lauf- oder Projekt-Budgets (siehe budget.py._generation_reserve_is_hard_abort).
-        # Anders als _provider_breaker_tripped/budget_aborted darf dieses Flag NICHT dazu
-        # führen, dass die nachfolgende Verifikation übersprungen wird - genau dafür wurde die
-        # Reserve ja freigehalten (siehe process() weiter unten).
+        # True, wenn department.py die Generierungsphase NUR wegen der
+        # VERIFICATION_TOKEN_RESERVE_RATIO-Reserve gestoppt hat, nicht wegen des vollen
+        # Budgets. Dieses Flag darf die Verifikation NICHT überspringen lassen - genau dafür
+        # wurde die Reserve freigehalten.
         self._generation_budget_reached_this_run: bool = False
-        # Ergebnis der maschinenlesbaren Fertigstellungs-Pruefung des letzten Laufs
-        # (core/definition_of_done.py) - von interface/ und evals/ als belastbare Quelle
-        # nutzbar, statt den Zustand aus Berichtstext zu raten.
+        # Maschinenlesbares Ergebnis der Fertigstellungs-Pruefung (core/definition_of_done.py) -
+        # belastbare Quelle, statt den Zustand aus Berichtstext zu raten.
         self.last_definition_of_done = None
-        # Pro-Projekt-Kostenbudget (core/project_constitution.py `max_project_tokens`,
-        # /constitution) - unabhängig vom globalen MAX_RUN_TOKENS (das begrenzt nur EINEN
-        # einzelnen Lauf). Bei jedem process()-Aufruf frisch aus der Konstitution des jeweils
-        # bearbeiteten Projekts gesetzt; 0 = kein Projekt-Budget aktiv (Standard, Verhalten
-        # unverändert). _project_tokens_before_run ist die bereits über frühere Läufe an
-        # DIESEM Projekt verbrauchte Summe (memory/run_history.py) - der aktuelle Lauf zählt on
-        # top über den bestehenden _tokens_used_since()-Mechanismus.
+        # Pro-Projekt-Kostenbudget (core/project_constitution.py) über ALLE Läufe hinweg -
+        # unabhängig von MAX_RUN_TOKENS, das nur einen einzelnen Lauf begrenzt. 0 = inaktiv.
+        # _project_tokens_before_run ist die bereits in früheren Läufen verbrauchte Summe.
         self._project_token_budget: int = 0
         self._project_tokens_before_run: int = 0
 
     def _escalate_agent_models(self, agent_ids: set[str] | None = None) -> set[str]:
         """
-        Stuft jeden Fachagenten, der nicht ohnehin bereits auf HEAVY_MODEL läuft, auf HEAVY_MODEL
-        hoch (siehe __init__.escalate_models-Docstring für den vollen Kontext). Best-effort: ein
-        einzelner Agent, dessen Modell-Erstellung fehlschlägt (z.B. fehlender API-Key für den
-        Zielprovider), behält sein bisheriges Modell statt den ganzen Lauf zu verhindern - dieselbe
-        Großzügigkeit wie beim Fallback in core/llm_factory.py.
+        Stuft jeden Fachagenten, der nicht ohnehin schon auf HEAVY_MODEL läuft, hoch.
+        Best-effort: ein Agent, dessen Modell-Erstellung fehlschlägt (z.B. fehlender API-Key),
+        behält sein bisheriges Modell statt den Lauf zu verhindern.
 
-        agent_ids: None (Standard, wie bisher) eskaliert ALLE Fachagenten für den Rest des Laufs -
-        genau das Verhalten, das core/backlog_worker.py beim automatischen Retry eines Governance-
-        Tickets nutzt. Eine konkrete Menge eskaliert NUR diese Agenten - siehe
-        _run_verification_loop weiter unten (verification.py): dort ist zum Zeitpunkt des letzten
-        Eskalationsversuchs innerhalb EINES Laufs bereits exakt bekannt, welche Agenten an der
-        stecken gebliebenen Datei hängen (`stuck_owners`), ein pauschales Hochstufen ALLER 33
-        Fachagenten (inkl. der an dem Fehler unbeteiligten) wäre unnötiger Mehrverbrauch.
+        agent_ids: None eskaliert ALLE Fachagenten (so nutzt es core/backlog_worker.py beim
+        Retry). Eine konkrete Menge eskaliert nur diese - innerhalb EINES Laufs ist bereits
+        bekannt, welche Agenten an der steckenden Datei hängen; alle 33 hochzustufen wäre
+        unnötiger Mehrverbrauch.
 
-        Gibt die IDs der tatsächlich hochgestuften Agenten zurück (leer, wenn `agent_ids` gesetzt
-        war, aber keiner davon ein bekannter Fachagent ist - z.B. ein Fachbereichsleiter statt
-        eines Spezialisten).
+        Gibt die IDs der tatsächlich hochgestuften Agenten zurück.
         """
         import config
         from core.llm_factory import LLMFactory, is_same_model
@@ -365,9 +291,8 @@ class Orchestrator(
         escalated: set[str] = set()
         for agent_id, agent in targets:
             # Kanonischer Vergleich statt `==`: Client-Wrapper entfernen das Provider-Präfix
-            # ("groq:openai/gpt-oss-120b" -> "openai/gpt-oss-120b"). Ein direkter Vergleich
-            # hielte deshalb jeden bereits hochgestuften Agenten für nicht hochgestuft, sobald
-            # HEAVY_MODEL ein präfixbehaftetes Modell ist (siehe core/llm_factory.py).
+            # ("groq:openai/gpt-oss-120b" -> "openai/gpt-oss-120b"), ein direkter Vergleich
+            # hielte bereits hochgestufte Agenten fälschlich für nicht hochgestuft.
             if is_same_model(agent._llm.model_name, heavy_model):
                 continue
             try:
@@ -386,13 +311,9 @@ class Orchestrator(
         cancel_requested: Callable[[], bool] | None = None,
     ) -> str:
         """Führt einen Lauf aus (siehe _process_impl) und garantiert, dass sein Lauf-Log IMMER mit
-        `run_closed` endet.
-
-        Realer Fund (Framework-Analyse 2026-09-10): Der Abschluss stand nur am regulären Ende von
-        _process_impl() - ein früher Return (Projekt-Budget erschöpft) oder eine Exception
-        hinterließ Logs ohne `run_closed`, die in jeder Auswertung fehlten. Zusätzlich wird der
-        Logger vor dem Lauf zurückgesetzt, damit frühe Agenten-Aufrufe nie in das Log des
-        VORHERIGEN Laufs derselben Orchestrator-Instanz geschrieben werden."""
+        `run_closed` endet - sonst fehlen früh abgebrochene oder abgestürzte Läufe in jeder
+        Auswertung. Der Logger wird vorab zurückgesetzt, damit frühe Agenten-Aufrufe nicht in das
+        Log des VORHERIGEN Laufs derselben Orchestrator-Instanz geschrieben werden."""
         self._run_logger = None
         self._begin_efficiency_tracking()
         try:
@@ -400,23 +321,13 @@ class Orchestrator(
                 user_request, status_callback, forced_project_dir, plan_confirmation_callback, cancel_requested,
             )
         except BaseException as exc:
-            # Gesamtsystem-Analyse (Framework-Analyse 2026-09-14, "verlorene Tracebacks"): bis
-            # hierhin wurde nur der EXCEPTION-KLASSENNAME persistiert (f"exception:{type(exc)
-            # .__name__}"), z.B. "exception:TypeError" - real beobachtet an drei aufeinander-
-            # folgenden ecochef-Läufen (20260913_{124114,140359,163546}), die alle mit demselben
-            # bloßen "TypeError" abbrachen. Ohne Zeile, Modul oder Nachricht war der Fehler aus
-            # den Logs allein NICHT diagnostizierbar - das Projekt blieb unfertig liegen.
-            # interface/cli.py hatte dieselbe Lücke an anderer Stelle (dort: ein blocked-Ticket
-            # mit nur str(e)) bereits einmal erkannt und behoben (dortiger Kommentar: "Ohne den
-            # [Traceback] ist nachträglich nicht mehr rekonstruierbar, WELCHE Zeile den Fehler
-            # auslöste"), aber nie auf DIESEN - strukturell identischen - Handler übertragen.
-            # Jetzt wird der volle Traceback (gedeckelt wie dort: die letzten 1000 Zeichen, denn
-            # dort stehen die eigentliche Fehlermeldung und die tiefsten Stack-Frames) sowohl im
-            # Lauf-Log selbst (für die automatisierte Root-Cause-Analyse, siehe
-            # core/root_cause_analyst.py) als auch als eigenes, NICHT-autonomes Backlog-Ticket
-            # festgehalten - ein Crash hat potenziell eine Framework-Ursache, kein Ticket, das
-            # core/backlog_worker.py von sich aus als Programmierauftrag umsetzen sollte (siehe
-            # dortige _AUTONOMOUS_SOURCES, "orchestrator_crash" ist bewusst nicht enthalten).
+            # Der reine Exception-Klassenname ("exception:TypeError") ist ohne Zeile, Modul und
+            # Nachricht nicht diagnostizierbar. Deshalb der volle Traceback - auf die letzten
+            # 1000 Zeichen gedeckelt, dort stehen Fehlermeldung und tiefste Stack-Frames -
+            # sowohl im Lauf-Log (für core/root_cause_analyst.py) als auch als eigenes Ticket.
+            # Dieses Ticket ist bewusst NICHT autonom (siehe _AUTONOMOUS_SOURCES in
+            # core/backlog_worker.py): ein Crash hat potenziell eine Framework-Ursache und ist
+            # kein Programmierauftrag.
             tb = traceback.format_exc()[-1000:]
             self._close_unfinished_run_log(f"exception:{type(exc).__name__}", traceback_text=tb)
             self._record_crash_ticket(exc, tb)
@@ -439,17 +350,12 @@ class Orchestrator(
             logging.getLogger(__name__).warning("Lauf-Log konnte nicht abgeschlossen werden: %s", e)
 
     def _record_crash_ticket(self, exc: BaseException, tb: str) -> None:
-        """Legt bei einem unbehandelten Absturz von process() ein Backlog-Ticket mit vollem
-        (gedecktem) Traceback an - best-effort, ein Fehler hier darf den ohnehin bereits
-        laufenden Absturz-Pfad nicht zusätzlich verschlimmern (siehe process()-Docstring/
-        Kommentar oben)."""
+        """Legt bei einem unbehandelten Absturz von process() ein Backlog-Ticket mit gedeckeltem
+        Traceback an - best-effort, ein Fehler hier darf den Absturz-Pfad nicht verschlimmern."""
         try:
             slug = self.last_project_slug or "unbekannt"
-            # Eine stabile, vom konkreten Zeitstempel unabhängige ticket_id (Exception-Klasse +
-            # Projekt-Slug) dedupliziert wiederholte Abstürze DERSELBEN Ursache zu einem Ticket,
-            # statt bei jedem der drei ecochef-Läufe ein neues, gleich lautendes anzulegen -
-            # dieselbe Update-statt-Neuanlage-Logik wie bei den "recurring-failure-"-Tickets in
-            # agents/orchestrator/verification.py.
+            # Stabile, zeitstempelfreie ticket_id (Exception-Klasse + Slug): dedupliziert
+            # wiederholte Abstürze derselben Ursache zu EINEM Ticket.
             ticket_id = f"orchestrator-crash-{type(exc).__name__}-{slug}"
             upsert_ticket(
                 ticket_id=ticket_id,
@@ -471,44 +377,31 @@ class Orchestrator(
         cancel_requested: Callable[[], bool] | None = None,
     ) -> str:
         """
-        plan_confirmation_callback: Wenn gesetzt, wird NACH der Aufgaben-Zerlegung, aber VOR
-        jeder Ausführung aufgerufen, WENN der Plan mindestens PLAN_CONFIRMATION_MIN_TASKS
-        Teilaufgaben umfasst (kleine, klar umrissene Aufgaben laufen ohne Rückfrage durch) -
-        lehnt der Callback ab, bricht der Lauf sauber ab, OHNE dass auch nur ein Agent
-        gestartet wurde (kein Tokenverbrauch für einen möglicherweise zu groß geratenen Plan).
+        plan_confirmation_callback: Wird NACH der Zerlegung, aber VOR jeder Ausführung
+        aufgerufen, sofern der Plan mindestens PLAN_CONFIRMATION_MIN_TASKS Teilaufgaben umfasst
+        (kleine Aufgaben laufen ohne Rückfrage durch). Bei Ablehnung bricht der Lauf ab, ohne
+        dass ein Agent gestartet wurde.
 
-        cancel_requested: Wenn gesetzt, wird VOR jeder Fachbereichs-Phase und VOR jedem
-        Verifikations-/Fixversuch abgefragt (dieselben Prüfpunkte wie das bestehende
-        MAX_RUN_TOKENS-Budget) – liefert er zu einem dieser Zeitpunkte True, wird der Lauf
-        wie beim Budget graceful beendet: verbleibende Arbeit übersprungen, bereits
-        Erarbeitetes trotzdem synthetisiert und ausgeliefert (kein bereits investierter
-        Tokenverbrauch verpufft ungenutzt). None (Standard) = kein Abbruch-Mechanismus
-        verfügbar – nur interface/cli.py (Strg+C) und interface/web_dashboard.py
-        (Job-Cancel-Endpunkt) reichen aktuell einen echten Callback durch.
+        cancel_requested: Wird vor jeder Fachbereichs-Phase und jedem Verifikations-/Fixversuch
+        abgefragt (dieselben Prüfpunkte wie das MAX_RUN_TOKENS-Budget). Bei True wird graceful
+        beendet: verbleibende Arbeit übersprungen, bereits Erarbeitetes trotzdem synthetisiert.
+        None = kein Abbruch-Mechanismus (nur CLI/Dashboard reichen einen echten Callback durch).
 
-        forced_project_dir: Wenn gesetzt (von interface/cli.py nach `/load <projekt>` befüllt),
-        arbeitet dieser Lauf IMMER in diesem Verzeichnis statt in einem frisch vom Modell
-        geratenen project_slug. Behebt einen realen Fund: `/load` setzte bisher zwar
-        `_loaded_project_dir`, das aber nirgends an process() durchgereicht wurde – jede
-        Chat-Nachricht landete trotz vorherigem `/load` in einem NEUEN Workspace-Ordner, statt
-        das geladene Projekt tatsächlich weiterzuentwickeln (Ursache mehrerer beobachteter
-        Duplikate wie `calculator_service`/`simple_calculator`).
+        forced_project_dir: Von interface/cli.py nach `/load <projekt>` befüllt - der Lauf
+        arbeitet dann IMMER in diesem Verzeichnis statt in einem frisch geratenen project_slug.
+        Ohne das landete jede Chat-Nachricht trotz `/load` in einem neuen Workspace-Ordner.
         """
         overall_start_time = time.monotonic()
-        # Reset gegen Datenleck aus einem VORHERIGEN process()-Aufruf derselben Orchestrator-
-        # Instanz (z.B. mehrere Chat-Runden in derselben CLI-Sitzung): ohne diesen Reset würde
-        # ein leerer/erfolgreicher aktueller Lauf fälschlich noch die unbehobenen Befunde des
-        # LETZTEN Laufs tragen, wenn dieser Lauf die entsprechende Fix-Schleife gar nicht
-        # durchläuft (siehe last_unresolved_review_findings-Docstring weiter unten im __init__).
+        # Reset gegen Datenleck aus einem VORHERIGEN process()-Aufruf derselben Instanz: sonst
+        # trüge ein erfolgreicher Lauf noch die unbehobenen Befunde des letzten Laufs, falls er
+        # die entsprechende Fix-Schleife gar nicht durchläuft.
         self.last_unresolved_review_findings = []
-        # Schnappschuss des GLOBALEN Tokenzählers (core/token_guard.py) vor diesem Lauf – nicht
-        # der Zähler selbst, da der Prozess (CLI-Sitzung/Dashboard-Worker) mehrere Läufe teilt.
-        # Der Verbrauch DIESES Laufs ergibt sich aus der Differenz zum aktuellen Stand (siehe
-        # _tokens_used_since()) und ist die Grundlage für das harte MAX_RUN_TOKENS-Budget.
+        # Schnappschuss des GLOBALEN Tokenzählers (core/token_guard.py), nicht der Zähler selbst:
+        # ein Prozess teilt sich mehrere Läufe. Der Verbrauch DIESES Laufs ist die Differenz
+        # (_tokens_used_since()) und Grundlage des harten MAX_RUN_TOKENS-Budgets.
         run_start_tokens = token_guard.get_summary()["grand_total_tokens"]
-        # Zusätzlich die Pro-Modell-Aufschlüsselung sichern (nicht nur den Gesamtwert) – Basis
-        # für die persistente, sitzungsübergreifende Kosten-Historie (memory/cost_history.py),
-        # die pro Modell/Provider mitschreibt, nicht nur einen einzelnen Gesamtwert.
+        # Zusätzlich die Pro-Modell-Aufschlüsselung sichern – Basis für die sitzungsübergreifende
+        # Kosten-Historie (memory/cost_history.py), die pro Modell/Provider mitschreibt.
         run_start_model_stats = token_guard.get_summary()["models"]
 
         def notify(msg: str):
@@ -523,16 +416,14 @@ class Orchestrator(
         task_summary, project_slug, agent_tasks = await self._task_manager.decompose(
             user_request, conversation_context=context, existing_projects=existing_projects
         )
-        # Für die Commit-Message-Vorschau in interface/cli.py: eine ECHTE, vom Modell erstellte
-        # Kurzfassung statt der rohen (oft konversationellen) Nutzereingabe. Wird auch bei einem
-        # Abbruch unten (keine Aufgaben ableitbar) nicht überschrieben, bleibt dann leer/alt.
+        # Für die Commit-Message-Vorschau in interface/cli.py. Bei einem Abbruch unten (keine
+        # Aufgaben ableitbar) bewusst nicht überschrieben.
         if agent_tasks:
             self.last_task_summary = task_summary
 
         if not agent_tasks:
-            # task_summary enthaelt bei einem echten Provider-Ausfall ("⚠️") oder einer
-            # Rueckfrage bei zu unklarer Aufgabe ("❓", siehe TaskManager.decompose()) bereits
-            # den konkreten Grund/die Fragen - sonst generischer Fallback.
+            # task_summary enthaelt bei Provider-Ausfall ("⚠️") oder Rueckfrage zu unklarer
+            # Aufgabe ("❓", TaskManager.decompose()) bereits den Grund - sonst Fallback.
             response = task_summary if task_summary.startswith(("⚠️", "❓")) else (
                 "⚠️ Ich konnte keine passenden Aufgaben ableiten. Bitte beschreibe die Aufgabe genauer."
             )
@@ -541,11 +432,9 @@ class Orchestrator(
 
         notify(f"📋 [bold white]Gesamtplan:[/bold white] {task_summary}")
 
-        # Plan-Freigabe-Gate: NACH der Zerlegung, aber VOR jeder Ausführung - noch kein Agent
-        # hat zu diesem Zeitpunkt auch nur einen Token verbraucht. Nur ab einer gewissen
-        # Plangröße (PLAN_CONFIRMATION_MIN_TASKS), damit kleine, klar umrissene Aufgaben
-        # weiterhin ohne Rückfrage durchlaufen - dieselbe "kein Overhead im Alltagsfall"-
-        # Abwägung wie bei der sequenziellen Ausführung kleiner Fachbereiche.
+        # Plan-Freigabe-Gate: NACH der Zerlegung, VOR jeder Ausführung - bis hier hat kein Agent
+        # einen Token verbraucht. Erst ab PLAN_CONFIRMATION_MIN_TASKS, damit kleine Aufgaben
+        # ohne Rückfrage durchlaufen.
         if plan_confirmation_callback and len(agent_tasks) >= PLAN_CONFIRMATION_MIN_TASKS:
             approved = await plan_confirmation_callback(task_summary, project_slug, agent_tasks)
             if not approved:
@@ -557,9 +446,8 @@ class Orchestrator(
                 return response
 
         if forced_project_dir:
-            # Explizit per /load geladenes (externes/Workspace-)Projekt: project_slug (vom
-            # Modell geraten) wird bewusst ignoriert – der Mensch hat das Zielverzeichnis
-            # bereits selbst gewählt.
+            # Per /load geladenes Projekt: der geratene project_slug wird bewusst ignoriert –
+            # der Mensch hat das Zielverzeichnis selbst gewählt.
             candidate_dir = forced_project_dir
             notify(f"📂 [dim]Arbeite im geladenen Projekt: {candidate_dir}[/dim]")
         else:
@@ -573,21 +461,15 @@ class Orchestrator(
                 )
                 project_slug = matched_project
 
-            # Frühwarnung vor stillschweigend doppelter Arbeit: project_slug wird pro Lauf neu vom
-            # Modell geraten und unterscheidet sich oft, selbst wenn die Aufgabe inhaltlich dieselbe
-            # ist wie ein früherer Lauf – real beobachtet u.a. bei "calculator_service" vs.
-            # "simple_calculator" und "notes_tasks_api" vs. "personal_notes_tasks": zwei komplette,
-            # separat bezahlte Läufe für praktisch dieselbe Anwendung. Rein informativ (keine
-            # Heuristik/kein LLM-Aufruf, also kostenlos) – der Mensch entscheidet, ob `/load <name>`
-            # statt eines neuen Projekts die bessere Wahl gewesen wäre.
+            # Frühwarnung vor stillschweigend doppelter Arbeit: project_slug wird pro Lauf neu
+            # geraten und unterscheidet sich oft, obwohl die Aufgabe dieselbe ist - so entstanden
+            # mehrfach zwei komplette, separat bezahlte Läufe für dieselbe Anwendung. Rein
+            # informativ (kein LLM-Aufruf); der Mensch entscheidet über `/load <name>`.
             if project_slug not in existing_projects and existing_projects:
-                # Realer Fund (Retrospektive zu vier separaten Läufen an praktisch derselben
-                # Aufgabe - "fastapi-task-mgmt", "fastapi_task_websocket", "kanban_board",
-                # "kanban_task_manager"): die reine Namensliste allein macht nicht sichtbar,
-                # dass ein bereits vorhandenes Projekt beim letzten Lauf gar nicht verifiziert
-                # werden konnte - ein weiterer, komplett neuer Versuch wirkt dadurch günstiger,
-                # als er ist. Zeigt zusätzlich den zuletzt protokollierten Status jedes
-                # vorhandenen Projekts an, weiterhin rein informativ (kein LLM-Aufruf).
+                # Zeigt zusätzlich den zuletzt protokollierten Status jedes vorhandenen Projekts:
+                # die reine Namensliste macht nicht sichtbar, dass ein vorhandenes Projekt beim
+                # letzten Lauf nicht verifiziert werden konnte - ein neuer Versuch wirkt dadurch
+                # günstiger, als er ist.
                 def _last_status_icon(name: str) -> str:
                     history = read_status(str(self._workspace.get_project_dir(name)))
                     if not history:
@@ -603,16 +485,9 @@ class Orchestrator(
 
                 shown = ", ".join(f"{name}{_last_status_icon(name)}" for name in existing_projects[:10])
                 more = f" (+{len(existing_projects) - 10} weitere)" if len(existing_projects) > 10 else ""
-                # Realer Fund: bei mehreren, kurz aufeinanderfolgenden Läufen INNERHALB
-                # derselben Sitzung (z.B. durch eine beim Einfügen zerrissene Nutzereingabe,
-                # die als mehrere separate Prompts ankam) sprang project_slug zwischen völlig
-                # unterschiedlichen Ordnernamen für dieselbe eigentliche Aufgabe hin und her -
-                # die generische Liste "Bereits vorhanden: ..." ging dabei im Rauschen älterer
-                # Projekte unter, obwohl DIESE Sitzung erst Sekunden zuvor schon an einem
-                # Projekt gearbeitet hatte. self.last_project_slug (von genau DIESEM
-                # Orchestrator-Objekt, also nur innerhalb der aktuellen Sitzung gesetzt, siehe
-                # __init__) bekommt deshalb eine eigene, vorangestellte Zeile - weiterhin rein
-                # informativ, der Mensch entscheidet nach wie vor selbst über `/load <name>`.
+                # Eigene, vorangestellte Zeile für das Projekt DIESER Sitzung: bei mehreren
+                # kurz aufeinanderfolgenden Läufen (z.B. eine beim Einfügen zerrissene Eingabe)
+                # ging der Hinweis sonst in der Liste älterer Projekte unter.
                 same_session_hint = ""
                 if self.last_project_slug and self.last_project_slug != project_slug:
                     same_session_hint = (
@@ -621,13 +496,9 @@ class Orchestrator(
                         f"(z.B. weil eine längere Eingabe in mehrere Nachrichten zerrissen ankam), "
                         f"lieber abbrechen und stattdessen `/load {self.last_project_slug}` nutzen.[/dim]\n"
                     )
-                # Realer Fund (Workspace-Audit): "calculator_service" und "modular_calculator_gui"
-                # blieben nicht die einzigen Fälle - auch "api_health_monitor" vs. "api-health-monitor"
-                # entstand als zwei komplette, separat bezahlte Läufe für dieselbe Aufgabe, obwohl
-                # sich der Slug nur durch "_" statt "-" unterschied. Die generische "Bereits
-                # vorhanden: ..."-Liste allein hebt so einen fast identischen Namen nicht gezielt
-                # hervor - ein eigener, direkter Hinweis bei einem naheliegenden Nahezu-Duplikat
-                # (Unterstrich/Bindestrich/Groß-Kleinschreibung ignoriert) macht das jetzt sichtbar.
+                # Eigener Hinweis bei einem Nahezu-Duplikat (Unterstrich/Bindestrich/Groß-
+                # Kleinschreibung ignoriert): so ein fast identischer Name fällt in der
+                # generischen "Bereits vorhanden"-Liste nicht auf.
                 near_duplicate = self._find_near_duplicate_slug(project_slug, existing_projects)
                 near_duplicate_hint = ""
                 if near_duplicate:
@@ -652,31 +523,25 @@ class Orchestrator(
             # Inhalt", da ein frisch angelegtes Verzeichnis dabei leer bleibt.
             candidate_dir = str(self._workspace.get_project_dir(project_slug))
 
-        # Jede Teilaufgabe bekommt ab hier echten Zugriff auf das Projektverzeichnis
-        # (read_file/write_file/edit_file/run_command/run_tests via agents/base_agent.py).
-        # Realer Fund: ein Selbstverbesserungslauf schrieb früher direkt im echten
-        # Arbeitsverzeichnis – dieselbe Gefahr besteht bei JEDEM Lauf gegen bereits
-        # vorhandenen Inhalt (z.B. ein per /load geladenes bestehendes Projekt), nicht nur
-        # beim Framework selbst. _resolve_project_isolation() isoliert deshalb IMMER, wenn am
-        # Zielort bereits echter Inhalt existiert – ein brandneues, leeres Projekt hat nichts
-        # zu verlieren und wird bewusst direkt geschrieben (kein Worktree-Overhead für den
-        # Alltagsfall "neues Projekt erstellen").
+        # Ab hier hat jede Teilaufgabe echten Schreibzugriff auf das Projektverzeichnis
+        # (agents/base_agent.py). _resolve_project_isolation() isoliert deshalb IMMER, wenn am
+        # Zielort bereits echter Inhalt existiert; ein leeres, neues Projekt hat nichts zu
+        # verlieren und wird ohne Worktree-Overhead direkt geschrieben.
         project_dir, abort_response = await self._resolve_project_isolation(candidate_dir, task_summary, notify)
         if abort_response:
             self._history.add_assistant_message(abort_response)
             return abort_response
 
-        # Der TATSÄCHLICH verwendete Ordnername (nicht der u.U. verworfene project_slug bei
-        # forced_project_dir) – zuverlässiger Commit-Message-Fallback, siehe last_project_slug oben.
+        # Der TATSÄCHLICH verwendete Ordnername (nicht der bei forced_project_dir verworfene
+        # project_slug) – zuverlässiger Commit-Message-Fallback.
         self.last_project_slug = Path(project_dir).name
 
-        # Ab hier ist der Projektname bekannt – erst jetzt kann das Lauf-Log unter einem
-        # sprechenden Dateinamen angelegt werden. Rein additiv: Schlägt das Anlegen fehl,
-        # schaltet sich der Logger selbst still ab (core/run_logger.py), der Lauf geht weiter.
+        # Erst jetzt ist der Projektname für einen sprechenden Log-Dateinamen bekannt. Rein
+        # additiv: schlägt das Anlegen fehl, läuft der Lauf ohne Protokoll weiter.
         try:
             self._run_logger = RunLogger(project_slug=self.last_project_slug, project_dir=project_dir)
-            # Codeversion im Log (core/framework_revision.py): ohne sie ließ sich im Lauf
-            # auditlog_sentinel nicht belegen, dass noch alter Code vor der Mindeststufe lief.
+            # Codeversion im Log (core/framework_revision.py): sonst lässt sich nachträglich
+            # nicht belegen, welcher Framework-Stand den Lauf ausgeführt hat.
             revision = current_revision()
             self._run_logger.log_event(
                 "run_started",
@@ -695,16 +560,10 @@ class Orchestrator(
             project_dir, getattr(self._run_logger, "stamp", None) or datetime.now().strftime("%Y%m%d_%H%M%S"),
         )
 
-        # Realer Fund (vier separate Läufe an praktisch derselben Aufgabe, alle mit
-        # verification_ok=false): der rein informative Duplikat-Hinweis oben wird beim
-        # WIEDERHOLTEN Scheitern DESSELBEN Projekts leicht überlesen - "einfach nochmal
-        # versuchen" wirkt jedes Mal aufs Neue günstiger, als es tatsächlich ist. Ab der
-        # dritten Runde OHNE bestandene Verifikation in Folge (2 bereits erfolgte + der gerade
-        # startende) wird die Warnung deshalb deutlich direkter, MIT einer konkreten
-        # Handlungsempfehlung (Aufgabe kleiner zerlegen / Budget prüfen) statt nur "informativ".
-        # Bewusst weiterhin KEIN automatisches Eingreifen (keine automatische Aufgaben-
-        # Zerlegung, keine automatische Budget-Erhöhung) - der Mensch entscheidet nach wie vor
-        # selbst, der Lauf wird dadurch nicht blockiert.
+        # Ab der dritten Runde ohne bestandene Verifikation in Folge wird die Warnung deutlich
+        # direkter und nennt konkrete Handlungsoptionen - "einfach nochmal versuchen" wirkt
+        # sonst jedes Mal günstiger, als es ist. Bewusst KEIN automatisches Eingreifen: der
+        # Mensch entscheidet, der Lauf wird nicht blockiert.
         consecutive_failures = count_consecutive_failed_runs(project_dir)
         if consecutive_failures >= 2:
             notify(
@@ -717,14 +576,10 @@ class Orchestrator(
                 f"Verifikations-Bericht lesen – wiederholt sich derselbe Fehler?"
             )
 
-            # Härteres Gate als der reine Hinweis oben (Punkt 1 einer Team-Retrospektive): eine
-            # Prompt-Warnung allein verhindert nicht zuverlässig, dass derselbe Fachbereich mit
-            # demselben Ansatz einfach nochmal loslegt. Ab 2 Fehlschlägen in Folge wird architect
-            # deshalb DETERMINISTISCH (kein LLM-Entscheid, kein Verlass darauf, dass das Modell
-            # die Prompt-Warnung tatsächlich befolgt) als zusätzliche, erste Teilaufgabe
-            # eingeplant - NUR falls architect nicht ohnehin schon Teil des Plans ist. architect
-            # bekommt den zuletzt dokumentierten Fehler direkt mit, statt ihn erst selbst suchen
-            # zu müssen.
+            # Härteres Gate als der reine Hinweis oben: eine Prompt-Warnung allein verhindert
+            # nicht, dass dieselben Fachbereiche denselben Ansatz wiederholen. Ab 2 Fehlschlägen
+            # in Folge wird architect deshalb DETERMINISTISCH als erste Teilaufgabe eingeplant
+            # (falls nicht ohnehin im Plan) und bekommt den letzten Fehler direkt mit.
             if agent_tasks and "architect" not in {t.agent_id for t in agent_tasks}:
                 last_detail = next(
                     (e.get("failure_detail") for e in read_status(project_dir) if e.get("failure_detail")), ""
@@ -751,35 +606,24 @@ class Orchestrator(
                     project_dir, "architect_forced_reescalation",
                     f"{consecutive_failures} Läufe in Folge ohne bestandene Verifikation – architect zusätzlich eingeplant.",
                 )
-                # Team-Optimierung (Retrospektive 2026-09-05, Punkt 1): dieser Punkt bedeutet
-                # konkret "mindestens 2 komplette Läufe an diesem Projekt sind bereits ohne
-                # Erfolg verpufft" - bisher stumm nur im Entscheidungslog vermerkt, obwohl das
-                # exakt der Moment ist, in dem ein Mensch (statt eines weiteren, ggf. erneut
-                # wirkungslosen Laufs) informiert werden sollte.
+                # Mindestens 2 komplette Läufe sind ohne Erfolg verpufft - genau der Moment, in
+                # dem ein Mensch informiert werden sollte, statt nur das Entscheidungslog.
                 await asyncio.to_thread(
                     notify_external, "Wiederholtes Scheitern – architect zusätzlich eingeplant",
                     f"{self.last_project_slug}: {consecutive_failures} Läufe in Folge ohne bestandene "
                     "Verifikation.",
                 )
 
-        # Team-Optimierung (KI-Team-Weiterentwicklung): pro-Lauf zurückgesetzt (nicht im
-        # Konstruktor), damit ein früherer Lauf mit Provider-Erschöpfung nicht fälschlich
-        # auch noch DIESEN neuen Lauf als betroffen kennzeichnet - siehe agents/orchestrator/
-        # dispatch.py._run_agents_parallel() für die volle Herleitung.
+        # Alle drei Flags pro Lauf zurücksetzen (nicht nur im Konstruktor), sonst würde ein
+        # früherer Lauf mit Provider-Erschöpfung bzw. erreichter Generierungsreserve auch
+        # diesen neuen Lauf fälschlich als betroffen kennzeichnen.
         self._provider_exhausted_this_run = False
-        # Circuit Breaker je Lauf zurücksetzen (agents/orchestrator/dispatch.py setzt ihn,
-        # wenn eine Welle überwiegend an Kontingenten/fehlenden Schlüsseln scheitert).
         self._provider_breaker_tripped = False
-        # Ebenfalls pro Lauf zurückgesetzt (siehe __init__) - sonst würde ein früherer Lauf, der
-        # die Generierungsreserve erreichte, fälschlich auch diesen neuen Lauf markieren.
         self._generation_budget_reached_this_run = False
 
-        # Pro-Projekt-Kostenbudget (siehe __init__): MAX_RUN_TOKENS begrenzt nur DIESEN einen
-        # Lauf - ein Projekt mit vielen aufeinanderfolgenden Läufen (z.B. für einen externen
-        # Auftraggeber mit festem Kostenrahmen) hatte bisher kein Limit über ALLE Läufe hinweg.
-        # Bereits VOR dem ersten Agenten-Aufruf geprüft: ein schon erschöpftes Projekt-Budget
-        # bricht den Lauf ab, ohne auch nur einen Token dafür zu verbrauchen (derselbe
-        # Grundsatz wie beim Plan-Bestätigungs-Abbruch oben).
+        # Pro-Projekt-Kostenbudget (siehe __init__), bereits VOR dem ersten Agenten-Aufruf
+        # geprüft: ein erschöpftes Projekt-Budget bricht den Lauf ab, ohne einen Token dafür zu
+        # verbrauchen - derselbe Grundsatz wie beim Plan-Bestätigungs-Abbruch oben.
         self._project_token_budget = get_max_project_tokens(project_dir)
         self._project_tokens_before_run = 0
         if self._project_token_budget > 0:
@@ -796,24 +640,18 @@ class Orchestrator(
                 self._close_unfinished_run_log("project_budget_exhausted")
                 return response
 
-        # Team-Optimierung (Retrospektive 2026-09-07): core/token_guard.py schaltet bisher rein
-        # REAKTIV auf ein Fallback-Modell um - erst NACHDEM ein echter 429/Rate-Limit-Fehler
-        # eintrat (siehe core/quota_estimator.py.get_proactive_daily_budget_warnings()-Docstring
-        # für die volle Herleitung). Nutzt bewusst die TAGES- statt die Sitzungs-Variante: an
-        # GENAU DIESER Stelle (Laufstart, vor jedem Tokenverbrauch) zählt der kumulierte
-        # Verbrauch des ganzen Kalendertags über alle Sitzungen hinweg, nicht nur der noch junge
-        # Zähler dieses einen, gerade erst gestarteten Prozesses. Rein informativ, blockiert den
-        # Lauf NICHT (anders als der Budget-Abbruch oben), damit ein einzelner naher Provider
-        # kein automatisches Fallback-Verhalten verhindert - das Team soll die Warnung nur SEHEN,
-        # bevor der erste 429 überhaupt eintritt.
+        # core/token_guard.py schaltet erst REAKTIV auf ein Fallback-Modell um (nach einem
+        # echten 429). Diese Warnung kommt proaktiv vor dem ersten Tokenverbrauch und nutzt
+        # bewusst die TAGES- statt der Sitzungs-Variante: hier zählt der kumulierte Verbrauch
+        # des Kalendertags über alle Sitzungen, nicht der junge Zähler dieses Prozesses. Rein
+        # informativ, blockiert den Lauf NICHT.
         for warning in QuotaEstimator.get_proactive_daily_budget_warnings():
             self._history.add_assistant_message(warning)
 
-        # Kapazitätsprüfung (core/capacity_gate.py): Die Tageswarnung oben war im Lauf
-        # auditlog_sentinel (548 % Gemini, alle übrigen Anbieter erschöpft) rein informativ – der
-        # Lauf startete trotzdem und scheiterte nach 374 k Tokens. Hier wird VOR dem ersten
-        # Agenten-Aufruf geprüft, ob jede eingeplante kritische Rolle überhaupt noch ein Modell
-        # oberhalb ihrer Mindeststufe erreicht.
+        # Kapazitätsprüfung (core/capacity_gate.py): die Tageswarnung oben ist nur informativ,
+        # ein Lauf mit erschöpften Anbietern startete trotzdem und verbrannte Tokens. Hier wird
+        # VOR dem ersten Agenten-Aufruf geprüft, ob jede eingeplante kritische Rolle noch ein
+        # Modell oberhalb ihrer Mindeststufe erreicht.
         if CAPACITY_GATE_MODE != "off" and agent_tasks:
             try:
                 capacity = assess_run_capacity([t.agent_id for t in agent_tasks])
@@ -834,42 +672,32 @@ class Orchestrator(
                         return response
                     notify(f"[bold yellow]⚠️ Kapazität unzureichend für {blocked_ids} – Lauf startet trotzdem (CAPACITY_GATE_MODE=warn).[/bold yellow]")
 
-        # Projekt-Kontinuität über mehrere Sitzungen hinweg (core/project_status.py): eine
-        # neue Sitzung (neues Terminal) hat KEINEN Zugriff auf memory/conversation_history.py
-        # (sitzungsgebunden) – die persistente Lauf-Historie DIESES Projekts wird deshalb
-        # direkt in den Kontext jeder Teilaufgabe injiziert, damit das Team z.B. sofort sieht,
-        # dass der letzte Lauf am Lauf-Budget abgebrochen wurde, statt das nur aus den rohen
-        # Quelldateien zu erraten. Leer für ein brandneues Projekt (kein unnötiger Prompt-Text).
+        # Die folgenden Kontext-Bausteine werden unten in den Kontext jeder Teilaufgabe
+        # injiziert. Alle sind leer, wenn nichts vorliegt (kein unnötiger Prompt-Text).
+
+        # Lauf-Historie DIESES Projekts (core/project_status.py): eine neue Sitzung hat keinen
+        # Zugriff auf die sitzungsgebundene conversation_history, sähe also z.B. nicht, dass
+        # der letzte Lauf am Budget abbrach.
         project_history_context = format_context_for_agents(project_dir)
 
-        # Team-weites, projektübergreifendes Lessons-Learned-Gedächtnis (core/team_memory.py,
-        # Punkt 3 einer Team-Retrospektive): anders als project_history_context oben (nur DIESES
-        # Projekts Lauf-Historie) fasst dies Muster aus Backlog-Ticket-würdigen Vorfällen AN
-        # BELIEBIGEN Projekten zusammen - ein neues, brandaktuelles Projekt profitiert so direkt
-        # von Fehlern, die frühere, völlig andere Projekte bereits gemacht haben. Leer, solange
-        # noch keine Lektion je aufgezeichnet wurde (kein unnötiger Prompt-Text im Normalfall).
+        # Projektübergreifendes Lessons-Learned-Gedächtnis (core/team_memory.py): Muster aus
+        # Vorfällen an BELIEBIGEN Projekten - ein neues Projekt profitiert so von Fehlern
+        # früherer, völlig anderer Projekte.
         team_lessons_context = format_team_lessons_for_agents(prioritize_slug=project_slug)
 
-        # Projekt-Konstitution (core/project_constitution.py): feste Tech-Stack-Präferenzen,
-        # die der Nutzer einmal per /constitution festlegt (Sprache, Framework, Test-Framework,
-        # Code-Stil, Deployment-Ziel) - sonst würde project_slug/Architektur pro Lauf neu vom
-        # Modell geraten, selbst am selben Projekt. Leer für Projekte ohne Konstitution (kein
-        # unnötiger Prompt-Text für die Mehrheit der Projekte).
+        # Projekt-Konstitution (core/project_constitution.py): per /constitution festgelegte
+        # Tech-Stack-Präferenzen - sonst würde die Architektur pro Lauf neu geraten, selbst am
+        # selben Projekt.
         constitution_context = format_constitution_for_agents(project_dir)
 
-        # Projekt-Design-System (core/design_system.py): feste visuelle Präferenzen
-        # (Farbpalette, Typografie, Spacing-Skala, Komponenten-Namenskonvention, Tonalität),
-        # die der Nutzer einmal per /design-system festlegt - das Pendant zur Konstitution
-        # oben, nur für Design statt Tech-Stack. Ohne das würde ein zweiter Lauf am selben
-        # Projekt eine andere Primärfarbe/Schriftart wählen können, ohne dass die
-        # Nutzeranfrage das je erwähnt hätte. Leer für Projekte ohne Design-System (kein
-        # unnötiger Prompt-Text für die Mehrheit der Projekte).
+        # Design-System (core/design_system.py): das Pendant zur Konstitution für visuelle
+        # Präferenzen - sonst könnte ein zweiter Lauf am selben Projekt eine andere
+        # Primärfarbe/Schriftart wählen, ohne dass die Anfrage das je erwähnt hätte.
         design_system_context = format_design_system_for_agents(project_dir)
 
-        # Architecture Decision Records (core/adr.py): das WARUM hinter bereits getroffenen
-        # Architektur-Entscheidungen (die Konstitution oben hält nur das WAS fest). Ohne das
-        # könnten spätere Läufe unbemerkt gegen frühere, bewusst getroffene Entscheidungen
-        # arbeiten. Leer für Projekte ohne bisherige ADRs (kein unnötiger Prompt-Text).
+        # Architecture Decision Records (core/adr.py): das WARUM hinter getroffenen
+        # Entscheidungen (die Konstitution hält nur das WAS fest) - sonst könnten spätere Läufe
+        # unbemerkt gegen frühere, bewusste Entscheidungen arbeiten.
         adr_context = format_adr_summary_for_context(project_dir)
 
         for t in agent_tasks:
@@ -883,9 +711,8 @@ class Orchestrator(
                 t.context += f"\n\n{design_system_context}"
             if project_history_context:
                 t.context += f"\n\n{project_history_context}"
-            # Relevanz je Agent statt einer für alle identischen Liste der neuesten Lektionen
-            # (core/team_memory.rank_lessons_by_relevance): der backend-Agent sieht zuerst
-            # Lektionen zu FastAPI/SQLAlchemy/Auth, der frontend-Agent zu UI/WebSocket.
+            # Nach Relevanz je Agent sortiert statt einer für alle identischen Liste
+            # (core/team_memory.rank_lessons_by_relevance).
             task_lessons_context = format_team_lessons_for_agents(
                 prioritize_slug=project_slug,
                 context=f"{t.agent_id} {t.description} {user_request[:600]}",
@@ -923,28 +750,19 @@ class Orchestrator(
         # Antworttext statt über write_file/edit_file geliefert hat, wird er zusätzlich
         # per Regex geparst – ohne bereits über Tools geschriebene Dateien zu überschreiben.
         saved_files_count = 0
-        # Realer Fund: bisher zählte der Abschlussbericht nur DIE ANZAHL der so gespeicherten
-        # Dateien, nicht WELCHE - eine per Regex aus freiem Antworttext geparste Datei ist
-        # fehleranfälliger als ein natives write_file-Tool-Argument (z.B. wenn der Agent nur
-        # einen Diff-/Integrations-Ausschnitt statt einer vollständigen Datei geliefert hat,
-        # real beobachtet: eine so gespeicherte main.py bestand nur aus einem Patch-Kommentar
-        # + drei Zeilen, ohne die dafür nötigen Imports). Python-Syntaxfehler fängt bereits
-        # core/workspace.py.parse_and_save_files() ab (CodeSandbox.validate_code), semantisch
-        # unvollständige, aber syntaktisch gültige Fragmente wie im realen Fund oben nicht -
-        # dafür bleibt core/verifier.py.check_lint() (läuft später) die zuständige Instanz.
-        # Diese Liste macht die betroffenen Pfade im Abschlussbericht NAMENTLICH sichtbar,
-        # damit ein Lint-/Testfehler an genau dieser Stelle sofort zuordenbar ist, statt in
-        # einer anonymen Zahl unterzugehen.
+        # Macht die so gespeicherten Pfade im Abschlussbericht NAMENTLICH sichtbar (statt nur
+        # als Anzahl): eine aus freiem Antworttext geparste Datei ist fehleranfälliger als ein
+        # natives write_file-Argument - Syntaxfehler fängt parse_and_save_files() ab, semantisch
+        # unvollständige Fragmente aber nicht. So ist ein späterer Lint-/Testfehler sofort
+        # zuordenbar.
         text_fallback_paths: list[str] = []
         if AUTO_SAVE_WORKSPACE:
             for res in results:
                 if res.success and res.content:
-                    # project_dir (nicht project_slug!) verwenden: project_dir ist bereits der
-                    # tatsächlich verwendete, absolute Zielordner (bei /load der geladene Pfad,
-                    # sonst workspace/<slug>/) – get_project_dir() akzeptiert absolute Pfade
-                    # direkt (siehe core/workspace.py), landet also garantiert am selben Ort wie
-                    # die per Werkzeug-Loop geschriebenen Dateien, statt versehentlich einen
-                    # zweiten Ordner unter dem geratenen project_slug anzulegen.
+                    # project_dir (nicht project_slug!): der tatsächlich verwendete, absolute
+                    # Zielordner. get_project_dir() akzeptiert absolute Pfade direkt, so landen
+                    # die Dateien garantiert dort, wo auch der Werkzeug-Loop geschrieben hat,
+                    # statt in einem zweiten Ordner unter dem geratenen Slug.
                     files = self._workspace.parse_and_save_files(
                         project_name=project_dir,
                         text_content=res.content,
@@ -985,11 +803,9 @@ class Orchestrator(
                     cancel_requested=cancel_requested,
                 )
 
-            # Rückfragen, in denen ein Agent NICHT ein echtes fachliches Problem hat, sondern
-            # nur fehlende Schreibrechte meldete (siehe core/review_gate.py.
-            # find_permission_blocked_questions für den realen Fund, der das motiviert hat) -
-            # direkt nach der Governance-Fix-Schleife, aus demselben Grund: VOR der echten
-            # Testverifikation, damit die Testsuite den reparierten Stand prüft.
+            # Rückfragen, in denen ein Agent kein fachliches Problem hat, sondern nur fehlende
+            # Schreibrechte meldete (core/review_gate.py.find_permission_blocked_questions) -
+            # ebenfalls VOR der Testverifikation, damit die Testsuite den reparierten Stand prüft.
             if not (budget_aborted or manually_cancelled):
                 results, permission_blocked_fix_summary, budget_aborted, manually_cancelled = (
                     await self._run_permission_blocked_clarification_fix(
@@ -1002,12 +818,9 @@ class Orchestrator(
                     )
                 )
 
-            # Verbleibende, ECHTE fachliche Rückfragen (keine Schreibrechte-Frage, siehe oben) -
-            # kein Mensch ist anwesend, um sie zu beantworten, also entscheidet der fragende
-            # Agent selbst mit der naheliegendsten Annahme, statt den Lauf unbeantwortet enden
-            # zu lassen (realer Fund: incidentpilot-Projekt, siehe
-            # _run_scope_clarification_autofix). Aus demselben Grund direkt danach: vor der
-            # echten Testverifikation, damit die Testsuite den vervollständigten Stand prüft.
+            # Verbleibende, ECHTE fachliche Rückfragen: kein Mensch ist anwesend, also
+            # entscheidet der fragende Agent selbst mit der naheliegendsten Annahme, statt den
+            # Lauf unbeantwortet enden zu lassen. Ebenfalls vor der Testverifikation.
             if not (budget_aborted or manually_cancelled):
                 results, scope_clarification_summary, budget_aborted, manually_cancelled = (
                     await self._run_scope_clarification_autofix(
@@ -1026,26 +839,15 @@ class Orchestrator(
         # überschrittenem Lauf-Budget ODER manuellem Abbruch wird die (potenziell token-/
         # zeitintensive) Fix-Schleife komplett übersprungen.
         if getattr(self, "_provider_breaker_tripped", False):
-            # Circuit Breaker (agents/orchestrator/dispatch.py UND, seit der chronos_queue-
-            # Härtung, der schnellere sequenzielle Breaker in agents/orchestrator/department.py).
-            # Realer Fund (workspace/event_ticket_api, 09.09.2026): 19 von 21 Agenten scheiterten
-            # an erschöpften Kontingenten und schrieben keine einzige Datei - der Lauf startete
-            # trotzdem die Verifikation, dispatchte daraufhin einen Fix-Auftrag für "keine
-            # Tests gefunden" und eröffnete ein Ticket. Beides beschrieb ein Problem, das es
-            # nicht gab: Es fehlten keine Tests, es fehlte schlicht das Kontingent. Die
-            # Verifikation wird deshalb übersprungen, statt aus dem Nichts einen Befund zu
-            # erzeugen.
+            # Circuit Breaker (dispatch.py bzw. der sequenzielle Breaker in department.py):
+            # Scheitern fast alle Agenten an erschöpften Kontingenten und schreiben keine Datei,
+            # erzeugte die Verifikation daraus einen Fix-Auftrag für "keine Tests gefunden" -
+            # ein Problem, das es nicht gab. Sie wird deshalb übersprungen.
             #
-            # WICHTIG: Dieser Zweig muss VOR der generischen budget_aborted-Prüfung unten stehen
-            # (Bugfix, chronos_queue-Nacharbeit 20260911) - der neue Fast Circuit Breaker in
-            # agents/orchestrator/department.py setzt beim Auslösen bewusst ZUSÄTZLICH
-            # budget_aborted=True (um die Governance-Fix-/Klärungs-Schleifen ebenfalls zu
-            # überspringen, siehe dortiger Kommentar). Stünde die budget_aborted-Prüfung ZUERST,
-            # würde sie IMMER zuerst greifen und diese viel genauere, provider-spezifische
-            # Meldung wäre für genau den Fall, für den sie geschrieben wurde, unerreichbarer
-            # toter Code - der Nutzer sähe stattdessen die irreführende generische "Lauf-Budget
-            # erreicht"-Meldung, obwohl real kein Token-Budget, sondern ein API-Kontingent
-            # erschöpft war.
+            # WICHTIG: Dieser Zweig muss VOR der generischen budget_aborted-Prüfung stehen - der
+            # Fast Circuit Breaker setzt zusätzlich budget_aborted=True, sonst wäre diese
+            # genauere, provider-spezifische Meldung toter Code und der Nutzer sähe irreführend
+            # "Lauf-Budget erreicht", obwohl nur ein API-Kontingent erschöpft war.
             reason = (
                 "Der Lauf wurde abgebrochen, weil der überwiegende Teil der Agenten-Aufrufe an "
                 "erschöpften API-Kontingenten bzw. fehlenden API-Schlüsseln scheiterte - nicht "
@@ -1062,10 +864,9 @@ class Orchestrator(
             log_decision(project_dir, "provider_exhaustion_breaker_tripped", reason)
             notify(f"🛑 [red]{reason}[/red]")
         elif budget_aborted and not manually_cancelled and any(r.files_written for r in results):
-            # Budget-Abbruch in der Generierung darf die Verifikation nicht komplett verhindern
-            # (chronospulse: 16 Dateien, Tests liefen nie). Ein Testlauf kostet 0 LLM-Tokens - die
-            # Verifikationsschleife beauftragt bei erschöpftem Budget selbst keine Fix-Agenten
-            # mehr, liefert aber ein ehrliches Ergebnis über den erzeugten Stand.
+            # Ein Budget-Abbruch in der Generierung darf die Verifikation nicht komplett
+            # verhindern: ein Testlauf kostet 0 LLM-Tokens. Die Schleife beauftragt bei
+            # erschöpftem Budget keine Fix-Agenten mehr, liefert aber ein ehrliches Ergebnis.
             notify("🧪 [yellow]Budget erreicht – führe trotzdem die kostenlose Verifikation (ohne Fix-Agenten) aus.[/yellow]")
             results, verification_summary, _v_budget_aborted, manually_cancelled, verification_ok = await self._run_verification_loop(
                 project_dir=project_dir,
@@ -1133,33 +934,24 @@ class Orchestrator(
         # dessen Tests nie bestätigt bestanden haben.
         self.last_verification_ok = verification_ok
         self.last_verification_summary = verification_summary
-        # Team-Optimierung (KI-Team-Optimierungs-Session, echter Fund): core/backlog_worker.py
-        # braucht Zugriff auf die vollständige Ergebnisliste, um zu erkennen, ob ein Lauf
-        # AUSSCHLIESSLICH an einer API-Kontingent-Erschöpfung scheiterte (dann soll KEIN PR mit
-        # nur Status-Datei-Änderungen eröffnet werden) - siehe dort
-        # `_is_provider_exhaustion_error()`. Bisher gab es dafür kein öffentliches Attribut.
+        # core/backlog_worker.py braucht die vollständige Ergebnisliste, um zu erkennen, ob ein
+        # Lauf AUSSCHLIESSLICH an API-Kontingent-Erschöpfung scheiterte - dann soll kein PR mit
+        # bloßen Status-Datei-Änderungen eröffnet werden.
         self.last_agent_results = results
 
-        # Härteres Gate gegen wiederholtes, blindes Scheitern (Punkt 4 einer Team-Retrospektive):
-        # die reine Prompt-Warnung in format_context_for_agents() (project_history_context oben)
-        # verlässt sich darauf, dass ein Agent sie liest UND befolgt - kein hartes Garant. Hier
-        # wird deterministisch (kein LLM-Aufruf) geprüft, ob DIESER Lauf erneut nicht verifiziert
-        # ist UND der vorherige Fehlertext dem NEUEN stark ähnelt (SequenceMatcher) - d.h. der
-        # Agent hat tatsächlich denselben Fehler wiederholt, nicht nur zufällig wieder gescheitert.
-        # In diesem Fall wird ein Backlog-Ticket für menschliche Prüfung eröffnet (dieselbe
-        # upsert_ticket-Mechanik wie core/workspace_audit.py) statt sich weiter auf einen
-        # automatischen Retry zu verlassen - ein sichtbares, system-erzeugtes Signal statt nur
-        # eines Prompt-Hinweises, den der nächste Lauf erneut ignorieren könnte.
+        # Härteres Gate gegen wiederholtes, blindes Scheitern: die Prompt-Warnung oben setzt
+        # voraus, dass ein Agent sie liest UND befolgt. Hier wird deterministisch geprüft, ob
+        # dieser Lauf erneut nicht verifiziert ist UND der vorherige Fehlertext dem neuen stark
+        # ähnelt (SequenceMatcher) - also derselbe Fehler wiederholt wurde, nicht nur zufällig
+        # wieder gescheitert. Dann ein Backlog-Ticket für menschliche Prüfung statt weiterer
+        # automatischer Retrys.
         if not verification_ok and has_repeated_failure(project_dir):
             previous_history = read_status(project_dir)
             previous_failure_detail = next((e.get("failure_detail") for e in previous_history if e.get("failure_detail")), "")
-            # Bugfix (Ultrareview-Fund): previous_failure_detail ist beim Speichern bereits auf
-            # MAX_FAILURE_DETAIL_CHARS gekürzt (core/project_status.py.record_run) - wurde hier
-            # aber gegen die UNGEKÜRZTE aktuelle verification_summary verglichen. SequenceMatcher.
-            # ratio() ist durch 2·min(len(a),len(b))/(len(a)+len(b)) gedeckelt - bei langen,
-            # mehrzeiligen Fehlerberichten (mehrere Testfehler + Installationslog) fiel die Quote
-            # dadurch systematisch unter die 0.55-Schwelle, selbst bei identischem Fehler. Beide
-            # Seiten jetzt symmetrisch auf dieselbe Länge gekürzt.
+            # Beide Seiten symmetrisch auf MAX_FAILURE_DETAIL_CHARS kürzen: previous_failure_
+            # detail ist beim Speichern bereits gekürzt, und SequenceMatcher.ratio() ist durch
+            # 2·min(len)/(len+len) gedeckelt - ein Vergleich gegen die ungekürzte Summary fiel
+            # bei langen Fehlerberichten selbst bei identischem Fehler unter die Schwelle.
             similarity = (
                 SequenceMatcher(None, previous_failure_detail, verification_summary.strip()[:MAX_FAILURE_DETAIL_CHARS]).ratio()
                 if previous_failure_detail else 0.0
@@ -1170,12 +962,9 @@ class Orchestrator(
                     "sehr ähnlichen Fehler wie die vorherigen Läufe gescheitert. Ein Backlog-Ticket für "
                     "menschliche Prüfung wurde eröffnet, statt automatisch weiterzuversuchen."
                 )
-                # Team-Optimierung (Retrospektive 2026-09-05): Ticket, Lernprotokoll und
-                # Entscheidungslog kürzten dieselbe Zusammenfassung bisher JEWEILS separat auf
-                # 300 Zeichen - bei einem mehrzeiligen Verifikations-Protokoll (mehrere Versuche,
-                # Eskalation, Governance-Funde) schnitt das den eigentlichen Grund oft mitten im
-                # Satz ab, ohne dass irgendwo eine Vollversion übrig blieb. Einmal ungekürzt
-                # berechnen, überall gleich verwenden.
+                # Einmal ungekürzt berechnen und in Ticket, Lernprotokoll und Entscheidungslog
+                # identisch verwenden - separate Kürzungen schnitten den eigentlichen Grund
+                # überall mitten im Satz ab, ohne dass irgendwo eine Vollversion blieb.
                 recurring_failure_detail = verification_summary.strip() + self._provider_exhaustion_ticket_note()
                 try:
                     upsert_ticket(
@@ -1186,33 +975,24 @@ class Orchestrator(
                     )
                 except Exception as e:
                     notify(f"⚠️ [dim yellow]Ticket für wiederkehrenden Fehler konnte nicht angelegt werden: {e}[/dim yellow]")
-                # Projektübergreifendes Lessons-Learned-Gedächtnis (Punkt 3 einer Team-
-                # Retrospektive, core/team_memory.py): derselbe Moment, der ein Backlog-Ticket
-                # auslöst, ist ein starkes Signal für ein Muster, das auch AN ANDEREN Projekten
-                # wieder auftreten kann - best-effort, darf den Lauf nie zum Absturz bringen.
+                # Derselbe Moment, der ein Ticket auslöst, ist ein starkes Signal für ein Muster,
+                # das auch an ANDEREN Projekten auftreten kann (core/team_memory.py).
                 record_lesson(
                     project_slug=self.last_project_slug, category="recurring_failure",
                     detail=recurring_failure_detail,
                 )
                 log_decision(project_dir, "recurring_failure_ticket_opened", recurring_failure_detail)
-                # Team-Optimierung (Retrospektive 2026-09-05, Punkt 1): bisher rief nur der
-                # Budget-Abbruch notify_external() auf - ein wiederkehrender Fehler, der die
-                # Verifikations-Schleife endgültig aufgeben lässt, ist ein mindestens ebenso
-                # starkes Signal, dass ein Mensch jetzt eingreifen muss (siehe reale Historie
-                # von workspace/zeiterfassung_app: 3 Läufe mit demselben Fehler, bevor ein
-                # Mensch das per Hand nachbesserte, ohne dass das Team aktiv Bescheid gab).
+                # Ein wiederkehrender Fehler, der die Verifikations-Schleife endgültig aufgeben
+                # lässt, ist ein ebenso starkes Eingriffs-Signal wie ein Budget-Abbruch.
                 await asyncio.to_thread(
                     notify_external, "Wiederkehrender Verifikations-Fehler",
                     f"{self.last_project_slug}: {recurring_failure_detail[:300]}",
                 )
 
         # Analog zur "wiederholtes Scheitern"-Eskalation oben, aber für Lint-Funde: ein
-        # Lint-Fund ist bewusst rein informativ und setzt verification_ok NIE zurück (siehe
-        # core/verifier/lint.py) - has_repeated_failure() griff deshalb nie, egal wie oft
-        # sich derselbe Lint-Fund wiederholte. Realer Fund (Team-Retrospektive, omnichat-
-        # Projekt): dasselbe ruff-F841 blieb über drei volle Läufe unverändert bestehen.
-        # `ruff check --fix` behebt inzwischen triviale Fälle bereits vor dem Report - dieser
-        # Check fängt die verbleibenden, nicht automatisch behebbaren Funde ab.
+        # Lint-Fund setzt verification_ok bewusst NIE zurück, has_repeated_failure() griff
+        # deshalb nie - derselbe Fund konnte über viele Läufe bestehen bleiben. Triviale Fälle
+        # behebt `ruff check --fix` schon vorher; dieser Check fängt den Rest ab.
         lint_signature = getattr(self, "last_lint_signature", [])
         lint_ticket_id = f"recurring-lint-{self.last_project_slug}" if self.last_project_slug else None
         if lint_signature and has_repeated_lint_finding(project_dir):
@@ -1222,11 +1002,9 @@ class Orchestrator(
                 "wurde eröffnet."
             )
             try:
-                # Team-Optimierung (Retrospektive 2026-09-04): lint_signature trägt einen
-                # Eintrag JE FUND-INSTANZ (siehe agents/orchestrator/verification.py) - ohne
-                # Deduplizierung listete ein Ticket dieselbe Regel/Datei-Kombination real
-                # mehrfach identisch auf (z.B. 6x "ruff:tests/test_invoices.py:DTZ001") statt
-                # bis zu 10 tatsächlich UNTERSCHIEDLICHE Funde zu zeigen.
+                # lint_signature trägt einen Eintrag JE FUND-INSTANZ - ohne set() listete das
+                # Ticket dieselbe Regel/Datei-Kombination mehrfach identisch auf, statt bis zu
+                # 10 wirklich unterschiedliche Funde zu zeigen.
                 upsert_ticket(
                     ticket_id=lint_ticket_id,
                     title=f"Wiederkehrender Lint-Fund: {self.last_project_slug}",
@@ -1240,13 +1018,9 @@ class Orchestrator(
             except Exception as e:
                 notify(f"⚠️ [dim yellow]Ticket für wiederkehrenden Lint-Fund konnte nicht angelegt werden: {e}[/dim yellow]")
         elif lint_ticket_id and not lint_signature and getattr(self, "last_lint_attempted", False):
-            # Team-Optimierung (Retrospektive, 2026-09-04): anders als das "recurring-failure-"-
-            # Pendant oben (siehe _run_verification_loop weiter unten: had_prior_test_ticket schließt
-            # es automatisch, sobald die Testsuite wieder grün ist) wurde ein "recurring-lint-"-Ticket
-            # bisher NIE geschlossen, selbst wenn der Lint-Fund in einem späteren Lauf behoben wurde -
-            # es blieb für immer "blocked" im Backlog stehen. Dieser Lauf hatte KEINEN einzigen
-            # Lint-Fund (lint_signature leer) - ein zuvor offenes Ticket für dasselbe Projekt gilt
-            # damit als erledigt.
+            # Gegenstück zum Öffnen oben: dieser Lauf hatte KEINEN Lint-Fund, ein zuvor offenes
+            # Ticket für dasselbe Projekt gilt damit als erledigt. Ohne das blieb ein
+            # "recurring-lint-"-Ticket für immer "blocked" im Backlog stehen.
             try:
                 existing_lint_ticket = get_ticket(lint_ticket_id)
                 if existing_lint_ticket is not None and existing_lint_ticket.status == "blocked":
@@ -1271,10 +1045,9 @@ class Orchestrator(
 
         # Synthese der Fachbereichs-Ergebnisse durch den Hauptagenten
         notify("🔍 [bold cyan]Phase 5/5:[/bold cyan] Hauptagent konsolidiert Berichte aller Fachbereichsleiter...")
-        # KRITISCHER FUND (CertPulse, 2026-09-12): einmalig VOR der Synthese gezählt (statt erst
-        # später bei der Definition of Done), damit no_implementation_files rechtzeitig als
-        # Anti-Halluzinations-Schutz an ResultAggregator.synthesize() übergeben werden kann - siehe
-        # NO_IMPLEMENTATION_GUARD_INSTRUCTION-Docstring in core/result_aggregator.py.
+        # Bewusst VOR der Synthese gezählt (nicht erst bei der Definition of Done), damit
+        # no_implementation_files als Anti-Halluzinations-Schutz an synthesize() gehen kann
+        # (NO_IMPLEMENTATION_GUARD_INSTRUCTION in core/result_aggregator.py).
         geschriebene_dateien = len({f for r in results for f in (r.files_written or [])})
         final_solution, synth_tokens = await self._result_aggregator.synthesize(
             user_request=user_request,
@@ -1291,16 +1064,12 @@ class Orchestrator(
         trainer_result = None
         self.last_budget_aborted = budget_aborted
 
-        # Maschinenlesbare "Definition of Done" (core/definition_of_done.py). Realer Fund:
-        # PROJECT_STATE.md meldete "In Entwicklung / Verifikation ausstehend" auch dann, wenn
-        # null Dateien geschrieben wurden - ein Prosa-Status kann "fast fertig", "gar nicht
-        # angefangen" und "an der Infrastruktur gescheitert" nicht unterscheiden. Rein additiv:
-        # ein Fehler hier darf einen sonst erfolgreichen Lauf nicht kippen.
+        # Maschinenlesbare "Definition of Done" (core/definition_of_done.py): ein Prosa-Status
+        # kann "fast fertig", "gar nicht angefangen" und "an der Infrastruktur gescheitert"
+        # nicht unterscheiden. Rein additiv - ein Fehler hier darf den Lauf nicht kippen.
         try:
-            # geschriebene_dateien bereits oben (vor der Synthese) berechnet - nicht erneut zählen.
-            # Strukturierte Einzelergebnisse statt Textsuche im Markdown-Protokoll (siehe
-            # core/verification_outcome.py) - der frühere String-Abgleich auf "Frontend/UI-Check
-            # erfolgreich" traf das tatsächliche Protokoll nie.
+            # Strukturierte Einzelergebnisse statt Textsuche im Markdown-Protokoll
+            # (core/verification_outcome.py) - der frühere String-Abgleich traf nie zu.
             _outcome = getattr(self, "last_verification_outcome", None)
             if not isinstance(_outcome, VerificationOutcome):
                 _outcome = VerificationOutcome()
@@ -1314,14 +1083,10 @@ class Orchestrator(
                 project_slug=self.last_project_slug,
                 project_dir=project_dir,
                 files_written=geschriebene_dateien,
-                # Realer Fund (toggleforge, 2026-09-12): "Testlauf" kam in verification_summary
-                # NIE vor (verification.py schreibt "✅ Echte Testsuite bestanden ..." bzw.
-                # "... Testsuite bestanden."). Zusätzlich kippte ein NACHGELAGERTER Check (z. B.
-                # der Browser-UI-Check auf ein fehlendes statisches Asset) verification_ok auf
-                # False - wodurch eine tatsächlich bestandene Unit-Testsuite als "nicht gelaufen"
-                # und "nicht bestanden" gemeldet wurde. tests_ran/tests_passed müssen daher direkt
-                # am Testsuite-Treffer im Summary hängen, nicht am Gesamt-verification_ok, das auch
-                # UI-/Asset-Befunde einschließt.
+                # tests_ran/tests_passed hängen bewusst am Testsuite-Einzelergebnis, nicht am
+                # Gesamt-verification_ok: ein nachgelagerter Check (z.B. Browser-UI) kippt
+                # verification_ok und ließ eine bestandene Unit-Testsuite als "nie gelaufen"
+                # erscheinen.
                 tests_ran=_outcome.ran("tests"),
                 tests_passed=_outcome.status("tests") is True,
                 deps_installable=_outcome.status("deps_install"),
@@ -1337,11 +1102,9 @@ class Orchestrator(
                 failed_checks=_outcome.failed_checks,
                 verification_skipped=bool(budget_aborted or manually_cancelled),
                 user_request=user_request,
-                # `/goal`-Auftrag (20260915, Schwachstelle 2): macht das ausschließlich
-                # dateibasierte "missing_frontend_ui"-Kriterium (core/definition_of_done.py)
-                # erst dann verpflichtend, wenn tatsächlich ein frontend-Agent eingeplant war -
-                # unabhängig davon, ob dessen Ergebnis erfolgreich war (gerade das Hard Delivery
-                # Gate-Scheitern soll hier sichtbar werden, siehe agents/base_agent.py).
+                # Macht das dateibasierte "missing_frontend_ui"-Kriterium nur verpflichtend,
+                # wenn ein frontend-Agent eingeplant war - unabhängig von dessen Erfolg, denn
+                # gerade ein gescheitertes Hard Delivery Gate soll hier sichtbar werden.
                 frontend_planned=any(r.agent_id == "frontend" for r in results),
             )
             write_definition_of_done(project_dir, self.last_definition_of_done)
@@ -1356,23 +1119,18 @@ class Orchestrator(
 
         if budget_aborted:
             notify(f"🚫 [bold red]{self._budget_exceeded_label(run_start_tokens)} erreicht:[/bold red] Retrospektive & Selbstoptimierung werden übersprungen ({self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf).")
-            # EIN zentraler Benachrichtigungs-Ort statt an jeder der drei Stellen, an denen
-            # budget_aborted innerhalb der Fachbereichs-/Governance-Fix-/Verifikations-Schleifen
-            # gesetzt werden kann (core/notifier.py, no-op ohne NOTIFY_WEBHOOK_URL) - relevant
-            # v.a. für unbeaufsichtigte Läufe (Dashboard-Job, Issue-Watcher), wo sonst niemand
-            # aktiv zusieht, dass ein Lauf vorzeitig beendet wurde.
+            # EIN zentraler Benachrichtigungs-Ort statt an jeder Stelle, an der budget_aborted
+            # gesetzt werden kann (no-op ohne NOTIFY_WEBHOOK_URL) - relevant v.a. für
+            # unbeaufsichtigte Läufe, wo sonst niemand den vorzeitigen Abbruch bemerkt.
             await asyncio.to_thread(
                 notify_external, "Budget erreicht",
                 f"{task_summary[:150]}: {self._budget_exceeded_label(run_start_tokens)} erreicht "
                 f"({self._tokens_used_since(run_start_tokens):,} Tokens in diesem Lauf verbraucht).",
             )
             if getattr(self, "_provider_exhausted_this_run", False):
-                # Team-Optimierung (chronos_queue-Retrospektive, 20260911): ein Sofortabbruch
-                # durch den Fast Circuit Breaker ist ein INFRASTRUKTUR-Blocker (kein Provider
-                # hatte noch Kapazität), kein Qualitätsmangel eines Agenten - core/optimization_
-                # advisor.py/core/team_retro.py sollen das künftig als solchen erkennen, statt
-                # betroffene Agenten fälschlich als "schlecht performend" einzustufen (siehe
-                # core/provider_exhaustion.py für dieselbe Trennung auf Einzelergebnis-Ebene).
+                # Ein Sofortabbruch durch den Fast Circuit Breaker ist ein INFRASTRUKTUR-Blocker,
+                # kein Qualitätsmangel eines Agenten - sonst stufen optimization_advisor/
+                # team_retro die betroffenen Agenten fälschlich als "schlecht performend" ein.
                 record_lesson(
                     project_slug=self.last_project_slug,
                     category="infrastructure_blocker",
@@ -1403,10 +1161,8 @@ class Orchestrator(
                 verification_summary=verification_summary,
                 definition_of_done=self.last_definition_of_done,
             )
-            # Gesamtsystem-Analyse 2026-09-14, Punkt 3.1: zusätzlich zum obigen (immer
-            # laufenden, aber werkzeuglosen) Trainer-Aufruf bei einem echten Warnsignal eine
-            # Tiefenanalyse MIT echtem Tool-Zugriff auslösen (core/root_cause_analyst.py) -
-            # schließt die Lücke, die bisher nur manuelle Analyse-Sitzungen füllten.
+            # Zusätzlich zum werkzeuglosen Trainer-Aufruf oben: bei einem echten Warnsignal eine
+            # Tiefenanalyse MIT Tool-Zugriff (core/root_cause_analyst.py).
             await self._maybe_run_root_cause_analysis(
                 user_request=user_request,
                 verification_ok=verification_ok,
@@ -1415,8 +1171,8 @@ class Orchestrator(
                 project_dir=project_dir,
                 notify=notify,
             )
-            # Gesamtsystem-Analyse 2026-09-14, Punkt 3.2: nur bei tatsächlich bestandener
-            # Verifikation - siehe _maybe_harvest_reusable_components-Docstring.
+            # Nur bei tatsächlich bestandener Verifikation - siehe
+            # _maybe_harvest_reusable_components-Docstring.
             self._maybe_harvest_reusable_components(
                 verification_ok=verification_ok,
                 project_dir=project_dir,
@@ -1446,32 +1202,23 @@ class Orchestrator(
                 "wurden übersprungen; die bis dahin erarbeiteten Ergebnisse wurden trotzdem oben zusammengefasst."
             )
 
-        # Realer Fund: final_solution (die LLM-Synthese oben) reproduzierte in einem echten
-        # Lauf Code, der NICHT mit der tatsächlich geschriebenen Datei übereinstimmte (das
-        # Modell paraphrasierte aus den Agenten-Berichten statt wortgetreu zu übernehmen) -
-        # ein echtes Vertrauensproblem für jeden, der nur den Chat-Output liest, statt die
-        # Dateien selbst zu prüfen. Dieser Abschnitt liest die WIRKLICH geschriebenen Dateien
-        # direkt von der Platte (kein LLM-Aufruf, daher immer exakt korrekt) - siehe auch die
-        # entsprechend angepasste SYNTHESIZE_SYSTEM_PROMPT-Anweisung, keinen vollständigen
-        # Code mehr zu reproduzieren.
+        # Liest die WIRKLICH geschriebenen Dateien direkt von der Platte (kein LLM-Aufruf, daher
+        # exakt): die Synthese oben paraphrasierte Code aus den Agenten-Berichten und wich damit
+        # von den tatsächlichen Dateien ab - ein Vertrauensproblem für alle, die nur den
+        # Chat-Output lesen.
         real_files_section = self._build_real_files_section(project_dir, file_owners)
         collision_section = self._build_file_collision_section(file_collisions)
         clarification_section = self._build_clarification_section(results)
         self.last_needs_human_input = bool(clarification_section)
         self.last_clarification_questions = [q for r in results for q in r.clarification_questions]
 
-        # Datenbasierte Selbstoptimierungs-Vorschläge (core/optimization_advisor.py) - rein
-        # deterministische Auswertung der BEREITS BESTEHENDEN, projektübergreifenden
-        # Lauf-Historie (kein zusätzlicher LLM-Aufruf nötig, anders als retrospective/
-        # agent_trainer direkt darunter). Standardmäßig NUR ein Vorschlag, keine automatische
-        # Änderung an config.py (siehe Modul-Docstring) - leer für die Mehrheit der Läufe ohne
-        # statistisch aussagekräftigen Befund, kein unnötiger Abschnitt im Bericht.
-        #
-        # Team-Optimierung (Retrospektive 2026-09-04): apply_auto_tuning() schließt den Kreislauf
-        # für Nutzer, die config.ENABLE_AUTO_MODEL_TUNING explizit aktiviert haben - ohne diesen
-        # Aufruf blieb selbst eine glasklare Empfehlung wirkungslos, solange niemand den
-        # Abschlussbericht liest (z.B. bei autonomen --work-backlog/Cron-Läufen). No-Op und []
-        # zurück, solange das Flag aus ist (Standard) - dieselbe Zeile läuft für JEDEN Lauf.
+        # Datenbasierte Selbstoptimierungs-Vorschläge (core/optimization_advisor.py):
+        # deterministische Auswertung der bestehenden, projektübergreifenden Lauf-Historie, kein
+        # zusätzlicher LLM-Aufruf. Standardmäßig nur ein Vorschlag, keine automatische Änderung.
+        # apply_auto_tuning() schließt den Kreislauf für Nutzer mit
+        # config.ENABLE_AUTO_MODEL_TUNING - sonst bleibt eine Empfehlung wirkungslos, solange
+        # niemand den Abschlussbericht liest (autonome --work-backlog/Cron-Läufe). No-Op,
+        # solange das Flag aus ist.
         optimization_report = analyze_optimization_potential()
         auto_tuned_agents = apply_auto_tuning(optimization_report)
         # Modell-Vorschläge als kontrollierte A/B-Tests starten und laufende Tests auswerten
@@ -1486,11 +1233,9 @@ class Orchestrator(
                     notify(f"🧪 [bold]Modell-A/B-Test {label}:[/bold] {', '.join(agents)}")
         except Exception as e:  # noqa: BLE001 - Selbstoptimierung darf den Lauf nie gefährden
             logging.getLogger(__name__).warning("Modell-A/B-Tests fehlgeschlagen: %r", e)
-        # Punkt 2 der Team-Retrospektive (2026-09-06): schreibt Modell-/Underperformer-Funde in
-        # das teamweite Lektionen-Gedächtnis (core/team_memory.py) - bleibt so auch dann
-        # wirksam sichtbar, wenn ENABLE_AUTO_MODEL_TUNING (bewusst) aus ist und niemand diesen
-        # einzelnen Abschlussbericht liest (z.B. autonome --work-backlog/Cron-Läufe). Rein
-        # deterministisch, kein zusätzlicher LLM-Aufruf; record_lesson() dedupliziert bereits
+        # Schreibt Modell-/Underperformer-Funde ins teamweite Lektionen-Gedächtnis
+        # (core/team_memory.py) - so bleiben sie sichtbar, auch wenn ENABLE_AUTO_MODEL_TUNING
+        # aus ist und niemand diesen Abschlussbericht liest. record_lesson() dedupliziert
         # intern, ein wiederholter Fund bläht die Historie also nicht auf.
         record_suggestions_as_lessons(optimization_report)
         # Lektionen, die das zentrale Regelwerk (core/known_pitfalls.py) inzwischen abdeckt, als
@@ -1502,21 +1247,13 @@ class Orchestrator(
                 notify(f"🧠 [dim]{len(linked)} Team-Lektion(en) als durch das Regelwerk abgedeckt markiert.[/dim]")
         except Exception as e:  # noqa: BLE001 - Lernpflege darf den Lauf nie gefährden
             logging.getLogger(__name__).warning("Lektionen-Verknüpfung fehlgeschlagen: %r", e)
-        # Team-Optimierung (Fortsetzung der Analyse 2026-09-06): unused_agent-Funde blieben
-        # bisher NUR eine Zeile in team_lessons.jsonl (siehe record_suggestions_as_lessons()
-        # oben) - dort teilen sie sich mit jeder anderen Kategorie dieselben knappen
-        # MAX_LESSONS_SHOWN-Anzeigeplätze und sind sonst nirgends nachverfolgbar sichtbar. Ein
-        # echter Lauf erzeugte 11 solcher Funde auf einmal, ohne dass das je auffiel. Öffnet
-        # jetzt zusätzlich ein sichtbares, verfolgbares Backlog-Ticket je betroffener Rolle -
-        # source="optimization_advisor" ist bewusst nicht in _AUTONOMOUS_SOURCES, das Team
-        # arbeitet es also NICHT automatisch ab (Rollen-Konsolidierung ist eine menschliche
-        # Abwägung), es bleibt aber sichtbar im Kanban-Board statt in einer JSONL-Datei begraben.
+        # Öffnet je betroffener Rolle ein verfolgbares Backlog-Ticket: als bloße Zeile in
+        # team_lessons.jsonl teilen sich unused_agent-Funde die knappen MAX_LESSONS_SHOWN-Plätze
+        # und gingen unter. source="optimization_advisor" ist bewusst nicht in
+        # _AUTONOMOUS_SOURCES - Rollen-Konsolidierung ist eine menschliche Abwägung.
         unused_agent_tickets = record_unused_agent_tickets(optimization_report)
-        # Team-Optimierung (KI-Team-Zustandsbericht 2026-09-08): Kehrseite von
-        # record_unused_agent_tickets() direkt darüber - schließt ein zuvor offenes
-        # `unused-agent-<id>`-Ticket automatisch, sobald die Rolle in einem späteren Lauf
-        # nachweislich wieder gewählt wurde (siehe close_resolved_unused_agent_tickets()-
-        # Docstring für den realen Fund, der das ausgelöst hat).
+        # Kehrseite dazu: schließt ein offenes `unused-agent-<id>`-Ticket automatisch, sobald
+        # die Rolle in einem späteren Lauf wieder gewählt wurde.
         resolved_unused_agent_tickets = close_resolved_unused_agent_tickets(optimization_report)
         optimization_section = format_optimization_report(optimization_report)
         if unused_agent_tickets:
@@ -1568,22 +1305,11 @@ class Orchestrator(
 
         self._history.add_assistant_message(final_output)
 
-        # Realer Fund aus einem echten Lauf: alle drei Telemetrie-Aufrufe unten (record_run/
-        # record_run_usage/record_run_history) sind laut ihren eigenen Kommentaren/Docstrings
-        # als "rein additiv, darf einen sonst erfolgreichen Lauf niemals zum Scheitern bringen"
-        # gedacht - waren das bisher aber nur GEGEN I/O-Fehler (record_run() fängt die
-        # ausdrücklich ab). Ein KeyError('cache_read_tokens') schlug hier unbehandelt durch bis
-        # zum CLI-Top-Level-Handler (interface/cli.py) - der bereits fertig SYNTHETISIERTE, in
-        # self._history bereits gespeicherte final_output ging dadurch für den Nutzer komplett
-        # verloren, der Lauf landete als "blocked" im Backlog, obwohl die eigentliche
-        # Team-Arbeit längst erfolgreich abgeschlossen war. Ursache war zunächst fälschlich als
-        # SDK-Eigenheit vermutet - tatsächlich ein simples Schema-Migrations-Loch in
-        # memory/cost_history.py.record_run_usage() (siehe dort: setdefault() füllte fehlende
-        # Schlüssel nur bei einem komplett NEUEN Modell-Eintrag, nicht bei einem bereits
-        # vorhandenen Eintrag aus der Zeit vor cache_read_tokens/cache_write_tokens - seitdem
-        # behoben). Jeder der drei Aufrufe unten bleibt trotzdem einzeln in ein eigenes
-        # try/except gekapselt (nicht ein gemeinsamer Block), damit
-        # ein Fehler in EINEM Telemetrie-Aufruf die anderen beiden nicht auch noch verhindert.
+        # Die drei Telemetrie-Aufrufe unten sind rein additiv und JEWEILS einzeln in try/except
+        # gekapselt (nicht in einem gemeinsamen Block), damit ein Fehler in einem die anderen
+        # beiden nicht verhindert. Ein unbehandelter Fehler hier ließ früher den bereits fertig
+        # synthetisierten final_output für den Nutzer komplett verloren gehen, obwohl die
+        # eigentliche Team-Arbeit erfolgreich abgeschlossen war.
         try:
             # Projekt-Kontinuität über mehrere Sitzungen hinweg & automatischer State-Checkpoint (core/project_status.py)
             all_written_files = sorted({f for r in results for f in r.files_written})
@@ -1609,21 +1335,17 @@ class Orchestrator(
             notify(f"⚠️ [dim yellow]Projekt-Historie / State-Checkpoint (save_project_checkpoint) konnte nicht aktualisiert werden: {e}[/dim yellow]")
 
         try:
-            # Kumulierte, sitzungsübergreifende Kosten-Historie (memory/cost_history.py) - anders
-            # als core/token_guard.py (reiner In-Memory-Zähler, bei jedem Neustart wieder bei
-            # Null) bleibt das über JEDEN künftigen Prozess-Neustart erhalten. Nutzt den
-            # Pro-Modell-DELTA seit Laufbeginn, nicht den Gesamtzähler des Prozesses - sonst
-            # würde ein zweiter Lauf in derselben Sitzung den ersten erneut mitzählen.
+            # Kumulierte, neustartfeste Kosten-Historie (memory/cost_history.py; token_guard ist
+            # nur ein In-Memory-Zähler). Nutzt den Pro-Modell-DELTA seit Laufbeginn - sonst
+            # zählte ein zweiter Lauf derselben Sitzung den ersten erneut mit.
             record_run_usage(self._model_usage_deltas(run_start_model_stats))
         except Exception as e:
             notify(f"⚠️ [dim yellow]Kosten-Historie (record_run_usage) konnte nicht aktualisiert werden: {e}[/dim yellow]")
 
         try:
-            # Realer Fund bei einer Bestandsaufnahme des eigenen Teams: core/project_status.py
-            # speichert Historie NUR pro Projekt, memory/cost_history.py NUR kumulierte Summen
-            # pro Modell - es gab keine Möglichkeit zu sehen, welche Agenten über die Zeit
-            # häufiger scheitern oder wie sich Tokenverbrauch/Dauer PROJEKTÜBERGREIFEND
-            # entwickeln (Grundlage für die Observability-Ansicht im Dashboard).
+            # Projektübergreifende Lauf-Historie: project_status speichert nur pro Projekt,
+            # cost_history nur Summen pro Modell - keines zeigt, welche Agenten über die Zeit
+            # häufiger scheitern (Grundlage der Observability-Ansicht im Dashboard).
             record_run_history(
                 project_slug=self.last_project_slug,
                 task_summary=task_summary,
@@ -1636,10 +1358,9 @@ class Orchestrator(
                         "success": r.success,
                         "total_tokens": r.total_tokens,
                         "model_used": r.model_used,
-                        # Ohne diese Klassifikation ließ sich in der Historie nicht mehr
-                        # unterscheiden, ob ein Agent an einem echten Fehler oder nur an einem
-                        # erschöpften Tageskontingent scheiterte - memory/run_history.py rechnet
-                        # Infrastruktur-Ausfälle jetzt aus allen Erfolgsquoten heraus.
+                        # Unterscheidet echten Fehler von erschöpftem Tageskontingent -
+                        # memory/run_history.py rechnet Infrastruktur-Ausfälle aus den
+                        # Erfolgsquoten heraus.
                         "failure_class": r.failure_class,
                     }
                     for r in results
@@ -1663,20 +1384,12 @@ class Orchestrator(
         except Exception:
             pass
 
-        # Realer Fund: bisher endete JEDER Lauf mit demselben uneingeschränkten "✅ Fertig!",
-        # auch wenn die Verifikation nie bestätigt werden konnte (keine Tests gefunden,
-        # Testfehler blieben ungelöst, Budget während der Fixversuche erreicht) - nicht zu
-        # unterscheiden von einem echten, verifizierten Erfolg. verification_ok macht das jetzt
-        # im allerletzten, am ehesten wahrgenommenen Status sichtbar statt nur im Kleingedruckten
-        # des Verifikations-Protokolls weiter oben. manually_cancelled bekommt einen eigenen,
-        # dritten Status statt in "NICHT verifiziert" mitzulaufen – der Nutzer hat den Lauf
-        # bewusst gestoppt, das ist etwas anderes als ein fehlgeschlagener Test.
-        # Team-Optimierung (Retrospektive 2026-09-03): ein offenes Governance-/Verifikations-
-        # Ticket (siehe core/project_status.py._BLOCKER_TICKET_PREFIXES) durfte bisher trotzdem
-        # zu einem uneingeschränkten "✅ Fertig!" führen, sobald die reine Testsuite bestand -
-        # genau der reale mockforge-Fund aus der Bestandsaufnahme, der zu dieser Änderung
-        # führte. Geprüft VOR verification_ok, weil ein ungelöster kritischer Befund schwerer
-        # wiegt als eine grüne Testsuite.
+        # Der allerletzte Status wird am ehesten wahrgenommen und muss deshalb differenzieren,
+        # statt immer "✅ Fertig!" zu melden: unbestätigte Verifikation, manueller Abbruch und
+        # offene Rückfrage sind je ein eigener Status, denn sie bedeuten Verschiedenes.
+        # Ein offenes Governance-/Verifikations-Ticket (_BLOCKER_TICKET_PREFIXES) wird VOR
+        # verification_ok geprüft - ein ungelöster kritischer Befund wiegt schwerer als eine
+        # grüne Testsuite.
         try:
             open_blocker = has_open_blocker_ticket(project_dir, verification_ok=verification_ok)
         except Exception:
@@ -1695,10 +1408,8 @@ class Orchestrator(
                 "bestanden hat."
             )
         elif self.last_needs_human_input:
-            # Eigener, vierter Status statt nur unter "NICHT verifiziert" mitzulaufen: eine
-            # offene Rückfrage ist kein Testfehler, sondern eine bewusste Entscheidung eines
-            # Agenten, NICHT zu raten - verdient eigene Sichtbarkeit (siehe
-            # _build_clarification_section oben).
+            # Eine offene Rückfrage ist kein Testfehler, sondern die bewusste Entscheidung eines
+            # Agenten, NICHT zu raten - deshalb ein eigener Status.
             notify(
                 f"❓ [bold cyan]Fertig, aber mit {len(self.last_clarification_questions)} offener "
                 f"Rückfrage(n)![/bold cyan] Siehe Abschnitt 'Offene Rückfragen' oben – bitte beantworten, "
@@ -1715,16 +1426,16 @@ class Orchestrator(
 
     @staticmethod
     def _normalize_slug(slug: str) -> str:
-        """Ignoriert Schreibvarianten, die für einen Menschen praktisch identisch aussehen:
-        Groß-/Kleinschreibung sowie "_" vs. "-" (real beobachtete Ursache doppelter Läufe)."""
+        """Ignoriert Schreibvarianten, die für einen Menschen identisch aussehen:
+        Groß-/Kleinschreibung sowie "_" vs. "-" - häufige Ursache doppelter Läufe."""
         return slug.lower().replace("-", "_")
 
     @classmethod
     def _find_near_duplicate_slug(cls, project_slug: str, existing_projects: list[str]) -> str | None:
-        """Findet ein bereits vorhandenes Projekt, dessen normalisierter Name mit dem neuen
-        project_slug übereinstimmt, obwohl die Roh-Slugs sich unterscheiden (z.B.
-        "api_health_monitor" vs. "api-health-monitor"). Gibt None zurück, wenn keines passt oder
-        der Slug ohnehin exakt existiert (dann greift bereits die reguläre Fortsetzungs-Logik)."""
+        """Findet ein vorhandenes Projekt, dessen normalisierter Name mit dem neuen project_slug
+        übereinstimmt, obwohl die Roh-Slugs sich unterscheiden ("api_health_monitor" vs.
+        "api-health-monitor"). None, wenn keines passt oder der Slug exakt existiert (dann greift
+        die reguläre Fortsetzungs-Logik)."""
         normalized_new = cls._normalize_slug(project_slug)
         for existing in existing_projects:
             if existing != project_slug and cls._normalize_slug(existing) == normalized_new:
@@ -1771,15 +1482,13 @@ class Orchestrator(
         bedeutungslos ("") – der Aufrufer MUSS abort_response (falls nicht None) direkt an
         den Nutzer zurückgeben, statt fortzufahren.
 
-        Isoliert wird IMMER, wenn am Zielort bereits echter Inhalt existiert (Framework-Root
-        selbst zählt immer dazu) – ein brandneues, leeres Projekt hat nichts zu verlieren und
-        wird bewusst direkt geschrieben (kein Worktree-Overhead im Alltagsfall). Kann isoliert
-        werden, aber es liegen unkommittete Änderungen am Zielort vor, wird NICHT isoliert
-        (ein frischer Worktree basiert auf dem letzten COMMIT und würde diese Änderungen
-        unsichtbar machen) – stattdessen wird direkt geschrieben, mit klarer Warnung. Nur beim
-        Framework-Root selbst (Selbstverbesserungslauf) führt ein generelles Scheitern der
-        Isolation (kein Git-Repo, `git` fehlt) zum Abbruch statt zu einem Fallback auf direktes
-        Schreiben – dort ist das Risiko am größten.
+        Isoliert wird IMMER, wenn am Zielort echter Inhalt existiert (Framework-Root zählt
+        immer dazu); ein leeres, neues Projekt hat nichts zu verlieren und wird ohne
+        Worktree-Overhead direkt geschrieben. Bei unkommittierten Änderungen am Zielort wird
+        NICHT isoliert (ein frischer Worktree basiert auf dem letzten COMMIT und würde sie
+        unsichtbar machen), sondern direkt geschrieben – mit klarer Warnung. Nur beim
+        Framework-Root führt ein Scheitern der Isolation zum Abbruch statt zum Fallback: dort
+        ist das Risiko am größten.
         """
         resolved = Path(candidate_dir).resolve()
         is_self_targeting = str(resolved) == str(Path(BASE_DIR).resolve())

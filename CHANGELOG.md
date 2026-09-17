@@ -7,6 +7,67 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔴 Team-Audit 2026-09-17: `browser_verifier` reichte WebSocket-Upgrades nie an das Backend durch
+
+Auslöser: gezielte Durchsicht nach demselben Symptom `Error during WebSocket handshake:
+'Connection' header is missing`, das trotz zweier bereits als `done` markierter
+`root_cause_analysis`-Tickets (`syncwave` 15.09., `logstream_sentinel` 16.09.) am 17.09. bei
+`entwickle_das_projekt_sentinel` DREI Läufe in Folge (07:51, 08:02, 08:10 UTC) erneut auftrat –
+im letzten Lauf bei sonst sauberem Backend-/Frontend-Code (keine Lint-, Test- oder
+Security-Funde).
+
+* **Fehleinschätzung in den beiden Vorläufer-Tickets:** Beide root-cause-Analysen schrieben das
+  Symptom fälschlich Agenten-Fehlern zu (Socket.IO-Client-Mismatch, fehlendes `websockets`-Paket
+  im falschen Interpreter) und lösten reine Prompt-Anpassungen aus. Die dritte Wiederholung mit
+  nachweislich korrektem Projektcode belegt, dass das eigentliche Problem nie im generierten
+  Code lag.
+* **Realer Fund (`core/browser_verifier.py`):** `_make_static_handler()`s `QuietHandler` proxyt
+  jede Anfrage ohne lokale Datei über `_proxy_to_backend()` per gepuffertem
+  `http.client`-Request/Response-Zyklus an `backend_port`. Dieser Zyklus liest die komplette
+  Antwort ein, bevor er sie zurückschreibt – ein `101 Switching Protocols`-Handshake kann so
+  strukturell nie durchgereicht werden. Da das vom Frontend erzeugte `new WebSocket(...)` sich
+  gegen `window.location.host` verbindet (also gegen den Playwright-Serve-Port, nicht direkt
+  gegen `backend_port`), scheiterte JEDES Projekt mit echten WebSockets an diesem Check,
+  unabhängig vom Agenten-Code.
+* **Fix:** `QuietHandler.do_GET()` erkennt den `Upgrade: websocket`-Header und übergibt die
+  Verbindung an `_proxy_websocket()` – dort wird der Client-Socket roh (bidirektionale
+  Thread-Pipe) mit einer frischen Verbindung zu `backend_port` gespleißt, statt über
+  `http.client` zu puffern. Handshake und alle folgenden Frames laufen dadurch unverändert durch.
+* **Tests:** `tests/test_browser_verifier_websocket_proxy.py` (neu) – ein echter Fake-Backend-
+  Socket-Server prüft, dass ein Upgrade-Request durch den Proxy hindurch tatsächlich ein `101`
+  erhält.
+* **Lehre fürs Team:** Eine `root_cause_analysis`, die ein Symptom in generiertem Projektcode
+  beheben will, muss zuerst prüfen, ob derselbe Fehler bei nachweislich sauberem Code
+  reproduzierbar ist – sonst wird wiederholt ein Framework-Bug den Agenten angelastet und das
+  Symptom kehrt beim nächsten Projekt mit derselben Anforderung zurück. Die beiden betroffenen
+  Tickets wurden nachträglich um einen Korrektur-Hinweis ergänzt.
+
+---
+
+## 🔴 Lauf-Analyse docu_guard 2026-09-17: Test-Payload/Route erfunden statt aus dem Backend-Code gelesen
+
+* **Realer Fund:** `workspace/docu_guard/.ai_team_runs/20260917_085622_verification.md` –
+  `tests/test_api.py` rief `POST /api/v1/documents` mit `{"title", "content", "author_id"}` auf
+  und erwartete Status `200`/Audit-Action `"CREATE"`. Der tatsächliche Endpunkt lautete
+  `@router.post("/upload", ..., status_code=201)` mit Pflichtfeld `filename` und loggte die
+  Audit-Action `"UPLOAD"`; `document_id` steckte zudem verschachtelt im `payload`-JSON-String,
+  nicht top-level. 4 von 5 Tests scheiterten an dieser frei erfundenen Annahme, nicht an echtem
+  Backend-Code – der automatische Fixversuch änderte nichts daran, das Ticket blieb `blocked`.
+* **Ursache:** Dieser Lauf (08:56 UTC) startete NACH dem bereits vorhandenen Prompt-Fix in
+  `agents/tester_agent.py` (08:28 UTC, ausgelöst durch den `pipeline_pilot`-Befund), der
+  vorschreibt, `app/schemas.py`/`app/models.py` vor jeder Test-Payload zu lesen – trat aber
+  trotzdem auf, weil dieser Fix nur Payload-Felder abdeckte, nicht Route/Methode/Statuscode/
+  Log-Strings. Beleg dafür, dass ein einzelner Prompt-Hinweis diese Fehlerklasse nicht
+  zuverlässig verhindert, solange er nicht auf den vollen API-Contract ausgeweitet wird.
+* **Fix:** `tests/test_api.py` manuell an den echten Contract angeglichen; zusätzlich zwei
+  `DTZ003`-Lint-Funde (`datetime.utcnow()` statt `datetime.now(UTC)`) in
+  `app/api/v1/documents.py` und `app/services/audit_chain.py` behoben – Suite läuft jetzt 5/5
+  grün, `ruff` clean. `agents/tester_agent.py` um eine explizite Regel ergänzt, Route, HTTP-
+  Methode, Statuscode und erwartete Log-/Audit-Strings ebenso am Quellcode statt an
+  REST-Konvention abzulesen.
+
+---
+
 ## 🔴 Lauf-Analyse pipeline_pilot 2026-09-16: Testtiefen-Nachbesserung im letzten Versuch unerreichbar
 
 * **Realer Fund:** `workspace/pipeline_pilot/.ai_team_runs/20260916_185239_verification.md` –

@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DocuGuard Dashboard</title>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; margin: 20px; background: #f4f4f9; color: #333; line-height: 1.5; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; background: white; }
+        th, td { padding: 12px; border: 1px solid #ccc; text-align: left; }
+        th { background: #e0e0e0; }
+        .status-quarantine { color: #d32f2f; font-weight: bold; }
+        .status-clean { color: #388e3c; font-weight: bold; }
+        button { padding: 8px 16px; cursor: pointer; background: #0056b3; color: white; border: none; border-radius: 4px; font-weight: bold; }
+        button:hover, button:focus { background: #004494; outline: 3px solid #ffbf47; }
+        :focus-visible { outline: 3px solid #ffbf47; }
+        .skip-link { position: absolute; top: -40px; left: 0; background: #000; color: #fff; padding: 8px; z-index: 100; }
+        .skip-link:focus { top: 0; }
+    </style>
+</head>
+<body>
+    <a href="#main-content" class="skip-link">Zum Hauptinhalt springen</a>
+    
+    <main id="main-content">
+        <h1>DocuGuard Dashboard</h1>
+        
+        <section>
+            <h2>Dokumente</h2>
+            <table id="docsTable">
+                <thead>
+                    <tr>
+                        <th scope="col">ID</th>
+                        <th scope="col">Dateiname</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Aktion</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>Audit Logs</h2>
+            <table id="auditTable">
+                <thead>
+                    <tr>
+                        <th scope="col">Timestamp</th>
+                        <th scope="col">Aktion</th>
+                        <th scope="col">Hash</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </section>
+    </main>
+
+    <script>
+        async function fetchData() {
+            try {
+                const [docsRes, auditRes] = await Promise.all([
+                    fetch('/api/v1/documents'),
+                    fetch('/api/v1/audit/logs')
+                ]);
+                
+                const docs = await docsRes.json();
+                const tbody = document.querySelector('#docsTable tbody');
+                tbody.innerHTML = '';
+                docs.forEach(doc => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${doc.id}</td>
+                        <td>${doc.filename}</td>
+                        <td class="status-${doc.status}">${doc.status}</td>
+                        <td>${doc.status === 'quarantine' ? `<button onclick="release(${doc.id})" aria-label="Dokument ${doc.filename} freigeben">Freigeben</button>` : '-'}</td>
+                    `;
+                    tbody.appendChild(row);
+                });
+
+                const logs = await auditRes.json();
+                const auditTbody = document.querySelector('#auditTable tbody');
+                auditTbody.innerHTML = '';
+                logs.forEach(log => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `<td>${log.timestamp}</td><td>${log.action}</td><td><code>${log.hash.substring(0, 16)}...</code></td>`;
+                    auditTbody.appendChild(row);
+                });
+            } catch (err) {
+                console.error('Fehler beim Laden der Daten:', err);
+            }
+        }
+
+        async function release(id) {
+            await fetch(`/api/v1/documents/${id}/release`, { method: 'POST' });
+            fetchData();
+        }
+
+        fetchData();
+    </script>
+</body>
+</html>

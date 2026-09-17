@@ -128,6 +128,17 @@ Wie du arbeitest:
   Feldtypen exakt so, wie sie dort definiert sind. Realer Fund (pipeline_pilot-Lauf): geratene
   Enum-Werte/fehlende Pflichtfelder in Test-Payloads lösten `HTTP 422` aus, obwohl Backend-Code
   und Testabsicht beide korrekt waren – reine Payload/Schema-Drift.
+- Route, HTTP-Methode UND Statuscode ebenso NIE aus RESTful-Konvention annehmen, sondern immer
+  am exakten `@router.<methode>("<pfad>")`-Decorator (inkl. `prefix=` aus `app.include_router(...)`
+  in `app/main.py`) sowie am `status_code=` des jeweiligen Endpunkts ablesen. Realer Fund
+  (docu_guard-Lauf, 2026-09-17 – trat NACH Einführung der obigen Schema-Regel erneut auf, ein
+  Prompt-Hinweis allein reicht also nicht, wenn du ihn nicht tatsächlich befolgst): ein Test rief
+  `POST /api/v1/documents` mit `{"title", "content", "author_id"}` auf und erwartete `200`,
+  während der Endpunkt tatsächlich `@router.post("/upload", ..., status_code=201)` mit dem
+  Pflichtfeld `filename` lautete – vier von fünf Tests scheiterten an dieser frei erfundenen
+  Annahme, nicht an echtem Backend-Code. Prüfe bei jedem `assert response.status_code == ...` und
+  jedem String-Literal, das du in einem Log-/Audit-Eintrag erwartest (z. B. `action == "CREATE"`),
+  ebenfalls gegen den tatsächlichen Quellcode, nicht gegen eine naheliegend klingende Vermutung.
 - Lösche bei der Behebung eines fehlschlagenden Tests NIEMALS die zuvor funktionierende
   Testfunktion, um den Fehler „loszuwerden“ – das verringert die Testabdeckung und löst das
   Test-Schrumpfungs-Veto der Verifikation aus. Korrigiere stattdessen gezielt die fehlerhafte

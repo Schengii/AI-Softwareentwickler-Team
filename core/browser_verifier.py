@@ -372,7 +372,65 @@ class BrowserVerifier:
                 except Exception:
                     self.send_error(502)
 
+            def _proxy_websocket(self):
+                """Reicht einen WebSocket-Handshake per rohem Socket-Splice an das Backend weiter.
+
+                Realer Fund (sentinel/logstream_sentinel/syncwave, zuletzt 2026-09-17 drei Laeufe
+                in Folge mit identischem Fehler): `_proxy_to_backend()` fuehrt einen gepufferten
+                `http.client`-Request/Response-Zyklus aus und kann daher niemals ein "101 Switching
+                Protocols" durchreichen - jede WebSocket-Verbindung, die der Browser gegen den von
+                Playwright genutzten statischen Server (nicht direkt gegen `backend_port`) oeffnet,
+                bricht zwingend mit 'Connection' header is missing ab, VOELLIG UNABHAENGIG davon, ob
+                Frontend- und Backend-Code korrekt sind. Fruehere Root-Cause-Analysen schrieben genau
+                dieses Symptom faelschlich Agenten-Code zu (fehlendes `websockets`-Paket, falscher
+                Client) und blieben wirkungslos, weil die eigentliche Luecke hier im Verifier lag."""
+                if not backend_port:
+                    self.send_error(502)
+                    return
+                try:
+                    backend_sock = socket.create_connection(("127.0.0.1", backend_port), timeout=5)
+                except OSError:
+                    self.send_error(502)
+                    return
+                request_head = [f"{self.command} {self.path} {self.request_version}\r\n"]
+                for k, v in self.headers.items():
+                    request_head.append(f"{k}: {v}\r\n")
+                request_head.append("\r\n")
+                try:
+                    backend_sock.sendall("".join(request_head).encode("latin-1"))
+                except OSError:
+                    backend_sock.close()
+                    return
+
+                client_sock = self.connection
+                self.close_connection = True
+
+                def _pipe(src, dst):
+                    try:
+                        while True:
+                            data = src.recv(65536)
+                            if not data:
+                                break
+                            dst.sendall(data)
+                    except OSError:
+                        pass
+                    finally:
+                        try:
+                            dst.shutdown(socket.SHUT_WR)
+                        except OSError:
+                            pass
+
+                t1 = threading.Thread(target=_pipe, args=(client_sock, backend_sock), daemon=True)
+                t2 = threading.Thread(target=_pipe, args=(backend_sock, client_sock), daemon=True)
+                t1.start()
+                t2.start()
+                t1.join()
+                t2.join()
+                backend_sock.close()
+
             def do_GET(self):
+                if self.headers.get("Upgrade", "").lower() == "websocket":
+                    return self._proxy_websocket()
                 if os.path.isfile(self.translate_path(self.path)):
                     return super().do_GET()
                 return self._proxy_to_backend()

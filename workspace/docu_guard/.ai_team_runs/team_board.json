@@ -1,0 +1,247 @@
+{
+  "run_id": "20260917_085622",
+  "handoffs": [
+    {
+      "agent_id": "architect",
+      "task_id": "8944fc51",
+      "files": [
+        "docs/adr/0001-sqlite-und-fastapi-monolith-f-r-document.md",
+        "docs/adr/0002-interne-sha-256-hash-kette-f-r-manipulat.md",
+        "docs/adr/0003-vanilla-js-dashboard-via-fastapi-staticf.md"
+      ],
+      "provides": [],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-17T08:57:24+00:00"
+    },
+    {
+      "agent_id": "frontend",
+      "task_id": "4bab781f",
+      "files": [
+        "public/index.html"
+      ],
+      "provides": [
+        "`public/index.html` (Dashboard UI)"
+      ],
+      "requires": [
+        "REST API Endpunkte unter `/api/v1/documents`, `/api/v1/documents/{id}/release`, `/api/v1/audit/logs`"
+      ],
+      "open_issues": [],
+      "timestamp": "2026-09-17T08:57:42+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "13ef13b0",
+      "files": [
+        "app/main.py",
+        "tests/test_api.py",
+        "tests/test_smoke.py"
+      ],
+      "provides": [
+        "`tests/test_smoke.py`, `tests/test_api.py`, `app/main.py`",
+        "app/main.py: root, list_documents, list_audit_logs, app",
+        "GET / (app/main.py)",
+        "GET /api/v1/audit/logs (app/main.py)",
+        "GET /api/v1/documents (app/main.py)",
+        "tests/test_api.py: test_upload_document_flow, test_verify_audit_chain",
+        "tests/test_smoke.py: test_app_starts_and_health_ok, test_api_documents_list_empty, test_audit_logs_initial, client"
+      ],
+      "requires": [],
+      "open_issues": [
+        "Implementierung der Geschäftslogik (Scanner, Audit-Chain, DB-Modelle) steht noch aus."
+      ],
+      "timestamp": "2026-09-17T08:58:39+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "cd837f42",
+      "files": [
+        "app/api/v1/audit.py",
+        "app/api/v1/documents.py",
+        "app/core/config.py",
+        "app/db/base.py",
+        "app/db/session.py",
+        "app/main.py",
+        "app/models/audit.py",
+        "app/models/document.py",
+        "app/schemas/audit.py",
+        "app/schemas/document.py",
+        "app/services/audit_chain.py",
+        "app/services/scanner.py",
+        "requirements.txt"
+      ],
+      "provides": [
+        "`GET /health`, `POST /api/v1/documents/upload`, `GET /api/v1/documents`, `GET /api/v1/documents/{id}`, `POST /api/v1/documents/{id}/release`, `GET /api/v1/audit/logs`, `GET /api/v1/audit/verify` (app/main.py, app/api/v1/*.py)",
+        "`ScannerService`, `AuditChainService`",
+        "app/api/v1/audit.py: get_audit_logs, verify_audit_chain, router",
+        "GET /logs (app/api/v1/audit.py)",
+        "GET /verify (app/api/v1/audit.py)",
+        "app/api/v1/documents.py: upload_document, list_documents, get_document, release_document, router",
+        "GET /{id} (app/api/v1/documents.py)",
+        "POST /upload (app/api/v1/documents.py)",
+        "POST /{id}/release (app/api/v1/documents.py)",
+        "app/core/config.py: Settings, get_settings, settings",
+        "app/db/base.py: Base",
+        "app/db/session.py: get_db, engine, async_session_maker"
+      ],
+      "requires": [
+        "Die von `frontend` bereitgestellte `public/index.html` (wird nun korrekt über `/` ausgeliefert)."
+      ],
+      "open_issues": [
+        "Der `tester` sollte seine Tests gegen die nun vollständigen Routen in `app/main.py` laufen lassen und verifizieren."
+      ],
+      "timestamp": "2026-09-17T08:59:39+00:00"
+    },
+    {
+      "agent_id": "accessibility",
+      "task_id": "42a042e8",
+      "files": [
+        "public/index.html"
+      ],
+      "provides": [],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-17T08:59:45+00:00"
+    },
+    {
+      "agent_id": "security",
+      "task_id": "91210186",
+      "files": [
+        "app/core/security.py"
+      ],
+      "provides": [
+        "`SecurityHeadersMiddleware`, `SimpleRateLimitMiddleware` (app/core/security.py)",
+        "app/core/security.py: SecurityHeadersMiddleware, SimpleRateLimitMiddleware"
+      ],
+      "requires": [
+        "Einbindung der Middlewares in `app/main.py` (`app.add_middleware`) durch den Backend-Agenten."
+      ],
+      "open_issues": [
+        "`docs/SECURITY_AUDIT.md` konnte aufgrund des Watchdog-Limits nicht mehr physisch gespeichert werden. Die Middlewares müssen noch in der `main.py` registriert werden."
+      ],
+      "timestamp": "2026-09-17T09:00:25+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "verify_fix_backend_1",
+      "files": [
+        "tests/test_api.py"
+      ],
+      "provides": [
+        "Fix für `httpx.AsyncClient` in `tests/test_api.py`",
+        "tests/test_api.py: test_upload_document_flow, test_verify_audit_chain"
+      ],
+      "requires": [],
+      "open_issues": [
+        "`sqlalchemy.exc.OperationalError` in `tests/test_smoke.py` beheben (Tabellen-Erstellung im Lifespan von `app/main.py` fehlt)",
+        "Implementierung der Geschäftslogik."
+      ],
+      "timestamp": "2026-09-17T09:02:17+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "verify_fix_backend_2",
+      "files": [
+        "app/main.py",
+        "app/models/__init__.py"
+      ],
+      "provides": [
+        "Registrierung der DB-Modelle im FastAPI Lifespan (`app/main.py`), `app/models/__init__.py`",
+        "app/main.py: lifespan, health_check, app",
+        "GET /health (app/main.py)"
+      ],
+      "requires": [
+        "Anpassung der `create_async_engine` Konfiguration für SQLite In-Memory (StaticPool) durch den `database`- oder `tester`-Agenten."
+      ],
+      "open_issues": [
+        "Tests schlagen noch mit `no such table` fehl, bedingt durch SQLite In-Memory Connection-Pooling."
+      ],
+      "timestamp": "2026-09-17T09:03:19+00:00"
+    },
+    {
+      "agent_id": "qa_lead",
+      "task_id": "verify_escalation_qa_lead_3",
+      "files": [
+        "app/db/session.py"
+      ],
+      "provides": [
+        "app/db/session.py: get_db, connect_args, poolclass, engine, async_session_maker"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-17T09:03:31+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "verify_model_escalation_tester_3",
+      "files": [
+        "tests/conftest.py",
+        "tests/test_api.py",
+        "tests/test_smoke.py"
+      ],
+      "provides": [
+        "Funktionierende Test-Infrastruktur mit isolierter In-Memory-DB (`tests/conftest.py`), reparierte Tests (`tests/test_smoke.py`, `tests/test_api.py`)",
+        "tests/conftest.py: override_get_db, setup_test_db, async_client, test_engine, TestSessionLocal",
+        "tests/test_api.py: test_upload_document_flow, test_verify_audit_chain",
+        "tests/test_smoke.py: test_app_starts_and_health_ok, test_api_documents_list_empty, test_audit_logs_initial"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-17T09:04:55+00:00"
+    }
+  ],
+  "claims": {
+    "public/index.html": "frontend",
+    "tests/test_smoke.py": "tester",
+    "requirements.txt": "backend",
+    "app/core/config.py": "backend",
+    "app/main.py": "tester",
+    "app/db/base.py": "backend",
+    "app/db/session.py": "backend",
+    "tests/test_api.py": "tester",
+    "app/models/document.py": "backend",
+    "app/models/audit.py": "backend",
+    "app/schemas/document.py": "backend",
+    "app/schemas/audit.py": "backend",
+    "app/services/audit_chain.py": "backend",
+    "app/services/scanner.py": "backend",
+    "app/api/v1/documents.py": "backend",
+    "app/api/v1/audit.py": "backend",
+    "app/core/security.py": "security",
+    "app/models/__init__.py": "backend",
+    "tests/conftest.py": "tester"
+  },
+  "foreign_changes": [
+    {
+      "path": "app/main.py",
+      "owner": "tester",
+      "changed_by": "backend",
+      "timestamp": "2026-09-17T08:59:20+00:00"
+    },
+    {
+      "path": "public/index.html",
+      "owner": "frontend",
+      "changed_by": "accessibility",
+      "timestamp": "2026-09-17T08:59:43+00:00"
+    },
+    {
+      "path": "tests/test_api.py",
+      "owner": "tester",
+      "changed_by": "backend",
+      "timestamp": "2026-09-17T09:02:07+00:00"
+    },
+    {
+      "path": "app/main.py",
+      "owner": "tester",
+      "changed_by": "backend",
+      "timestamp": "2026-09-17T09:02:47+00:00"
+    },
+    {
+      "path": "app/db/session.py",
+      "owner": "backend",
+      "changed_by": "qa_lead",
+      "timestamp": "2026-09-17T09:03:29+00:00"
+    }
+  ],
+  "questions": []
+}

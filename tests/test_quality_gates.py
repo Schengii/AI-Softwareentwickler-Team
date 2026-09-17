@@ -167,6 +167,25 @@ class TestRedProjectRepair:
         assert report.queued == ["b"]
         assert "ausgeschöpft" in report.skipped["a"] and "Limit" in report.skipped["c"]
 
+    def test_existing_test_regression_ticket_prevents_duplicate_repair_ticket(self, tmp_path):
+        # Team-Optimierung (Token-/Erfolgsquoten-Analyse 2026-09-17): ohne "test-regression-" in
+        # _RELATED_PREFIXES hätte ein Projekt mit offenem test-regression-<slug>-Ticket
+        # (agents/orchestrator/verification.py, Test-Schrumpfung auch nach Auto-Revert nicht
+        # behoben) hier ZUSÄTZLICH ein redundantes recurring-failure-<slug>-Ticket bekommen -
+        # zwei parallele automatische Nachbesserungsversuche für denselben roten Stand.
+        from core.red_project_repair import queue_red_projects
+
+        ws = tmp_path / "ws"
+        self._project(ws, "red_one", False)
+        backlog_store.upsert_ticket(
+            "test-regression-red_one", "Tests statt Fehler entfernt: red_one",
+            "orchestrator", "blocked", project_slug="red_one", detail="1 Test entfernt statt behoben",
+        )
+        report = queue_red_projects(ws)
+        assert report.queued == []
+        assert "test-regression-red_one" in report.skipped["red_one"]
+        assert backlog_store.get_ticket("recurring-failure-red_one") is None
+
     def test_queued_ticket_is_picked_by_worker_retry_pool(self, tmp_path):
         from core.backlog_worker import _governance_retry_pool
         from core.red_project_repair import queue_red_projects

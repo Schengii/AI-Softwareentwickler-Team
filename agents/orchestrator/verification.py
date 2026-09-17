@@ -42,6 +42,7 @@ from config import (
     ENABLE_LOAD_TEST_CHECK,
     ENABLE_SMOKE_TEST_GATE,
     ENABLE_TEST_DEPTH_GATE,
+    HEAVY_MODEL,
     LOAD_TEST_DURATION_SECONDS,
     LOAD_TEST_TIMEOUT_SECONDS,
     MAX_VERIFICATION_ITERATIONS,
@@ -65,8 +66,9 @@ from core.failure_triage import (
     triage_structural_failure,
 )
 from core.message_bus import AgentResult, AgentTask
+from core.model_capability import model_capability_tier
 from core.pre_flight_check import PreFlightIssue, run_pre_flight_check
-from core.test_depth import analyze_test_depth, collect_test_function_names
+from core.test_depth import analyze_test_depth, collect_test_function_names, restore_test_files, snapshot_test_files
 from core.verification_outcome import VerificationOutcome, parse_install_exit_code
 from core.verifier import ProjectVerifier, VerificationReport
 
@@ -871,6 +873,7 @@ class VerificationMixin:
             current_signature = _issue_signature(report.failures, lambda f: (f.test_id, _failure_fingerprint(f.message)))
             if _no_progress(previous_failure_signature, current_signature):
                 escalated_and_resolved = False
+                _heavy_escalation_downgrade_note = ""
                 try:
                     if not escalation_attempted and not (
                         run_start_tokens is not None and (
@@ -977,6 +980,40 @@ class VerificationMixin:
                                     f"Fachbereichsleiter → letzter Versuch mit HEAVY_MODEL für "
                                     f"{', '.join(sorted(escalated_agent_ids))}."
                                 )
+                                # Realer Fund (chronoflow-Lauf 20260917_092911): `agent._llm` wird oben
+                                # zwar zuverlässig auf HEAVY_MODEL gesetzt, der tatsächliche API-Aufruf
+                                # kann aber (Kontingent-Erschöpfung) intern auf ein SCHWÄCHERES Modell
+                                # zurückfallen - `model_used` zeigte am Ende `gemini-3.8-flash` statt des
+                                # angeforderten `gemini-pro-latest`. Da `tester` (anders als z.B.
+                                # `backend`) kein CRITICAL_AGENT_ID ist, griff dafür auch kein
+                                # Capability Floor und die spätere Modell-Abstufungs-Anzeige im
+                                # Abschlussbericht (core.model_capability.describe_degraded_results()) sah
+                                # es nie. Ohne diesen Hinweis liest sich ein spätes "kein Fortschritt trotz
+                                # HEAVY_MODEL" wie ein Agenten-/Prompt-Problem, obwohl in Wahrheit nie ein
+                                # stärkeres Modell zum Einsatz kam - ein Infrastruktur-, kein Qualitätsfund.
+                                _not_actually_heavy = sorted(
+                                    r.agent_id for r in fix_results
+                                    if r.agent_id in escalated_agent_ids and r.model_used
+                                    and model_capability_tier(r.model_used) < model_capability_tier(HEAVY_MODEL)
+                                )
+                                if _not_actually_heavy:
+                                    notify(
+                                        f"  ⚠️ [dim yellow]HEAVY_MODEL für {', '.join(_not_actually_heavy)} nicht "
+                                        "tatsächlich erreicht (vermutlich Kontingent-Erschöpfung) - der Fix lief "
+                                        "auf einem schwächeren Modell als angefordert.[/dim yellow]"
+                                    )
+                                    summary_lines.append(
+                                        f"- ⚠️ HEAVY_MODEL-Eskalation für {', '.join(_not_actually_heavy)} griff "
+                                        "nicht tatsächlich (Kontingent-Erschöpfung o.ä.) - der letzte Versuch lief "
+                                        "auf einem schwächeren als dem angeforderten Modell."
+                                    )
+                                    _heavy_escalation_downgrade_note = (
+                                        "\n\n⚠️ Hinweis: HEAVY_MODEL-Eskalation für "
+                                        f"{', '.join(_not_actually_heavy)} erreichte tatsächlich NICHT die "
+                                        "angeforderte Modellstufe (vermutlich Kontingent-Erschöpfung) - der "
+                                        "letzte Versuch lief auf einem schwächeren Modell. Dieses Ticket ist "
+                                        "damit eher ein Infrastruktur-/Kontingent- als ein Agenten-/Prompt-Befund."
+                                    )
                                 await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
                                 report = await self._run_tests_logged(verifier, "nach-eskalation")
                                 if report.passed:
@@ -1014,6 +1051,7 @@ class VerificationMixin:
                                 source="orchestrator", status="blocked", project_slug=self.last_project_slug,
                                 detail=f"Fixversuch änderte nichts an {len(report.failures)} Testfehler(n) – "
                                        "vermutlich falscher/unzureichend instruierter Agent.\n\n" + top_failures
+                                       + _heavy_escalation_downgrade_note
                                        + self._provider_exhaustion_ticket_note(),
                             )
                         except Exception as e:
@@ -1109,6 +1147,10 @@ class VerificationMixin:
             _tests_before_fix = (
                 collect_test_function_names(project_dir) if "tester" in agents_to_fix else None
             )
+            # Voller Dateiinhalt (nicht nur Testnamen) VOR dem Fix-Versuch, damit eine erkannte
+            # Test-Schrumpfung unten tatsächlich rückgängig gemacht werden kann, statt sie nur
+            # zu protokollieren (core.test_depth.snapshot_test_files()).
+            _test_files_before_fix = snapshot_test_files(project_dir) if _tests_before_fix is not None else None
             fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
             restored_manifests = (
                 restore_dependency_manifests(project_dir, manifest_snapshot) if manifest_snapshot is not None else []
@@ -1135,28 +1177,85 @@ class VerificationMixin:
                 _tests_lost = _tests_before_fix - _tests_after_fix
                 if _tests_lost and len(_tests_after_fix) < len(_tests_before_fix):
                     _lost_list = ", ".join(sorted(_tests_lost)[:10])
-                    outcome.record(
-                        "test_regression", False,
-                        f"{len(_tests_lost)} Test(s) entfernt statt behoben: {_lost_list}",
-                    )
                     notify(
                         f"  🧪 [bold red]Test-Schrumpfung erkannt:[/bold red] {len(_tests_lost)} Testfunktion(en) "
                         f"nach dem Fixversuch verschwunden statt der Fehler behoben: {_lost_list}."
                     )
-                    summary_lines.append(
-                        f"- 🧪 ❌ **Verifikations-Veto durch Test-Schrumpfung:** {len(_tests_lost)} Testfunktion(en) "
-                        f"entfernt statt den Fehler zu beheben ({_lost_list})."
+                    # Realer Fund (Team-Optimierung 2026-09-17): dieser Zweig protokollierte die
+                    # Schrumpfung bisher nur (Veto + Ticket), ließ die gelöschten Tests aber
+                    # gelöscht - der Lauf endete als `blocked`-Ticket ohne echten Fix-Versuch, der
+                    # das eigentliche Problem (fehlerhafter Anwendungscode) noch angehen konnte.
+                    # Jetzt: gelöschte Tests werden aus _test_files_before_fix zurückgeholt und
+                    # EIN weiterer, expliziter Fix-Versuch mit klarem Verbot ("Tests NICHT
+                    # löschen") wird SOFORT nachgeschoben, inline geprüft (kein verbrauchter
+                    # `attempt` wie bei der Eskalation oben) - erst wenn auch der scheitert, gilt
+                    # es als echter, unbehobener Befund.
+                    _restored_test_files = (
+                        restore_test_files(project_dir, _test_files_before_fix)
+                        if _test_files_before_fix is not None else []
                     )
-                    if self.last_project_slug:
-                        try:
-                            upsert_ticket(
-                                ticket_id=f"test-regression-{self.last_project_slug}",
-                                title=f"Tests statt Fehler entfernt: {self.last_project_slug}",
-                                source="orchestrator", status="blocked", project_slug=self.last_project_slug,
-                                detail=f"Versuch {attempt}: {len(_tests_lost)} Testfunktion(en) verschwunden: {_lost_list}",
+                    _regression_fixed = False
+                    if _restored_test_files:
+                        notify(
+                            f"  ↩️ [yellow]{len(_restored_test_files)} Testdatei(en) auf den Stand vor dem "
+                            f"Fixversuch zurückgesetzt:[/yellow] {', '.join(sorted(_restored_test_files))}. "
+                            "Fordere einen erneuten, echten Fix an..."
+                        )
+                        _anti_regression_tasks = [
+                            AgentTask(
+                                task_id=f"{ft.task_id}_no_regression",
+                                agent_id=ft.agent_id,
+                                description=(
+                                    "Dein vorheriger Fixversuch hat den fehlschlagenden Test ERSATZLOS GELÖSCHT "
+                                    "statt den zugrunde liegenden Fehler zu beheben - die Testdatei(en) wurden "
+                                    "deshalb auf den Stand davor zurückgesetzt. Behebe den echten Fehler im "
+                                    "Anwendungscode (oder korrigiere eine nachweislich falsche Testerwartung, "
+                                    "OHNE die Testfunktion zu entfernen). Test NICHT löschen oder überspringen "
+                                    f"(kein `skip`/`xfail`).\n\n{ft.description}"
+                                ),
+                                context="", project_dir=project_dir, max_tool_iterations=8,
                             )
-                        except Exception as e:
-                            notify(f"  ⚠️ [dim yellow]Ticket für Test-Schrumpfung konnte nicht angelegt werden: {e}[/dim yellow]")
+                            for ft in fix_tasks
+                        ]
+                        _anti_regression_results = await self._run_agents_parallel(_anti_regression_tasks, notify=notify)
+                        self._update_file_owners(file_owners, _anti_regression_results)
+                        all_results.extend(_anti_regression_results)
+                        summary_lines.append(
+                            f"- ↩️ Versuch {attempt}: Test-Schrumpfung erkannt, {len(_restored_test_files)} "
+                            "Testdatei(en) zurückgesetzt und ein erneuter Fix mit explizitem Lösch-Verbot angefordert."
+                        )
+                        await self._resync_environment_if_dependencies_changed(verifier, _anti_regression_results, notify, summary_lines)
+                        _tests_after_retry = collect_test_function_names(project_dir)
+                        if not (_tests_before_fix - _tests_after_retry):
+                            _retry_report = await self._run_tests_logged(verifier, "nach-test-schrumpfung")
+                            if _retry_report.passed:
+                                notify("  ✅ [bold green]Erneuter Fix ohne Test-Löschung erfolgreich:[/bold green] Testsuite ist grün.")
+                                summary_lines.append("- ✅ Erneuter Fix ohne Test-Löschung behob den Fehler – Testsuite bestanden.")
+                                report = _retry_report
+                                _regression_fixed = True
+                            else:
+                                report = _retry_report
+                    if not _regression_fixed:
+                        outcome.record(
+                            "test_regression", False,
+                            f"{len(_tests_lost)} Test(s) entfernt statt behoben: {_lost_list}",
+                        )
+                        summary_lines.append(
+                            f"- 🧪 ❌ **Verifikations-Veto durch Test-Schrumpfung:** {len(_tests_lost)} Testfunktion(en) "
+                            f"entfernt statt den Fehler zu beheben ({_lost_list})"
+                            + (" – auch nach zurückgesetzten Tests und erneutem Fix-Versuch weiterhin nicht behoben." if _restored_test_files else ".")
+                        )
+                        if self.last_project_slug:
+                            try:
+                                upsert_ticket(
+                                    ticket_id=f"test-regression-{self.last_project_slug}",
+                                    title=f"Tests statt Fehler entfernt: {self.last_project_slug}",
+                                    source="orchestrator", status="blocked", project_slug=self.last_project_slug,
+                                    detail=f"Versuch {attempt}: {len(_tests_lost)} Testfunktion(en) verschwunden: {_lost_list}"
+                                           + (" (Tests zurückgesetzt, erneuter Fix-Versuch ebenfalls erfolglos)" if _restored_test_files else ""),
+                                )
+                            except Exception as e:
+                                notify(f"  ⚠️ [dim yellow]Ticket für Test-Schrumpfung konnte nicht angelegt werden: {e}[/dim yellow]")
 
             if attempt == MAX_VERIFICATION_ITERATIONS:
                 # Die Schleife testet nur am Anfang jedes Versuchs - ohne diese Abschlussprüfung würde

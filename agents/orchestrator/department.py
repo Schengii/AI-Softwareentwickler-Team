@@ -28,8 +28,9 @@ from config import (
 from core.checkpoint import clear_checkpoint, load_checkpoint, save_phase_checkpoint
 from core.definition_of_done import check_entrypoint_exists
 from core.message_bus import AgentResult, AgentTask
+from core.model_capability import complex_run
 from core.provider_exhaustion import FAILURE_CLASS_PROVIDER_EXHAUSTED
-from core.task_manager import is_micro_task
+from core.task_manager import is_complex_task, is_micro_task
 from core.token_guard import token_guard
 
 # Nach welcher Phase der statische Einstiegspunkt-Pre-Flight läuft: "dev_lead" liegt direkt
@@ -50,6 +51,43 @@ class DepartmentMixin:
     """Führt die Fachbereichs-Phasen mit echter Teamleiter-Delegation/-Konsolidierung aus."""
 
     async def _run_department_hierarchy(
+        self,
+        user_request: str,
+        task_summary: str,
+        agent_tasks: list[AgentTask],
+        project_dir: str,
+        notify: Callable[[str], None],
+        run_start_tokens: int | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+        collision_sink: list[dict] | None = None,
+        enable_phase_checkpoint: bool = False,
+    ) -> tuple[list[AgentResult], dict[str, str], bool, bool]:
+        """Dünner Wrapper um _run_department_hierarchy_impl(): markiert den Lauf für seine
+        gesamte Dauer (inkl. aller daraus gestarteten asyncio-Tasks) als anspruchsvoll oder
+        nicht, siehe core/model_capability.complex_run() und config.get_model_for_agent(). Als
+        eigene Methode, damit die Markierung per try/finally auch bei einer Exception irgendwo
+        in der Hierarchie zuverlässig zurückgesetzt wird, ohne den kompletten (sehr langen)
+        Hierarchie-Code dafür einrücken zu müssen."""
+        task_is_complex = ENABLE_TASK_COMPLEXITY_SCALING and is_complex_task(agent_tasks)
+        if task_is_complex:
+            notify(
+                "🧠 [dim]Anspruchsvolle Aufgabe erkannt – Selbstoptimierer darf Rollen für "
+                "diesen Lauf nicht auf ein schwächeres Modell abstufen.[/dim]"
+            )
+        with complex_run(task_is_complex):
+            return await self._run_department_hierarchy_impl(
+                user_request=user_request,
+                task_summary=task_summary,
+                agent_tasks=agent_tasks,
+                project_dir=project_dir,
+                notify=notify,
+                run_start_tokens=run_start_tokens,
+                cancel_requested=cancel_requested,
+                collision_sink=collision_sink,
+                enable_phase_checkpoint=enable_phase_checkpoint,
+            )
+
+    async def _run_department_hierarchy_impl(
         self,
         user_request: str,
         task_summary: str,

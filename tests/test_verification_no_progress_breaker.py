@@ -139,6 +139,40 @@ class TestVerificationNoProgressBreaker(unittest.TestCase):
         self.assertTrue(any("Modell-Eskalation erfolgreich" in line for line in logs))
         mock_upsert_ticket.assert_not_called()
 
+    def test_model_escalation_warns_when_heavy_model_not_actually_reached(self):
+        # Realer Fund (chronoflow-Lauf 20260917_092911): `_escalate_agent_models()` setzt
+        # `agent._llm` zwar zuverlässig auf HEAVY_MODEL, der tatsächliche API-Aufruf kann aber
+        # (Kontingent-Erschöpfung) intern auf ein schwächeres Modell zurückfallen - `model_used`
+        # zeigte am Ende `gemini-3.8-flash` statt des angeforderten `gemini-pro-latest`. Das
+        # Test-Double hier meldet als `model_used` bewusst "fake-model" (keine HEAVY-Stufe) -
+        # exakt dieselbe Situation, die die neue Prüfung erkennen und melden soll, UNABHÄNGIG
+        # davon, ob der Fixversuch am Ende erfolgreich war.
+        result, logs, mock_verifier, mock_upsert_ticket = self._run(
+            [FAILING_REPORT, FAILING_REPORT, FAILING_REPORT, PASSING_REPORT],
+        )
+
+        self.assertTrue(self.orchestrator.last_verification_ok)
+        self.assertTrue(any("nicht tatsächlich erreicht" in line for line in logs))
+
+    def test_recurring_failure_ticket_notes_heavy_model_not_reached(self):
+        """Scheitert die Verifikation trotz HEAVY_MODEL-Eskalation endgültig, muss das
+        `recurring-failure`-Ticket den Hinweis enthalten, dass die Eskalation die Modellstufe
+        nicht tatsächlich erreicht hat - sonst liest sich das Ticket wie ein Agenten-/
+        Prompt-Befund, obwohl es (hier: per Test-Double simuliert) ein Infrastruktur-/
+        Kontingent-Befund ist."""
+        result, logs, mock_verifier, mock_upsert_ticket = self._run(
+            [FAILING_REPORT, FAILING_REPORT, FAILING_REPORT, FAILING_REPORT, FAILING_REPORT],
+        )
+
+        recurring_calls = [
+            c for c in mock_upsert_ticket.call_args_list
+            if str(c.kwargs.get("ticket_id", "")).startswith("recurring-failure-")
+        ]
+        self.assertTrue(recurring_calls)
+        self.assertTrue(
+            any("HEAVY_MODEL-Eskalation für" in str(c.kwargs.get("detail", "")) for c in recurring_calls)
+        )
+
     def test_different_failures_after_fix_do_not_trigger_breaker(self):
         # MAX_VERIFICATION_ITERATIONS ist standardmäßig 3 (config.py) - drei jeweils
         # UNTERSCHIEDLICHE Fehlschläge, damit keiner der drei regulär erlaubten Versuche vom

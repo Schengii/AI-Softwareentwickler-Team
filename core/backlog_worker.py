@@ -91,6 +91,16 @@ _AUTONOMOUS_SOURCES = ("cli", "dashboard")
 _GOVERNANCE_RETRY_PREFIXES = (
     "unresolved-governance-critical-", "unresolved-permission-blocked-",
     "recurring-failure-", "recurring-lint-",
+    # Team-Optimierung (Token-/Erfolgsquoten-Analyse 2026-09-17, echter Fund: `test-regression-
+    # pipeline_pilot`, `test-regression-entwickle_das_projekt_sentinel` standen seit dem
+    # 16./17.09. unverändert auf "blocked"): "test-regression-" (agents/orchestrator/
+    # verification.py legt dieses Ticket an, wenn selbst der neue Auto-Revert-Versuch - siehe
+    # core.test_depth.restore_test_files() - einen gelöschten statt behobenen Test nicht retten
+    # konnte) fehlte hier aus genau demselben Grund wie "recurring-failure-"/"recurring-lint-"
+    # oben ursprünglich: eine eigene, thematisch verwandte Ticket-Kategorie, die der generische
+    # Filter unten nicht als retry-fähig erkannte - das Ticket blieb dadurch für immer "blocked"
+    # liegen, ohne dass `--work-backlog` je einen weiteren Versuch unternahm.
+    "test-regression-",
     # Team-Optimierung (KI-Team-Optimierungs-Session, echter Fund): core/workspace_audit.py
     # eröffnet "audit-<slug>"-Tickets (fehlgeschlagene Re-Verifikation) UND
     # "audit-<slug>-adr-duplicate"-Tickets (Nahezu-Duplikat-ADRs) mit `source="workspace_audit"`

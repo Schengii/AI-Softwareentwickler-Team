@@ -100,6 +100,43 @@ def pop_capability_floor(tokens: FloorTokens) -> None:
     _floor_owner.reset(owner_token)
 
 
+# ── Komplexitäts-Hochstufung für anspruchsvolle Läufe ──────────────────────────────────────
+# Symmetrisches Gegenstück zur Mindeststufe oben, aber für den GANZEN Lauf statt nur kritische
+# Rollen: core/task_manager.py.is_complex_task() stuft einen Aufgabenplan als anspruchsvoll ein
+# (mehrere Komplexitäts-Signal-Agenten oder ein breiter Plan), agents/orchestrator/department.py
+# setzt diese ContextVar dann für die Dauer des gesamten Laufs. config.get_model_for_agent()
+# liest sie, um eine vom Selbstoptimierer (core/optimization_advisor.py) vorgeschlagene
+# Modell-ABSTUFUNG für diesen Lauf zu ignorieren - eine Rolle darf durch Auto-Tuning weiterhin
+# aufgewertet, aber während eines anspruchsvollen Laufs nicht stillschweigend abgewertet werden.
+# ContextVar statt Parameter-Durchreichung durch alle rund 30 Aufrufstellen, aus demselben Grund
+# wie beim Capability Floor oben: asyncio-Tasks (inkl. `asyncio.gather()`) übernehmen den
+# Kontext automatisch.
+_complex_run: ContextVar[bool] = ContextVar("complex_run", default=False)
+
+
+def current_run_is_complex() -> bool:
+    return _complex_run.get()
+
+
+def push_complex_run(flag: bool) -> Token[bool]:
+    return _complex_run.set(flag)
+
+
+def pop_complex_run(token: Token[bool]) -> None:
+    _complex_run.reset(token)
+
+
+@contextmanager
+def complex_run(flag: bool) -> Iterator[None]:
+    """Markiert den aktuellen Lauf (und alle daraus gestarteten asyncio-Tasks) als
+    anspruchsvoll bzw. nicht anspruchsvoll - siehe Modul-Kommentar oben."""
+    token = push_complex_run(flag)
+    try:
+        yield
+    finally:
+        pop_complex_run(token)
+
+
 @contextmanager
 def capability_floor(min_tier: int, owner: str = "") -> Iterator[None]:
     tokens = push_capability_floor(min_tier, owner)

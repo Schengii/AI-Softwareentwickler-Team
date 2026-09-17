@@ -417,6 +417,21 @@ def get_model_for_agent(agent_id: str, include_ab_trial: bool = True) -> str:
     ):
         model = auto_tuned_entry.get("model", "")
         if model:
+            # Realer Fund (Token-Analyse 2026-09-17): der Selbstoptimierer misst Erfolgsquote
+            #/Tokenverbrauch GEMITTELT über alle Projekte und stuft Rollen wie tester/frontend
+            # auf ein Lite-Modell ab, sobald das im Durchschnitt bessere Zahlen liefert - ein
+            # Durchschnitt, der einfache Wegwerf-Projekte genauso gewichtet wie anspruchsvolle.
+            # core/task_manager.is_complex_task() markiert anspruchsvolle Läufe (mehrere
+            # Architektur-/Sicherheits-Signale oder ein breiter Plan); für deren Dauer darf eine
+            # Auto-Tuning-Abstufung NICHT stillschweigend greifen - eine Aufwertung (z.B. durch
+            # einen bestandenen A/B-Test) bleibt dagegen erlaubt, ist ja kein Risiko.
+            if ENABLE_TASK_COMPLEXITY_SCALING:
+                from core.model_capability import current_run_is_complex, model_capability_tier
+
+                baseline_model = AGENT_MODELS.get(agent_id, DEFAULT_AGENT_MODEL)
+                is_downgrade = model_capability_tier(model) < model_capability_tier(baseline_model)
+                if is_downgrade and current_run_is_complex():
+                    return baseline_model
             return model
 
     # 3b. Laufender A/B-Test: ein Anteil der Läufe nutzt das Kandidatenmodell.

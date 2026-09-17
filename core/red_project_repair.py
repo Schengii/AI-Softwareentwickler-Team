@@ -24,7 +24,12 @@ from core.project_status import read_full_detail, read_status
 logger = logging.getLogger(__name__)
 
 REPAIR_TICKET_PREFIX = "recurring-failure-"
-_RELATED_PREFIXES = ("recurring-failure-", "unresolved-governance-critical-", "audit-", "recurring-lint-")
+# "test-regression-" ergänzt (Token-/Erfolgsquoten-Analyse 2026-09-17): ohne diesen Eintrag hätte
+# ein Projekt mit offenem test-regression-<slug>-Ticket (core.backlog_worker._GOVERNANCE_RETRY_
+# PREFIXES kümmert sich bereits darum) HIER zusätzlich ein redundantes recurring-failure-<slug>-
+# Ticket für denselben roten Stand bekommen - zwei parallele automatische Nachbesserungsversuche
+# für dasselbe Projekt statt eines koordinierten.
+_RELATED_PREFIXES = ("recurring-failure-", "unresolved-governance-critical-", "audit-", "recurring-lint-", "test-regression-")
 MAX_DETAIL_CHARS = 3000
 
 

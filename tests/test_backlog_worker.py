@@ -529,6 +529,23 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
         ticket = backlog_store.get_ticket("recurring-lint-mockforge")
         self.assertEqual(ticket.retries, 1)
 
+    def test_test_regression_ticket_is_picked_up_and_retries_incremented(self):
+        # Team-Optimierung (Token-/Erfolgsquoten-Analyse 2026-09-17, echter Fund:
+        # `test-regression-pipeline_pilot`/`test-regression-entwickle_das_projekt_sentinel`
+        # standen seit dem 16./17.09. unverändert auf "blocked") - dieselbe Sackgasse wie einst
+        # bei "recurring-failure-"/"recurring-lint-", nur für die "Tests statt Fehler entfernt"-
+        # Ticket-Kategorie aus agents/orchestrator/verification.py.
+        backlog_store.upsert_ticket(
+            "test-regression-mockforge", "Tests statt Fehler entfernt: mockforge",
+            "orchestrator", "blocked", project_slug="mockforge", detail="1 Test entfernt statt behoben",
+        )
+        report = asyncio.run(run_backlog_poll_cycle())
+
+        self.fake_orchestrator.process.assert_called_once()
+        self.assertEqual(len(report.results), 1)
+        ticket = backlog_store.get_ticket("test-regression-mockforge")
+        self.assertEqual(ticket.retries, 1)
+
     def test_audit_ticket_is_picked_up_and_retries_incremented(self):
         # Team-Optimierung (KI-Team-Optimierungs-Session, echter Fund): core/workspace_audit.py
         # eröffnet "audit-<slug>"-Tickets mit source="workspace_audit" - fiel bisher durch

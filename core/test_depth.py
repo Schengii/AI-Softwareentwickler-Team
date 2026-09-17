@@ -134,6 +134,56 @@ def collect_test_function_names(project_dir: str | Path) -> set[str]:
     return names
 
 
+def snapshot_test_files(project_dir: str | Path) -> dict[str, str]:
+    """Inhalt aller Python-Testdateien vor einem Fix-Versuch - Gegenstück zu
+    `core.failure_triage.snapshot_dependency_manifests()`, aber für Testdateien statt
+    Abhängigkeits-Manifeste. Wird von agents/orchestrator/verification.py genutzt, um eine per
+    `collect_test_function_names()` erkannte Test-Schrumpfung (siehe Docstring oben) tatsächlich
+    rückgängig zu machen, statt sie nur zu protokollieren."""
+    base = Path(project_dir)
+    snapshot: dict[str, str] = {}
+    if not base.is_dir():
+        return snapshot
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for filename in filenames:
+            if not filename.endswith(".py"):
+                continue
+            path = Path(dirpath) / filename
+            rel = path.relative_to(base).as_posix()
+            if not _is_test_file(rel):
+                continue
+            try:
+                snapshot[rel] = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+    return snapshot
+
+
+def restore_test_files(project_dir: str | Path, snapshot: dict[str, str]) -> list[str]:
+    """Stellt den Stand aus snapshot_test_files() für Dateien wieder her, die seitdem
+    Testfunktionen VERLOREN haben (per Namensabgleich, nicht nur Byte-Gleichheit - ein Fix darf
+    weiterhin Tests umformulieren, nur nicht ersatzlos entfernen). Rückgabe: wiederhergestellte
+    relative Pfade."""
+    base = Path(project_dir)
+    restored: list[str] = []
+    for rel, before_text in snapshot.items():
+        path = base / rel
+        try:
+            after_text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+        except OSError:
+            continue
+        before_names = set(_PY_TEST_NAME_RE.findall(before_text))
+        after_names = set(_PY_TEST_NAME_RE.findall(after_text))
+        if before_names - after_names:
+            try:
+                path.write_text(before_text, encoding="utf-8")
+                restored.append(rel)
+            except OSError:
+                continue
+    return restored
+
+
 def _route_regex(route_path: str) -> re.Pattern[str]:
     normalized = normalize_path(route_path)
     if normalized == "/":

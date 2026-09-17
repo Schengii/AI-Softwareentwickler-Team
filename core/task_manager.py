@@ -445,6 +445,32 @@ def is_micro_task(agent_tasks: list["AgentTask"]) -> bool:
     return not any(t.agent_id in _COMPLEXITY_SIGNAL_AGENT_IDS for t in agent_tasks)
 
 
+# Ab dieser Anzahl an Komplexitäts-Signal-Agenten (siehe _COMPLEXITY_SIGNAL_AGENT_IDS oben) IM
+# SELBEN Plan gilt eine Aufgabe als anspruchsvoll: EIN Signal-Agent (z.B. nur "security" wegen
+# eines simplen Login-Formulars) reicht für "nicht trivial" (is_micro_task), sagt aber noch
+# nichts über echte Architektur-Tiefe aus. Mehrere gleichzeitig (z.B. architect + security +
+# performance) deuten auf ein Projekt hin, bei dem eine vom Selbstoptimierer nahegelegte
+# Modell-Abstufung (core/optimization_advisor.py) das größere Risiko ist als die eingesparten
+# Tokens - siehe core/model_capability.py.complex_run().
+_COMPLEX_TASK_MIN_SIGNAL_AGENTS = 2
+
+# Auch ohne mehrere Komplexitäts-Signal-Agenten deutet ein breiter Plan (viele beteiligte
+# Spezialisten) auf echten Koordinations- und Qualitätsbedarf hin.
+_COMPLEX_TASK_MIN_AGENTS = 8
+
+
+def is_complex_task(agent_tasks: list["AgentTask"]) -> bool:
+    """
+    Symmetrisches Gegenstück zu is_micro_task(): erkennt das ANDERE Ende der Skala, statt nur
+    "trivial genug für weniger Koordination" auch "anspruchsvoll genug für keine stillschweigende
+    Modell-Abstufung". Ebenfalls rein deterministisch aus dem bereits erstellten Aufgabenplan.
+    """
+    if len(agent_tasks) >= _COMPLEX_TASK_MIN_AGENTS:
+        return True
+    signal_count = sum(1 for t in agent_tasks if t.agent_id in _COMPLEXITY_SIGNAL_AGENT_IDS)
+    return signal_count >= _COMPLEX_TASK_MIN_SIGNAL_AGENTS
+
+
 DECOMPOSE_SYSTEM_PROMPT = """Du bist ein erfahrener Principal Software-Architekt und Engineering Lead.
 Analysiere die Aufgabe und wähle NUR die wirklich notwendigen Spezialisten aus, um maximale Token-Effizienz zu gewährleisten.
 

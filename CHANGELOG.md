@@ -7,6 +7,84 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Team-Optimierung 2026-09-17 (Teil 2): Test-Schrumpfung, HEAVY_MODEL-Eskalation, Backlog-Sackgasse
+
+Umsetzung dreier zuvor identifizierter, evidenzbasierter Befunde (Backlog-Analyse, siehe
+Token-Analyse-Eintrag oben) sowie einer anschließenden Prüfung von Tokenverbrauch und
+Agenten-Erfolgsquoten.
+
+* **Test-Schrumpfung wurde nur erkannt, nie behoben:** `agents/orchestrator/verification.py`
+  protokollierte bisher nur ein Veto + `blocked`-Ticket, wenn ein Fix-Agent einen
+  fehlschlagenden Test ERSATZLOS ENTFERNT hat, statt den echten Fehler zu beheben (real:
+  `test-regression-pipeline_pilot`, `test-regression-entwickle_das_projekt_sentinel`). Neu:
+  `core/test_depth.py.snapshot_test_files()`/`restore_test_files()` sichern den Testdatei-Inhalt
+  vor jedem Fix-Versuch und setzen ihn bei erkannter Schrumpfung zurück; anschließend wird SOFORT
+  ein weiterer, expliziter Fix-Auftrag mit klarem Lösch-Verbot nachgeschoben und inline geprüft,
+  bevor überhaupt ein Ticket entsteht. Tests: `tests/test_test_regression_auto_revert.py` (neu).
+* **HEAVY_MODEL-Eskalation griff manchmal nicht wirklich:** `_escalate_agent_models()` setzt
+  `agent._llm` zuverlässig auf `HEAVY_MODEL`, der tatsächliche API-Aufruf kann aber (Kontingent-
+  Erschöpfung) intern auf ein schwächeres Modell zurückfallen - real beobachtet im
+  `chronoflow`-Lauf 20260917_092911 (`requested_model: gemini-pro-latest`,
+  `effective_model: gemini-3.8-flash`). Da nicht-kritische Rollen wie `tester` keinen Capability
+  Floor haben, sah auch der bestehende Abstufungs-Report (`core.model_capability.
+  describe_degraded_results()`, nur für `CRITICAL_AGENT_IDS`) das nie. `agents/orchestrator/
+  verification.py` vergleicht jetzt `model_used` der Eskalations-Ergebnisse gegen die Zielstufe
+  und vermerkt einen Fehlschlag explizit im `recurring-failure`-Ticket ("Infrastruktur-/
+  Kontingent-, kein Agenten-/Prompt-Befund"), statt den Eindruck eines unfähigen Agenten zu
+  hinterlassen. Tests: `tests/test_verification_no_progress_breaker.py` erweitert.
+* **`test-regression-*`-Tickets waren eine Backlog-Sackgasse:** `core/backlog_worker.py
+  ._GOVERNANCE_RETRY_PREFIXES` enthielt `recurring-failure-`/`recurring-lint-`/`audit-`, aber
+  nicht `test-regression-` - genau die Sackgasse, die dieselbe Liste laut ihrem eigenen
+  Kommentar bereits einmal für die ersten beiden Kategorien behoben hatte. `--work-backlog`
+  griff betroffene Tickets deshalb NIE wieder auf; `core/red_project_repair.py
+  ._RELATED_PREFIXES` ergänzt, damit `--queue-red-projects` für dasselbe Projekt nicht
+  zusätzlich ein redundantes `recurring-failure-`-Ticket parallel eröffnet. Tests:
+  `tests/test_backlog_worker.py`, `tests/test_quality_gates.py` erweitert.
+* **Tokenverbrauch/Erfolgsquote-Review:** `core/optimization_advisor.py.analyze()` liefert
+  aktuell weder `model_suggestions` noch `low_performing_agents` - alle Rollen liegen bei
+  ausreichender Stichprobe im Bereich 80-95% Erfolgsquote je Agenten-Aufgabe, ohne einen
+  Ausreißer, der eine weitere Modell-Umstellung rechtfertigt. Der eigentliche Engpass ist nicht
+  Agenten-/Modellqualität, sondern die GESAMT-Verifikation: nur 19 von 143 aufgezeichneten Läufen
+  (13,3%) bestanden `verification_ok`, obwohl einzelne Agenten-Aufgaben meist erfolgreich waren -
+  genau die Lücke, die die drei Fixes oben sowie die Komplexitäts-Skalierung aus dem vorherigen
+  Eintrag adressieren, statt eine unbelegte weitere Modell-Umstellung vorzunehmen.
+
+---
+
+## 🟢 Token-Analyse 2026-09-17: Selbstoptimierer durfte anspruchsvolle Läufe stillschweigend abstufen
+
+Auswertung von `memory/cost_history.json` (418 Läufe, ~68 Mio. Tokens seit 21.08.) und
+`memory/auto_tuned_models.json` auf Nutzeranfrage, ob der Tokenverbrauch bei komplexen/
+anspruchsvollen Projekten näher betrachtet werden sollte.
+
+* **Realer Fund:** `core/optimization_advisor.py` stuft Rollen anhand der GEMITTELTEN
+  Erfolgsquote/des Tokenverbrauchs über ALLE Projekte hinweg ab – zuletzt `tester`, `frontend`,
+  `qa_lead`, `api_integration`, `design_lead` und `content_lead` von `gemini-3.8-flash` auf das
+  schwächere `gemini-3.1-flash-lite`. Der Durchschnitt gewichtet ein triviales
+  Wegwerf-Testprojekt genauso wie ein Projekt mit echter Architektur-/Sicherheits-Tiefe;
+  `ENABLE_TASK_COMPLEXITY_SCALING` skalierte bisher nur nach UNTEN (überspringt
+  Teamleiter-Koordination bei kleinen Aufgaben, `core/task_manager.is_micro_task()`) – es gab
+  keine symmetrische Gegenrichtung für anspruchsvolle Aufgaben.
+* **Fix:** `core/task_manager.is_complex_task()` (neu) erkennt anspruchsvolle Pläne
+  deterministisch aus dem bereits erstellten Aufgabenplan (≥2 Komplexitäts-Signal-Agenten wie
+  `architect`+`security`, oder ≥8 beteiligte Spezialisten insgesamt). `agents/orchestrator/
+  department.py._run_department_hierarchy()` markiert einen so erkannten Lauf für seine
+  gesamte Dauer (inkl. aller daraus gestarteten `asyncio`-Tasks) über eine neue ContextVar
+  (`core/model_capability.complex_run()`, analog zum bestehenden Capability Floor). Während
+  eines solchen Laufs ignoriert `config.get_model_for_agent()` eine vom Selbstoptimierer
+  vorgeschlagene ABSTUFUNG (fällt zurück auf die in `AGENT_MODELS` konfigurierte Standardstufe)
+  – eine AUFWERTUNG (z.B. durch einen bestandenen A/B-Test) bleibt weiterhin erlaubt, da sie kein
+  Risiko ist. Bei deaktiviertem `ENABLE_TASK_COMPLEXITY_SCALING` bleibt das alte Verhalten
+  unverändert.
+* **Tests:** `tests/test_task_complexity_scaling.py` erweitert um `is_complex_task()`
+  (Signal-Agenten-Schwelle, breiter Plan, leerer Plan), das Zusammenspiel von `complex_run()`
+  mit `get_model_for_agent()` (Abstufung blockiert, Aufwertung erlaubt, Flag deaktiviert) sowie
+  einen End-to-End-Test, der bestätigt, dass verschachtelte Agenten-Aufrufe innerhalb der
+  Fachbereichs-Hierarchie die Markierung tatsächlich sehen und sie danach wieder zurückgesetzt
+  wird.
+
+---
+
 ## 🔴 Team-Audit 2026-09-17: `browser_verifier` reichte WebSocket-Upgrades nie an das Backend durch
 
 Auslöser: gezielte Durchsicht nach demselben Symptom `Error during WebSocket handshake:

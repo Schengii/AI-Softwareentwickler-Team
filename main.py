@@ -71,7 +71,10 @@ def main():
     Mit `--weekly-digest [--days N]` (Standard: core/team_retro.DIGEST_WINDOW_DAYS=7) zeigt ein
     Sprint-Review-artiger Überblick abgeschlossene/neu eröffnete Tickets, Velocity, Token-
     verbrauch und Verifikations-Erfolgsquote der letzten N Tage, plus denselben liegengebliebenen
-    Ticket-Block wie `--team-retro`.
+    Mit `--workspace-hygiene [--days N] [--dry-run]` läuft die smarte Speicher-Hygiene
+    über den Workspace (Option 1): Projekte, deren Quellcode seit > N Tagen (Standard: 7) nicht
+    mehr geändert wurde, werden von reproduzierbaren Artefakten (.ai_team_venv, node_modules,
+    dist, build, .pytest_cache) befreit, während Quellcode und Historie vollständig erhalten bleiben.
     """
     if "--clean-telemetry" in sys.argv:
         from core.telemetry_hygiene import clean_eval_history, clean_run_history
@@ -80,6 +83,22 @@ def main():
             total, removed = cleaner(dry_run=dry_run)
             verb = "würden entfernt" if dry_run else "entfernt (Sicherung *.bak_*)"
             print(f"{label}: {removed} von {total} synthetischen Einträgen {verb}.")
+        return
+
+    if "--workspace-hygiene" in sys.argv:
+        from core.workspace_hygiene import run_workspace_hygiene
+
+        days = 7.0
+        if "--days" in sys.argv:
+            try:
+                days = float(sys.argv[sys.argv.index("--days") + 1])
+            except (IndexError, ValueError):
+                pass
+        dry_run = "--dry-run" in sys.argv
+        mode_str = " (Dry-Run / Simulation)" if dry_run else ""
+        print(f"🧹 Starte Workspace-Hygiene (Schwellenwert: {days:.1f} Tage){mode_str} ...")
+        report = run_workspace_hygiene(max_age_days=days, dry_run=dry_run)
+        print(report.format_summary())
         return
 
     if "--queue-red-projects" in sys.argv:

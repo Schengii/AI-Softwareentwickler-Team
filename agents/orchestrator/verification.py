@@ -797,7 +797,7 @@ class VerificationMixin:
                     outcome.record("test_depth", depth.passed, "" if depth.passed else depth.format_summary())
                 can_fix_depth = (
                     not depth.passed and not test_depth_fix_attempted and not budget_aborted
-                    and "tester" in self._agents and attempt < MAX_VERIFICATION_ITERATIONS
+                    and "tester" in self._agents
                     and not (run_start_tokens is not None and self._run_budget_exceeded(run_start_tokens))
                 )
                 if can_fix_depth:
@@ -821,7 +821,30 @@ class VerificationMixin:
                     self._update_file_owners(file_owners, fix_results)
                     all_results.extend(fix_results)
                     await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
-                    continue
+                    if attempt < MAX_VERIFICATION_ITERATIONS:
+                        continue
+                    # Realer Fund (pipeline_pilot, 2026-09-16): Tests wurden erst im letzten
+                    # erlaubten Versuch grün, wodurch für die Testtiefen-Nachbesserung kein
+                    # weiterer Schleifendurchlauf mehr übrig war - ein `continue` hätte die
+                    # Schleife verlassen, OHNE den gerade beauftragten Fix je gegen die
+                    # Testsuite zu prüfen. Deshalb hier einmalig inline nachverifizieren statt
+                    # auf einen nicht mehr vorhandenen nächsten Durchlauf zu setzen.
+                    notify("  🔍 [yellow]Letzter Versuch bereits verbraucht:[/yellow] verifiziere die ergänzten Tests direkt inline...")
+                    depth_fix_report = await self._run_tests_logged(verifier, "test_depth_fix")
+                    report = depth_fix_report
+                    if depth_fix_report.passed:
+                        redepth = await asyncio.to_thread(analyze_test_depth, project_dir, MIN_ROUTE_TEST_RATIO)
+                        if redepth.applicable:
+                            outcome.record("test_depth", redepth.passed, "" if redepth.passed else redepth.format_summary())
+                            icon = "✅" if redepth.passed else "⚠️"
+                            summary_lines.append(f"- 🧪 {icon} {redepth.format_summary()}")
+                        verification_ok = True
+                        notify(f"  ✅ [bold green]Nachgelieferte Tests bestehen weiterhin.[/bold green] ({depth_fix_report.duration_seconds:.1f}s).")
+                        summary_lines.append("- ✅ Testtiefen-Nachbesserung inline verifiziert: Testsuite bleibt grün.")
+                    else:
+                        notify("  ❌ [bold red]Testtiefen-Nachbesserung hat die Suite gebrochen[/bold red] – letzter Stand wird übernommen.")
+                        summary_lines.append(f"- ❌ Testtiefen-Nachbesserung hat {len(depth_fix_report.failures)} Testfehler eingeführt – letzter Stand wird übernommen.")
+                    break
                 if depth.applicable:
                     icon = "✅" if depth.passed else "⚠️"
                     summary_lines.append(f"- 🧪 {icon} {depth.format_summary()}")

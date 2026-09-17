@@ -7,6 +7,29 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🔴 Lauf-Analyse pipeline_pilot 2026-09-16: Testtiefen-Nachbesserung im letzten Versuch unerreichbar
+
+* **Realer Fund:** `workspace/pipeline_pilot/.ai_team_runs/20260916_185239_verification.md` –
+  die Testsuite wurde erst im 3. (letzten erlaubten) Versuch grün, nachdem zwei echte
+  Testfehler behoben werden mussten. Die Testtiefe lag danach nur bei 33 % (4/12 API-Routen),
+  weit unter dem Mindestwert – `tester` hätte per bestehendem Nachbesserungs-Mechanismus
+  (`agents/orchestrator/verification.py`, `test_depth_fix_dispatched`) einen zusätzlichen
+  Auftrag bekommen sollen, fehlende Routen-Tests zu ergänzen.
+* **Ursache:** Die Nachbesserung war an `attempt < MAX_VERIFICATION_ITERATIONS` gebunden – lief
+  die Testsuite aber (wie hier, ein realistischer Normalfall bei generiertem Code) erst im
+  letzten erlaubten Versuch grün, war dieses Kriterium nie erfüllbar. `tester` bekam den Auftrag
+  nie, `test_depth` blieb unlösbar als Definition-of-Done-Blocker stehen, obwohl ein einziger
+  zusätzlicher Testlauf ausgereicht hätte.
+* **Fix:** Die Bedingung prüft nicht mehr das verbleibende Schleifenbudget. Trifft der Fix
+  genau im letzten Versuch, wird er nicht mehr per `continue` "ins Leere" geschickt (die
+  `range()` war dort bereits erschöpft) – die ergänzten Tests werden stattdessen sofort inline
+  nachverifiziert (analog zur bestehenden Abschlussprüfung für echte Testfehler). Bricht der
+  Nachbesserungsversuch die Suite, wird ehrlich der letzte rote Stand übernommen statt ein
+  falscher Erfolg gemeldet.
+* **Tests:** `tests/test_test_depth_last_attempt_fix.py` (neu) deckt beide Ausgänge ab.
+
+---
+
 ## 🔴 Team-Audit 2026-09-16: `browser_verifier` startete Backends im falschen Python
 
 Auslöser: gezielte Durchsicht des Frameworks nach den eigenen `root_cause_analysis`-Lektionen in

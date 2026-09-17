@@ -35,6 +35,7 @@ Bevor du mit neuen Aufgaben, Optimierungen oder Analysen startest, orientiere di
 | **Gedächtnis-Sync nach Obsidian** | `python main.py --sync-obsidian` |
 | **Obsidian-Echtzeit-Watcher** | `python scripts/watch_obsidian_sync.py` |
 | **Test-Rauschen aus Lern-Historie entfernen** | `python main.py --clean-telemetry [--dry-run]` |
+| **Workspace-Hygiene (Alte Build-Artefakte prunen)** | `python main.py --workspace-hygiene [--days 7] [--dry-run]` |
 | **Backlog-Hygiene** | `python main.py --backlog-hygiene` |
 | **Rote Projekte zur Nachbesserung einplanen** | `python main.py --queue-red-projects` |
 | **Nur-Kommentar-Änderung beweisen** | `python scripts/check_comment_only_change.py <dateien>` |

@@ -1,0 +1,37 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/models/schemas.py": {
+      "MetricItem": "class",
+      "MetricBatch": "class",
+      "WindowAggregate": "class",
+      "AlertRule": "class",
+      "AlertRuleCreate": "class",
+      "AlertEvent": "class"
+    },
+    "app/services/pubsub.py": {
+      "ConnectionManager": "class",
+      "pubsub_manager": "instance"
+    },
+    "app/services/aggregator.py": {
+      "SlidingWindowAggregator": "class",
+      "aggregator_service": "instance"
+    },
+    "app/services/alerting.py": {
+      "AlertEngine": "class",
+      "alert_engine": "instance"
+    },
+    "app/api/ingestion.py": {
+      "router": "instance"
+    },
+    "app/api/alerts.py": {
+      "router": "instance"
+    },
+    "app/api/streaming.py": {
+      "router": "instance"
+    }
+  }
+}

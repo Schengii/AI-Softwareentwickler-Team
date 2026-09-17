@@ -61,6 +61,7 @@ from core.verifier.models import (
     _PYTEST_ASYNC_TEST_RE,
     _README_FILE_REF_RE,
     _RESILIENCE_FALLBACK_EXCEPT_RE,
+    _ROUTE_DECL_RE,
     _ROUTE_IO_EXEMPT_NAME_RE,
     _SQLA_ASYNC_ENGINE_RE,
     _SQLA_DECLARATIVE_BASE_RE,
@@ -70,6 +71,7 @@ from core.verifier.models import (
     _STDLIB_MODULES,
     _STUB_MARKER_RE,
     _STUB_SCAN_EXTENSIONS,
+    _TEST_CLIENT_CALL_RE,
     _TRUSTED_HOST_WILDCARD_RE,
     CompletenessIssue,
     CompletenessReport,
@@ -160,6 +162,7 @@ class CompletenessMixin:
         issues.extend(self._wildcard_security_middleware(py_texts))
         issues.extend(self._scan_for_toplevel_event_loop(py_texts))
         issues.extend(self._undefined_names_in_entrypoints(py_texts))
+        issues.extend(self._test_requests_undeclared_routes(py_texts))
 
         return CompletenessReport(attempted=True, passed=not issues, issues=issues)
 
@@ -865,6 +868,103 @@ class CompletenessMixin:
                             f"defined` beim App-Start. Vermutlich ein Router/Objekt, das "
                             f"registriert, aber nie implementiert/importiert wurde.",
                     kind="undefined_entrypoint_name",
+                ))
+        return issues
+
+    def _route_path_pattern(self, path: str) -> re.Pattern[str]:
+        """Wandelt einen deklarierten Routen-Pfad (kann `{param}`-Platzhalter enthalten) in ein
+        anker­gebundenes Regex um, das JEDEN konkreten Wert an dieser Stelle akzeptiert - `/pipelines/
+        {pipeline_id}` matcht so auch `/pipelines/42`. Ein optionaler abschließender Slash wird
+        normalisiert (beide Schreibweisen gelten als dieselbe Route), die Wurzelroute `/` bleibt
+        Sonderfall."""
+        normalized = path.split("?", 1)[0]
+        if len(normalized) > 1:
+            normalized = normalized.rstrip("/")
+        normalized = normalized or "/"
+        parts = re.split(r"\{[^{}]*\}", normalized)
+        pattern = "[^/]+".join(re.escape(p) for p in parts)
+        return re.compile(f"^{pattern}$")
+
+    def _test_requests_undeclared_routes(self, py_texts: dict[str, str]) -> list[CompletenessIssue]:
+        """Realer Fund (docu_guard-Projekt, 2026-09-17, siehe _ROUTE_DECL_RE-Docstring in
+        core/verifier/models.py): `tests/test_api.py` rief `POST /api/v1/documents` auf, der
+        tatsächliche Endpunkt lautete `POST /upload` - eine frei erfundene statt aus dem
+        Backend-Code gelesene Route/Methode-Kombination. Zwei vorherige Prompt-Hinweise an
+        `agents/tester_agent.py` verhinderten dieselbe Fehlerklasse nicht zuverlässig (dieselbe
+        Kategorie wie beim WebSocket-Proxy-Fund: ein struktureller Konsistenzfehler zwischen
+        zwei Code-Stellen lässt sich per Prompt allein nicht zuverlässig verhindern). Sammelt
+        deshalb JEDEN per Dekorator deklarierten Backend-Endpunkt (inkl. `APIRouter(prefix=...)`
+        und projektweiten `include_router(..., prefix=...)`-Präfixen) und gleicht jeden Aufruf
+        eines `...client.<verb>(...)` in einer Testdatei mit LITERALEM Pfad dagegen ab.
+
+        Bewusst konservativ: dynamische Pfade (f-Strings, `{...}`-Platzhalter im Testcode selbst)
+        werden übersprungen, da ihr tatsächlicher Wert statisch nicht bekannt ist - ein
+        übersehener Fund ist besser als ein Fehlalarm bei einem Pfad, der zur Laufzeit
+        durchaus existiert."""
+        backend_texts = {
+            rel: text for rel, text in py_texts.items()
+            if "test" not in Path(rel).parts and not Path(rel).name.startswith("test_")
+        }
+        test_texts = {rel: text for rel, text in py_texts.items() if rel not in backend_texts}
+        if not backend_texts or not test_texts:
+            return []
+
+        external_prefixes = {""}
+        for text in backend_texts.values():
+            for m in re.finditer(r"\.include_router\s*(\()", text):
+                close_idx = self._find_matching_paren(text, m.start(1))
+                if close_idx is None:
+                    continue
+                prefix_match = re.search(r"\bprefix\s*=\s*[\"']([^\"']+)[\"']", text[m.end(1):close_idx])
+                if prefix_match:
+                    external_prefixes.add(prefix_match.group(1))
+
+        declared: dict[str, list[re.Pattern[str]]] = {}
+        for text in backend_texts.values():
+            file_prefix = ""
+            router_match = re.search(r"\bAPIRouter\s*(\()", text)
+            if router_match:
+                close_idx = self._find_matching_paren(text, router_match.start(1))
+                if close_idx is not None:
+                    prefix_match = re.search(
+                        r"\bprefix\s*=\s*[\"']([^\"']+)[\"']", text[router_match.end(1):close_idx],
+                    )
+                    if prefix_match:
+                        file_prefix = prefix_match.group(1)
+            for m in _ROUTE_DECL_RE.finditer(text):
+                method, path = m.group(1).lower(), m.group(2)
+                for ext_prefix in external_prefixes:
+                    declared.setdefault(method, []).append(
+                        self._route_path_pattern(f"{ext_prefix}{file_prefix}{path}"),
+                    )
+
+        if not declared:
+            return []
+
+        issues: list[CompletenessIssue] = []
+        seen: set[tuple[str, str, str]] = set()
+        for rel, text in test_texts.items():
+            for m in _TEST_CLIENT_CALL_RE.finditer(text):
+                client_name, method, is_fstring, path = m.groups()
+                if is_fstring or "{" in path or not path.startswith("/"):
+                    continue
+                method = method.lower()
+                normalized_path = path.split("?", 1)[0].rstrip("/") or "/"
+                if any(rx.match(normalized_path) for rx in declared.get(method, [])):
+                    continue
+                key = (rel, method, normalized_path)
+                if key in seen:
+                    continue
+                seen.add(key)
+                issues.append(CompletenessIssue(
+                    file_path=rel,
+                    line_number=text.count("\n", 0, m.start()) + 1,
+                    message=f"Test ruft `{client_name}.{method}(\"{path}\")` auf, aber kein "
+                            f"Backend-Endpunkt im Projekt deklariert `{method.upper()} {path}` "
+                            f"(geprüft gegen alle @router/@app-Dekoratoren inkl. Router-Präfixe) "
+                            f"- vermutlich eine erfundene statt aus dem Backend-Code gelesene "
+                            f"Route.",
+                    kind="test_route_mismatch",
                 ))
         return issues
 

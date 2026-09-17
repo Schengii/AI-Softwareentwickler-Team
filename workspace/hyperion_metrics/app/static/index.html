@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hyperion Metrics Dashboard</title>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; margin: 20px; background: #f4f4f9; color: #333; line-height: 1.5; }
+        .container { max-width: 1200px; margin: auto; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        #status { padding: 10px; margin-bottom: 20px; border-radius: 4px; font-weight: bold; }
+        .connected { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .disconnected { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        #metrics-log { height: 300px; overflow-y: auto; background: #eee; padding: 10px; border: 1px solid #ccc; font-family: monospace; }
+        :focus { outline: 3px solid #005a9c; outline-offset: 2px; }
+    </style>
+</head>
+<body>
+    <a href="#main-content" style="position: absolute; left: -10000px; top: auto; width: 1px; height: 1px; overflow: hidden;">Zum Hauptinhalt springen</a>
+    
+    <div class="container" id="main-content">
+        <h1>Hyperion Metrics</h1>
+        <div id="status" class="disconnected" role="status" aria-live="polite">Verbindungsstatus: Getrennt</div>
+        
+        <main class="card">
+            <h2>Live-Daten</h2>
+            <div id="metrics-log" role="log" aria-live="polite" aria-atomic="false" tabindex="0" aria-label="Eingehende Metrik-Daten"></div>
+        </main>
+    </div>
+
+    <script>
+        const log = document.getElementById('metrics-log');
+        const status = document.getElementById('status');
+        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        const ws = new WebSocket(`${protocol}://${window.location.host}/ws/dashboard`);
+
+        ws.onopen = () => {
+            status.textContent = 'Verbindungsstatus: Verbunden';
+            status.className = 'connected';
+        };
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            const entry = document.createElement('div');
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${JSON.stringify(data)}`;
+            log.prepend(entry);
+        };
+
+        ws.onclose = () => {
+            status.textContent = 'Verbindungsstatus: Getrennt';
+            status.className = 'disconnected';
+        };
+    </script>
+</body>
+</html>

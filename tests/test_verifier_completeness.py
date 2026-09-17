@@ -175,6 +175,23 @@ class TestCompletenessCheck(unittest.TestCase):
             report = verifier.check_completeness()
             self.assertTrue(report.passed)
 
+    def test_write_route_with_named_remove_method_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "main.py").write_text(
+                "from fastapi import FastAPI\n"
+                "app = FastAPI()\n\n"
+                "@app.delete('/api/v1/alerts/{rule_id}')\n"
+                "async def delete_alert_rule(rule_id: str):\n"
+                "    removed = alert_engine.remove_rule(rule_id)\n"
+                "    return {'status': 'deleted', 'id': rule_id}\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
     def test_detects_component_without_props_or_api(self):
         with tempfile.TemporaryDirectory() as tmp:
             project_dir = Path(tmp)
@@ -1484,6 +1501,137 @@ class TestUndefinedEntrypointNames(unittest.TestCase):
             report = verifier.check_completeness()
             undefined = [i for i in report.issues if i.kind == "undefined_entrypoint_name"]
             self.assertEqual(undefined, [])
+
+
+class TestTestRequestsUndeclaredRoutes(unittest.TestCase):
+    """Deckt den docu_guard-Fund ab (2026-09-17): eine Testsuite rief `POST /api/v1/documents`
+    auf, der tatsächliche Endpunkt lautete `POST /upload` - eine frei erfundene statt aus dem
+    Backend-Code gelesene Route."""
+
+    def test_flags_test_calling_nonexistent_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app").mkdir()
+            (project_dir / "app" / "main.py").write_text(
+                "from fastapi import FastAPI\n\n"
+                "app = FastAPI()\n\n"
+                "@app.post('/upload', status_code=201)\n"
+                "def upload_document():\n"
+                "    return {'id': 1}\n",
+                encoding="utf-8",
+            )
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_api.py").write_text(
+                "def test_create_document(client):\n"
+                "    response = client.post('/api/v1/documents', json={'title': 'x'})\n"
+                "    assert response.status_code == 200\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            mismatches = [i for i in report.issues if i.kind == "test_route_mismatch"]
+            self.assertEqual(len(mismatches), 1)
+            self.assertEqual(mismatches[0].file_path, "tests/test_api.py")
+            self.assertIn("/api/v1/documents", mismatches[0].message)
+
+    def test_matching_route_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app").mkdir()
+            (project_dir / "app" / "main.py").write_text(
+                "from fastapi import FastAPI\n\n"
+                "app = FastAPI()\n\n"
+                "@app.post('/upload', status_code=201)\n"
+                "def upload_document():\n"
+                "    return {'id': 1}\n",
+                encoding="utf-8",
+            )
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_api.py").write_text(
+                "def test_upload(client):\n"
+                "    response = client.post('/upload', json={'title': 'x'})\n"
+                "    assert response.status_code == 201\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            mismatches = [i for i in report.issues if i.kind == "test_route_mismatch"]
+            self.assertEqual(mismatches, [])
+
+    def test_router_prefix_and_path_param_resolved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app").mkdir()
+            (project_dir / "app" / "main.py").write_text(
+                "from fastapi import FastAPI\n"
+                "from app.routers import pipelines\n\n"
+                "app = FastAPI()\n"
+                "app.include_router(pipelines.router, prefix='/api/v1')\n",
+                encoding="utf-8",
+            )
+            (project_dir / "app" / "routers").mkdir()
+            (project_dir / "app" / "routers" / "pipelines.py").write_text(
+                "from fastapi import APIRouter\n\n"
+                "router = APIRouter()\n\n"
+                "@router.get('/pipelines/{pipeline_id}')\n"
+                "def get_pipeline(pipeline_id: int):\n"
+                "    return {'id': pipeline_id}\n",
+                encoding="utf-8",
+            )
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_api.py").write_text(
+                "def test_get_pipeline(client):\n"
+                "    response = client.get('/api/v1/pipelines/42')\n"
+                "    assert response.status_code == 200\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            mismatches = [i for i in report.issues if i.kind == "test_route_mismatch"]
+            self.assertEqual(mismatches, [])
+
+    def test_dynamic_fstring_path_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app.py").write_text(
+                "from fastapi import FastAPI\n\napp = FastAPI()\n\n"
+                "@app.get('/items/{item_id}')\n"
+                "def get_item(item_id: int):\n    return {'id': item_id}\n",
+                encoding="utf-8",
+            )
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_api.py").write_text(
+                "def test_get_item(client):\n"
+                "    item_id = 1\n"
+                "    response = client.get(f'/items/{item_id}/extra')\n"
+                "    assert response.status_code == 200\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            mismatches = [i for i in report.issues if i.kind == "test_route_mismatch"]
+            self.assertEqual(mismatches, [])
+
+    def test_non_client_call_not_flagged(self):
+        """`session.post(...)` (verbreitet für ausgehende Drittanbieter-HTTP-Mocks) wird bewusst
+        nicht geprüft - der Objektname endet nicht auf "client"."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app.py").write_text(
+                "from fastapi import FastAPI\n\napp = FastAPI()\n\n"
+                "@app.get('/health')\ndef health():\n    return {'ok': True}\n",
+                encoding="utf-8",
+            )
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_webhook.py").write_text(
+                "def test_forwards_to_upstream(session):\n"
+                "    session.post('/completely/unrelated/upstream/path', json={})\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            mismatches = [i for i in report.issues if i.kind == "test_route_mismatch"]
+            self.assertEqual(mismatches, [])
 
 
 class TestAuditClaimedFixes(unittest.TestCase):

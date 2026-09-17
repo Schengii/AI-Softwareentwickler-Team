@@ -610,6 +610,28 @@ _PY_WRITE_ROUTE_DECORATOR_RE = re.compile(
     re.IGNORECASE,
 )
 _PY_ROUTE_DEF_RE = re.compile(r"^\s*(?:async\s+)?def\s+(\w+)")
+
+# Dreizehnter realer Fund (docu_guard-Projekt, 2026-09-17): `tests/test_api.py` rief `POST
+# /api/v1/documents` auf und erwartete Status 200/Audit-Action "CREATE", der tatsächliche
+# Endpunkt lautete `@router.post("/upload", status_code=201)` mit Audit-Action "UPLOAD" - der
+# Tester-Agent hatte Route, Methode und Statuscode frei erfunden statt aus dem Backend-Code
+# gelesen. Zwei vorherige Prompt-Hinweise an agents/tester_agent.py verhinderten dieselbe
+# Fehlerklasse nicht zuverlässig (siehe CHANGELOG-Eintrag); _ROUTE_DECL_RE (Backend-Dekoratoren)
+# und _TEST_CLIENT_CALL_RE (Testsuite-Aufrufe) bilden zusammen die Grundlage für einen
+# deterministischen Abgleich in core/verifier/completeness.py._test_requests_undeclared_routes(),
+# statt sich erneut allein auf einen Prompt-Hinweis zu verlassen.
+_ROUTE_DECL_RE = re.compile(
+    r"^\s*@(?:[A-Za-z_]\w*)\.(get|post|put|patch|delete)\(\s*[\"']([^\"']*)[\"']",
+    re.IGNORECASE | re.MULTILINE,
+)
+# Nur Aufrufe auf einem Objekt, dessen Name auf "client" endet (TestClient/AsyncClient-Konvention
+# von FastAPI/Starlette/httpx) - schließt bewusst z.B. `session.post(...)` (verbreitet für
+# ECHTE ausgehende HTTP-Aufrufe an Drittanbieter-APIs innerhalb eines Test-Mocks) aus, um dort
+# keinen Fehlalarm auszulösen.
+_TEST_CLIENT_CALL_RE = re.compile(
+    r"\b(\w*client\w*)\.(get|post|put|patch|delete)\(\s*(f)?[\"']([^\"']*)[\"']",
+    re.IGNORECASE,
+)
 _IO_CALL_MARKERS = (
     "session", "db.", "db_", "cursor", "execute(", "query(", ".save(", "insert(",
     "update(", "delete(", "open(", "s3", "boto3", "redis", "requests.", "httpx.",
@@ -630,6 +652,14 @@ _IO_CALL_MARKERS = (
 # Store ist keine Stub-Implementierung, nur kein DB-/Storage-Framework. Separates Muster statt
 # Teil von _IO_CALL_MARKERS, weil es strukturell (Subscript-Zuweisung/Methodenaufruf) statt rein
 # textuell erkannt wird.
+# Vierzehnter realer Fund (hyperion_metrics-Projekt, 2026-09-17): `DELETE /api/v1/alerts/{rule_id}`
+# rief `alert_engine.remove_rule(rule_id)` auf - eine echte In-Memory-Mutation, kein Stub. Das
+# Muster verlangte bis dahin exakt `.remove(` OHNE Suffix (anders als `.add\w*\(`/`.update\w*\(`/
+# etc., die bewusst einen Methodennamen-Suffix erlauben), sodass jede sprechend benannte Remove-
+# Methode (`remove_rule`, `remove_item`, ...) fälschlich als fehlende Persistenz gemeldet wurde -
+# der Fixversuch-Loop erkannte danach korrekt "keine Veränderung" (der Code war nie kaputt) und
+# brach ab, wodurch das gesamte Projekt trotz funktionierendem Handler auf Rot stand. `\w*` nach
+# `.remove` ergänzt, analog zu den übrigen Mustern dieser Gruppe.
 _IO_MUTATION_RE = re.compile(
     r"\w+\[[^\]\n]+\]\s*="  # z.B. notes_db[note_id] = ...
     r"|\bdel\s+\w+\["  # z.B. del notes_db[note_id]
@@ -640,7 +670,7 @@ _IO_MUTATION_RE = re.compile(
     r"|\.store\w*\("
     r"|\.append\("
     r"|\.update\w*\("
-    r"|\.remove\("
+    r"|\.remove\w*\("
     r"|\.insert\w*\(",
 )
 # Endpunktnamen, bei denen eine fehlende I/O-Anbindung erwartbar/legitim ist (z.B. ein reiner

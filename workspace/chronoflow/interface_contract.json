@@ -1,0 +1,27 @@
+{
+  "modules": {
+    "app.config": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app.core.idempotency": {
+      "idempotency_dependency": "function"
+    },
+    "app.core.saga": {
+      "SagaOrchestrator": "class",
+      "Step": "class"
+    },
+    "app.db.session": {
+      "get_db": "function"
+    },
+    "app.db.models": {
+      "WorkflowExecution": "class",
+      "StepExecution": "class",
+      "IdempotencyKey": "class"
+    },
+    "app.api.notifier": {
+      "WebSocketNotifier": "class",
+      "notifier": "instance"
+    }
+  }
+}

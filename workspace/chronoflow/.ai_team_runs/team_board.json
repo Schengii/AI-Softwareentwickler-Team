@@ -1,0 +1,223 @@
+{
+  "run_id": "20260917_092911",
+  "handoffs": [
+    {
+      "agent_id": "architect",
+      "task_id": "59cb171d",
+      "files": [
+        "docs/adr/0001-saga-orchestrierung-statt-choreographie.md",
+        "docs/adr/0002-native-websockets-statt-socket-io-f-r-li.md"
+      ],
+      "provides": [],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-17T09:30:08+00:00"
+    },
+    {
+      "agent_id": "frontend",
+      "task_id": "6d004942",
+      "files": [
+        "public/index.html"
+      ],
+      "provides": [
+        "`public/index.html` (Dashboard UI)"
+      ],
+      "requires": [
+        "`POST /api/v1/sagas` und `WS /ws/sagas` (Backend-Implementierung)"
+      ],
+      "open_issues": [],
+      "timestamp": "2026-09-17T09:30:31+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "394834e7",
+      "files": [
+        "app/main.py",
+        "tests/test_saga_api.py",
+        "tests/test_smoke.py"
+      ],
+      "provides": [
+        "** `tests/test_smoke.py`, `tests/test_saga_api.py` (Test-Suite für Saga-API und Idempotenz).",
+        "app/main.py: create_saga, app",
+        "POST /api/v1/sagas/ (app/main.py)",
+        "tests/test_saga_api.py: test_idempotency_key_header_required, test_saga_creation_with_idempotency_key, test_idempotency_replay, client",
+        "tests/test_smoke.py: test_app_starts_and_health_ok, test_api_saga_endpoints_exist, client"
+      ],
+      "requires": [
+        "** `app/main.py` (Implementierung der Idempotenz-Logik und korrekte Routen-Konfiguration durch das Backend-Team)."
+      ],
+      "open_issues": [
+        "** Die API-Endpunkte müssen noch die `Idempotency-Key`-Validierung implementieren und die korrekten HTTP-Methoden unterstützen, damit die Testsuite vollständig grün wird."
+      ],
+      "timestamp": "2026-09-17T09:31:31+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "9f303a41",
+      "files": [
+        "app/api/sagas.py",
+        "app/core/config.py",
+        "app/core/orchestrator.py",
+        "app/db/base.py",
+        "app/db/session.py",
+        "app/main.py",
+        "app/models/saga.py",
+        "app/schemas/saga.py",
+        "tests/test_saga_api.py",
+        "tests/test_smoke.py"
+      ],
+      "provides": [
+        "`GET /health`, `POST /api/v1/sagas`, `GET /api/v1/sagas/{saga_id}`, `GET /api/v1/sagas`, `WS /ws/sagas` (in `app/api/sagas.py`), `SagaOrchestrator` (in `app/core/orchestrator.py`), DB-Modelle (in `app/models/saga.py`)",
+        "app/api/sagas.py: ConnectionManager, websocket_endpoint, create_saga, run_saga_background, get_saga, list_sagas, router, manager, ws_router",
+        "GET /{saga_id} (app/api/sagas.py)",
+        "WEBSOCKET /ws/sagas (app/api/sagas.py)",
+        "app/core/config.py: Settings, settings",
+        "app/core/orchestrator.py: SagaOrchestrator, logger",
+        "app/db/base.py: Base",
+        "app/db/session.py: get_db, engine, async_session",
+        "app/main.py: lifespan, health, app",
+        "GET /health (app/main.py)",
+        "app/models/saga.py: Saga, SagaStep, IdempotencyKey",
+        "app/schemas/saga.py: SagaCreate, SagaStepOut, SagaOut"
+      ],
+      "requires": [
+        "Frontend-Dashboard in `public/index.html` (bereits vorhanden)"
+      ],
+      "open_issues": [
+        "Die Tests laufen jetzt durch, da der Lifespan-Handler korrekt getriggert wird. Keine offenen Punkte."
+      ],
+      "timestamp": "2026-09-17T09:33:17+00:00"
+    },
+    {
+      "agent_id": "security",
+      "task_id": "9f345ab9",
+      "files": [
+        "docs/SECURITY_AUDIT.md"
+      ],
+      "provides": [
+        "`docs/SECURITY_AUDIT.md` (Security Audit Report mit Findings und Checkliste)"
+      ],
+      "requires": [
+        "`backend` für die Umsetzung der Pydantic-Constraints in `app/schemas/saga.py` und der Header-Validierung in `app/api/sagas.py`",
+        "`tester`/`backend` für die Integration der Security-Headers in `app/main.py`."
+      ],
+      "open_issues": [
+        "Die im Audit beschriebenen Fixes (Input-Validierung, Security-Headers, Idempotenz-Key-Validierung) müssen vom Backend-Team noch physisch in den Code integriert werden."
+      ],
+      "timestamp": "2026-09-17T09:34:25+00:00"
+    },
+    {
+      "agent_id": "resilience_guard",
+      "task_id": "1aa072bc",
+      "files": [
+        "app/core/resilience.py"
+      ],
+      "provides": [
+        "`CircuitBreaker`, `ResilientStepExecutor`, `CircuitBreakerOpenError`, `get_or_create_circuit_breaker` (app/core/resilience.py)",
+        "app/core/resilience.py: CircuitState, CircuitBreakerOpenError, CircuitBreaker, ResilientStepExecutor, get_or_create_circuit_breaker, logger"
+      ],
+      "requires": [
+        "Einbindung in `app/core/orchestrator.py` durch Backend-Entwickler"
+      ],
+      "open_issues": [],
+      "timestamp": "2026-09-17T09:34:50+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "verify_fix_backend_1",
+      "files": [
+        "dummy.txt"
+      ],
+      "provides": [
+        "Fehleranalyse für Idempotenz-Tests in `app/api/sagas.py`"
+      ],
+      "requires": [
+        "Manuelle Anwendung des Fixes (Tool-Limit erreicht)"
+      ],
+      "open_issues": [
+        "Pydantic ValidationErrors in `create_saga` müssen behoben werden, indem die `steps`-Relation vor der Validierung geladen wird (`selectinload`) und der Replay-Body als Dictionary zurückgegeben wird."
+      ],
+      "timestamp": "2026-09-17T09:38:35+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "verify_model_escalation_tester_2",
+      "files": [
+        "app/api/sagas.py"
+      ],
+      "provides": [
+        "Fehlerbehebung in `app/api/sagas.py` (Behebung der Pydantic ValidationErrors bei Idempotenz-Erstellung und Replay via Eager-Loading `selectinload(Saga.steps)`)",
+        "app/api/sagas.py: ConnectionManager, websocket_endpoint, create_saga, run_saga_background, get_saga, list_sagas, router, manager, ws_router",
+        "GET /{saga_id} (app/api/sagas.py)",
+        "WEBSOCKET /ws/sagas (app/api/sagas.py)"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-17T09:39:48+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "verify_fix_browser_backend_1",
+      "files": [
+        "app/api/sagas.py"
+      ],
+      "provides": [
+        "app/api/sagas.py: ConnectionManager, websocket_endpoint, run_saga_background, create_saga, list_sagas, get_saga, logger, manager, router, ws_router",
+        "GET /{saga_id} (app/api/sagas.py)",
+        "WEBSOCKET /ws/sagas (app/api/sagas.py)"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-17T09:41:59+00:00"
+    }
+  ],
+  "claims": {
+    "public/index.html": "frontend",
+    "tests/test_smoke.py": "tester",
+    "app/main.py": "tester",
+    "tests/test_saga_api.py": "tester",
+    "app/core/config.py": "backend",
+    "app/db/base.py": "backend",
+    "app/db/session.py": "backend",
+    "app/models/saga.py": "backend",
+    "app/schemas/saga.py": "backend",
+    "app/core/orchestrator.py": "backend",
+    "app/api/sagas.py": "backend",
+    "docs/SECURITY_AUDIT.md": "security",
+    "app/core/resilience.py": "resilience_guard",
+    "dummy.txt": "backend"
+  },
+  "foreign_changes": [
+    {
+      "path": "app/main.py",
+      "owner": "tester",
+      "changed_by": "backend",
+      "timestamp": "2026-09-17T09:32:20+00:00"
+    },
+    {
+      "path": "app/main.py",
+      "owner": "tester",
+      "changed_by": "backend",
+      "timestamp": "2026-09-17T09:32:32+00:00"
+    },
+    {
+      "path": "tests/test_saga_api.py",
+      "owner": "tester",
+      "changed_by": "backend",
+      "timestamp": "2026-09-17T09:33:08+00:00"
+    },
+    {
+      "path": "tests/test_smoke.py",
+      "owner": "tester",
+      "changed_by": "backend",
+      "timestamp": "2026-09-17T09:33:08+00:00"
+    },
+    {
+      "path": "app/api/sagas.py",
+      "owner": "backend",
+      "changed_by": "tester",
+      "timestamp": "2026-09-17T09:39:45+00:00"
+    }
+  ],
+  "questions": []
+}

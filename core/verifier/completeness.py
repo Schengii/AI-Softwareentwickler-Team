@@ -74,7 +74,13 @@ from core.verifier.models import (
     CompletenessIssue,
     CompletenessReport,
     find_toplevel_event_loop_calls,
+    find_undefined_entrypoint_names,
 )
+
+# Einstiegsdateien, gegen die _undefined_names_in_entrypoints() prüft - genau die Dateien, deren
+# NameError beim App-Start das gesamte Projekt sofort startunfähig macht (siehe
+# find_undefined_entrypoint_names()-Docstring in core/verifier/models.py).
+_ENTRYPOINT_FILENAMES = {"main.py", "app.py"}
 
 _logger = logging.getLogger(__name__)
 
@@ -153,6 +159,7 @@ class CompletenessMixin:
         issues.extend(self._direct_dict_return_type_mismatch(py_texts))
         issues.extend(self._wildcard_security_middleware(py_texts))
         issues.extend(self._scan_for_toplevel_event_loop(py_texts))
+        issues.extend(self._undefined_names_in_entrypoints(py_texts))
 
         return CompletenessReport(attempted=True, passed=not issues, issues=issues)
 
@@ -830,6 +837,34 @@ class CompletenessMixin:
                             f"Cooldowns/TTLs und initialisiere Async-Objekte (Singletons, HTTP-"
                             f"Clients) erst im FastAPI-Lifespan oder in einer async Factory-Methode.",
                     kind="toplevel_event_loop",
+                ))
+        return issues
+
+    def _undefined_names_in_entrypoints(self, py_texts: dict[str, str]) -> list[CompletenessIssue]:
+        """Realer Fund (ecotrack_ai, 2026-09-17): `app/main.py` registrierte
+        `app.include_router(fleet_router)`/`ml_router`/`finops_router` per `include_router()`,
+        ohne die Module je zu importieren - garantierter `NameError` bei jedem App-Start, den
+        weder die Handoff-Prüfung noch `_missing_local_python_imports()` erfasst (jener Check
+        prüft nur, ob referenzierte IMPORTE existieren, nicht ob im Code verwendete Namen
+        überhaupt gebunden wurden). Läuft ausschließlich gegen die üblichen Python-Einstiegs-
+        dateien (`main.py`/`app.py`, siehe _ENTRYPOINT_FILENAMES) - eine projektweite Prüfung
+        jeder Datei wäre wegen komplexerer Scoping-Fälle (Closures, bedingte Definitionen)
+        fehleranfälliger, siehe find_undefined_entrypoint_names()-Docstring für die genauen
+        Konservativitäts-Vorkehrungen (Modul-Ebene, kein Wildcard-Import, flow-insensitiv)."""
+        issues: list[CompletenessIssue] = []
+        for rel, text in sorted(py_texts.items()):
+            if Path(rel).name not in _ENTRYPOINT_FILENAMES:
+                continue
+            for line_no, name in find_undefined_entrypoint_names(text):
+                issues.append(CompletenessIssue(
+                    file_path=rel,
+                    line_number=line_no,
+                    message=f"Name „{name}“ wird in {rel}:{line_no} auf Modulebene verwendet, "
+                            f"ohne irgendwo im selben Modul importiert, zugewiesen oder definiert "
+                            f"worden zu sein - garantierter `NameError: name '{name}' is not "
+                            f"defined` beim App-Start. Vermutlich ein Router/Objekt, das "
+                            f"registriert, aber nie implementiert/importiert wurde.",
+                    kind="undefined_entrypoint_name",
                 ))
         return issues
 

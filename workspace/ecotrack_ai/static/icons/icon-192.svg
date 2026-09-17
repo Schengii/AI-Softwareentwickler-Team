@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192" role="img" aria-label="EcoTrack AI Icon 192">
+  <defs>
+    <linearGradient id="bgGrad192" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#022c22" />
+    </linearGradient>
+    <linearGradient id="ecoGrad192" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34d399" />
+      <stop offset="100%" stop-color="#059669" />
+    </linearGradient>
+    <linearGradient id="circuitGrad192" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#0284c7" />
+    </linearGradient>
+  </defs>
+  <rect width="192" height="192" rx="42" fill="url(#bgGrad192)"/>
+  <rect x="6" y="6" width="180" height="180" rx="38" fill="none" stroke="#059669" stroke-width="2" stroke-opacity="0.4"/>
+  <!-- Leaf Contour -->
+  <path d="M52 140 C44 98, 80 52, 144 46 C144 110, 98 152, 52 140 Z" fill="url(#ecoGrad192)" filter="drop-shadow(0 8px 16px rgba(0,0,0,0.35))"/>
+  <!-- Center Stem -->
+  <path d="M64 128 C88 110, 114 84, 138 52" stroke="#ffffff" stroke-width="6" stroke-linecap="round" fill="none"/>
+  <!-- AI Neural Network Nodes on Leaf -->
+  <line x1="88" y1="106" x2="68" y2="82" stroke="#bae6fd" stroke-width="3.5" stroke-linecap="round"/>
+  <circle cx="68" cy="82" r="7" fill="#0284c7" stroke="#ffffff" stroke-width="2"/>
+  
+  <line x1="114" y1="80" x2="134" y2="108" stroke="#bae6fd" stroke-width="3.5" stroke-linecap="round"/>
+  <circle cx="134" cy="108" r="7" fill="#0284c7" stroke="#ffffff" stroke-width="2"/>
+
+  <circle cx="88" cy="106" r="8" fill="#38bdf8" stroke="#ffffff" stroke-width="2.5"/>
+  <circle cx="114" cy="80" r="8" fill="#38bdf8" stroke="#ffffff" stroke-width="2.5"/>
+  <circle cx="138" cy="52" r="9" fill="#22c55e" stroke="#ffffff" stroke-width="3"/>
+  <!-- Text Label -->
+  <text x="96" y="172" text-anchor="middle" fill="#ecfdf5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="16" font-weight="700" letter-spacing="1">ECOTRACK AI</text>
+</svg>

@@ -1400,6 +1400,92 @@ class TestCompletenessCheck(unittest.TestCase):
             self.assertTrue(report.passed)
 
 
+class TestUndefinedEntrypointNames(unittest.TestCase):
+    """Deckt den ecotrack_ai-Fund ab (root-cause-Ticket 2026-09-17): `app/main.py` registrierte
+    `app.include_router(fleet_router)` u.a., ohne die Module je zu importieren - garantierter
+    `NameError` beim App-Start, den keiner der bisherigen Checks erfasste."""
+
+    def test_flags_router_used_but_never_imported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app").mkdir()
+            (project_dir / "app" / "main.py").write_text(
+                "from fastapi import FastAPI\n\n"
+                "app = FastAPI()\n"
+                "app.include_router(fleet_router)\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertFalse(report.passed)
+            undefined = [i for i in report.issues if i.kind == "undefined_entrypoint_name"]
+            self.assertEqual(len(undefined), 1)
+            self.assertEqual(undefined[0].file_path, "app/main.py")
+            self.assertIn("fleet_router", undefined[0].message)
+
+    def test_router_imported_before_use_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app").mkdir()
+            (project_dir / "app" / "api").mkdir()
+            (project_dir / "app" / "__init__.py").write_text("", encoding="utf-8")
+            (project_dir / "app" / "api" / "__init__.py").write_text("", encoding="utf-8")
+            (project_dir / "app" / "api" / "fleet.py").write_text(
+                "from fastapi import APIRouter\n\nfleet_router = APIRouter()\n",
+                encoding="utf-8",
+            )
+            (project_dir / "app" / "main.py").write_text(
+                "from fastapi import FastAPI\n"
+                "from app.api.fleet import fleet_router\n\n"
+                "app = FastAPI()\n"
+                "app.include_router(fleet_router)\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            undefined = [i for i in report.issues if i.kind == "undefined_entrypoint_name"]
+            self.assertEqual(undefined, [])
+
+    def test_name_used_only_inside_function_body_not_flagged(self):
+        """Modul-Ebene beschränkt: eine Variable, die erst innerhalb einer Funktion verwendet und
+        dort per Parameter/Closure gebunden wird, ist keine Modul-Ebenen-NameError-Quelle."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app.py").write_text(
+                "def handler(fleet_router):\n    return fleet_router\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            undefined = [i for i in report.issues if i.kind == "undefined_entrypoint_name"]
+            self.assertEqual(undefined, [])
+
+    def test_non_entrypoint_file_not_scanned(self):
+        """Nur main.py/app.py werden geprüft - andere Dateien mit demselben Muster nicht (siehe
+        _ENTRYPOINT_FILENAMES-Docstring: Scoping in Nicht-Einstiegsdateien ist fehleranfälliger)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "routes.py").write_text(
+                "register(fleet_router)\n", encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            undefined = [i for i in report.issues if i.kind == "undefined_entrypoint_name"]
+            self.assertEqual(undefined, [])
+
+    def test_wildcard_import_disables_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "main.py").write_text(
+                "from app.routers import *\n\ninclude_all(fleet_router)\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            undefined = [i for i in report.issues if i.kind == "undefined_entrypoint_name"]
+            self.assertEqual(undefined, [])
+
+
 class TestAuditClaimedFixes(unittest.TestCase):
     """Deckt den EventForge-Fund ab (KI-Team-Analyse 20260916_154524):
     `docs/SECURITY_AUDIT.md` markierte SEC-01 als "Behoben" und verwies auf

@@ -1,0 +1,24 @@
+{
+  "modules": {
+    "app/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/exports.py": {
+      "FleetService": "class",
+      "MLEmissionEngine": "class",
+      "FinOpsService": "class",
+      "VehicleCreate": "class",
+      "TelemetryPayload": "class"
+    },
+    "app/services/fleet_service.py": {
+      "FleetService": "class"
+    },
+    "app/services/ml_service.py": {
+      "MLEmissionEngine": "class"
+    },
+    "app/services/finops_service.py": {
+      "FinOpsService": "class"
+    }
+  }
+}

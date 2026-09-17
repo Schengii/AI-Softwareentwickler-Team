@@ -587,8 +587,12 @@ class VerificationMixin:
         )
 
         # Vorab-Import-Check: fehlende lokale Module/Symbole sind statisch in Millisekunden erkennbar
-        # und würden sonst erst nach der teuren Test-/Governance-Kaskade auffallen. Prüft nur
-        # Import-Funde; Stub-Marker u.ä. bleiben beim späteren vollständigen Durchlauf.
+        # und würden sonst erst nach der teuren Test-/Governance-Kaskade auffallen. Prüft Import-
+        # Funde UND (seit ecotrack_ai-Fund 2026-09-17) unaufgelöste Namen in Einstiegsdateien
+        # (`undefined_entrypoint_name`, z.B. ein registrierter, aber nie importierter Router) -
+        # beides garantierte NameError/ImportError-Abstürze beim Start, dieselbe Kategorie. Stub-
+        # Marker u.ä. bleiben beim späteren vollständigen Durchlauf.
+        _PREIMPORT_ISSUE_KINDS = {"missing_local_import", "undefined_entrypoint_name"}
         if ENABLE_COMPLETENESS_CHECK and not (budget_aborted or manually_cancelled):
             # Zirkuit-Breaker wie in den übrigen Fix-Schleifen.
             previous_preimport_signature: frozenset[tuple[str, str]] | None = None
@@ -611,7 +615,7 @@ class VerificationMixin:
                     break
                 # CompletenessIssue.kind ist ein stabiles Tag und erfasst auch fehlende Symbol-Importe,
                 # die eine Substring-Suche auf die Meldung verpassen würde.
-                import_issues = [i for i in pre_report.issues if i.kind == "missing_local_import"]
+                import_issues = [i for i in pre_report.issues if i.kind in _PREIMPORT_ISSUE_KINDS]
                 if not import_issues:
                     if attempt > 1:
                         notify(f"  🧩 [bold green]Vorab-Import-Check nach Fix (Versuch {attempt}) bestanden.[/bold green]")
@@ -630,9 +634,9 @@ class VerificationMixin:
                 previous_preimport_signature = current_preimport_signature
 
                 top = "; ".join(f"{i.file_path}:{i.line_number} – {i.message}" for i in import_issues[:5])
-                notify(f"  🧩 [bold red]Vorab-Import-Check: {len(import_issues)} fehlende(s) lokale(s) Modul/Symbol VOR jedem Testlauf gefunden.[/bold red]")
+                notify(f"  🧩 [bold red]Vorab-Import-Check: {len(import_issues)} fehlende(s)/unaufgelöste(s) lokale(s) Modul/Symbol/Name VOR jedem Testlauf gefunden.[/bold red]")
 
-                # Fehlendes lokales Modul/Symbol ist immer ein Code-Problem - Fallback-Owner dev_lead.
+                # Fehlendes lokales Modul/Symbol/unaufgelöster Name ist immer ein Code-Problem - Fallback-Owner dev_lead.
                 agents_to_fix: dict[str, list] = {}
                 for issue in import_issues:
                     owner = file_owners.get(issue.file_path)
@@ -653,9 +657,11 @@ class VerificationMixin:
                         agent_id=agent_id,
                         description=(
                             "Ein statischer Vorab-Check (VOR jedem Testlauf) hat lokale Python-Importe "
-                            "gefunden, die auf nicht existierende Dateien/Symbole verweisen - der Code kann "
-                            "dadurch nicht einmal importiert werden. Lege die fehlende(n) Datei(en) mit "
-                            "echtem Inhalt an bzw. ergänze das fehlende Symbol in der genannten Datei.\n\n"
+                            "gefunden, die auf nicht existierende Dateien/Symbole verweisen, oder Namen "
+                            "(z.B. ein registrierter Router), die in einer Einstiegsdatei verwendet werden, "
+                            "ohne dort importiert/definiert zu sein - der Code kann dadurch nicht einmal "
+                            "gestartet werden. Lege die fehlende(n) Datei(en)/Symbol(e) mit echtem Inhalt an "
+                            "und importiere sie in der genannten Einstiegsdatei, statt sie nur zu registrieren.\n\n"
                             f"{issue_text}"
                         ),
                         context="",

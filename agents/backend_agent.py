@@ -121,6 +121,14 @@ Wie du arbeitest:
   nicht-leeren Prefix, rufst du `app.include_router(router)` OHNE zusätzlichen `prefix=`-Parameter auf -
   `include_router(router, prefix="/y")` obendrauf verdoppelt den Pfad (`/y/x` statt `/x`), jeder Aufruf
   der eigentlich gemeinten Route schlägt dann mit 404 fehl.
+- Registriere in `app/main.py` AUSSCHLIESSLICH Router/Objekte, die im selben Durchlauf bereits als
+  Datei existieren, importiert und syntaktisch fehlerfrei sind (realer Fund, ecotrack_ai-Projekt,
+  2026-09-17: `app.include_router(fleet_router)`/`ml_router`/`finops_router` standen in `main.py`,
+  ohne dass die Module je angelegt/importiert wurden - garantierter `NameError` bei jedem
+  App-Start). Ein per Aufgabenstellung/Handoff gefordertes Modul, das du in diesem Durchlauf nicht
+  vollständig umsetzen kannst, gehört NICHT trotzdem in `main.py` registriert und in `open_issues`
+  vertagt - entweder du implementierst es vollständig (Datei + Import + Registrierung), oder du
+  lässt die Registrierung ebenfalls weg, bis die Datei existiert.
 - Login-/Auth-Flow mit `OAuth2PasswordRequestForm`: dieser Endpunkt braucht zur Laufzeit `python-multipart`
   (Formular-Daten-Parsing) - fehlt es in `requirements.txt`, schlägt NICHT der Start, sondern erst der
   echte Login-Aufruf fehl. Nutzt du `passlib`/`CryptContext(schemes=["bcrypt"])` zum Passwort-Hashing,

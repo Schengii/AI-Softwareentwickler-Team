@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="EcoTrack AI Logo">
+  <defs>
+    <linearGradient id="ecoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981" />
+      <stop offset="100%" stop-color="#047857" />
+    </linearGradient>
+    <linearGradient id="aiGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#0284c7" />
+    </linearGradient>
+  </defs>
+  <!-- Background Rounded Rect -->
+  <rect width="64" height="64" rx="14" fill="#0d1b1e"/>
+  <!-- Leaf Base -->
+  <path d="M18 46 C16 32, 28 18, 48 16 C48 36, 34 50, 18 46 Z" fill="url(#ecoGrad)" />
+  <!-- Leaf Vein & AI Circuit -->
+  <path d="M22 42 C30 36, 38 28, 46 18" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+  <!-- AI Neural Nodes -->
+  <circle cx="30" cy="36" r="2.5" fill="#38bdf8" />
+  <circle cx="38" cy="28" r="2.5" fill="#38bdf8" />
+  <circle cx="46" cy="18" r="3" fill="#ffffff" stroke="#0284c7" stroke-width="1.5" />
+  <path d="M30 36 L24 28" stroke="#38bdf8" stroke-width="1.5" stroke-linecap="round"/>
+  <circle cx="24" cy="28" r="2" fill="#38bdf8"/>
+  <path d="M38 28 L44 38" stroke="#38bdf8" stroke-width="1.5" stroke-linecap="round"/>
+  <circle cx="44" cy="38" r="2" fill="#38bdf8"/>
+</svg>

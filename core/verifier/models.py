@@ -10,6 +10,7 @@ coverage.py, runtime.py).
 """
 
 import ast
+import builtins
 import re
 import sys
 from dataclasses import dataclass, field
@@ -76,6 +77,94 @@ def find_toplevel_event_loop_calls(source: str) -> list[int]:
 
     _Visitor().visit(tree)
     return lines
+
+
+def find_undefined_entrypoint_names(source: str) -> list[tuple[int, str]]:
+    """Namen (Zeilennummer, Bezeichner), die auf MODUL-EBENE einer Einstiegsdatei (`app/main.py`,
+    `main.py`, ...) gelesen werden, ohne irgendwo im selben Modul gebunden (importiert, zugewiesen,
+    als Funktion/Klasse definiert, ...) worden zu sein - der statische Vorläufer eines garantierten
+    `NameError` beim Start.
+
+    Realer Fund (ecotrack_ai, 2026-09-17): `app/main.py` registrierte `app.include_router(
+    fleet_router)`/`ml_router`/`finops_router`, ohne die Module je zu importieren - `NameError:
+    name 'fleet_router' is not defined` bei jedem App-Start. Weder die Handoff-Prüfung noch
+    `_missing_local_python_imports()` (prüft nur, ob referenzierte IMPORTE existieren, nicht ob
+    verwendete Namen überhaupt importiert wurden) fingen das ab; erst der Testlauf deckte es auf,
+    nachdem bereits ein Handoff-Zyklus als abgeschlossen galt.
+
+    Bewusst flow-insensitiv (prüft nur, ob ein Name IRGENDWO im Modul gebunden wird, nicht ob VOR
+    seiner Verwendung) und auf Modul-Ebene beschränkt (Funktions-/Klassenkörper haben eigene
+    Scoping-Regeln und werden hier nicht geprüft) - dieselbe konservative Grundhaltung wie die
+    übrigen Checks in dieser Datei: ein NameError, der nur unter seltenen Laufzeitbedingungen
+    auftritt, darf übersehen werden, aber ein gemeldeter Fund muss zuverlässig echt sein. Ein
+    Wildcard-Import (`from x import *`) macht die Analyse unzuverlässig (der Stern könnte jeden
+    Namen einführen) und schaltet sie komplett ab."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return []
+
+    bound: set[str] = set(dir(builtins)) | {"__name__", "__file__", "__doc__", "self", "cls"}
+    has_star_import = False
+
+    class _BindingCollector(ast.NodeVisitor):
+        def visit_Import(self, node: ast.Import) -> None:
+            for alias in node.names:
+                bound.add((alias.asname or alias.name).split(".")[0])
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            nonlocal has_star_import
+            for alias in node.names:
+                if alias.name == "*":
+                    has_star_import = True
+                else:
+                    bound.add(alias.asname or alias.name)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            bound.add(node.name)
+            self.generic_visit(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            bound.add(node.name)
+            self.generic_visit(node)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            bound.add(node.name)
+            self.generic_visit(node)
+
+        def visit_Name(self, node: ast.Name) -> None:
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                bound.add(node.id)
+
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+            if node.name:
+                bound.add(node.name)
+            self.generic_visit(node)
+
+        def visit_Global(self, node: ast.Global) -> None:
+            bound.update(node.names)
+
+        def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+            bound.update(node.names)
+
+        def visit_arg(self, node: ast.arg) -> None:
+            bound.add(node.arg)
+
+    _BindingCollector().visit(tree)
+    if has_star_import:
+        return []
+
+    findings: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)):
+            continue
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                if node.id not in bound and node.id not in seen:
+                    seen.add(node.id)
+                    findings.append((node.lineno, node.id))
+    return findings
 
 # Best-effort-Erkennung fehlgeschlagener npm-Tests: Jest/Vitest melden fehlgeschlagene
 # Testdateien als "FAIL <pfad>" bzw. mit "✕"/"×" vor dem Testnamen. Da es kein einheitliches

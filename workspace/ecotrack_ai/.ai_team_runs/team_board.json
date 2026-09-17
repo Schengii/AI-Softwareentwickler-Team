@@ -1,0 +1,204 @@
+{
+  "run_id": "20260917_105400",
+  "handoffs": [
+    {
+      "agent_id": "architect",
+      "task_id": "7dac82c9",
+      "files": [
+        "docs/adr/0001-modularer-fastapi-monolith-statt-microse.md",
+        "docs/adr/0002-in-process-ml-engine-mit-standard-librar.md"
+      ],
+      "provides": [],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-17T10:54:37+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "22b0ffa4",
+      "files": [
+        "app/__init__.py",
+        "app/api/__init__.py",
+        "app/config.py",
+        "app/main.py",
+        "app/schemas/__init__.py",
+        "app/schemas/finops.py",
+        "app/schemas/fleet.py",
+        "app/schemas/ml.py",
+        "requirements.txt"
+      ],
+      "provides": [
+        "app/config.py: Settings, get_settings",
+        "app/main.py: lifespan, root_health, settings, app, static_dir",
+        "GET /health (app/main.py)",
+        "app/schemas/finops.py: FinOpsCostRequest, FinOpsCostResponse",
+        "app/schemas/fleet.py: VehicleType, FleetEmissionsRequest, FleetEmissionsResponse",
+        "app/schemas/ml.py: PredictionRequest, PredictionResponse"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-17T10:56:40+00:00"
+    },
+    {
+      "agent_id": "mobile",
+      "task_id": "fd2212a0",
+      "files": [
+        "docs/adr/0003-pwa-client-architektur-vanilla-web-compo.md",
+        "static/icons/favicon.svg",
+        "static/icons/icon-192.svg",
+        "static/icons/icon-512.svg",
+        "static/icons/icons.svg",
+        "static/manifest.json",
+        "static/sw.js"
+      ],
+      "provides": [],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-17T10:56:44+00:00"
+    },
+    {
+      "agent_id": "ml",
+      "task_id": "3409049c",
+      "files": [
+        "app/services/ml_prediction.py"
+      ],
+      "provides": [
+        "`FleetEmissionPredictor`, `get_prediction_service` (app/services/ml_prediction.py)",
+        "app/services/ml_prediction.py: PredictionResult, FleetEmissionPredictor, get_prediction_service"
+      ],
+      "requires": [
+        "`PredictionRequest`, `PredictionResponse` (app/schemas/ml.py)",
+        "`VehicleType` (app/schemas/fleet.py)"
+      ],
+      "open_issues": [
+        "`app/api/ml.py` Router-Endpunkt zur Anbindung an `app/main.py` muss durch backend/api_integration bereitgestellt werden."
+      ],
+      "timestamp": "2026-09-17T10:57:40+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "40a5b0c1",
+      "files": [
+        "app/api/__init__.py",
+        "app/api/health.py",
+        "app/main.py",
+        "tests/test_smoke.py"
+      ],
+      "provides": [
+        "`tests/test_smoke.py` (Smoke-Test)",
+        "`app/api/health.py` (Health-Endpunkt)",
+        "app/api/__init__.py: api_router",
+        "app/api/health.py: health_check, router",
+        "GET /health (app/api/health.py)",
+        "app/main.py: lifespan, root_health, settings, app, static_dir",
+        "GET /health (app/main.py)",
+        "tests/test_smoke.py: test_app_starts_and_health_ok, client"
+      ],
+      "requires": [
+        "`backend`-Team für die Implementierung von `app/api/fleet.py`, `app/api/ml.py` und `app/api/finops.py`."
+      ],
+      "open_issues": [
+        "Die Integration der restlichen Domänen-Router in `app/main.py` ist noch offen, sobald die entsprechenden Module durch das `backend`-Team bereitgestellt werden."
+      ],
+      "timestamp": "2026-09-17T10:57:53+00:00"
+    },
+    {
+      "agent_id": "security",
+      "task_id": "807d6a65",
+      "files": [
+        "docs/SECURITY_AUDIT.md"
+      ],
+      "provides": [
+        "docs/SECURITY_AUDIT.md (Security Audit Report & Härtungs-Checkliste)"
+      ],
+      "requires": [
+        "backend für Bereitstellung der Router `fleet_router`, `ml_router`, `finops_router` in `app/api/` zur Behebung des NameErrors in `app/main.py`"
+      ],
+      "open_issues": [],
+      "timestamp": "2026-09-17T10:58:26+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "security_handoff_fix",
+      "files": [
+        "app/api/fleet.py"
+      ],
+      "provides": [
+        "`fleet_router`, `calculate_fleet_emissions` (app/api/fleet.py)",
+        "app/api/fleet.py: calculate_fleet_emissions, fleet_router",
+        "POST /calculate (app/api/fleet.py)"
+      ],
+      "requires": [
+        "`FleetEmissionPredictor` (app/services/ml_prediction.py), `PredictionRequest` (app/schemas/ml.py), `FinOpsCostCalculationRequest` (app/schemas/finops.py)"
+      ],
+      "open_issues": [
+        "Ergänzung von `app/api/ml.py` und `app/api/finops.py` sowie Re-Export/Import in `app/main.py`, um den `NameError` bei App-Initialisierung vollständig aufzulösen."
+      ],
+      "timestamp": "2026-09-17T10:58:44+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "verify_fix_tester_2",
+      "files": [
+        "app/api/ml_finops.py",
+        "app/main.py"
+      ],
+      "provides": [
+        "`app/api/ml_finops.py` (ml_router, finops_router)",
+        "`app/main.py` (Router-Registrierung)",
+        "app/api/ml_finops.py: ml_router, finops_router",
+        "app/main.py: lifespan, root_health, settings, app, static_dir",
+        "GET /health (app/main.py)"
+      ],
+      "requires": [],
+      "open_issues": [
+        "Die Implementierung der tatsächlichen Logik in `ml_router` und `finops_router` durch das `backend`/`ml`-Team."
+      ],
+      "timestamp": "2026-09-17T11:01:38+00:00"
+    }
+  ],
+  "claims": {
+    "app/main.py": "backend",
+    "requirements.txt": "backend",
+    "static/manifest.json": "mobile",
+    "static/icons/favicon.svg": "mobile",
+    "app/__init__.py": "backend",
+    "static/icons/icon-192.svg": "mobile",
+    "app/config.py": "backend",
+    "static/icons/icon-512.svg": "mobile",
+    "app/schemas/__init__.py": "backend",
+    "app/schemas/fleet.py": "backend",
+    "static/icons/icons.svg": "mobile",
+    "app/schemas/ml.py": "backend",
+    "app/schemas/finops.py": "backend",
+    "static/sw.js": "mobile",
+    "app/api/__init__.py": "backend",
+    "tests/test_smoke.py": "tester",
+    "app/services/ml_prediction.py": "ml",
+    "app/api/health.py": "tester",
+    "docs/SECURITY_AUDIT.md": "security",
+    "app/api/fleet.py": "backend",
+    "app/api/ml_finops.py": "tester"
+  },
+  "foreign_changes": [
+    {
+      "path": "app/api/__init__.py",
+      "owner": "backend",
+      "changed_by": "tester",
+      "timestamp": "2026-09-17T10:57:42+00:00"
+    },
+    {
+      "path": "app/main.py",
+      "owner": "backend",
+      "changed_by": "tester",
+      "timestamp": "2026-09-17T10:57:51+00:00"
+    },
+    {
+      "path": "app/main.py",
+      "owner": "backend",
+      "changed_by": "tester",
+      "timestamp": "2026-09-17T11:01:29+00:00"
+    }
+  ],
+  "questions": []
+}

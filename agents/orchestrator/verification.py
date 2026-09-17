@@ -1397,6 +1397,14 @@ class VerificationMixin:
         if ENABLE_COMPLETENESS_CHECK and not (budget_aborted or manually_cancelled):
             # Zirkuit-Breaker wie in den übrigen Fix-Schleifen.
             previous_completeness_signature: frozenset[tuple[str, str]] | None = None
+            # Team-Optimierung 2026-09-17 (hyperion_metrics-Root-Cause "Backend-Agent
+            # remediierte den Completeness-Befund im Fix-Zyklus nicht"): anders als die
+            # Test-Fehlerschleife oben (siehe stuck_owners/_escalate_agent_models weiter oben in
+            # dieser Methode) gab diese Schleife beim ERSTEN identischen Wiederholungsfund sofort
+            # auf, ohne je ein stärkeres Modell zu versuchen - derselbe (schwache/falsch
+            # instruierte) Agent bekam nie eine zweite Chance mit HEAVY_MODEL, bevor das Veto und
+            # das Backlog-Ticket entstanden. Ein Versuch, dann eskalieren, dann erst aufgeben.
+            completeness_model_escalation_attempted = False
             for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
                 if run_start_tokens is not None and (
                     self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
@@ -1427,6 +1435,55 @@ class VerificationMixin:
                     completeness_report.issues, lambda i: (i.file_path, i.message[:300]),
                 )
                 if _no_progress(previous_completeness_signature, current_completeness_signature):
+                    stuck_owners = {
+                        owner
+                        for issue in completeness_report.issues
+                        for owner in [file_owners.get(issue.file_path) or self._infer_owner_from_path(issue.file_path, issue.message)]
+                        if owner and owner in self._agents
+                    }
+                    if not completeness_model_escalation_attempted and stuck_owners and not (
+                        run_start_tokens is not None and (
+                            self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                        )
+                    ):
+                        completeness_model_escalation_attempted = True
+                        escalated_agent_ids = self._escalate_agent_models(stuck_owners)
+                        if escalated_agent_ids:
+                            notify(
+                                f"  ⬆️ [bold yellow]Kein Fortschritt bei Vollständigkeits-Fix – letzter Versuch mit "
+                                f"stärkerem Modell:[/bold yellow] {', '.join(sorted(escalated_agent_ids))}."
+                            )
+                            top_issues = "\n".join(
+                                f"- {i.file_path}" + (f":{i.line_number}" if i.line_number else "") + f" – {i.message}"
+                                for i in completeness_report.issues[:5]
+                            )
+                            escalation_tasks = [
+                                AgentTask(
+                                    task_id=f"verify_completeness_model_escalation_{owner}_{attempt}",
+                                    agent_id=owner,
+                                    description=(
+                                        "Dein vorheriger, gezielter Fixversuch hat den folgenden Vollständigkeits-Befund "
+                                        "NICHT wirksam behoben (identisch vor und nach dem Versuch) - du bekommst jetzt "
+                                        "für diesen letzten Versuch ein stärkeres Modell. Prüfe genau, ob dein letzter "
+                                        "Edit tatsächlich gespeichert wurde und die beanstandete Stelle wirklich "
+                                        f"verändert, statt denselben (wirkungslosen) Ansatz zu wiederholen.\n\n{top_issues}"
+                                    ),
+                                    context="", project_dir=project_dir,
+                                )
+                                for owner in sorted(escalated_agent_ids)
+                            ]
+                            fix_results = await self._run_agents_parallel(escalation_tasks, notify=notify)
+                            self._update_file_owners(file_owners, fix_results)
+                            all_results.extend(fix_results)
+                            summary_lines.append(
+                                f"- 🧩 ⬆️ Versuch {attempt}: kein Fortschritt beim vorherigen Fix → letzter Versuch mit "
+                                f"HEAVY_MODEL für {', '.join(sorted(escalated_agent_ids))}."
+                            )
+                            completeness_report = await asyncio.to_thread(verifier.check_completeness)
+                            if completeness_report.attempted and completeness_report.passed:
+                                notify("  ✅ [bold green]Eskalation erfolgreich:[/bold green] Vollständigkeits-Check nach stärkerem Modell bestanden.")
+                                summary_lines.append("- ✅ Eskalation mit stärkerem Modell behob den Vollständigkeits-Befund.")
+                                break
                     notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Vollständigkeits-Funde wie vor dem letzten Fixversuch – breche Schleife ab.")
                     summary_lines.append(
                         f"- 🧩 🛑 Versuch {attempt}: dieselben {len(completeness_report.issues)} Vollständigkeits-Fund(e) wie nach "

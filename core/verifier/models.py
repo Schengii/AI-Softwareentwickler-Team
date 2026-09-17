@@ -671,7 +671,15 @@ _IO_MUTATION_RE = re.compile(
     r"|\.append\("
     r"|\.update\w*\("
     r"|\.remove\w*\("
-    r"|\.insert\w*\(",
+    r"|\.insert\w*\("
+    # Team-Optimierung 2026-09-17 (hyperion_metrics-Root-Cause): `.delete...(`/`.clear...(` auf
+    # einer In-Memory-Engine/Registry (z.B. `alert_engine.delete_rule(id)`, `cache.clear()`)
+    # ist dieselbe Klasse valider Zustandsmutation wie `.remove...(`/`.pop(`, wurde bisher aber
+    # nicht erkannt - ein schreibender Handler, der ausschließlich so mutiert, wurde fälschlich
+    # als I/O-los gemeldet, obwohl die Architektur laut ADR bewusst auf eine In-Memory-Engine
+    # statt DB/Datei/HTTP setzt.
+    r"|\.delete\w*\("
+    r"|\.clear\w*\(",
 )
 # Endpunktnamen, bei denen eine fehlende I/O-Anbindung erwartbar/legitim ist (z.B. ein reiner
 # Logout, der nur ein Cookie löscht) - bewusst kurz gehalten, kein Anspruch auf Vollständigkeit.

@@ -7,6 +7,26 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Team-Optimierung 2026-09-17 (Teil 3): Unwired-Router-Erkennung, In-Memory-Mutationen & Completeness-Eskalation
+
+Reale Funde und Root-Cause-Analysen aus dem `hyperion_metrics`-Lauf (2026-09-17):
+
+* **Tote APIRouter-Instanzen (`unwired_api_router`):** `core/verifier/completeness.py` erkennt nun
+  `APIRouter()`-Instanzen, die im gesamten Projekt nie an `include_router(...)` übergeben werden.
+  Zuvor wurden solche toten Endpunkte in `_test_requests_undeclared_routes()` fälschlich als
+  "deklariert" gewertet, obwohl sie zur Laufzeit 404/405 warfen. Tests: `tests/test_verifier_completeness.py`.
+* **In-Memory-Mutationen im Verifier:** `core/verifier/models.py._IO_MUTATION_RE` erkennt jetzt auch
+  Methoden wie `.delete...(` und `.clear...(` auf In-Memory-Engines, um Fehlalarme bei schreibenden
+  Routen-Handlern zu vermeiden.
+* **HEAVY_MODEL-Eskalation bei Vollständigkeits-Fixes:** `agents/orchestrator/verification.py`
+  eskaliert bei fehlendem Fortschritt in der Completeness-Schleife vor dem Abbruch auf `HEAVY_MODEL`
+  (analog zur Test-Fehlerschleife). Tests: `tests/test_completeness_no_progress_escalation.py`.
+* **Prompting für Backend-Agenten:** `agents/backend_agent.py` instruiert den Agenten bei
+  wiederholten Completeness-Vetos zu I/O-Spuren (z. B. Audit-Log oder Event-Bus), um wirkungslose
+  Wiederholungen zu verhindern.
+
+---
+
 ## 🟢 Team-Optimierung 2026-09-17 (Teil 2): Test-Schrumpfung, HEAVY_MODEL-Eskalation, Backlog-Sackgasse
 
 Umsetzung dreier zuvor identifizierter, evidenzbasierter Befunde (Backlog-Analyse, siehe

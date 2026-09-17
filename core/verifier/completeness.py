@@ -162,6 +162,7 @@ class CompletenessMixin:
         issues.extend(self._wildcard_security_middleware(py_texts))
         issues.extend(self._scan_for_toplevel_event_loop(py_texts))
         issues.extend(self._undefined_names_in_entrypoints(py_texts))
+        issues.extend(self._unwired_api_routers(py_texts))
         issues.extend(self._test_requests_undeclared_routes(py_texts))
 
         return CompletenessReport(attempted=True, passed=not issues, issues=issues)
@@ -885,6 +886,86 @@ class CompletenessMixin:
         pattern = "[^/]+".join(re.escape(p) for p in parts)
         return re.compile(f"^{pattern}$")
 
+    def _wired_router_names(self, py_texts: dict[str, str]) -> tuple[set[str], set[str]]:
+        """Sammelt aus jedem `include_router(...)`-Aufruf im Projekt die verwendete Modul-
+        Qualifizierung (`app.include_router(ingestion.router)` -> `"ingestion"`) bzw. den nackten
+        Namen bei direktem Import (`from app.api.ingestion import router; app.include_router
+        (router)` -> `"router"`). Gemeinsame Grundlage für `_unwired_api_routers()` und die
+        Verdrahtungs-Prüfung in `_test_requests_undeclared_routes()` (siehe dort)."""
+        wired_qualifiers: set[str] = set()
+        wired_bare_names: set[str] = set()
+        for text in py_texts.values():
+            for m in re.finditer(r"\.include_router\s*\(\s*(?:([A-Za-z_]\w*)\.)?([A-Za-z_]\w*)", text):
+                qualifier, name = m.groups()
+                if qualifier:
+                    wired_qualifiers.add(qualifier)
+                else:
+                    wired_bare_names.add(name)
+        return wired_qualifiers, wired_bare_names
+
+    def _reachable_route_files(self, py_texts: dict[str, str]) -> set[str]:
+        """Dateien, deren per Dekorator deklarierte Routen tatsächlich in der laufenden App
+        erreichbar sind: Einstiegsdateien (`_ENTRYPOINT_FILENAMES`) immer, sonstige Dateien mit
+        einer eigenen `APIRouter()`-Instanz nur, wenn diese irgendwo im Projekt per
+        `include_router(...)` eingebunden wird (siehe `_unwired_api_routers()`-Docstring für den
+        realen Fund). Dateien ohne eigene `APIRouter()`-Definition (z.B. Routen direkt auf einem
+        importierten `app`-Objekt) werden konservativ als erreichbar gewertet - ein übersehener
+        Fund ist besser als ein Fehlalarm."""
+        wired_qualifiers, wired_bare_names = self._wired_router_names(py_texts)
+        reachable: set[str] = set()
+        for rel, text in py_texts.items():
+            if Path(rel).name in _ENTRYPOINT_FILENAMES:
+                reachable.add(rel)
+                continue
+            router_vars = set(re.findall(r"^\s*(\w+)\s*=\s*APIRouter\s*\(", text, re.MULTILINE))
+            if not router_vars:
+                reachable.add(rel)
+                continue
+            if Path(rel).stem in wired_qualifiers or router_vars & wired_bare_names:
+                reachable.add(rel)
+        return reachable
+
+    def _unwired_api_routers(self, py_texts: dict[str, str]) -> list[CompletenessIssue]:
+        """Realer Fund (hyperion_metrics, 2026-09-17): `app/api/ingestion.py` deklarierte einen
+        eigenen `router = APIRouter()` mit `@router.post("/metrics", ...)`, `app/main.py`
+        registrierte aber ausschließlich eigene, inline definierte `@app.post("/api/v1/metrics",
+        ...)`-Handler und importierte/inkludierte den Router aus `ingestion.py` AN KEINER STELLE
+        (kein einziges `include_router(...)` im gesamten Projekt). Der `tester`-Agent schrieb
+        seine Tests gegen den (toten) `/metrics`-Pfad aus dieser Datei, die laufende App bediente
+        aber nur `/api/v1/metrics` - drei Fix-Zyklen in Folge scheiterten am selben `405 Method
+        Not Allowed`, ohne dass ein Agent die eigentliche Ursache (zwei parallele, nie verbundene
+        API-Implementierungen) erkannte. `_test_requests_undeclared_routes()` deckte das bislang
+        nicht ab, weil dort JEDER `@router.*`-Dekorator unabhängig von seiner Verdrahtung als
+        "deklariert" zählte (jetzt über `_reachable_route_files()` eingeschränkt).
+
+        Dieser Check macht die eigentliche Ursache selbst sichtbar: eine `APIRouter()`-Instanz,
+        die im ganzen Projekt nie an `include_router(...)` übergeben wird, ist toter Code - ihre
+        Endpunkte existieren nur auf dem Papier. Konservativ: erkennt nur die beiden verbreiteten
+        FastAPI-Konventionen (`include_router(<modul>.<name>)` und `include_router(<name>)` nach
+        direktem Import) - ein Import-Alias wird bewusst nicht aufgelöst."""
+        reachable = self._reachable_route_files(py_texts)
+        issues: list[CompletenessIssue] = []
+        for rel, text in sorted(py_texts.items()):
+            if rel in reachable or Path(rel).name in _ENTRYPOINT_FILENAMES:
+                continue
+            router_match = re.search(r"^\s*(\w+)\s*=\s*APIRouter\s*\(", text, re.MULTILINE)
+            if not router_match:
+                continue
+            route_matches = list(_ROUTE_DECL_RE.finditer(text))
+            if not route_matches:
+                continue
+            line_no = text.count("\n", 0, router_match.start()) + 1
+            issues.append(CompletenessIssue(
+                file_path=rel,
+                line_number=line_no,
+                message=f"`{router_match.group(1)} = APIRouter(...)` in {rel} wird im gesamten "
+                        f"Projekt nie an `include_router(...)` übergeben - {len(route_matches)} "
+                        f"darüber deklarierte Endpunkt(e) sind toter Code und über die laufende "
+                        f"App unerreichbar (garantierter 404/405 bei jedem echten Aufruf).",
+                kind="unwired_api_router",
+            ))
+        return issues
+
     def _test_requests_undeclared_routes(self, py_texts: dict[str, str]) -> list[CompletenessIssue]:
         """Realer Fund (docu_guard-Projekt, 2026-09-17, siehe _ROUTE_DECL_RE-Docstring in
         core/verifier/models.py): `tests/test_api.py` rief `POST /api/v1/documents` auf, der
@@ -897,6 +978,15 @@ class CompletenessMixin:
         und projektweiten `include_router(..., prefix=...)`-Präfixen) und gleicht jeden Aufruf
         eines `...client.<verb>(...)` in einer Testdatei mit LITERALEM Pfad dagegen ab.
 
+        Team-Optimierung 2026-09-17 (hyperion_metrics-Root-Cause): zählte bisher JEDEN
+        `@router.*`-Dekorator als "deklariert", auch wenn dessen `APIRouter()` im gesamten
+        Projekt nie an `include_router(...)` übergeben wurde - ein Test gegen einen solchen toten
+        Router-Endpunkt (der real existierende Endpunkt lag unter einem anderen, direkt in
+        `main.py` definierten Pfad) wurde so fälschlich als "gültig" durchgewunken, obwohl er zur
+        Laufzeit 404/405 lieferte. Zieht jetzt nur noch Routen aus `_reachable_route_files()`
+        heran (siehe dort bzw. `_unwired_api_routers()` für den eigenständigen Fund am toten
+        Router selbst).
+
         Bewusst konservativ: dynamische Pfade (f-Strings, `{...}`-Platzhalter im Testcode selbst)
         werden übersprungen, da ihr tatsächlicher Wert statisch nicht bekannt ist - ein
         übersehener Fund ist besser als ein Fehlalarm bei einem Pfad, der zur Laufzeit
@@ -908,6 +998,8 @@ class CompletenessMixin:
         test_texts = {rel: text for rel, text in py_texts.items() if rel not in backend_texts}
         if not backend_texts or not test_texts:
             return []
+        reachable = self._reachable_route_files(backend_texts)
+        declared_texts = {rel: text for rel, text in backend_texts.items() if rel in reachable}
 
         external_prefixes = {""}
         for text in backend_texts.values():
@@ -920,7 +1012,7 @@ class CompletenessMixin:
                     external_prefixes.add(prefix_match.group(1))
 
         declared: dict[str, list[re.Pattern[str]]] = {}
-        for text in backend_texts.values():
+        for text in declared_texts.values():
             file_prefix = ""
             router_match = re.search(r"\bAPIRouter\s*(\()", text)
             if router_match:

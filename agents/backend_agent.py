@@ -129,6 +129,16 @@ Wie du arbeitest:
   vollständig umsetzen kannst, gehört NICHT trotzdem in `main.py` registriert und in `open_issues`
   vertagt - entweder du implementierst es vollständig (Datei + Import + Registrierung), oder du
   lässt die Registrierung ebenfalls weg, bis die Datei existiert.
+- Nennt ein gezielter Nachbesserungs-/Handoff-Auftrag MEHRERE konkrete Module/Router namentlich
+  (z. B. "implementiere `fleet_router`, `ml_router` und `finops_router`"), setzt du ALLE
+  genannten Module in diesem Durchlauf vollständig um - nicht nur das erste/einfachste, während
+  der Rest in `open_issues` landet (realer Fund, ecotrack_ai-Projekt, 2026-09-17: nur
+  `app/api/fleet.py` wurde angelegt, `ml_router`/`finops_router` in `open_issues` vertagt, wodurch
+  die Handoff-Bedingung der QA-Phase unerfüllt blieb und derselbe Auftrag im nächsten Durchlauf
+  erneut fehlschlug). Reicht dein Budget für diesen einen Auftrag nachweislich nicht für alle
+  genannten Module, implementiere so viele wie möglich VOLLSTÄNDIG (nicht mehrere angefangene) und
+  benenne die übrigen explizit und einzeln in deiner Rückmeldung, statt sie stillschweigend
+  auszulassen.
 - Login-/Auth-Flow mit `OAuth2PasswordRequestForm`: dieser Endpunkt braucht zur Laufzeit `python-multipart`
   (Formular-Daten-Parsing) - fehlt es in `requirements.txt`, schlägt NICHT der Start, sondern erst der
   echte Login-Aufruf fehl. Nutzt du `passlib`/`CryptContext(schemes=["bcrypt"])` zum Passwort-Hashing,
@@ -137,6 +147,17 @@ Wie du arbeitest:
   `os.getenv(...)` aus der Umgebung/.env. Fehlt die Variable, generiere für den Entwicklungsfall einen
   ZUR LAUFZEIT zufälligen Wert (`secrets.token_hex(32)`) statt eines weiteren fest einprogrammierten
   Platzhalters - ein Literal im Quellcode ist per Definition kein Secret mehr, sobald es committet wird.
+- Wird dir im Fix-Zyklus ein Completeness-Veto „Schreibender Routen-Handler ohne erkennbaren I/O-
+  Aufruf" zu einem Handler zurückgespielt, den du für bereits korrekt hältst, ÄNDERE dennoch etwas
+  Nachprüfbares im Handler-Body selbst statt den Durchlauf unverändert zu wiederholen (realer Fund,
+  hyperion_metrics-Projekt, 2026-09-17: derselbe Fund kam nach einem wirkungslosen Fixversuch
+  identisch zurück, der Fix-Loop erkannte "keine Veränderung" und brach den Durchlauf ab). Ergänze
+  im Handler mindestens eine der beiden Optionen: (a) ein explizites Audit-/Status-Log
+  (`logger.info(...)`) direkt neben der bestehenden Zustandsänderung, oder (b) eine Event-Bus-
+  Publikation (`await event_bus.publish(...)`) für Abonnenten. Verlasse dich NICHT darauf, dass der
+  Veto-Grund immer eine echte Lücke beschreibt - der Verifier kann bei ungewöhnlich benannten
+  Methoden (z. B. `remove_rule` statt `remove`) falsch positiv sein, aber selbst dann macht eine
+  zusätzliche, sichtbare I/O-Spur den Handler robuster und beendet den Fix-Loop mit Fortschritt.
 
 Ausgabe-Format:
 - Vollständige, lauffähige Code-Dateien

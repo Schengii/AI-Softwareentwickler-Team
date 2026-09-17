@@ -192,6 +192,30 @@ class TestCompletenessCheck(unittest.TestCase):
             report = verifier.check_completeness()
             self.assertTrue(report.passed)
 
+    def test_write_route_with_named_delete_or_clear_method_passes(self):
+        """Team-Optimierung 2026-09-17 (hyperion_metrics-Root-Cause): `.delete...(`/`.clear...(`
+        auf einer In-Memory-Engine ist dieselbe Klasse valider Zustandsmutation wie `.remove...(`/
+        `.pop(` und darf nicht als fehlender I/O gemeldet werden."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "main.py").write_text(
+                "from fastapi import FastAPI\n"
+                "app = FastAPI()\n\n"
+                "@app.delete('/api/v1/alerts/{rule_id}')\n"
+                "async def delete_alert_rule(rule_id: str):\n"
+                "    removed = alert_engine.delete_rule(rule_id)\n"
+                "    return {'status': 'deleted', 'id': rule_id}\n\n"
+                "@app.post('/api/v1/cache/flush')\n"
+                "async def flush_cache():\n"
+                "    cache_store.clear_all()\n"
+                "    return {'status': 'flushed'}\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
     def test_detects_component_without_props_or_api(self):
         with tempfile.TemporaryDirectory() as tmp:
             project_dir = Path(tmp)
@@ -1632,6 +1656,101 @@ class TestTestRequestsUndeclaredRoutes(unittest.TestCase):
             report = verifier.check_completeness()
             mismatches = [i for i in report.issues if i.kind == "test_route_mismatch"]
             self.assertEqual(mismatches, [])
+
+    def test_flags_router_never_included_as_dead_code(self):
+        """Realer Fund (hyperion_metrics, 2026-09-17): `app/api/ingestion.py` deklarierte einen
+        eigenen `router = APIRouter()`, `app/main.py` registrierte aber nur eigene, inline
+        definierte Handler und inkludierte den Router aus `ingestion.py` nie - die Endpunkte des
+        Routers sind toter Code."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app").mkdir()
+            (project_dir / "app" / "main.py").write_text(
+                "from fastapi import FastAPI\n\n"
+                "app = FastAPI()\n\n"
+                "@app.post('/api/v1/metrics', status_code=202)\n"
+                "def ingest_metric():\n"
+                "    return {'status': 'accepted'}\n",
+                encoding="utf-8",
+            )
+            (project_dir / "app" / "api").mkdir()
+            (project_dir / "app" / "api" / "ingestion.py").write_text(
+                "from fastapi import APIRouter\n\n"
+                "router = APIRouter()\n\n"
+                "@router.post('/metrics', status_code=202)\n"
+                "def ingest_metric():\n"
+                "    return {'status': 'accepted'}\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            unwired = [i for i in report.issues if i.kind == "unwired_api_router"]
+            self.assertEqual(len(unwired), 1)
+            self.assertIn("app/api/ingestion.py", unwired[0].file_path)
+
+    def test_flags_test_against_dead_router_endpoint_as_mismatch(self):
+        """Erweiterung desselben Funds: ein Test, der gegen den toten Router-Pfad `/metrics`
+        aufruft (statt gegen den real bedienten `/api/v1/metrics`), muss als `test_route_mismatch`
+        auffallen - vorher wurde er fälschlich als "deklariert" durchgewunken."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app").mkdir()
+            (project_dir / "app" / "main.py").write_text(
+                "from fastapi import FastAPI\n\n"
+                "app = FastAPI()\n\n"
+                "@app.post('/api/v1/metrics', status_code=202)\n"
+                "def ingest_metric():\n"
+                "    return {'status': 'accepted'}\n",
+                encoding="utf-8",
+            )
+            (project_dir / "app" / "api").mkdir()
+            (project_dir / "app" / "api" / "ingestion.py").write_text(
+                "from fastapi import APIRouter\n\n"
+                "router = APIRouter()\n\n"
+                "@router.post('/metrics', status_code=202)\n"
+                "def ingest_metric():\n"
+                "    return {'status': 'accepted'}\n",
+                encoding="utf-8",
+            )
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_metrics.py").write_text(
+                "def test_ingest(client):\n"
+                "    response = client.post('/metrics', json={'name': 'cpu'})\n"
+                "    assert response.status_code == 202\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            mismatches = [i for i in report.issues if i.kind == "test_route_mismatch"]
+            self.assertEqual(len(mismatches), 1)
+            self.assertIn("/metrics", mismatches[0].message)
+
+    def test_included_router_via_bare_import_not_flagged(self):
+        """Zweite verbreitete FastAPI-Konvention (`from ... import router; include_router(
+        router)` statt `include_router(modul.router)`) darf keinen Fehlalarm auslösen."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app").mkdir()
+            (project_dir / "app" / "main.py").write_text(
+                "from fastapi import FastAPI\n"
+                "from app.api.ingestion import router\n\n"
+                "app = FastAPI()\n"
+                "app.include_router(router)\n",
+                encoding="utf-8",
+            )
+            (project_dir / "app" / "api").mkdir()
+            (project_dir / "app" / "api" / "ingestion.py").write_text(
+                "from fastapi import APIRouter\n\n"
+                "router = APIRouter()\n\n"
+                "@router.post('/metrics', status_code=202)\n"
+                "def ingest_metric():\n"
+                "    return {'status': 'accepted'}\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            unwired = [i for i in report.issues if i.kind == "unwired_api_router"]
+            self.assertEqual(unwired, [])
 
 
 class TestAuditClaimedFixes(unittest.TestCase):

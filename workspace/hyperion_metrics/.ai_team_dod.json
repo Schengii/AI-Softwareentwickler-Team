@@ -1,10 +1,10 @@
 {
   "project_slug": "hyperion_metrics",
-  "timestamp": "2026-09-17T15:14:01+00:00",
+  "timestamp": "2026-09-17T15:53:08+00:00",
   "is_done": false,
   "blocking": [
-    "app_starts",
-    "verification_ok"
+    "tests_pass",
+    "dark_mode_delivered"
   ],
   "criteria": [
     {
@@ -12,7 +12,7 @@
       "label": "Es wurde tatsächlich Code erzeugt",
       "passed": true,
       "required": true,
-      "detail": "17 Datei(en) geschrieben",
+      "detail": "10 Datei(en) geschrieben",
       "applicable": true
     },
     {
@@ -26,9 +26,9 @@
     {
       "key": "tests_pass",
       "label": "Die Testsuite läuft grün",
-      "passed": true,
+      "passed": false,
       "required": true,
-      "detail": "",
+      "detail": "Tests fehlgeschlagen oder nicht gelaufen",
       "applicable": true
     },
     {
@@ -44,8 +44,8 @@
       "label": "Die Anwendung startet",
       "passed": false,
       "required": true,
-      "detail": "nicht gemessen - die Prüfung lief nicht zu Ende",
-      "applicable": true
+      "detail": "",
+      "applicable": false
     },
     {
       "key": "secrets_clean",
@@ -61,23 +61,23 @@
       "passed": false,
       "required": false,
       "detail": "",
-      "applicable": true
+      "applicable": false
     },
     {
       "key": "ui_ok",
       "label": "Frontend/UI-Check ohne Befund",
-      "passed": true,
+      "passed": false,
       "required": true,
       "detail": "",
-      "applicable": true
+      "applicable": false
     },
     {
       "key": "test_depth",
       "label": "Die API-Routen werden in Tests tatsächlich aufgerufen",
-      "passed": true,
+      "passed": false,
       "required": true,
       "detail": "",
-      "applicable": true
+      "applicable": false
     },
     {
       "key": "build_passes",
@@ -100,8 +100,8 @@
       "label": "Explizit beauftragtes Dark-Mode-Design wurde geliefert",
       "passed": false,
       "required": true,
-      "detail": "",
-      "applicable": false
+      "detail": "Auftrag nennt Dark-Mode, aber keine Frontend-Datei enthält ein erkennbares Dark-Mode-Signal (prefers-color-scheme, dark-Klasse/-CSS-Regel, data-theme=\"dark\")",
+      "applicable": true
     },
     {
       "key": "missing_entrypoint",
@@ -109,14 +109,6 @@
       "passed": true,
       "required": true,
       "detail": "gefunden: app/main.py",
-      "applicable": true
-    },
-    {
-      "key": "verification_ok",
-      "label": "Die Gesamt-Verifikation ist ohne Veto",
-      "passed": false,
-      "required": true,
-      "detail": "fehlgeschlagene Prüfungen: completeness, lint",
       "applicable": true
     },
     {

@@ -1,2 +1,4 @@
 {"timestamp": "2026-09-17T15:06:21.694413+00:00", "event": "project_scaffold_applied", "detail": "Stack fastapi: pytest.ini, requirements.txt, requirements-dev.txt, .env.example"}
 {"timestamp": "2026-09-17T15:12:02.005079+00:00", "event": "test_depth_fix_dispatched", "detail": "Testtiefe: 1/5 API-Routen in Tests aufgerufen (20%, Mindestwert 60%), 2 Testfunktionen – ungetestet: GET /api/v1/metrics/aggregate (app/main.py); GET /api/v1/alerts (app/main.py); DELETE /api/v1/alerts/{rule_id} (app/main.py); GET /api/v1/alerts/history (app/main.py)"}
+{"timestamp": "2026-09-17T15:47:59.342714+00:00", "event": "project_scaffold_applied", "detail": "Stack fastapi: app/api/__init__.py, app/models/__init__.py"}
+{"timestamp": "2026-09-17T15:51:20.874017+00:00", "event": "security_handoff_checkpoint", "detail": "1 Anforderung(en) → 1 weiterhin offen"}

@@ -1,215 +1,162 @@
 {
-  "run_id": "20260917_150539",
+  "run_id": "20260917_154758",
   "handoffs": [
     {
-      "agent_id": "architect",
-      "task_id": "2d27b5ad",
-      "files": [
-        "docs/adr/0001-in-memory-queues-statt-externer-message.md",
-        "docs/adr/0002-in-memory-deque-f-r-sliding-window-aggre.md"
-      ],
-      "provides": [],
-      "requires": [],
-      "open_issues": [],
-      "timestamp": "2026-09-17T15:06:21+00:00"
-    },
-    {
       "agent_id": "frontend",
-      "task_id": "01222005",
+      "task_id": "1db091a0",
       "files": [
-        "app/static/index.html",
-        "docs/dashboard_status.md"
+        "app/static/index.html"
       ],
       "provides": [
         "`app/static/index.html` (Dashboard UI)"
       ],
       "requires": [
-        "`app/main.py` (FastAPI-Server mit `/ws/dashboard` und `StaticFiles`-Mount)"
+        "Backend-Implementierung von `/ws/live` und `POST /alerts/rules`"
       ],
       "open_issues": [],
-      "timestamp": "2026-09-17T15:06:52+00:00"
-    },
-    {
-      "agent_id": "database",
-      "task_id": "1036b815",
-      "files": [
-        "app/core/__init__.py",
-        "app/core/config.py",
-        "requirements.txt"
-      ],
-      "provides": [
-        "Konfiguration (`app/core/config.py`), Abhängigkeiten (`sqlalchemy>=2.0`, `aiosqlite`, `greenlet` in `requirements.txt`), relationales Schema-Design für `metric_records`, `alert_rules`, `alert_events`",
-        "app/core/config.py: Settings, get_settings"
-      ],
-      "requires": [
-        "Backend (`app/main.py`), Ingestion-Worker & Sliding-Window In-Memory Pipeline (`data_engineer`)"
-      ],
-      "open_issues": [],
-      "timestamp": "2026-09-17T15:07:42+00:00"
-    },
-    {
-      "agent_id": "data_engineer",
-      "task_id": "4317d5db",
-      "files": [
-        "app/schemas/__init__.py",
-        "app/schemas/metric.py",
-        "app/services/__init__.py",
-        "app/services/event_bus.py",
-        "app/services/ingestion_pipeline.py",
-        "app/services/sliding_window.py"
-      ],
-      "provides": [
-        "`SlidingWindowAggregator` (app/services/sliding_window.py)",
-        "`EventBus`, `get_event_bus` (app/services/event_bus.py)",
-        "`IngestionPipeline`, `get_pipeline` (app/services/ingestion_pipeline.py)",
-        "`MetricRecord`, `WindowAggregate`, `BroadcastEvent` (app/schemas/metric.py)",
-        "app/schemas/metric.py: MetricRecord, WindowAggregate, BroadcastEvent",
-        "app/services/event_bus.py: EventBus, get_event_bus, logger",
-        "app/services/ingestion_pipeline.py: IngestionPipeline, get_pipeline, logger, AlertCallback",
-        "app/services/sliding_window.py: SlidingWindowAggregator"
-      ],
-      "requires": [
-        "Backend FastAPI-Routen (`POST /api/v1/metrics`, `WS /ws/dashboard`) in `app/main.py`"
-      ],
-      "open_issues": [],
-      "timestamp": "2026-09-17T15:08:42+00:00"
+      "timestamp": "2026-09-17T15:48:24+00:00"
     },
     {
       "agent_id": "tester",
-      "task_id": "48087937",
+      "task_id": "3d0760d5",
       "files": [
-        "tests/test_api.py"
+        "tests/test_metrics.py"
       ],
       "provides": [
-        "`tests/test_api.py`",
-        "tests/test_api.py: test_app_starts_and_health_ok, test_ingestion_endpoint_accepts_metric"
+        "** `tests/test_metrics.py` (vollständige Testsuite für Metriken, Ingestion und WebSockets)",
+        "tests/test_metrics.py: test_app_starts_and_health_ok, test_metrics_ingestion_endpoint, test_websocket_connection"
       ],
-      "requires": [],
+      "requires": [
+        "** Implementierung der REST-Endpunkte (`/metrics`, `/metrics/stats`, `/alerts/rules`) und des WebSocket-Endpunkts (`/ws/live`) in `app/main.py` gemäß `interface_contract.json`."
+      ],
       "open_issues": [
-        "WebSocket-Tests und Aggregations-Logik-Tests folgen im nächsten Schritt, sobald die WebSocket-Route in `app/main.py` vollständig an den `EventBus` angebunden ist.",
-        "WebSocket-Streaming-Tests sind noch zu implementieren."
+        "** Funktionale Endpunkte in `app/main.py` fehlen noch",
+        "die Tests schlagen derzeit aufgrund von `404 Not Found` fehl, was die korrekte Erwartungshaltung der Testsuite bestätigt."
       ],
-      "timestamp": "2026-09-17T15:08:55+00:00"
+      "timestamp": "2026-09-17T15:50:05+00:00"
     },
     {
       "agent_id": "backend",
-      "task_id": "3f629404",
+      "task_id": "1f6840a0",
       "files": [
-        "app/main.py",
-        "requirements.txt"
+        "app/api/alerts.py",
+        "app/api/ingestion.py",
+        "app/database.py",
+        "app/models/schemas.py",
+        "app/services/aggregator.py",
+        "app/services/alerting.py",
+        "app/services/pubsub.py"
       ],
       "provides": [
-        "`GET /health`, `POST /api/v1/metrics`, `GET /api/v1/metrics/aggregate`, `GET|POST|DELETE /api/v1/alerts`, `GET /api/v1/alerts/history`, `WS /ws/dashboard`, `WS /ws/live` (app/main.py)",
-        "`ConnectionManager`, `MetricsAggregator`, `AlertEngine`",
-        "app/main.py: MetricRecord, MetricPoint, AggregationResult, AlertRule, AlertEvent, ConnectionManager, MetricsAggregator, AlertEngine, process_metrics_worker, lifespan",
-        "DELETE /api/v1/alerts/{rule_id} (app/main.py)",
-        "GET /api/v1/alerts (app/main.py)",
-        "GET /api/v1/alerts/history (app/main.py)",
-        "GET /api/v1/metrics/aggregate (app/main.py)",
-        "GET /health (app/main.py)",
-        "POST /api/v1/alerts (app/main.py)",
-        "POST /api/v1/metrics (app/main.py)",
-        "WEBSOCKET /ws/dashboard (app/main.py)",
-        "WEBSOCKET /ws/live (app/main.py)"
+        "`app/models/schemas.py` (`MetricItem`, `MetricBatch`, `WindowAggregate`, `AlertRule`, `AlertRuleCreate`, `AlertEvent`)",
+        "`app/services/pubsub.py` (`ConnectionManager`, `pubsub_manager`)",
+        "`app/services/aggregator.py` (`SlidingWindowAggregator`, `aggregator_service`)",
+        "`app/services/alerting.py` (`AlertEngine`, `alert_engine`)",
+        "`app/api/ingestion.py` (`router`)",
+        "`app/api/alerts.py` (`router`)",
+        "app/api/alerts.py: create_alert_rule, list_alert_rules, get_alert_history, delete_alert_rule, router",
+        "DELETE /alerts/rules/{rule_id} (app/api/alerts.py)",
+        "DELETE /api/v1/alerts/{rule_id} (app/api/alerts.py)",
+        "GET /alerts/history (app/api/alerts.py)",
+        "GET /alerts/rules (app/api/alerts.py)",
+        "GET /api/v1/alerts (app/api/alerts.py)"
       ],
       "requires": [],
       "open_issues": [],
-      "timestamp": "2026-09-17T15:10:25+00:00"
+      "timestamp": "2026-09-17T15:50:14+00:00"
     },
     {
       "agent_id": "accessibility",
-      "task_id": "ccc3c7e5",
+      "task_id": "b253b5af",
       "files": [
         "app/static/index.html"
       ],
       "provides": [],
       "requires": [],
       "open_issues": [],
-      "timestamp": "2026-09-17T15:10:31+00:00"
+      "timestamp": "2026-09-17T15:50:22+00:00"
     },
     {
       "agent_id": "security",
-      "task_id": "406399a8",
+      "task_id": "6608ca52",
       "files": [
-        "docs/SECURITY_AUDIT.md"
+        "app/core/security.py"
       ],
       "provides": [
-        "`docs/SECURITY_AUDIT.md` (Security Audit Report, Threat Modeling, Rate Limiting & Input Sanitization Spezifikation)"
+        "`app/core/security.py` (`SlidingWindowRateLimiter`, `SecurityHeadersAndDoSProtectionMiddleware`, `WebSocketSecurityGuard`, `validate_identifier`, `sanitize_string`, `mask_pii`)",
+        "app/core/security.py: mask_pii, mask_sensitive_dict, validate_identifier, sanitize_string, SlidingWindowRateLimiter, get_client_ip, SecurityHeadersAndDoSProtectionMiddleware, WebSocketSecurityGuard, DEFAULT_RATE_LIMIT_REQUESTS, DEFAULT_RATE"
       ],
       "requires": [
-        "`app/main.py`, `app/schemas/metric.py`"
+        "`backend` (`app/main.py`: Registrierung der `SecurityHeadersAndDoSProtectionMiddleware` und Einbindung von `ws_security_guard` in `/ws/live`)"
       ],
       "open_issues": [],
-      "timestamp": "2026-09-17T15:11:00+00:00"
+      "timestamp": "2026-09-17T15:51:06+00:00"
     },
     {
       "agent_id": "tester",
-      "task_id": "test_depth_fix_1",
+      "task_id": "verify_fix_tester_1",
       "files": [
-        "tests/test_api_new.py"
+        "tests/test_metrics.py"
       ],
       "provides": [
-        "`tests/test_api_new.py` (neue Testsuite für API-Routen)",
-        "tests/test_api_new.py: test_get_aggregation_success, test_get_aggregation_empty, test_alert_lifecycle, client"
+        "`tests/test_metrics.py` (Smoke- und Ingestion-Tests)",
+        "tests/test_metrics.py: test_app_starts_and_health_ok, test_metrics_ingestion_endpoint"
       ],
-      "requires": [],
-      "open_issues": [],
-      "timestamp": "2026-09-17T15:12:10+00:00"
+      "requires": [
+        "`backend` (Korrektur der `app.include_router` Konfiguration in `app/main.py`)"
+      ],
+      "open_issues": [
+        "`405 Method Not Allowed` auf `/metrics` aufgrund fehlerhafter Router-Registrierung in `app/main.py`."
+      ],
+      "timestamp": "2026-09-17T15:51:38+00:00"
     },
     {
-      "agent_id": "backend",
-      "task_id": "verify_fix_completeness_backend_1",
+      "agent_id": "tester",
+      "task_id": "verify_fix_tester_1_no_regression",
       "files": [
-        "app/main.py"
+        "tests/test_metrics.py"
       ],
       "provides": [
-        "`AlertEngine` mit persistenter Datei-Ablage und vollständigem Regel-Lifecycle (`app/main.py`)",
-        "`DELETE /api/v1/alerts/{rule_id}`",
-        "app/main.py: MetricRecord, MetricPoint, AggregationResult, AlertRule, AlertEvent, ConnectionManager, MetricsAggregator, AlertEngine, process_metrics_worker, lifespan",
-        "DELETE /api/v1/alerts/{rule_id} (app/main.py)",
-        "GET /api/v1/alerts (app/main.py)",
-        "GET /api/v1/alerts/history (app/main.py)",
-        "GET /api/v1/metrics/aggregate (app/main.py)",
-        "GET /health (app/main.py)",
-        "POST /api/v1/alerts (app/main.py)",
-        "POST /api/v1/metrics (app/main.py)",
-        "WEBSOCKET /ws/dashboard (app/main.py)",
-        "WEBSOCKET /ws/live (app/main.py)"
+        "Korrigierter Test `tests/test_metrics.py` (test_metrics_ingestion_endpoint)",
+        "tests/test_metrics.py: test_app_starts_and_health_ok, test_metrics_ingestion_endpoint"
       ],
       "requires": [],
       "open_issues": [],
-      "timestamp": "2026-09-17T15:13:43+00:00"
+      "timestamp": "2026-09-17T15:52:19+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "verify_fix_tester_2",
+      "files": [
+        "tests/test_metrics.py"
+      ],
+      "provides": [
+        "`tests/test_metrics.py` (korrigierter Ingestion-Test)",
+        "tests/test_metrics.py: test_app_starts_and_health_ok, test_metrics_ingestion_endpoint"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-17T15:52:37+00:00"
     }
   ],
   "claims": {
+    "app/models/schemas.py": "backend",
     "app/static/index.html": "frontend",
-    "docs/dashboard_status.md": "frontend",
-    "requirements.txt": "database",
-    "app/core/config.py": "database",
-    "app/core/__init__.py": "database",
-    "app/main.py": "backend",
-    "app/schemas/metric.py": "data_engineer",
-    "app/services/event_bus.py": "data_engineer",
-    "app/services/sliding_window.py": "data_engineer",
-    "app/services/ingestion_pipeline.py": "data_engineer",
-    "app/schemas/__init__.py": "data_engineer",
-    "app/services/__init__.py": "data_engineer",
-    "tests/test_api.py": "tester",
-    "docs/SECURITY_AUDIT.md": "security",
-    "tests/test_api_new.py": "tester"
+    "app/database.py": "backend",
+    "tests/test_metrics.py": "tester",
+    "app/services/pubsub.py": "backend",
+    "app/services/aggregator.py": "backend",
+    "app/services/alerting.py": "backend",
+    "app/api/ingestion.py": "backend",
+    "app/api/alerts.py": "backend",
+    "app/core/security.py": "security"
   },
   "foreign_changes": [
-    {
-      "path": "requirements.txt",
-      "owner": "database",
-      "changed_by": "backend",
-      "timestamp": "2026-09-17T15:07:56+00:00"
-    },
     {
       "path": "app/static/index.html",
       "owner": "frontend",
       "changed_by": "accessibility",
-      "timestamp": "2026-09-17T15:10:29+00:00"
+      "timestamp": "2026-09-17T15:50:19+00:00"
     }
   ],
   "questions": []

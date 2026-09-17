@@ -165,6 +165,41 @@ class TestObsidianSync(unittest.TestCase):
         # README.md (kein Secret) muss trotzdem normal synchronisiert werden.
         self.assertIn("README.md", result.synced_files)
 
+    def test_sync_with_subdirectories_and_learnings(self):
+        target_sub = "02 Areas/Lernprojekte/AI-Team"
+        target_dest = self.vault_path / Path(target_sub)
+
+        # Unterverzeichnis-Datei anlegen
+        (self.project_src / "skills" / "ai-dev-team").mkdir(parents=True, exist_ok=True)
+        (self.project_src / "skills" / "ai-dev-team" / "SKILL.md").write_text("# Skill Spec\nContent", encoding="utf-8")
+
+        # Team-Lessons JSONL anlegen
+        (self.project_src / "memory").mkdir(parents=True, exist_ok=True)
+        (self.project_src / "memory" / "team_lessons.jsonl").write_text(
+            '{"timestamp": "2026-09-17T09:00:00", "project_slug": "test_proj", "category": "root_cause_analysis", "detail": "Test Root Cause", "resolution": "Fix applied"}\n',
+            encoding="utf-8",
+        )
+
+        with patch("core.obsidian_sync.BASE_DIR", str(self.project_src)):
+            result = sync_project_to_obsidian(
+                vault_path=self.vault_path,
+                target_dir=target_sub,
+                files_to_sync=["skills/ai-dev-team/SKILL.md", "README.md"],
+            )
+
+        self.assertTrue(result.success)
+        self.assertTrue((target_dest / "skills" / "ai-dev-team" / "SKILL.md").exists())
+        self.assertTrue((target_dest / "01_TEAM_LEARNINGS.md").exists())
+        self.assertTrue((target_dest / "00_PROJEKT_GEDAECHTNIS.md").exists())
+
+        learnings_content = (target_dest / "01_TEAM_LEARNINGS.md").read_text(encoding="utf-8")
+        self.assertIn("Test Root Cause", learnings_content)
+        self.assertIn("Root-Cause-Analysen", learnings_content)
+
+        index_content = (target_dest / "00_PROJEKT_GEDAECHTNIS.md").read_text(encoding="utf-8")
+        self.assertIn("[[01_TEAM_LEARNINGS.md]]", index_content)
+        self.assertIn("[[skills/ai-dev-team/SKILL.md]]", index_content)
+
 
 class TestRecordSyncHealthTicket(unittest.TestCase):
     """

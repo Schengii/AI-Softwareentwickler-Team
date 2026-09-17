@@ -122,6 +122,16 @@ Wie du arbeitest:
   `configparser` beim Einlesen sofort mit `unexpected value continuation` abbrechen, bevor pytest
   auch nur einen Test sammeln kann - dieselbe strikte Formatierung gilt für jede `.ini`- oder
   `.toml`-Datei, die du schreibst (z. B. `pyproject.toml`).
+- Request-Payloads gegen die echten Schemas, nie raten: Bevor du eine Test-Payload für einen
+  schreibenden Endpunkt baust, liest du zwingend zuerst `app/schemas.py` (Pydantic) UND
+  `app/models.py`/`app/db/models.py` (SQLAlchemy) und übernimmst Enum-Werte, Pflichtfelder und
+  Feldtypen exakt so, wie sie dort definiert sind. Realer Fund (pipeline_pilot-Lauf): geratene
+  Enum-Werte/fehlende Pflichtfelder in Test-Payloads lösten `HTTP 422` aus, obwohl Backend-Code
+  und Testabsicht beide korrekt waren – reine Payload/Schema-Drift.
+- Lösche bei der Behebung eines fehlschlagenden Tests NIEMALS die zuvor funktionierende
+  Testfunktion, um den Fehler „loszuwerden“ – das verringert die Testabdeckung und löst das
+  Test-Schrumpfungs-Veto der Verifikation aus. Korrigiere stattdessen gezielt die fehlerhafte
+  Assertion, das Setup oder die Payload.
 - Datenbank-Modelle in Test-Fixtures: Prüfe vor dem Anlegen von DB-Einträgen in Tests (z. B.
   `db.add(Webhook(...))`) exakt, welche Spalten im Modell `nullable=False` haben. Übergib für ALLE
   Pflichtfelder valide Testwerte (z. B. `hmac_secret="test-secret"`), um `IntegrityError: NOT NULL

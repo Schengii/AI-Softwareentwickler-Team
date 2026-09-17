@@ -1,0 +1,154 @@
+{
+  "run_id": "20260917_081015",
+  "handoffs": [
+    {
+      "agent_id": "frontend",
+      "task_id": "35ac5526",
+      "files": [
+        "public/index.html"
+      ],
+      "provides": [
+        "`public/index.html` (mit dynamischer WebSocket-Initialisierung)"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-17T08:11:19+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "8e680a93",
+      "files": [
+        "app/api/websocket.py",
+        "tests/test_telemetry.py"
+      ],
+      "provides": [
+        "`app/api/websocket.py` (bereinigtes Logging/Exception-Handling)",
+        "`tests/test_telemetry.py` (wiederhergestellte & isolierte Tests)",
+        "`public/index.html` (dynamische WS-URL)",
+        "app/api/websocket.py: ConnectionManager, websocket_endpoint, logger, router, manager",
+        "WEBSOCKET /ws/live-metrics (app/api/websocket.py)",
+        "tests/test_telemetry.py: setup_db, override_get_db, test_ingest_telemetry_buffer_full, test_ingest_telemetry, test_get_stats, test_get_history, DATABASE_URL, engine, TestingSessionLocal"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-17T08:12:20+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "149cac79",
+      "files": [
+        "app/api/websocket.py",
+        "tests/test_telemetry.py"
+      ],
+      "provides": [
+        "app/api/websocket.py: ConnectionManager, websocket_endpoint, logger, router, manager",
+        "WEBSOCKET /ws/live-metrics (app/api/websocket.py)",
+        "tests/test_telemetry.py: setup_db, override_get_db, test_ingest_telemetry_buffer_full, test_ingest_telemetry, test_get_stats, test_get_history, DATABASE_URL, engine, TestingSessionLocal"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-17T08:13:10+00:00"
+    },
+    {
+      "agent_id": "security",
+      "task_id": "b46a0722",
+      "files": [
+        "app/core/security.py"
+      ],
+      "provides": [
+        "`app/core/security.py` (gehärtete CORS- und TrustedHost-Konfiguration)",
+        "app/core/security.py: SecurityHeadersMiddleware, setup_security"
+      ],
+      "requires": [],
+      "open_issues": [
+        "`docs/SECURITY_AUDIT.md` muss noch mit den aktuellen Findings (CORS-Fix & WebSocket-Sicherheit) aktualisiert werden."
+      ],
+      "timestamp": "2026-09-17T08:14:31+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "verify_fix_tester_1",
+      "files": [
+        "tests/test_telemetry.py"
+      ],
+      "provides": [
+        "Korrigierte `tests/test_telemetry.py`",
+        "tests/test_telemetry.py: test_ingest_telemetry, test_get_stats, test_get_history, test_ingest_telemetry_buffer_full"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-17T08:14:50+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "verify_fix_tester_2",
+      "files": [
+        "tests/test_telemetry.py"
+      ],
+      "provides": [
+        "Korrigierte `tests/test_telemetry.py`",
+        "tests/test_telemetry.py: test_ingest_telemetry, test_get_stats, test_get_history, test_ingest_telemetry_buffer_full"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-17T08:15:22+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "verify_model_escalation_tester_3",
+      "files": [
+        "tests/test_telemetry.py"
+      ],
+      "provides": [
+        "`tests/test_telemetry.py` (gefixte Test-Suite mit korrekter `base_url` für TrustedHostMiddleware)",
+        "tests/test_telemetry.py: test_ingest_telemetry, test_get_stats, test_get_history, test_ingest_telemetry_buffer_full"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-17T08:16:33+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "verify_fix_browser_backend_1",
+      "files": [
+        "app/core/security.py"
+      ],
+      "provides": [
+        "`app/core/security.py` (angepasste Middleware-Konfiguration für erfolgreiche WebSocket-Handshakes)",
+        "app/core/security.py: SecurityHeadersMiddleware, setup_security"
+      ],
+      "requires": [],
+      "open_issues": [
+        "`docs/SECURITY_AUDIT.md` muss noch vom Security-Team mit den angepassten CORS/Host-Regeln aktualisiert werden."
+      ],
+      "timestamp": "2026-09-17T08:18:12+00:00"
+    }
+  ],
+  "claims": {
+    "public/index.html": "frontend",
+    "app/api/websocket.py": "tester",
+    "tests/test_telemetry.py": "tester",
+    "app/core/security.py": "security"
+  },
+  "foreign_changes": [
+    {
+      "path": "app/api/websocket.py",
+      "owner": "tester",
+      "changed_by": "backend",
+      "timestamp": "2026-09-17T08:12:25+00:00"
+    },
+    {
+      "path": "tests/test_telemetry.py",
+      "owner": "tester",
+      "changed_by": "backend",
+      "timestamp": "2026-09-17T08:13:07+00:00"
+    },
+    {
+      "path": "app/core/security.py",
+      "owner": "security",
+      "changed_by": "backend",
+      "timestamp": "2026-09-17T08:18:01+00:00"
+    }
+  ],
+  "questions": []
+}

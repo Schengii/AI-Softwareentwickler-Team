@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sentinel Stream Dashboard</title>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; margin: 20px; background: #f4f4f9; color: #333; line-height: 1.5; }
+        .container { max-width: 1000px; margin: auto; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 12px; border-bottom: 1px solid #ddd; text-align: left; }
+        th { background-color: #f8f9fa; }
+        .anomaly { color: #d32f2f; font-weight: bold; }
+        .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+        :focus { outline: 3px solid #005a9c; outline-offset: 2px; }
+    </style>
+</head>
+<body>
+    <a href="#main-content" class="sr-only">Zum Hauptinhalt springen</a>
+    
+    <main id="main-content" class="container">
+        <h1>Sentinel Stream Dashboard</h1>
+        
+        <section class="card" aria-labelledby="live-metrics-title">
+            <h2 id="live-metrics-title">Live-Metriken (WebSocket)</h2>
+            <div role="status" aria-live="polite" aria-atomic="false" class="sr-only" id="live-announcer"></div>
+            <table id="metrics-table">
+                <thead>
+                    <tr>
+                        <th scope="col">Device ID</th>
+                        <th scope="col">Metric</th>
+                        <th scope="col">Value</th>
+                        <th scope="col">Z-Score</th>
+                        <th scope="col">Status</th>
+                    </tr>
+                </thead>
+                <tbody id="metrics-body"></tbody>
+            </table>
+        </section>
+    </main>
+
+    <script>
+        const tableBody = document.getElementById('metrics-body');
+        const announcer = document.getElementById('live-announcer');
+        let ws;
+        let reconnectInterval = 2000;
+
+        function connect() {
+            // Dynamische WebSocket-Initialisierung basierend auf window.location
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/live-metrics`);
+
+            ws.onopen = () => {
+                console.log('WebSocket verbunden');
+                reconnectInterval = 2000;
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                const row = document.createElement('tr');
+                const isAnomaly = data.is_anomaly;
+                
+                row.innerHTML = `
+                    <td>${data.device_id}</td>
+                    <td>${data.metric}</td>
+                    <td>${data.value.toFixed(2)}</td>
+                    <td>${data.z_score.toFixed(2)}</td>
+                    <td class="${isAnomaly ? 'anomaly' : ''}">${isAnomaly ? 'ANOMALIE' : 'OK'}</td>
+                `;
+                tableBody.prepend(row);
+                if (tableBody.children.length > 20) tableBody.lastElementChild.remove();
+                
+                if (isAnomaly) {
+                    announcer.textContent = `Anomalie erkannt bei Gerät ${data.device_id}: ${data.metric} ist ${data.value.toFixed(2)}`;
+                }
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket getrennt, versuche Reconnect...');
+                setTimeout(connect, reconnectInterval);
+                reconnectInterval = Math.min(reconnectInterval * 1.5, 30000);
+            };
+
+            ws.onerror = (err) => {
+                console.error('WebSocket Fehler:', err);
+                ws.close();
+            };
+        }
+
+        connect();
+    </script>
+</body>
+</html>

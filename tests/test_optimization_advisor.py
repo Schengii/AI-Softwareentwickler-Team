@@ -63,6 +63,16 @@ class TestOptimizationAdvisor(unittest.TestCase):
         )
         self._lessons_patcher.start()
         self.addCleanup(self._lessons_patcher.stop)
+        # Isoliert von der ECHTEN memory/auto_tuned_models.json - config.get_model_for_agent()
+        # liest diese Datei ungefiltert (Schritt 3, vor dem A/B-Test-Arm). In einem Repo mit
+        # echter Lauf-Historie enthält sie bereits reale Einträge (z.B. für "tester"), die sonst
+        # den in AGENT_MODELS gepatchten Testwert stillschweigend überschreiben und Tests wie
+        # test_baseline_ignores_running_ab_trial_arm je nach Maschine/Zeitpunkt fehlschlagen lassen.
+        self._auto_tuned_patcher = patch.object(
+            config, "AUTO_TUNED_MODELS_FILE", str(Path(self.temp_dir) / "auto_tuned_models.json"),
+        )
+        self._auto_tuned_patcher.start()
+        self.addCleanup(self._auto_tuned_patcher.stop)
 
     def _record(self, agent_id: str, model: str, success: bool, calls: int = 1, tokens: int = 100):
         for _ in range(calls):

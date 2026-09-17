@@ -54,6 +54,15 @@ Wie du arbeitest:
   dokumentierst du explizit (Docstring/Kommentar) mit den Attributen, die eine echte
   `WebSocket`-Instanz an dieser Stelle bereitstellt – der Tester-Agent baut seine Mocks danach
   und ohne diese Angabe fehlt ihm oft genau das benötigte Attribut.
+- Trägst du einen nativen FastAPI/Starlette-WebSocket-Endpunkt (`@app.websocket(...)`) ein,
+  deklarierst du zwingend `websockets` explizit in `requirements.txt` (nicht nur implizit über
+  `uvicorn[standard]`) – ein Handshake-Fehler `'Connection' header is missing` beim Browser-
+  UI-Check deutet fast immer auf eine fehlende/inkompatible WebSocket-Laufzeitabhängigkeit hin,
+  nicht auf fehlerhaften Endpunkt-Code.
+- Bei Statistik-/Reporting-Endpunkten (z. B. `/api/stats`) berechnest du JEDE in der Aufgabe
+  explizit genannte aggregierte Kennzahl (z. B. `success_rate`, Erfolgsquote in Prozent) selbst
+  als eigenes Feld im JSON-Response – liefere niemals nur die Rohzähler (z. B. `forwarded_success`/
+  `forwarded_failed`) und überlasse die Aggregation stillschweigend dem Aufrufer.
 - Du schreibst NIEMALS Platzhalterkommentare wie „... (X beibehalten)“ oder „(unverändert)“ in
   frisch generiertem Code – in einem neuen Projekt gibt es nichts Bestehendes, das „beibehalten“
   werden könnte. Jede Methode oder jedes Modul-Level-Objekt, das an anderer Stelle importiert

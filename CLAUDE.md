@@ -18,8 +18,10 @@ Bevor du mit neuen Aufgaben, Optimierungen oder Analysen startest, orientiere di
 1. **Aktueller Code-Stand:** `git log -n 5 --oneline` (zeigt die letzten Commits und den aktuellen Branch).
 2. **Neueste Optimierungen & Historie:** Die obersten Zeilen von `CHANGELOG.md` lesen (nur die ersten ~60 Zeilen via Head/View, nicht die ganze Datei einlesen!).
 3. **Letzte Fehleranalysen & Traces:** Prüfe die neuesten Berichte in `logs/FEHLERANALYSE_*.md` sowie die letzten Ausführungs-Traces in `logs/runs/` bzw. `logs/verification/`.
-4. **Bereits diagnostizierte, aber noch nicht behobene Befunde:** `memory/team_lessons.jsonl` (Einträge mit `"category": "root_cause_analysis"`) enthält Root-Cause-Analysen aus echten Läufen, die noch keinem Fix zugeordnet wurden – oft die ergiebigste Quelle für echte, bereits belegte Framework-Bugs statt Spekulation.
-5. **Projektgedächtnis:** Bei architektonischen Grundsatzentscheidungen `00_PROJEKT_GEDAECHTNIS.md` im Obsidian-Vault konsultieren.
+4. **Bereits diagnostizierte, aber noch nicht behobene Befunde:** `memory/team_lessons.jsonl` (Einträge mit `"category": "root_cause_analysis"`) enthält Root-Cause-Analysen aus echten Läufen, die noch keinem Fix zugeordnet wurden – oft die ergiebigste Quelle für echte, bereits belegte Framework-Bugs statt Spekulation. Der verbindliche Status-Speicher ist aber das Backlog (`core/backlog_store.py`, `source="root_cause_analysis"`), nicht die JSONL-Datei: `python -c "from core.backlog_store import list_tickets; [print(t.id, t.status) for t in list_tickets() if t.source=='root_cause_analysis']"` zeigt, was davon noch offen ist.
+5. **Projektgedächtnis & Obsidian-Notizen:** Bei architektonischen Entscheidungen oder Detailfragen die synchronisierten Notizen in `C:\Users\sche-\Desktop\Obsidian\02 Areas\Lernprojekte\AI-Softwareentwickler-Team\` konsultieren (besonders `00_PROJEKT_GEDAECHTNIS.md` und `01_TEAM_LEARNINGS.md`).
+
+**Wichtig beim Committen eines Fixes für ein Root-Cause-/Audit-Ticket:** Nenne die Ticket-ID in der Commit-Nachricht als eigene Zeile `Closes: <ticket-id>` (auch `Fixes:`/`Resolves:` funktionieren, mehrere IDs kommagetrennt). `core/backlog_hygiene.py.run_backlog_hygiene()` (`python main.py --backlog-hygiene`) markiert danach automatisch das referenzierte Ticket als `done` – ohne diese Zeile bleibt ein längst behobenes Ticket unbegrenzt als offen im Backlog stehen, obwohl der Fix bereits committet ist (realer Fund, 2026-09-17: mehrere `root-cause-*`-Tickets standen trotz längst gemergter Fixes noch auf `todo`/`blocked`, weil frühere Fix-Commits keine `Closes:`-Zeile enthielten).
 
 ---
 
@@ -51,6 +53,7 @@ AI-Softwareentwickler-Team/
 ├── interface/     # Schnittstellen (cli.py, web_dashboard.py)
 ├── memory/        # Persistentes Backlog (backlog.json), Token-Kosten & Run-Historie
 ├── scripts/       # Hilfsskripte (sync_to_obsidian.py, watch_obsidian_sync.py)
+├── skills/        # AI-Dev-Team Skill & Rollen-Katalog (ai-dev-team/SKILL.md)
 ├── tests/         # pytest-Suite für Framework & Verifier
 ├── workspace/     # Generierte Zielprojekte (vom Framework-Code getrennt halten!)
 ├── config.py      # Zentrale Konfiguration & Umgebungsvariablen
@@ -75,10 +78,21 @@ AI-Softwareentwickler-Team/
 ## 🧠 Externes Gedächtnis (Obsidian Vault)
 
 Alle wichtigen Projektkonfigurationen, Architekturpläne und Verlaufsdaten werden automatisch mit deinem Obsidian-Vault synchronisiert:
-- **Vault-Pfad:** `C:\Users\sche-\Desktop\Obsidian\02 Areas\Lernprojekte\AI-Softwareentwickler-Team\`
-- **Index-Notiz:** `00_PROJEKT_GEDAECHTNIS.md`
-- **Konfig-Dateien:** `.env.example.md` (Vorlage, KEINE echten Secrets), `README.md`, `ARCHITECTURE.md`, `CHANGELOG.md`
-- Wenn du nach bisherigen Entscheidungen oder Setup-Details suchst, ist `00_PROJEKT_GEDAECHTNIS.md` im Vault die schnellste Quelle.
+- **Basis-Verzeichnis:** `C:\Users\sche-\Desktop\Obsidian\02 Areas\Lernprojekte\AI-Softwareentwickler-Team\`
+
+### 📂 Struktur im Vault & Wann Claude was liest:
+
+| Obsidian-Pfad | Inhalt / Zweck | Wann aufrufen? |
+| :--- | :--- | :--- |
+| `00_PROJEKT_GEDAECHTNIS.md` | **Zentraler Index & Hub** mit Wiki-Links zu allen synchronisierten Notizen | Zu Beginn für Gesamtübersicht & Einstiegspunkt |
+| `01_TEAM_LEARNINGS.md` | **Aggregierter Erfahrungsspeicher** (Root-Cause-Analysen, typische Dependency-Fallen, Governance-Befunde) | Vor komplexen Bugfixes, Architekturänderungen oder Verifikationsschleifen |
+| `skills/ai-dev-team/SKILL.md` | **Rollen- & Agenten-Katalog** mit Toolsets, Modellen, Fachbereichen | Wenn Rollenbeschreibungen, Prompts oder Workflow-Regeln modifiziert werden |
+| `ARCHITECTURE.md` | **Systemarchitektur** des Frameworks (6 Fachbereiche, 33 Rollen, Tiers) | Bei Architekturentscheidungen und Pipeline-Erweiterungen |
+| `CHANGELOG.md` | **Historie aller Bugfixes & Features** | Zum Nachschlagen, wann ein Feature implementiert oder geändert wurde |
+| `.env.example.md` | **Konfigurations-Dokumentation** (Alle Umgebungsvariablen erklärt, KEINE echten Secrets) | Bei Fragen zu Config-Optionen, LLM-Keys oder Modell-Routing |
+| `03 Resources/Permanent Notes/ADR - *.md` | **Architektur-Entscheidungen (ADRs)** der autonomen Zielprojekte | Bei Detailfragen zu früheren Design-Entscheidungen einzelner generierter Apps |
+
+*Tipp für Claude:* Falls du in einer Session gezielt nach früheren Fehlern oder Dependency-Fallen suchst, lese direkt `01_TEAM_LEARNINGS.md` im Vault oder `memory/team_lessons.jsonl`.
 
 ---
 

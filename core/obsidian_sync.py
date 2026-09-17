@@ -6,6 +6,7 @@ in den Obsidian-Vault als Langzeitgedächtnis für Claude und Nachschlagewerk.
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -127,6 +128,106 @@ tags:
 """
 
 
+def _generate_team_learnings_summary(
+    src_base: Path,
+    dest_path: Path,
+    timestamp: str,
+) -> Path | None:
+    """Extrahiert Erkenntnisse aus memory/team_lessons.jsonl und erzeugt 01_TEAM_LEARNINGS.md."""
+    lessons_file = src_base / "memory" / "team_lessons.jsonl"
+    if not lessons_file.exists():
+        return None
+
+    raw_lines = [
+        line.strip()
+        for line in lessons_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        if line.strip()
+    ]
+    if not raw_lines:
+        return None
+
+    entries = []
+    for line in raw_lines:
+        try:
+            entries.append(json.loads(line))
+        except Exception:
+            continue
+
+    category_titles = {
+        "root_cause_analysis": "🔍 Root-Cause-Analysen (Echte Framework- & Systembefunde)",
+        "dependency_compatibility": "📦 Dependency- & Kompatibilitäts-Fallen",
+        "missing_dependency": "🧩 Fehlende Abhängigkeiten zur Laufzeit",
+        "hardcoded_secret": "🔐 Security & Secrets Governance",
+        "architecture_consistency": "🏛️ Architektur- & Routing-Inkonsistenzen",
+        "code_elision": "⚠️ Code-Elision & Anti-Platzhalter-Befunde",
+        "unresolved_governance_critical": "🔴 Unresolved Governance (Kritische Prüffehler)",
+        "unused_agent": "🤖 Ungenutzte Agenten (Optimierungsbedarf)",
+        "deterministic_check_suggestion": "⚙️ Vorschläge für deterministische Checks",
+    }
+
+    by_category: dict[str, list[dict]] = {}
+    for entry in entries:
+        cat = entry.get("category") or "sonstige"
+        by_category.setdefault(cat, []).append(entry)
+
+    out = [
+        "---",
+        "type: team-learnings",
+        "project: AI-Softwareentwickler-Team",
+        f"last_synced: {timestamp}",
+        f"total_lessons: {len(entries)}",
+        "tags:",
+        "  - ai-team",
+        "  - learnings",
+        "  - root-cause",
+        "  - architecture",
+        "---",
+        "",
+        "# 💡 Team-Learnings & Erfahrungsspeicher",
+        "",
+        "> [!note] Destilliertes Langzeitgedächtnis für Claude & Entwickler",
+        f"> Automatisch generiert aus `memory/team_lessons.jsonl` am {timestamp}.",
+        f"> Enthält **{len(entries)} dokumentierte Lektionen**, Bug-Analysen und Governance-Erkenntnisse aus autonomen Läufen.",
+        "",
+        "---",
+        "",
+    ]
+
+    # Geordnete Kategorien zuerst
+    ordered_cats = list(category_titles.keys()) + [c for c in by_category if c not in category_titles]
+
+    for cat in ordered_cats:
+        cat_entries = by_category.get(cat)
+        if not cat_entries:
+            continue
+        title = category_titles.get(cat, f"📌 Kategorie: {cat}")
+        out.append(f"## {title} ({len(cat_entries)})")
+        out.append("")
+
+        # Neueste Einträge zuerst (maximal die 10 relevantesten pro Kategorie, um Token-Effizienz zu wahren)
+        for e in reversed(cat_entries[-10:]):
+            slug = e.get("project_slug", "team")
+            ts = (e.get("timestamp") or "")[:19].replace("T", " ")
+            detail = (e.get("detail") or "").strip()
+            res = (e.get("resolution") or "").strip()
+
+            out.append(f"### Projekt: `{slug}` ({ts})")
+            out.append(detail)
+            if res:
+                out.append(f"\n**Lösung / Status:** {res}")
+            out.append("")
+
+        if len(cat_entries) > 10:
+            out.append(f"*... sowie {len(cat_entries) - 10} ältere Einträge im JSONL-Archiv.*\n")
+
+    out.append("---")
+    out.append("*Automatisch aufbereitet durch `core/obsidian_sync.py`.*")
+
+    dest_file = dest_path / "01_TEAM_LEARNINGS.md"
+    dest_file.write_text("\n".join(out), encoding="utf-8")
+    return dest_file
+
+
 def _generate_memory_index(
     target_dir: Path,
     file_records: list[dict[str, str]],
@@ -160,8 +261,8 @@ tags:
 
 > [!note] Claude-Gedächtnis & Wissensspeicher
 > Dieses Verzeichnis wird automatisch aus dem Live-Projekt synchronisiert.
-> Es enthält alle Kern-Konfigurationen, Architektur-Pläne, den aktuellen Zwischenstand
-> und das Änderungsprotokoll des 33-köpfigen KI-Entwickler-Teams.
+> Es enthält alle Kern-Konfigurationen, Architektur-Pläne, den aktuellen Zwischenstand,
+> die Agenten-Skills sowie die aggregierten Team-Learnings des 33-köpfigen KI-Entwickler-Teams.
 > 
 > **Letzter Sync:** `{timestamp}` | **Git:** `{git_info.get('branch', 'unknown')}@{git_info.get('commit', 'unknown')}`
 
@@ -176,11 +277,21 @@ tags:
 ---
 
 ## 🎯 Schnelleinstieg für Claude
+- **Erfahrungs- & Fehler-Gedächtnis:** [[01_TEAM_LEARNINGS.md]] (Root-Cause-Analysen, typische Dependency-Fallen & echte Fixes)
+- **Agenten-Skills & Rollen-Katalog:** [[skills/ai-dev-team/SKILL.md]] & [[skills/ai-dev-team/README.md]] (Fachbereiche, Workflows & Best Practices)
 - **Architektur & Agenten-Hierarchie:** [[ARCHITECTURE.md]] (Erklärt die 6 Fachbereiche & 33 Rollen)
 - **Projekt-Handbuch & CLI-Befehle:** [[README.md]]
 - **Umgebungsvariablen-Vorlage (KEINE echten Secrets):** [[.env.example.md]]
 - **Changelog & Historie realer Bugfixes:** [[CHANGELOG.md]]
 - **Übergeordnete Lernprojekt-Notiz:** [[AI-Softwareentwickler-Team - Übersicht]]
+
+---
+
+## 🏛️ Architektur-Entscheidungen (ADRs)
+> [!tip] ADR-Ablageort
+> Architektur-Entscheidungs-Aufzeichnungen (ADRs nach Nygard) der autonomen Zielprojekte befinden sich im Vault unter:
+> - `03 Resources/Permanent Notes/ADR - *.md` (automatisch bei Generierung exportiert)
+> - Im Workspace-Code: `workspace/<projekt_slug>/docs/adr/0001-*.md`
 
 ---
 *Automatisch generiert durch `core/obsidian_sync.py`.*
@@ -241,8 +352,9 @@ def sync_project_to_obsidian(
             continue
 
         try:
-            # 1:1 Rohdatei im Ziel
+            # 1:1 Rohdatei im Ziel (inklusive möglicher Unterverzeichnisse wie skills/ai-dev-team/...)
             dest_file = dest_path / file_name
+            dest_file.parent.mkdir(parents=True, exist_ok=True)
             src_hash = compute_sha256(src_file)
             dest_hash = compute_sha256(dest_file) if dest_file.exists() else None
 
@@ -262,6 +374,7 @@ def sync_project_to_obsidian(
             if not is_markdown:
                 md_target_name = f"{file_name}.md"
                 md_dest_file = dest_path / md_target_name
+                md_dest_file.parent.mkdir(parents=True, exist_ok=True)
                 content = src_file.read_text(encoding="utf-8", errors="replace")
                 wrapped_content = _create_markdown_wrapper(file_name, content, result.timestamp)
                 md_dest_file.write_text(wrapped_content, encoding="utf-8")
@@ -280,6 +393,21 @@ def sync_project_to_obsidian(
         except Exception as e:
             result.failed_files[file_name] = str(e)
             result.success = False
+
+    # Team-Learnings aufbereiten & synchronisieren
+    try:
+        learnings_dest = _generate_team_learnings_summary(src_base, dest_path, result.timestamp)
+        if learnings_dest and learnings_dest.exists():
+            size_bytes = learnings_dest.stat().st_size
+            size_str = f"{size_bytes / 1024:.1f} KB"
+            file_records.append({
+                "original_name": "memory/team_lessons.jsonl",
+                "target_name": "01_TEAM_LEARNINGS.md",
+                "size_str": size_str,
+                "status": "Generiert",
+            })
+    except Exception as e:
+        result.failed_files["01_TEAM_LEARNINGS.md"] = f"Learnings-Aufbereitung fehlgeschlagen: {e}"
 
     # Gedächtnis-Index schreiben
     try:

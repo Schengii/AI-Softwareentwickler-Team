@@ -1,0 +1,19 @@
+[
+  {
+    "timestamp": "2026-09-18T23:01:02+00:00",
+    "task_summary": "FastAPI Job-Orchestrator mit DAG und DLQ implementiert",
+    "verification_ok": false,
+    "budget_aborted": true,
+    "cancelled": false,
+    "files_written_count": 18,
+    "lint_signature": [
+      "ruff:app/worker/loop.py:BLE001"
+    ],
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 📦 ✅ pip install -r requirements.txt (exit_code=0)\n- 📦 ✅ pip install -r requirements-dev.txt (exit_code=0)\n- 🧪 ✅ Testtiefe: 2/2 API-Routen in Tests aufgerufen (100%, Mindestwert 60%), 9 Testfunktionen\n- ✅ Echte Testsuite bestanden nach 1 Durchlauf/Durchläufen (3.4s).\n- 🔒 pip-audit: keine bekannten Schwachstellen in Abhängigkeiten gefunden.\n… (gekürzt, vollständig in detail_file)",
+    "detail_file": ".ai_team_runs/20260918_225210_verification.md",
+    "failed_checks": [
+      "completeness",
+      "lint"
+    ]
+  }
+]

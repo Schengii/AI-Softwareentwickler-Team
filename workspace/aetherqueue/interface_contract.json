@@ -1,0 +1,27 @@
+{
+  "modules": {
+    "app/core/settings.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/db/session.py": {
+      "get_db": "function",
+      "init_db": "function"
+    },
+    "app/models/job.py": {
+      "Job": "class",
+      "JobDependency": "class",
+      "JobStatus": "class"
+    },
+    "app/repositories/job_repository.py": {
+      "JobRepository": "class"
+    },
+    "app/services/job_service.py": {
+      "JobService": "class"
+    },
+    "app/worker/loop.py": {
+      "start_worker": "function",
+      "stop_worker": "function"
+    }
+  }
+}

@@ -7,6 +7,31 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Team-Optimierung 2026-09-18: Runtime-Smoke-Test erkannte Clean-Architecture-Layout nie
+
+Root-Cause-Analyse der letzten beiden Projektläufe (`aegisflow`, `aetherqueue`, 2026-09-18):
+beide nutzten die vom Architekt-Agenten selbst empfohlene Clean-Architecture-Struktur
+(`app/main.py` statt `main.py` im Projekt-Root).
+
+* **Unbehebbares `verification_ok=False` trotz laufender App:** `core/verifier/runtime.py.
+  check_runtime_smoke()`/`_start_python_web_app()` suchten Python-Einstiegspunkte bisher NUR
+  unter `main.py`/`app.py`/`server.py`/`api.py` im Projekt-Root, während `core/
+  definition_of_done.py._ENTRYPOINT_CANDIDATES` auch `app/main.py` als gültigen Einstiegspunkt
+  führt. Der Smoke-Test lief dadurch für beide Projekte nie (`attempted=False`, kein Log-
+  Eintrag, kein Fix-Zyklus), das DoD-Kriterium `app_starts` blieb aber verpflichtend – bei
+  `aegisflow` blockierte das `verification_ok` dauerhaft, obwohl die App real startete (manuell
+  mit `uvicorn app.main:app` verifiziert). `_PYTHON_ENTRYPOINT_CANDIDATES` ist jetzt
+  deckungsgleich mit `definition_of_done`.
+* **Prozessstart per `-m <modul>` statt Direktaufruf:** Ein gefundener, verschachtelter
+  Einstiegspunkt (z. B. `app/main.py`) legt bei `python app/main.py` nur sein eigenes
+  Verzeichnis auf `sys.path`, nicht das Projekt-Root – absolute Package-Imports (`from
+  app.config import settings`) wären mit `ModuleNotFoundError` gescheitert. Beide Funktionen
+  starten Python-Einstiegspunkte jetzt durchgängig über `python -m <modul>`.
+
+Ticket: `root-cause-aegisflow-runtime-smoke-test-findet-clean-architecture-einstiegspunkte`.
+
+---
+
 ## 🟢 Team-Optimierung 2026-09-17 (Teil 3): Unwired-Router-Erkennung, In-Memory-Mutationen & Completeness-Eskalation
 
 Reale Funde und Root-Cause-Analysen aus dem `hyperion_metrics`-Lauf (2026-09-17):

@@ -37,6 +37,30 @@ from core.verifier.models import (
     _csv_float,
 )
 
+# Realer Fund (aegisflow/aetherqueue, 2026-09-18): Beide Projekte nutzten die vom Architekten
+# selbst empfohlene Clean-Architecture-Struktur mit app/main.py statt main.py im Projekt-Root.
+# check_runtime_smoke() suchte bisher NUR nach main.py/app.py/server.py/api.py im Wurzel-
+# verzeichnis - genau diese Struktur wurde nie gefunden (attempted=False, kein Log-Eintrag,
+# kein Fix-Zyklus), während core/definition_of_done.py._ENTRYPOINT_CANDIDATES app/main.py
+# als gültigen Einstiegspunkt kennt und das Kriterium "app_starts" trotzdem als verpflichtend
+# einstuft. Ergebnis: verification_ok blieb dauerhaft und unbehebbar False, obwohl die App
+# tatsächlich startete. Diese Liste hält die Python-Kandidaten jetzt deckungsgleich mit
+# definition_of_done._ENTRYPOINT_CANDIDATES.
+_PYTHON_ENTRYPOINT_CANDIDATES = (
+    "main.py", "app.py", "server.py", "api.py",
+    "app/main.py", "app/app.py", "src/main.py", "backend/main.py", "backend/app.py",
+    "backend/app/main.py",
+)
+
+
+def _entry_to_module(entry_name: str) -> str:
+    """Wandelt einen relativen Einstiegspunkt-Pfad (z.B. `app/main.py`) in einen für
+    `python -m` ausführbaren Modulnamen (`app.main`) um - notwendig, damit absolute Imports
+    innerhalb des Pakets (z.B. `from app.config import settings`) funktionieren. Ein direkter
+    Skriptaufruf (`python app/main.py`) legt nur das `app/`-Verzeichnis auf sys.path, nicht das
+    Projekt-Root, und würde solche Imports mit ModuleNotFoundError zum Absturz bringen."""
+    return entry_name[:-3].replace("/", ".").replace("\\", ".")
+
 
 class RuntimeMixin:
     """Führt echte Laufzeit-/Deployment-/Lastentest-Checks für ein Projekt aus."""
@@ -92,7 +116,7 @@ class RuntimeMixin:
         python_exe = self._resolve_python()
 
         # 1. Suche nach Python-Einstiegspunkten
-        for entry_name in ("main.py", "app.py", "server.py", "api.py"):
+        for entry_name in _PYTHON_ENTRYPOINT_CANDIDATES:
             entry_file = self.project_dir / entry_name
             if entry_file.exists():
                 try:
@@ -100,6 +124,7 @@ class RuntimeMixin:
                 except OSError:
                     continue
 
+                module_name = _entry_to_module(entry_name)
                 is_web = any(kw in content for kw in ("FastAPI", "uvicorn", "Flask", "aiohttp", "http.server", "HTTPServer"))
                 if is_web:
                     port = self._find_free_port()
@@ -111,9 +136,13 @@ class RuntimeMixin:
                     # CodeSandbox._restricted_env() - dieselbe Secret-Filterung, die run_command()
                     # bereits für jeden Subprozess nutzt.
                     env = {**CodeSandbox._restricted_env(), "PORT": str(port), "UVICORN_PORT": str(port)}
-                    cmd = [python_exe, str(entry_file)]
+                    # Immer per `-m <modul>` starten statt den Direktpfad auszuführen: ein
+                    # verschachtelter Einstiegspunkt (z.B. app/main.py) legt bei direktem
+                    # Skriptaufruf nur sein eigenes Verzeichnis auf sys.path, nicht das
+                    # Projekt-Root - absolute Imports wie `from app.config import settings`
+                    # würden dann mit ModuleNotFoundError abstürzen (siehe Modul-Docstring).
+                    cmd = [python_exe, "-m", module_name]
                     if "uvicorn" in content and ("app = FastAPI" in content or "app =" in content):
-                        module_name = entry_name[:-3]
                         cmd = [python_exe, "-m", "uvicorn", f"{module_name}:app", "--port", str(port), "--host", "127.0.0.1"]
 
                     proc = None
@@ -162,7 +191,7 @@ class RuntimeMixin:
                                 proc.kill()
                 else:
                     # CLI / Skript: Teststart mit --help
-                    res = CodeSandbox.run_command([python_exe, str(entry_file), "--help"], cwd=self.project_dir, timeout_seconds=timeout_seconds)
+                    res = CodeSandbox.run_command([python_exe, "-m", module_name, "--help"], cwd=self.project_dir, timeout_seconds=timeout_seconds)
                     if res.exit_code == 0 or "usage:" in (res.stdout + res.stderr).lower() or "--help" in (res.stdout + res.stderr):
                         return RuntimeSmokeReport(attempted=True, passed=True, entrypoint=entry_name, app_type="cli_script")
                     elif res.exit_code != 0 and not res.timed_out:
@@ -317,7 +346,7 @@ class RuntimeMixin:
         _terminate_process(proc) verantwortlich.
         """
         python_exe = self._resolve_python()
-        for entry_name in ("main.py", "app.py", "server.py", "api.py"):
+        for entry_name in _PYTHON_ENTRYPOINT_CANDIDATES:
             entry_file = self.project_dir / entry_name
             if not entry_file.exists():
                 continue
@@ -328,11 +357,13 @@ class RuntimeMixin:
             if not any(kw in content for kw in ("FastAPI", "uvicorn", "Flask", "aiohttp", "http.server", "HTTPServer")):
                 continue
 
+            module_name = _entry_to_module(entry_name)
             port = self._find_free_port()
             env = {**CodeSandbox._restricted_env(), "PORT": str(port), "UVICORN_PORT": str(port)}
-            cmd = [python_exe, str(entry_file)]
+            # Siehe check_runtime_smoke(): immer per `-m <modul>` starten, damit verschachtelte
+            # Einstiegspunkte (app/main.py) das Projekt-Root auf sys.path haben.
+            cmd = [python_exe, "-m", module_name]
             if "uvicorn" in content and "app =" in content:
-                module_name = entry_name[:-3]
                 cmd = [python_exe, "-m", "uvicorn", f"{module_name}:app", "--port", str(port), "--host", "127.0.0.1"]
 
             proc = subprocess.Popen(

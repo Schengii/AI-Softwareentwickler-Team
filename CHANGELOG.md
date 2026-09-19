@@ -7,6 +7,39 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Backlog-Reconciliation 2026-09-19: Zwei Handlungsempfehlungen aus der Team-Retrospektive waren bereits umgesetzt
+
+Vor der Abarbeitung einer priorisierten 7-Punkte-Liste aus einer Team-Retrospektive
+(Governance-Findings-Backlog, AST-Check für Einstiegsdateien, offene Reconciliation-Tickets,
+fehlende deterministische Checks, Agenten-Portfolio, Modellzuweisung, Watchdog-Loop-Schutz)
+zeigte die Verifikation gegen den aktuellen Code-Stand, dass zwei der sieben Punkte bereits
+vollständig implementiert waren – die ursprüngliche Analyse basierte auf `memory/
+team_lessons.jsonl`/dem Backlog-Snapshot und übersah, dass zwischenzeitlich bereits Fixes
+committet wurden:
+
+* **Governance-Findings landen bereits im Backlog:** `agents/orchestrator/governance.py`
+  (`_run_governance_fix_loop`) eröffnet bei ungelösten kritischen Governance-Befunden (nach
+  Fix-Versuch, Fachbereichsleiter-Eskalation und verpflichtendem Re-Review) bereits ein
+  `blocked`-Ticket (`unresolved-governance-critical-<slug>`) über `upsert_ticket()` UND eine
+  `unresolved_governance_critical`-Lektion in `team_lessons.jsonl` - kein Fund verpufft
+  wirkungslos. `core/backlog_hygiene.py` räumt zusätzlich verwaiste/veraltete Tickets aus
+  (Projekt existiert nicht mehr im Workspace, oder seit >14 Tagen unbearbeitet).
+* **AST-Check auf ungebundene Symbole in Einstiegsdateien existiert bereits:**
+  `core/verifier/completeness.py._undefined_names_in_entrypoints()` (Commit `68e6814`,
+  17.09.2026) prüft `main.py`/`app.py` bereits deterministisch per AST auf modulweite Namen,
+  die verwendet, aber nie importiert/zugewiesen/definiert wurden (`kind=
+  "undefined_entrypoint_name"`) - genau der Fund aus `root-cause-ecotrack_ai-fehlende-
+  statische-pr-fung-auf-ungebundene-symbole-in-einsti`. Test: `tests/
+  test_verifier_completeness.py::TestUndefinedEntrypointNames` (5/5 grün). Der Commit enthielt
+  jedoch keine `Closes:`-Zeile, weshalb `run_backlog_hygiene()` das Ticket nie automatisch als
+  `done` markiert hat, obwohl der Fix seit zwei Tagen live war - derselbe Verwaisungs-Effekt,
+  den `core/backlog_hygiene.py`s eigener Docstring bereits als bekanntes Muster beschreibt.
+
+Ticket: `root-cause-ecotrack_ai-fehlende-statische-pr-fung-auf-ungebundene-symbole-in-einsti`
+(Status: `done`, nachträglich verifiziert statt neu implementiert).
+
+---
+
 ## 🟢 Team-Optimierung 2026-09-19: `queue_red_projects()` ignorierte blockierende Definition-of-Done-Befunde
 
 Root-Cause-Analyse der letzten drei Läufe (`nexus_mesh`, `aetherqueue`, `aegisflow`, alle

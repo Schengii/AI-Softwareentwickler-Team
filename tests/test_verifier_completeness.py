@@ -1831,5 +1831,73 @@ class TestAuditClaimedFixes(unittest.TestCase):
             )
 
 
+class TestFakeTestFiles(unittest.TestCase):
+    """Team-Optimierung (Retrospektive 2026-09-19): eine Datei, die der pytest-Sammelkonvention
+    folgt, aber keine echte `def test_...`-Funktion enthält, sammelt 0 Tests ein, ohne dass das
+    auffällt (das "Alibi-Smoke-Test"-Muster aus core/definition_of_done.py)."""
+
+    def test_flags_test_file_without_any_test_function(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app.py").write_text("def real_function(): pass\n", encoding="utf-8")
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_smoke.py").write_text(
+                "import os\n\n"
+                "def check_files_exist():\n"
+                "    assert os.path.exists('requirements.txt')\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            fake = [i for i in report.issues if i.kind == "fake_test_file"]
+            self.assertEqual(len(fake), 1)
+            self.assertEqual(fake[0].file_path, "tests/test_smoke.py")
+
+    def test_does_not_flag_test_file_with_real_test_function(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app.py").write_text("def real_function(): pass\n", encoding="utf-8")
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_smoke.py").write_text(
+                "def test_real_function():\n    assert True\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            fake = [i for i in report.issues if i.kind == "fake_test_file"]
+            self.assertEqual(fake, [])
+
+    def test_does_not_flag_async_test_function(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app.py").write_text("def real_function(): pass\n", encoding="utf-8")
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_smoke.py").write_text(
+                "async def test_real_function():\n    assert True\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            fake = [i for i in report.issues if i.kind == "fake_test_file"]
+            self.assertEqual(fake, [])
+
+    def test_conftest_without_test_function_not_flagged(self):
+        """conftest.py ist eine reine Fixture-Datei per Konvention - keine eigenen Testfunktionen erwartet."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app.py").write_text("def real_function(): pass\n", encoding="utf-8")
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "conftest.py").write_text(
+                "import pytest\n\n"
+                "@pytest.fixture\n"
+                "def client():\n    return None\n",
+                encoding="utf-8",
+            )
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            fake = [i for i in report.issues if i.kind == "fake_test_file"]
+            self.assertEqual(fake, [])
+
+
 if __name__ == "__main__":
     unittest.main()

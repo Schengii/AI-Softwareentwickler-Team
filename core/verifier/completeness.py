@@ -59,6 +59,7 @@ from core.verifier.models import (
     _PY_ROUTE_DEF_RE,
     _PY_WRITE_ROUTE_DECORATOR_RE,
     _PYTEST_ASYNC_TEST_RE,
+    _PYTEST_TEST_FUNCTION_RE,
     _README_FILE_REF_RE,
     _RESILIENCE_FALLBACK_EXCEPT_RE,
     _ROUTE_DECL_RE,
@@ -162,6 +163,7 @@ class CompletenessMixin:
         issues.extend(self._wildcard_security_middleware(py_texts))
         issues.extend(self._scan_for_toplevel_event_loop(py_texts))
         issues.extend(self._undefined_names_in_entrypoints(py_texts))
+        issues.extend(self._fake_test_files(py_texts))
         issues.extend(self._unwired_api_routers(py_texts))
         issues.extend(self._test_requests_undeclared_routes(py_texts))
 
@@ -870,6 +872,37 @@ class CompletenessMixin:
                             f"registriert, aber nie implementiert/importiert wurde.",
                     kind="undefined_entrypoint_name",
                 ))
+        return issues
+
+    def _fake_test_files(self, py_texts: dict[str, str]) -> list[CompletenessIssue]:
+        """Team-Optimierung (Retrospektive 2026-09-19, deterministic_check_suggestion): eine
+        Datei, die der pytest-Sammelkonvention (`test_*.py`/`*_test.py`) folgt, aber KEINE
+        einzige `def test_...`/`async def test_...`-Funktion enthält, wird von pytest zwar
+        anstandslos eingesammelt, liefert aber 0 Tests - kein Fehlschlag, keine Warnung, nur
+        stille Abwesenheit jeder echten Prüfung. Genau das in core/definition_of_done.py bereits
+        beschriebene "Alibi-Smoke-Test"-Muster (pulseflow_gateway, 2026-09-11): eine Testdatei,
+        die nur `os.path.exists("requirements.txt")`/`__init__.py` prüft, statt echtes
+        Anwendungsverhalten. `conftest.py` ist bewusst ausgenommen (reine Fixture-Datei, per
+        Konvention ohne eigene Testfunktionen)."""
+        issues: list[CompletenessIssue] = []
+        for rel, text in sorted(py_texts.items()):
+            name = Path(rel).name
+            if name == "conftest.py":
+                continue
+            if not (name.startswith("test_") or name.endswith("_test.py")):
+                continue
+            if _PYTEST_TEST_FUNCTION_RE.search(text):
+                continue
+            issues.append(CompletenessIssue(
+                file_path=rel,
+                line_number=1,
+                message=f"{rel} folgt der Testdatei-Namenskonvention, enthält aber keine "
+                        f"einzige `def test_...`/`async def test_...`-Funktion - pytest sammelt "
+                        f"hier 0 Tests ein, ohne dass das als Fehlschlag auffällt. Entweder "
+                        f"echte Testfunktionen ergänzen oder die Datei umbenennen/entfernen, "
+                        f"falls sie nur Hilfscode enthält.",
+                kind="fake_test_file",
+            ))
         return issues
 
     def _route_path_pattern(self, path: str) -> re.Pattern[str]:

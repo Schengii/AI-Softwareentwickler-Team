@@ -765,6 +765,14 @@ _KNOWN_PACKAGE_NAMES = frozenset({
 # eigentliche Testcode korrekt ist. Derselbe logpulse-Fund wie oben.
 _PYTEST_ASYNC_TEST_RE = re.compile(r"@pytest\.mark\.asyncio\b|^\s*async\s+def\s+test_", re.MULTILINE)
 
+# Team-Optimierung (Retrospektive 2026-09-19, deterministic_check_suggestion): eine Datei, deren
+# Name der pytest-Sammelkonvention entspricht (`test_*.py`/`*_test.py`), aber KEINE einzige
+# `def test_...`/`async def test_...`-Funktion auf Modulebene enthält, sammelt bei pytest exakt
+# 0 Tests ein - kein Fehlschlag, keine Warnung, einfach stille Abwesenheit jeder Prüfung. Deckt
+# das in core/definition_of_done.py bereits benannte "Alibi-Smoke-Test"-Muster ab (Datei prüft
+# nur `os.path.exists("requirements.txt")` o.ä. statt echtes Verhalten).
+_PYTEST_TEST_FUNCTION_RE = re.compile(r"^\s*(?:async\s+)?def\s+test_\w+", re.MULTILINE)
+
 # Zweiter Teil desselben logpulse-Funds: `app/database.py` definierte eine ASYNCHRONE Engine
 # (`create_async_engine`), `app/models.py` daneben eine eigene SYNCHRONE Engine
 # (`create_engine`) samt eigener `Base = declarative_base()` - zwei parallele, inkompatible

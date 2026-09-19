@@ -7,6 +7,45 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Team-Optimierung 2026-09-19: `queue_red_projects()` ignorierte blockierende Definition-of-Done-Befunde
+
+Root-Cause-Analyse der letzten drei Läufe (`nexus_mesh`, `aetherqueue`, `aegisflow`, alle
+2026-09-18): trotz des Vortags-Fixes für die Einstiegspunkt-Erkennung (siehe Eintrag darunter)
+lief der Runtime-Smoke-Test bei `nexus_mesh` und `aegisflow` weiterhin nie zu Ende
+(`_outcome.status("smoke")` blieb `None`), obwohl `app/main.py` korrekt gefunden wurde.
+
+* **`verification_ok` und `.ai_team_dod.json` können auseinanderlaufen:** `core/
+  definition_of_done.py` markiert einen fehlenden Messwert bei einer nach gelaufener
+  Verifikation fälligen Pflichtprüfung korrekt als Blocker (`is_done=False,
+  blocking=["app_starts"]`, Detail "nicht gemessen - die Prüfung lief nicht zu Ende"). Die
+  separate `verification_ok`-Mitschrift in `agents/orchestrator/verification.py` sieht einen NIE
+  aufgezeichneten Check dagegen nie als Fehlschlag und blieb bei `nexus_mesh` `True` -
+  `save_project_checkpoint()`/`record_run_history()` persistieren nur `verification_ok`.
+* **Automatische Nachbesserung erreichte solche Projekte nie:** `core/red_project_repair.py.
+  queue_red_projects()` prüfte ausschließlich `last.get("verification_ok")` und kannte die DoD-
+  Datei gar nicht - ein Projekt, dessen eigene Definition of Done es als nicht fertig einstuft,
+  wurde vom automatischen Nachbesserungs-Kreislauf für immer ignoriert. `queue_red_projects()`
+  liest jetzt zusätzlich `.ai_team_dod.json` und queued auch bei `verification_ok=True`, sobald
+  die DoD einen Blocker führt. Tests: `tests/test_quality_gates.py::TestRedProjectRepair::
+  test_verification_ok_true_but_dod_blocked_is_still_queued`.
+
+**Nachtrag, selber Tag:** Ursache für den nie zu Ende laufenden Smoke-Test selbst gefunden und
+behoben. `core/verifier/runtime.py.check_runtime_smoke()`/`_start_python_web_app()` starteten eine
+erkannte FastAPI-App nur dann per `uvicorn <modul>:app`, wenn der String `"uvicorn"` LITERAL im
+Quelltext vorkam. Eine idiomatische FastAPI-App wird aber nie aus sich selbst heraus gestartet
+(kein `if __name__ == "__main__": uvicorn.run(...)`-Block), sondern immer extern per
+`uvicorn <modul>:app` - das Wort "uvicorn" taucht im generierten Code deshalb so gut wie nie auf.
+`python -m app.main` importierte die App dadurch nur (Routen/Middleware registriert), startete
+aber keinen Server und beendete sich sofort mit Exit 0 - der Smoke-Test hielt eine gesunde App
+fälschlich für tot bzw. lieferte gar kein Ergebnis. Jede erkannte FastAPI-Instanziierung
+(`"FastAPI(" in content`) wird jetzt immer per uvicorn gestartet, unabhängig vom literalen
+"uvicorn"-String. Tests: `tests/test_verifier_smoke.py::TestCheckRuntimeSmoke::
+test_fastapi_app_is_started_via_uvicorn_even_without_literal_uvicorn_string`.
+
+Ticket: `root-cause-nexus_mesh-verification-ok-ignoriert-dod-blocker-app-starts` (Status: `done`).
+
+---
+
 ## 🟢 Team-Optimierung 2026-09-18: Runtime-Smoke-Test erkannte Clean-Architecture-Layout nie
 
 Root-Cause-Analyse der letzten beiden Projektläufe (`aegisflow`, `aetherqueue`, 2026-09-18):

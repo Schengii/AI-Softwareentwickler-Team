@@ -142,7 +142,18 @@ class RuntimeMixin:
                     # Projekt-Root - absolute Imports wie `from app.config import settings`
                     # würden dann mit ModuleNotFoundError abstürzen (siehe Modul-Docstring).
                     cmd = [python_exe, "-m", module_name]
-                    if "uvicorn" in content and ("app = FastAPI" in content or "app =" in content):
+                    # Realer Fund (nexus_mesh/aegisflow, 2026-09-18): FastAPI-Apps werden idiomatisch
+                    # NIE aus sich selbst heraus gestartet (kein `if __name__ == "__main__":
+                    # uvicorn.run(...)`-Block), sondern immer extern per `uvicorn <modul>:app` - das
+                    # Wort "uvicorn" taucht im generierten Code deshalb oft überhaupt nicht auf. Die
+                    # alte Bedingung verlangte genau diesen String und griff dadurch praktisch nie:
+                    # `python -m <modul>` importierte FastAPI-Apps nur (Routen/Middleware werden
+                    # registriert), startete aber keinen Server und beendete sich sofort mit Exit 0 -
+                    # der Smoke-Test wertete eine völlig gesunde App fälschlich als "startet nicht"
+                    # bzw. blieb ganz ohne Ergebnis (attempted=False), obwohl der Einstiegspunkt
+                    # korrekt gefunden wurde. Jede erkannte FastAPI-Instanziierung wird jetzt IMMER
+                    # per uvicorn gestartet, unabhängig davon, ob "uvicorn" im Quelltext vorkommt.
+                    if "FastAPI(" in content or ("uvicorn" in content and ("app = FastAPI" in content or "app =" in content)):
                         cmd = [python_exe, "-m", "uvicorn", f"{module_name}:app", "--port", str(port), "--host", "127.0.0.1"]
 
                     proc = None
@@ -363,7 +374,10 @@ class RuntimeMixin:
             # Siehe check_runtime_smoke(): immer per `-m <modul>` starten, damit verschachtelte
             # Einstiegspunkte (app/main.py) das Projekt-Root auf sys.path haben.
             cmd = [python_exe, "-m", module_name]
-            if "uvicorn" in content and "app =" in content:
+            # Siehe check_runtime_smoke(): dieselbe FastAPI-immer-per-uvicorn-Korrektur, sonst
+            # startet der Lastentest-Vorlauf hier denselben Fehler nach - die App wird nur
+            # importiert statt bedient, der Lastentest liefe gegen einen bereits beendeten Prozess.
+            if "FastAPI(" in content or ("uvicorn" in content and "app =" in content):
                 cmd = [python_exe, "-m", "uvicorn", f"{module_name}:app", "--port", str(port), "--host", "127.0.0.1"]
 
             proc = subprocess.Popen(

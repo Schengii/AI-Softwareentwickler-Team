@@ -195,6 +195,25 @@ class TestRedProjectRepair:
         queue_red_projects(ws)
         assert [t.id for t in _governance_retry_pool(backlog_store.list_tickets())] == ["recurring-failure-red_one"]
 
+    def test_verification_ok_true_but_dod_blocked_is_still_queued(self, tmp_path):
+        """Realer Fund (nexus_mesh/aegisflow, 2026-09-18): der Runtime-Smoke-Test lief nie zu
+        Ende (`app_starts` in .ai_team_dod.json bleibt "nicht gemessen"), aber `verification_ok`
+        sah darin nie einen Fehlschlag und blieb True. Ohne DoD-Kenntnis ignorierte
+        `queue_red_projects()` so ein Projekt für immer, obwohl seine eigene Definition of Done
+        es als nicht fertig einstuft."""
+        from core.red_project_repair import queue_red_projects
+
+        ws = tmp_path / "ws"
+        self._project(ws, "half_done", True)
+        _write(
+            ws / "half_done" / ".ai_team_dod.json",
+            json.dumps({"is_done": False, "blocking": ["app_starts"]}),
+        )
+        report = queue_red_projects(ws)
+        assert report.queued == ["half_done"]
+        ticket = backlog_store.get_ticket("recurring-failure-half_done")
+        assert "app_starts" in ticket.detail
+
 
 class TestWatchdog:
     def test_read_without_write_escalates_for_code_roles(self):

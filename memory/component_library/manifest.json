@@ -11,5 +11,44 @@
     "content_hash": "b57ca82170ca82df",
     "preview": "class EndpointCircuitBreaker:\n    \"\"\"\n    In-Memory Circuit Breaker pro Endpoint-URL.\n    Zustände: CLOSED (normal), OPEN (blockiert Aufrufe), HALF_OPEN (Probe-Request).\n    Nutzt time.monotonic() für Zeitmessungen.\n    \"\"\"\n\n    def __init__(\n        self,\n        failure_threshold: int = 5,\n       ",
     "snippet_file": "C:\\Users\\sche-\\Desktop\\Programmieren Projekte\\AI-Softwareentwickler-Team\\memory\\component_library\\circuit_breaker\\circuit_breaker-endpointcircuitbreaker-b57ca821.py"
+  },
+  {
+    "id": "circuit_breaker-circuitbreaker-94314de4",
+    "category": "circuit_breaker",
+    "class_name": "CircuitBreaker",
+    "source_project": "nexus_mesh",
+    "source_path": "app/core/circuit_breaker.py",
+    "language": "py",
+    "added_at": "2026-09-18T23:34:16.120376+00:00",
+    "char_count": 3534,
+    "content_hash": "94314de4e902b85f",
+    "preview": "class CircuitBreaker:\n    \"\"\"\n    Stateful Circuit Breaker Pattern (CLOSED -> OPEN -> HALF_OPEN -> CLOSED).\n    Nutzt time.monotonic() für alle Zeit- und Cooldown-Berechnungen.\n    \"\"\"\n    def __init__(\n        self,\n        failure_threshold: int = 5,\n        recovery_timeout: float = 30.0,\n       ",
+    "snippet_file": "C:\\Users\\sche-\\Desktop\\Programmieren Projekte\\AI-Softwareentwickler-Team\\memory\\component_library\\circuit_breaker\\circuit_breaker-circuitbreaker-94314de4.py"
+  },
+  {
+    "id": "rate_limiter-tokenbucket-660f0687",
+    "category": "rate_limiter",
+    "class_name": "TokenBucket",
+    "source_project": "nexus_mesh",
+    "source_path": "tests/test_rate_limiter.py",
+    "language": "py",
+    "added_at": "2026-09-18T23:34:16.116914+00:00",
+    "char_count": 337,
+    "content_hash": "660f068740d0529c",
+    "preview": "class TokenBucket:\n    def __init__(self, capacity, refill_rate):\n        self.capacity = capacity\n        self.tokens = capacity\n        self.refill_rate = refill_rate\n        self.last_refill = time.time()\n    \n    def consume(self):\n        if self.tokens > 0:\n            self.tokens -= 1\n       ",
+    "snippet_file": "C:\\Users\\sche-\\Desktop\\Programmieren Projekte\\AI-Softwareentwickler-Team\\memory\\component_library\\rate_limiter\\rate_limiter-tokenbucket-660f0687.py"
+  },
+  {
+    "id": "rate_limiter-ratelimiter-54de7653",
+    "category": "rate_limiter",
+    "class_name": "RateLimiter",
+    "source_project": "nexus_mesh",
+    "source_path": "app/core/rate_limiter.py",
+    "language": "py",
+    "added_at": "2026-09-18T23:34:16.123190+00:00",
+    "char_count": 794,
+    "content_hash": "54de76531779be7f",
+    "preview": "class RateLimiter:\n    def __init__(self, capacity: int = 100, refill_rate: float = 10.0):\n        self.capacity = capacity\n        self.refill_rate = refill_rate\n        self.buckets: dict[str, TokenBucket] = {}\n\n    def consume(self, key: str, tokens: int = 1) -> bool:\n        now = time.monotonic",
+    "snippet_file": "C:\\Users\\sche-\\Desktop\\Programmieren Projekte\\AI-Softwareentwickler-Team\\memory\\component_library\\rate_limiter\\rate_limiter-ratelimiter-54de7653.py"
   }
 ]

@@ -1,0 +1,18 @@
+[
+  {
+    "timestamp": "2026-09-18T23:34:16+00:00",
+    "task_summary": "FastAPI API-Gateway mit Circuit-Breaker implementiert",
+    "verification_ok": true,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 14,
+    "lint_signature": [
+      "ruff:app/core/circuit_breaker.py:SIM102"
+    ],
+    "success_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 📦 ✅ pip install -r requirements.txt (exit_code=0)\n- 📦 ✅ pip install -r requirements-dev.txt (exit_code=0)\n- 🧪 ✅ Testtiefe: 2/2 API-Routen in Tests aufgerufen (100%, Mindestwert 60%), 3 Testfunktionen\n- ✅ Echte Testsuite bestanden nach 1 Durchlauf/Durchläufen (2.9s).\n- 🕵️ bandit: keine Sicherheits-Funde im Code (statischer Scan).\n… (gekürzt, vollständig in detail_file)",
+    "detail_file": ".ai_team_runs/20260918_232646_verification.md",
+    "failed_checks": [
+      "lint"
+    ]
+  }
+]

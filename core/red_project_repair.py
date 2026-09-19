@@ -19,6 +19,7 @@ from pathlib import Path
 
 from config import MAX_GOVERNANCE_TICKET_RETRIES
 from core.backlog_store import get_ticket, upsert_ticket
+from core.definition_of_done import read_definition_of_done
 from core.project_status import read_full_detail, read_status
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,18 @@ def queue_red_projects(workspace_dir: str | Path | None = None, max_new: int = 3
         if not history:
             continue
         last = history[0]
-        if last.get("verification_ok") or last.get("cancelled"):
+        if last.get("cancelled"):
+            continue
+        # Realer Fund (nexus_mesh/aegisflow, 2026-09-18): `verification_ok` und die maschinen-
+        # lesbare Definition of Done (.ai_team_dod.json, core/definition_of_done.py) können
+        # auseinanderlaufen - z.B. wenn der Runtime-Smoke-Test nie zu Ende lief
+        # (verification_ok=True, obwohl die DoD `app_starts` mit "nicht gemessen" als Blocker
+        # führt). `verification_ok` sieht einen NIE aufgezeichneten Check nie als Fehlschlag,
+        # die DoD dagegen schon. Ohne diesen Zusatz-Check ignorierte `queue_red_projects()` genau
+        # solche Projekte für immer, weil es ausschließlich `verification_ok` kannte.
+        dod = read_definition_of_done(project_dir)
+        dod_blocking = list(dod.get("blocking") or []) if isinstance(dod, dict) else []
+        if last.get("verification_ok") and not dod_blocking:
             continue
         reason = _existing_repair_state(slug)
         if reason:
@@ -81,6 +93,8 @@ def queue_red_projects(workspace_dir: str | Path | None = None, max_new: int = 3
             report.skipped[slug] = "Limit pro Durchlauf erreicht"
             continue
         detail = read_full_detail(project_dir, last)[:MAX_DETAIL_CHARS]
+        if dod_blocking:
+            detail = f"Definition of Done blockiert an: {', '.join(dod_blocking)}\n\n{detail}"
         budget_note = " Der letzte Lauf endete am Token-Budget - führe zuerst die Verifikation aus." if last.get("budget_aborted") else ""
         try:
             upsert_ticket(

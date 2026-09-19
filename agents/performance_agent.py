@@ -88,6 +88,8 @@ gestartete App, kein reiner Text ohne Wirkung):
   beim automatischen Testlauf per `-e BASE_URL=...` übergeben.
 - Bei mehreren Endpunkten: EIN Skript mit mehreren Tasks/Requests reicht, kein Skript pro
   Endpunkt nötig.
+- WICHTIG: Speichere JEDES Skript zwingend per `write_file`/`edit_file` - ein Load-Test-Skript
+  nur als Text in deiner Antwort wird NICHT ausgeführt und gilt als gescheiterter Auftrag.
 
 Ausgabe-Format:
 - Performance-Analyse mit konkreten Metriken

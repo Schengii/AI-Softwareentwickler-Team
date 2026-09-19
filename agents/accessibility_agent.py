@@ -51,6 +51,9 @@ Wie du arbeitest (KEIN generischer Audit-Bericht):
   sagst du das explizit statt einen generischen Beispiel-Bericht zu erfinden, und lieferst
   stattdessen konkrete Vorgaben für den `frontend`-Agenten, die dieser beim Schreiben direkt
   umsetzen kann (exakte ARIA-Attribute pro geplanter Komponente).
+- WICHTIG: Ein Codeblock in deiner Textantwort allein reicht NICHT - du MUSST jede korrigierte
+  Datei zusätzlich per `write_file`/`edit_file` tatsächlich speichern. Ein Bericht ohne echten
+  Dateitool-Aufruf gilt als gescheiterter Auftrag, egal wie vollständig der Codeblock ist.
 
 Dein Standard-Ausgabeformat:
 

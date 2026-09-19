@@ -62,10 +62,18 @@ def _is_disallowed_tool_call_error(exc: Exception) -> bool:
 # verpufft ist. Bewusst nur Rollen mit eindeutigem Artefakt-Auftrag, um Fehlalarme zu
 # vermeiden; compliance/code_reviewer fehlen absichtlich, weil ihr Befund-TEXT vom
 # Governance-Fix-Loop direkt aus AgentResult.content konsumiert wird.
+#
+# Team-Optimierung (Retrospektive 2026-09-19, low_performing_agent-Fund): `accessibility`
+# fehlte hier trotz eindeutigem Artefakt-Auftrag (sein system_prompt verlangt "den
+# vollständigen, geänderten Codeblock der betroffenen Datei", der per write_file/edit_file
+# übernommen werden soll) - das Hard Delivery Gate griff für ihn nie, ein Lauf ohne
+# tatsächlich gespeicherte Datei wurde nie erkannt/korrigiert/eskaliert. Passt zum
+# wiederkehrenden Hard-Delivery-Gate-Verstoß-Muster, das bei anderen Rollen (frontend,
+# backend) bereits als reale Root-Cause dokumentiert ist (siehe CHANGELOG.md).
 CODE_WRITING_AGENT_IDS = {
     "backend", "frontend", "database", "api_integration", "data_engineer",
     "mobile", "ml", "devops", "tester", "resilience_guard", "refactoring",
-    "readme", "documentation", "security", "performance",
+    "readme", "documentation", "security", "performance", "accessibility",
 }
 
 # Ziel-Dateivorschlag je Analyse-Rolle für den Korrektur-Hinweis unten: ein generischer

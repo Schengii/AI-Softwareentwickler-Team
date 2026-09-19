@@ -1,0 +1,238 @@
+{
+  "run_id": "20260919_003629",
+  "handoffs": [
+    {
+      "agent_id": "architect",
+      "task_id": "0b974ab8",
+      "files": [
+        "docs/adr/0001-postgresql-als-prim-re-datenbank-f-r-per.md",
+        "docs/adr/0002-celery-und-redis-f-r-asynchrone-webhook.md",
+        "docs/adr/0003-modularer-monolith-als-architekturstil.md"
+      ],
+      "provides": [],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-19T00:37:16+00:00"
+    },
+    {
+      "agent_id": "database",
+      "task_id": "a68e110c",
+      "files": [
+        "alembic.ini",
+        "alembic/env.py",
+        "alembic/script.py.mako",
+        "app/core/config.py",
+        "app/db/base.py",
+        "app/db/models.py",
+        "requirements.txt"
+      ],
+      "provides": [
+        "`Endpoint`, `DeliveryLog`, `IdempotencyKey` (in `app/db/models.py`)",
+        "Async DB-Setup (in `app/db/base.py`)",
+        "Alembic-Setup",
+        "alembic/env.py: run_migrations_offline, do_run_migrations, run_async_migrations, run_migrations_online, config, target_metadata",
+        "app/core/config.py: Settings, get_settings, settings",
+        "app/db/base.py: Base, engine, async_session_maker",
+        "app/db/models.py: utcnow, Endpoint, DeliveryLog, IdempotencyKey"
+      ],
+      "requires": [],
+      "open_issues": [
+        "Initiale Alembic-Migration (`alembic revision --autogenerate -m \"Initial\"`) muss vom Entwickler lokal ausgeführt werden, da der Befehl in der Sandbox nicht auf der Whitelist steht."
+      ],
+      "timestamp": "2026-09-19T00:38:28+00:00"
+    },
+    {
+      "agent_id": "api_integration",
+      "task_id": "a5a3ab17",
+      "files": [
+        "app/api/endpoints.py",
+        "app/api/security.py"
+      ],
+      "provides": [
+        "`POST /api/v1/webhooks/ingest/{endpoint_id}` (app/api/endpoints.py)",
+        "`verify_signature`, `check_idempotency` (app/api/security.py)",
+        "app/api/endpoints.py: create_endpoint, list_endpoints, ingest_webhook, router",
+        "GET /endpoints (app/api/endpoints.py)",
+        "POST /endpoints (app/api/endpoints.py)",
+        "POST /webhooks/ingest/{endpoint_id} (app/api/endpoints.py)",
+        "app/api/security.py: get_db, verify_signature, check_idempotency"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-19T00:39:02+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "5ee88719",
+      "files": [
+        "app/api/deps.py",
+        "app/api/endpoints.py",
+        "app/core/config.py",
+        "app/database.py",
+        "app/main.py",
+        "app/models.py",
+        "app/schemas.py",
+        "requirements.txt"
+      ],
+      "provides": [
+        "`app/main.py` (FastAPI App), `app/api/endpoints.py` (REST-API für Endpoints & Ingestion), `app/schemas.py` (Pydantic Modelle)",
+        "app/api/deps.py: get_db",
+        "app/api/endpoints.py: create_endpoint, list_endpoints, ingest_webhook, router",
+        "GET /endpoints (app/api/endpoints.py)",
+        "POST /endpoints (app/api/endpoints.py)",
+        "POST /ingest/{endpoint_id} (app/api/endpoints.py)",
+        "app/core/config.py: Settings, get_settings, settings",
+        "app/database.py: Base, get_async_session, settings, engine, async_session_maker",
+        "app/main.py: lifespan, health_check, settings, app",
+        "GET /health (app/main.py)",
+        "app/models.py: WebhookEndpoint",
+        "app/schemas.py: WebhookEndpointCreate, WebhookEndpointOut"
+      ],
+      "requires": [
+        "`app.api.security.verify_signature`, `app.api.security.check_idempotency` (von `api_integration`), `app.db.models` (von `database`)"
+      ],
+      "open_issues": [
+        "`app/main.py` importiert aktuell noch `engine` und `Base` aus `app.database` (meinem initialen Entwurf) statt aus `app.db.base` (dem finalen Modul des Database-Agenten). Dies muss im nächsten Fix-Zyklus oder durch den Database-Agenten in `a"
+      ],
+      "timestamp": "2026-09-19T00:39:48+00:00"
+    },
+    {
+      "agent_id": "data_engineer",
+      "task_id": "6a94c380",
+      "files": [
+        "app/worker/__init__.py",
+        "app/worker/dispatcher.py"
+      ],
+      "provides": [
+        "`WebhookDispatcher`, `BackoffConfig`, `DeliveryResult` (in `app/worker/dispatcher.py`, re-exportiert in `app/worker/__init__.py`)",
+        "app/worker/dispatcher.py: utcnow, BackoffConfig, DeliveryResult, WebhookDispatcher, logger"
+      ],
+      "requires": [
+        "`app/db/models.py` (`DeliveryLog`, `Endpoint`), `AsyncSession`"
+      ],
+      "open_issues": [],
+      "timestamp": "2026-09-19T00:40:04+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "7f08c63f",
+      "files": [
+        "tests/conftest.py",
+        "tests/test_smoke.py",
+        "tests/test_webhook_ingestion.py"
+      ],
+      "provides": [
+        "`tests/conftest.py`, `tests/test_smoke.py`, `tests/test_webhook_ingestion.py`",
+        "tests/conftest.py: db_session, override_get_db, test_webhook_ingestion_with_db, DATABASE_URL, engine, TestingSessionLocal",
+        "tests/test_smoke.py: test_app_starts_and_health_ok",
+        "tests/test_webhook_ingestion.py: test_webhook_ingestion_hmac_validation"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-19T00:40:45+00:00"
+    },
+    {
+      "agent_id": "security",
+      "task_id": "44953f5b",
+      "files": [
+        "app/api/security.py",
+        "docs/SECURITY_AUDIT.md"
+      ],
+      "provides": [
+        "`docs/SECURITY_AUDIT.md` (Security Audit Report)",
+        "`verify_signature` mit Replay-Schutz, `check_idempotency` mit DB-Validierung (in `app/api/security.py`)",
+        "app/api/security.py: get_db, verify_signature, check_idempotency, settings"
+      ],
+      "requires": [
+        "`database` oder `backend` muss in `app/core/config.py` die Settings anpassen: `ALLOWED_HOSTS` und `CORS_ORIGINS` auf eine Whitelist umstellen (kein `[\"*\"]`) und `HMAC_SECRET_KEY` hinzufügen."
+      ],
+      "open_issues": [
+        "Unsichere Defaults für CORS und TrustedHostMiddleware in der Config",
+        "fehlender dedizierter `HMAC_SECRET_KEY` (Fallback auf `SECRET_KEY` ist aktuell in `security.py` implementiert)."
+      ],
+      "timestamp": "2026-09-19T00:41:37+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "verify_fix_tester_1",
+      "files": [
+        "pytest.ini",
+        "tests/test_webhook_ingestion.py"
+      ],
+      "provides": [
+        "`tests/test_webhook_ingestion.py`, `pytest.ini`",
+        "tests/test_webhook_ingestion.py: test_webhook_ingestion_hmac_validation"
+      ],
+      "requires": [],
+      "open_issues": [
+        "`CompileError` bei `JSONB` in SQLite-Testumgebung",
+        "Umstellung der Test-Datenbank auf PostgreSQL erforderlich."
+      ],
+      "timestamp": "2026-09-19T00:42:49+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "verify_model_escalation_tester_2",
+      "files": [
+        "tests/conftest.py"
+      ],
+      "provides": [
+        "`tests/conftest.py` (vollständige Fixtures für Async-DB und HTTPX-Client mit sauberen Dependency-Overrides)",
+        "tests/conftest.py: db_session, client, SQLALCHEMY_DATABASE_URL, engine, TestingSessionLocal"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-19T00:43:50+00:00"
+    }
+  ],
+  "claims": {
+    "requirements.txt": "backend",
+    "app/core/config.py": "database",
+    "app/db/base.py": "database",
+    "app/db/models.py": "database",
+    "alembic.ini": "database",
+    "app/database.py": "backend",
+    "app/models.py": "backend",
+    "app/schemas.py": "backend",
+    "app/api/endpoints.py": "backend",
+    "app/main.py": "backend",
+    "alembic/env.py": "database",
+    "alembic/script.py.mako": "database",
+    "app/api/security.py": "api_integration",
+    "app/api/deps.py": "backend",
+    "app/worker/dispatcher.py": "data_engineer",
+    "app/worker/__init__.py": "data_engineer",
+    "tests/test_smoke.py": "tester",
+    "tests/test_webhook_ingestion.py": "tester",
+    "tests/conftest.py": "tester",
+    "docs/SECURITY_AUDIT.md": "security",
+    "pytest.ini": "tester"
+  },
+  "foreign_changes": [
+    {
+      "path": "requirements.txt",
+      "owner": "backend",
+      "changed_by": "database",
+      "timestamp": "2026-09-19T00:37:41+00:00"
+    },
+    {
+      "path": "app/core/config.py",
+      "owner": "database",
+      "changed_by": "backend",
+      "timestamp": "2026-09-19T00:38:26+00:00"
+    },
+    {
+      "path": "app/api/endpoints.py",
+      "owner": "backend",
+      "changed_by": "api_integration",
+      "timestamp": "2026-09-19T00:38:57+00:00"
+    },
+    {
+      "path": "app/api/security.py",
+      "owner": "api_integration",
+      "changed_by": "security",
+      "timestamp": "2026-09-19T00:41:27+00:00"
+    }
+  ],
+  "questions": []
+}

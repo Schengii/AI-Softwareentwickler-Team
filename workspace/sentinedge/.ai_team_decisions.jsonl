@@ -1,0 +1,3 @@
+{"timestamp": "2026-09-19T00:15:43.093049+00:00", "event": "project_scaffold_applied", "detail": "Stack fastapi: pytest.ini, requirements.txt, requirements-dev.txt, .env.example"}
+{"timestamp": "2026-09-19T00:18:31.034035+00:00", "event": "integration_checkpoint", "detail": "1 Befund(e) → behoben"}
+{"timestamp": "2026-09-19T00:20:39.913421+00:00", "event": "security_handoff_checkpoint", "detail": "1 Anforderung(en) → 1 weiterhin offen"}

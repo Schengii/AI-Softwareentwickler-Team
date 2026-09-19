@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+pydantic
+sqlalchemy
+aiosqlite
+greenlet
+cryptography
+bcrypt
+httpx

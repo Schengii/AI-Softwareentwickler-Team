@@ -1,0 +1,28 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/core/crypto.py": {
+      "CryptoService": "class"
+    },
+    "app/core/security.py": {
+      "verify_api_key": "function",
+      "get_current_client": "function"
+    },
+    "app/db/session.py": {
+      "get_db": "function",
+      "Base": "constant"
+    },
+    "app/services/secret_service.py": {
+      "SecretService": "class"
+    },
+    "app/services/feature_flag_service.py": {
+      "FeatureFlagService": "class"
+    },
+    "app/services/audit_service.py": {
+      "AuditService": "class"
+    }
+  }
+}

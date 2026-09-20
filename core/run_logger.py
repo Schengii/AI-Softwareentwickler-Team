@@ -133,6 +133,12 @@ class RunLogger:
             "prompt_tokens": getattr(result, "prompt_tokens", 0),
             "completion_tokens": getattr(result, "completion_tokens", 0),
             "total_tokens": getattr(result, "total_tokens", 0),
+            # Realer Fund (ROADMAP_TEMP.md P5-2, notecatcher-Referenzlauf 2026-09-20): fehlten
+            # hier bisher komplett, obwohl token_guard sie korrekt aggregierte - jede
+            # Cache-Auswertung war dadurch auf den Freitext des Abschlussberichts angewiesen
+            # statt auf strukturierte Trace-Daten.
+            "cache_read_tokens": getattr(result, "cache_read_tokens", 0),
+            "cache_write_tokens": getattr(result, "cache_write_tokens", 0),
             "duration_seconds": round(getattr(result, "duration_seconds", 0.0) or 0.0, 2),
             "tool_calls_count": getattr(result, "tool_calls_count", 0),
             "files_written": list(getattr(result, "files_written", []) or []),

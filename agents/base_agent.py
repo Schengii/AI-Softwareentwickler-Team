@@ -170,7 +170,10 @@ class BaseAgent(ABC):
                 toolbox = AgentToolbox(project_dir=task.project_dir, agent_id=self.agent_id, read_only=task.tools_read_only)
                 stable_prompt = self._augment_with_tool_instructions(self.system_prompt, read_only=task.tools_read_only)
                 effective_system_prompt = agent_knowledge_base.get_augmented_prompt(self.agent_id, stable_prompt)
-                response, prompt_tokens, completion_tokens, hard_delivery_gate_failed = await self._run_agentic_loop(
+                (
+                    response, prompt_tokens, completion_tokens,
+                    cache_read_tokens, cache_write_tokens, hard_delivery_gate_failed,
+                ) = await self._run_agentic_loop(
                     task=task, toolbox=toolbox, system_prompt=effective_system_prompt,
                 )
             else:
@@ -182,6 +185,7 @@ class BaseAgent(ABC):
                 prompt = self._build_prompt(task)
                 response = await self._llm.generate_with_usage(prompt, effective_system_prompt)
                 prompt_tokens, completion_tokens = response.prompt_tokens, response.completion_tokens
+                cache_read_tokens, cache_write_tokens = response.cache_read_tokens, response.cache_write_tokens
 
             duration = time.monotonic() - start_time
             # Hard Delivery Gate: ein Code-schreibender Agent, der trotz Korrektur-Retry in
@@ -204,6 +208,8 @@ class BaseAgent(ABC):
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=prompt_tokens + completion_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
                     files_written=[],
                     tool_calls_count=toolbox.call_count if toolbox else 0,
                     # NO_DELIVERY statt AGENT_ERROR (Ticket-Vorlage P1-5): der Agent hat kein
@@ -227,6 +233,8 @@ class BaseAgent(ABC):
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=prompt_tokens + completion_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
                 files_written=sorted(toolbox.files_written) if toolbox else [],
                 tool_calls_count=toolbox.call_count if toolbox else 0,
                 needs_human_input=bool(toolbox and toolbox.clarification_requests),
@@ -337,7 +345,7 @@ class BaseAgent(ABC):
         task: AgentTask,
         toolbox: AgentToolbox,
         system_prompt: str,
-    ) -> tuple[LLMResponse, int, int, bool]:
+    ) -> tuple[LLMResponse, int, int, int, int, bool]:
         """
         Der echte Werkzeug-Loop: Modell antwortet entweder mit finalem Text ODER
         mit angeforderten Werkzeug-Aufrufen. Werkzeug-Aufrufe werden ausgeführt,
@@ -375,6 +383,11 @@ class BaseAgent(ABC):
 
         total_prompt_tokens = 0
         total_completion_tokens = 0
+        # Realer Fund (ROADMAP_TEMP.md P5-2, notecatcher-Referenzlauf 2026-09-20): ohne diese
+        # Summierung blieb die Cache-Wirksamkeit unsichtbar - token_guard bekam sie korrekt
+        # gemeldet, aber AgentResult (und damit jede Trace-Zeile) nie.
+        total_cache_read_tokens = 0
+        total_cache_write_tokens = 0
         response: LLMResponse | None = None
         active_llm = self._llm
         disallowed_tool_call_retry_used = False
@@ -505,6 +518,8 @@ class BaseAgent(ABC):
 
             total_prompt_tokens += response.prompt_tokens
             total_completion_tokens += response.completion_tokens
+            total_cache_read_tokens += response.cache_read_tokens
+            total_cache_write_tokens += response.cache_write_tokens
 
             if allow_fallback and response.model_name != self._llm.model_name:
                 active_llm = LLMFactory.create_for_model(response.model_name)
@@ -675,7 +690,10 @@ class BaseAgent(ABC):
                 toolbox.watchdog_events = list(watchdog.events)
 
         assert response is not None
-        return response, total_prompt_tokens, total_completion_tokens, hard_delivery_gate_failed
+        return (
+            response, total_prompt_tokens, total_completion_tokens,
+            total_cache_read_tokens, total_cache_write_tokens, hard_delivery_gate_failed,
+        )
 
     def _team_board_view(self, task: AgentTask) -> str:
         """Aktuelle Team-Board-Sicht (core/team_board.py) für den Start dieser Aufgabe."""

@@ -527,5 +527,65 @@ class TestArchitectAdrCallRetry(unittest.TestCase):
         self.assertEqual(fake_llm.call_count, 1)
 
 
+class TestCacheTokensPropagateToAgentResult(unittest.TestCase):
+    """Realer Fund (ROADMAP_TEMP.md P5-2, notecatcher-Referenzlauf 2026-09-20): Caching wurde
+    korrekt an token_guard gemeldet (Abschlussbericht zeigte 63% Trefferquote), aber
+    AgentResult - und damit jede einzelne Trace-Zeile - hatte gar kein cache_read_tokens-Feld.
+    Diese Tests decken die Weitergabe LLMResponse -> _run_agentic_loop() -> AgentResult ab,
+    inklusive Summierung über mehrere Iterationen desselben Werkzeug-Loops."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_single_iteration_cache_tokens_reach_agent_result(self):
+        # tools_read_only=True: umgeht das Hard Delivery Gate (das nur codeschreibende Aufgaben
+        # betrifft) und hält den Test auf EINE Iteration beschränkt - reiner Nachweis, dass ein
+        # einzelnes cache_read_tokens korrekt bis ins AgentResult durchgereicht wird.
+        response = LLMResponse(
+            text="Zusammenfassung.", model_name="fake-model",
+            prompt_tokens=100, completion_tokens=20, total_tokens=120,
+            cache_read_tokens=3336, cache_write_tokens=0, tool_calls=[],
+        )
+        fake_llm = _ScriptedLLM([response])
+        agent = BackendAgent()
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="backend", description="Fasse den Stand zusammen",
+                          project_dir=self.temp_dir, tools_read_only=True, max_tool_iterations=5)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.cache_read_tokens, 3336)
+        self.assertEqual(result.cache_write_tokens, 0)
+
+    def test_cache_tokens_summed_across_multiple_iterations(self):
+        from core.llm_factory import ToolCall
+
+        write_call = LLMResponse(
+            text="", model_name="fake-model", prompt_tokens=50, completion_tokens=10,
+            total_tokens=60, cache_read_tokens=1000, cache_write_tokens=500,
+            tool_calls=[ToolCall(id="1", name="write_file", arguments={"path": "app.py", "content": "print('a')"})],
+        )
+        final_response = LLMResponse(
+            text="Fertig.", model_name="fake-model", prompt_tokens=40, completion_tokens=5,
+            total_tokens=45, cache_read_tokens=1200, cache_write_tokens=0, tool_calls=[],
+        )
+        fake_llm = _ScriptedLLM([write_call, final_response])
+        agent = BackendAgent()
+        agent._llm = fake_llm
+        task = AgentTask(task_id="t1", agent_id="backend", description="Baue app.py",
+                          project_dir=self.temp_dir, max_tool_iterations=5)
+
+        result = asyncio.run(agent.execute(task))
+
+        self.assertTrue(result.success, result.error)
+        # Summiert über BEIDE Iterationen, nicht nur die letzte.
+        self.assertEqual(result.cache_read_tokens, 1000 + 1200)
+        self.assertEqual(result.cache_write_tokens, 500)
+
+
 if __name__ == "__main__":
     unittest.main()

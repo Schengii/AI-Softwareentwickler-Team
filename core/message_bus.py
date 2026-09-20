@@ -43,6 +43,15 @@ class AgentResult:
     prompt_tokens: int = 0               # Verbrauchte Prompt-Tokens
     completion_tokens: int = 0           # Verbrauchte Completion-Tokens
     total_tokens: int = 0                # Gesamt-Tokens für diese Teilaufgabe
+    # Realer Fund (Referenzlauf 'notecatcher', 2026-09-20, siehe ROADMAP_TEMP.md P5-2): das
+    # Caching (core/llm_factory.py.LLMResponse.cache_read_tokens/cache_write_tokens) wurde schon
+    # korrekt an token_guard gemeldet und tauchte damit im Abschlussbericht auf ("63% Cache-
+    # Trefferquote"), aber NICHT hier - jede einzelne agent_call-Trace-Zeile
+    # (core/run_logger.py.log_agent_result()) zeigte deshalb weiterhin 0, obwohl das Caching
+    # tatsächlich griff. Ohne diese beiden Felder lässt sich Cache-Wirksamkeit nie pro Agent/Rolle
+    # auswerten, nur als ein einziger Prozentwert für den gesamten Lauf.
+    cache_read_tokens: int = 0           # Aus dem Cache bediente Prompt-Tokens (0 = kein Treffer/kein Caching)
+    cache_write_tokens: int = 0          # Für einen neuen Cache-Eintrag geschriebene Tokens (nur Anthropic-Pfad bisher)
     files_written: list[str] = field(default_factory=list)  # Relative Pfade, die der Agent selbst via Tools geschrieben/geändert hat
     tool_calls_count: int = 0            # Anzahl der Werkzeug-Aufrufe während der Ausführung
     # Realer Fund: Rückfragen (core/task_manager.py needs_clarification) passierten bisher NUR

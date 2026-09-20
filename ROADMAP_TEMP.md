@@ -836,10 +836,16 @@ noch 2×.
    > `prompt_tokens`/`completion_tokens`/`total_tokens` vom `AgentResult`. Der ursprüngliche
    > „0 % über alle 264 Traces"-Befund oben war also selbst teilweise ein Artefakt dieser
    > Beobachtungslücke, nicht nur fehlenden Cachings – zum Zeitpunkt der Messung stimmte aber
-   > wahrscheinlich beides gleichzeitig (kein Cache UND keine Sichtbarkeit). Separates, kleines
-   > Ticket wert: `cache_read_tokens`/`cache_write_tokens` durch `AgentResult` bis in den Trace
-   > durchreichen, sonst bleibt jede künftige Cache-Analyse auf den Abschlussbericht-Text
-   > angewiesen statt auf strukturierte Trace-Daten.
+   > wahrscheinlich beides gleichzeitig (kein Cache UND keine Sichtbarkeit).
+   >
+   > **Ebenfalls behoben, 2026-09-20:** `cache_read_tokens`/`cache_write_tokens` sind jetzt
+   > Felder auf `core/message_bus.py.AgentResult`, werden in `agents/base_agent.py._run_agentic_loop()`
+   > über alle Iterationen summiert (nicht nur aus der letzten Antwort übernommen) und landen
+   > via `core/run_logger.py.log_agent_result()` in jeder `agent_call`-Trace-Zeile. Künftige
+   > Cache-Analysen können sich damit auf strukturierte Trace-Daten stützen statt auf den
+   > Freitext des Abschlussberichts. Abgedeckt durch zwei neue Tests in
+   > `tests/test_agentic_loop_resilience.py` (Einzel-Iteration und Summierung über mehrere
+   > Iterationen hinweg).
 2. **Kontext-Kompaktierung früher greifen lassen.** `context_chars_compacted` lag im letzten Lauf
    bei nur 24.839 Zeichen über den *ganzen* Lauf. Die Empfehlung aus der Fehleranalyse
    (> 15 Tool-Calls oder > 100k Tokens ⇒ Zwischenergebnis erzwingen) ist noch nicht umgesetzt.

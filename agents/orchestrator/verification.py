@@ -421,6 +421,10 @@ class VerificationMixin:
         # Danach GENAU EINMAL pro Lauf ein letzter Versuch mit HEAVY_MODEL nur für die betroffenen
         # Agenten, statt erst im späteren Backlog-Retry (core/backlog_worker.py) zu eskalieren.
         model_escalation_attempted = False
+        # Letzte Stufe der Eskalationsleiter: eine Zweitmeinung einer ANDEREN Rolle - siehe
+        # _second_opinion_fix_round(). Greift auch dann, wenn HEAVY_MODEL nicht erreichbar ist,
+        # und ist damit die einzige Stufe, die keine stärkere Modellstufe voraussetzt.
+        second_opinion_attempted = False
         # Vorinitialisiert: bei MAX_VERIFICATION_ITERATIONS > 2 kann der "kein Fortschritt"-Zweig nach
         # bereits erfolgter Eskalation erneut greifen und top_failures im Ticket-Text referenzieren.
         top_failures = ""
@@ -969,6 +973,32 @@ class VerificationMixin:
                         if not model_escalation_attempted and stuck_owners:
                             model_escalation_attempted = True
                             escalated_agent_ids = self._escalate_agent_models(stuck_owners)
+                            # HEAVY_MODEL nachweislich nicht erreichbar: der Versuch würde intern
+                            # auf ein SCHWÄCHERES Modell zurückfallen als das, mit dem der Fix
+                            # zuvor schon zweimal gescheitert ist - er kann also nichts Neues
+                            # bringen und wird übersprungen statt verbrannt. Der Grund gehört
+                            # sichtbar ins Protokoll UND ins Ticket, sonst liest sich das
+                            # Ergebnis wie ein Agenten-/Prompt-Problem, obwohl es ein
+                            # Infrastruktur-/Kontingent-Befund ist.
+                            _blocked_reason = getattr(self, "last_model_escalation_blocked_reason", None)
+                            if not escalated_agent_ids and _blocked_reason:
+                                notify(
+                                    f"  ⏭️ [dim yellow]Modell-Eskalation übersprungen:[/dim yellow] "
+                                    f"{_blocked_reason} - ein Versuch auf derselben oder einer "
+                                    "schwächeren Stufe kann den Fehler nicht neu angehen."
+                                )
+                                summary_lines.append(
+                                    f"- ⏭️ Modell-Eskalation auf HEAVY_MODEL übersprungen: {_blocked_reason}. "
+                                    "Der Versuch wäre auf derselben oder einer schwächeren Stufe gelaufen "
+                                    "als die bereits gescheiterten - kein neuer Ansatz, nur Mehrverbrauch."
+                                )
+                                _heavy_escalation_downgrade_note = (
+                                    "\n\n⚠️ Hinweis: Die HEAVY_MODEL-Eskalation wurde gar nicht erst "
+                                    f"versucht, weil die Stufe nicht erreichbar war ({_blocked_reason}). "
+                                    "Dieses Ticket ist damit eher ein Infrastruktur-/Kontingent- als ein "
+                                    "Agenten-/Prompt-Befund - ein erneuter Anlauf lohnt erst, wenn die "
+                                    "Modellstufe wieder verfügbar ist."
+                                )
                             if escalated_agent_ids:
                                 notify(
                                     f"  ⬆️ [bold yellow]Letzter Versuch mit stärkerem Modell:[/bold yellow] "
@@ -1050,6 +1080,37 @@ class VerificationMixin:
                                             notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
                                     break
                                 escalated_and_resolved = True  # Auch mit stärkerem Modell weiterhin rot - unten normal abbrechen.
+
+                        # Letzte Stufe: Zweitmeinung einer anderen Rolle. Bewusst NACH der
+                        # Modell-Eskalation, aber unabhängig davon, ob diese überhaupt möglich
+                        # war - sie ist die einzige Stufe, die ohne stärkere Modellstufe
+                        # auskommt (siehe _second_opinion_fix_round()).
+                        if not second_opinion_attempted and stuck_owners and not (
+                            run_start_tokens is not None and (
+                                self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                            )
+                        ):
+                            second_opinion_attempted = True
+                            _resolved, report = await self._second_opinion_fix_round(
+                                verifier=verifier, project_dir=project_dir, stuck_owners=stuck_owners,
+                                top_failures=top_failures, attempt=attempt, file_owners=file_owners,
+                                all_results=all_results, summary_lines=summary_lines, notify=notify,
+                                current_report=report,
+                            )
+                            if _resolved:
+                                verification_ok = True
+                                if had_prior_test_ticket and test_ticket_id:
+                                    try:
+                                        upsert_ticket(
+                                            ticket_id=test_ticket_id,
+                                            title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                                            source="orchestrator", status="done", project_slug=self.last_project_slug,
+                                            detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
+                                        )
+                                    except Exception as e:
+                                        notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
+                                break
+                            escalated_and_resolved = True
 
                     notify(
                         "  🛑 [bold red]Kein Fortschritt:[/bold red] identische Testfehler wie vor dem letzten "
@@ -1418,19 +1479,23 @@ class VerificationMixin:
             # das Backlog-Ticket entstanden. Ein Versuch, dann eskalieren, dann erst aufgeben.
             completeness_model_escalation_attempted = False
             for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
-                if run_start_tokens is not None and (
-                    self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
-                ):
-                    budget_aborted = True
-                    notify("  🚫 [bold red]Budget erreicht[/bold red] – weitere Vollständigkeits-Fixversuche werden übersprungen.")
-                    summary_lines.append(f"- 🚫 {self._budget_exceeded_label(run_start_tokens)} erreicht – Vollständigkeits-Check nach Versuch {attempt - 1} abgebrochen.")
-                    break
                 if cancel_requested and cancel_requested():
                     manually_cancelled = True
                     notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – weitere Vollständigkeits-Fixversuche werden übersprungen.")
                     summary_lines.append(f"- ⏹️ Manuell abgebrochen – Vollständigkeits-Check nach Versuch {attempt - 1} beendet.")
                     break
 
+                # Die MESSUNG läuft vor dem Budget-Gate: `check_completeness()` ist ein rein
+                # deterministischer AST-/Dateisystem-Check (core/verifier/completeness.py) und
+                # kostet KEINE Tokens. Das Gate stand bisher davor, wodurch bei erschöpftem
+                # Budget gar nicht erst gemessen wurde - `completeness_report` blieb `None`, die
+                # Aufzeichnung unten (`if completeness_report is not None and ... .attempted`)
+                # fiel aus, und der Check galt als "nicht gemessen" statt als bestanden oder
+                # gerissen. Real beobachtet bei `sentinedge` und `eventforge_core`
+                # (2026-09-19): "🚫 Lauf-Budget erreicht – Vollständigkeits-Check nach Versuch 0
+                # abgebrochen" - ein Qualitätssignal ging verloren, ohne dass dadurch auch nur
+                # ein Token gespart wurde. Budgetpflichtig ist erst der FIX-Versuch weiter
+                # unten, der einen echten Agenten-Aufruf kostet.
                 completeness_report = await asyncio.to_thread(verifier.check_completeness)
                 if not completeness_report.attempted:
                     break
@@ -1441,6 +1506,27 @@ class VerificationMixin:
                     else:
                         notify(f"  🧩 [bold green]Vollständigkeits-Check nach Fix (Versuch {attempt}) bestanden.[/bold green]")
                         summary_lines.append(f"- 🧩 Vollständigkeits-Check nach {attempt} Durchlauf/Durchläufen bestanden.")
+                    break
+
+                # Ab hier kostet jeder weitere Schritt einen echten Agenten-Aufruf - erst jetzt
+                # greift das Budget-Gate. Der Befund ist zu diesem Zeitpunkt bereits gemessen
+                # und wird unten regulär aufgezeichnet, statt als "nicht gemessen" zu verpuffen.
+                if run_start_tokens is not None and (
+                    self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                ):
+                    budget_aborted = True
+                    top_open = "; ".join(
+                        f"{i.file_path}:{i.line_number} – {i.message}" for i in completeness_report.issues[:5]
+                    )
+                    notify(
+                        f"  🚫 [bold red]Budget erreicht[/bold red] – die {len(completeness_report.issues)} "
+                        "Vollständigkeits-Fund(e) bleiben ungefixt (Befund wurde aber gemessen)."
+                    )
+                    summary_lines.append(
+                        f"- 🚫 {self._budget_exceeded_label(run_start_tokens)} erreicht – "
+                        f"{len(completeness_report.issues)} Vollständigkeits-Fund(e) gemessen, aber nach "
+                        f"Versuch {attempt - 1} kein Fixversuch mehr möglich: {top_open}"
+                    )
                     break
 
                 current_completeness_signature = _issue_signature(
@@ -1820,6 +1906,111 @@ class VerificationMixin:
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."
         )
         return all_results, verification_summary, budget_aborted, manually_cancelled, verification_ok
+
+    # Rollen, die eine Zweitmeinung abgeben können: analysieren fremden Code als Kernaufgabe
+    # und sind nicht selbst Eigentümer der steckenden Dateien. Reihenfolge ist Priorität.
+    _SECOND_OPINION_ROLES = ("code_reviewer", "refactoring", "architect")
+
+    async def _second_opinion_fix_round(
+        self, *, verifier, project_dir: str, stuck_owners: set, top_failures: str, attempt: int,
+        file_owners: dict, all_results: list, summary_lines: list[str], notify, current_report,
+    ):
+        """Zweitmeinung einer ANDEREN Rolle, dann ein Fix mit dieser Diagnose im Kontext.
+
+        Letzte Stufe der Eskalationsleiter. Die drei bisherigen Stufen sind (1) derselbe Agent
+        mit gezieltem Auftrag, (2) der Fachbereichsleiter mit geänderter Strategie, (3) dieselben
+        Agenten auf HEAVY_MODEL. Stufe 2 und 3 haben beide eine Schwäche: der Fachbereichsleiter
+        delegiert am Ende wieder an dieselben Teammitglieder, und Stufe 3 setzt voraus, dass eine
+        stärkere Modellstufe überhaupt erreichbar ist - genau das war bei `aetherqueue` und
+        `eventforge_core` (2026-09-18/19) nicht der Fall, weshalb die Leiter dort faktisch nach
+        Stufe 2 endete und acht `recurring-failure-*`-Tickets mit derselben Diagnose entstanden:
+        "Fixversuch änderte nichts an N Testfehler(n) - vermutlich falscher/unzureichend
+        instruierter Agent."
+
+        Diese Stufe ändert nicht das Modell, sondern den BLICKWINKEL, und ist damit die einzige,
+        die auch bei erschöpftem Kontingent noch etwas Neues beitragen kann: eine nicht beteiligte
+        Rolle liest den Code READ-ONLY und schreibt eine Diagnose; erst diese Diagnose geht dann
+        als Kontext in einen letzten Fix-Auftrag an die eigentlichen Eigentümer. Das entspricht
+        dem, was ein echtes Team tut, wenn jemand dreimal an derselben Stelle hängt - es holt
+        jemanden dazu, der draufschaut, statt lauter dieselbe Anweisung zu wiederholen.
+
+        Gibt `(resolved, report)` zurück: `report` ist der Teststand NACH dieser Runde (oder
+        unverändert `current_report`, wenn die Runde nicht zustande kam).
+        """
+        reviewer = next(
+            (a for a in self._SECOND_OPINION_ROLES if a in self._agents and a not in stuck_owners),
+            None,
+        )
+        if reviewer is None:
+            return False, current_report
+
+        notify(
+            f"  🧑‍⚖️ [bold yellow]Zweitmeinung:[/bold yellow] {reviewer} analysiert den Fehler "
+            "unbeteiligt (read-only), bevor ein letzter Fix versucht wird..."
+        )
+        diagnosis_results = await self._run_agents_parallel([AgentTask(
+            task_id=f"verify_second_opinion_{reviewer}_{attempt}",
+            agent_id=reviewer,
+            description=(
+                "Ein Testfehler ist trotz mehrerer Fixversuche der zuständigen Kollegen "
+                f"({', '.join(sorted(stuck_owners))}) unverändert geblieben - derselbe Ansatz "
+                "hat erkennbar nicht funktioniert. Du bist an diesem Code bisher NICHT beteiligt "
+                "gewesen. Lies die betroffenen Dateien und den Test und stelle eine DIAGNOSE:\n"
+                "1. Was ist die tatsächliche Ursache (nicht das Symptom)?\n"
+                "2. Welche Grundannahme der bisherigen Fixversuche war falsch?\n"
+                "3. Welche konkrete Datei/Funktion muss wie geändert werden?\n\n"
+                "Schreibe KEINEN Code und ändere KEINE Datei - liefere nur die Diagnose als "
+                f"knappen Text.\n\n{top_failures}"
+            ),
+            context="", project_dir=project_dir, tools_read_only=True,
+        )], notify=notify)
+        all_results.extend(diagnosis_results)
+
+        diagnosis = next(
+            (r.content.strip() for r in diagnosis_results if r.success and r.content.strip()), "",
+        )
+        if not diagnosis:
+            summary_lines.append(
+                f"- 🧑‍⚖️ Versuch {attempt}: Zweitmeinung durch {reviewer} lieferte keine verwertbare Diagnose."
+            )
+            return False, current_report
+
+        fix_results = await self._run_agents_parallel([
+            AgentTask(
+                task_id=f"verify_second_opinion_fix_{owner}_{attempt}",
+                agent_id=owner,
+                description=(
+                    "Deine bisherigen Fixversuche haben den Testfehler nicht behoben. Ein "
+                    f"unbeteiligter Kollege ({reviewer}) hat den Code daraufhin durchgesehen. "
+                    "Setze SEINE Diagnose um, statt deinen bisherigen Ansatz zu wiederholen - "
+                    "auch dann, wenn du ihn für falsch hältst; in dem Fall widerlege ihn "
+                    "ausdrücklich im Ergebnis, statt ihn stillschweigend zu ignorieren.\n\n"
+                    f"=== DIAGNOSE VON {reviewer.upper()} ===\n{diagnosis[:4000]}\n\n"
+                    f"=== UNVERÄNDERTER TESTFEHLER ===\n{top_failures}"
+                ),
+                context="", project_dir=project_dir,
+            )
+            for owner in sorted(stuck_owners)
+        ], notify=notify)
+        self._update_file_owners(file_owners, fix_results)
+        all_results.extend(fix_results)
+        summary_lines.append(
+            f"- 🧑‍⚖️ Versuch {attempt}: kein Fortschritt trotz Eskalation → Zweitmeinung durch "
+            f"{reviewer} eingeholt und an {', '.join(sorted(stuck_owners))} zur Umsetzung gegeben."
+        )
+
+        await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
+        report = await self._run_tests_logged(verifier, "nach-zweitmeinung")
+        if report.passed:
+            notify(
+                f"  ✅ [bold green]Zweitmeinung erfolgreich:[/bold green] Alle Tests bestanden "
+                f"(Versuch {attempt}, {report.duration_seconds:.1f}s)."
+            )
+            summary_lines.append(
+                f"- ✅ Die Zweitmeinung durch {reviewer} behob den Fehler – Testsuite bestanden."
+            )
+            return True, report
+        return False, report
 
     async def _recheck_stale_blocking_checks(
         self, project_dir: str, outcome: VerificationOutcome,

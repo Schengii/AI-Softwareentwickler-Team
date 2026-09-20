@@ -295,7 +295,7 @@ Branch mit mindestens einem neuen, vorher fehlschlagenden Test und einem Draft-P
 ---
 
 ### P1-2 · `recurring-failure-*`-Sackgasse: 8 Tickets, kein Weg heraus
-**Status:** ❌ offen · **Aufwand:** M · **Wirkung:** hoch
+**Status:** ✅ **erledigt 2026-09-20** (Stufe „Zweitmeinung") · **Wirkung:** hoch
 
 Offen: `recurring-failure-{eventforge_core, sentinedge, hyperion_metrics, chronoflow,
 entwickle_das_projekt_sentinel, devpulse, aegis_mesh, chronos_ledger}`. Fast alle tragen dieselbe
@@ -344,7 +344,7 @@ verifiziert ist.
 ---
 
 ### P1-4 · Orchestrator-Absturz (`CancelledError`) ohne Wiederaufnahme
-**Status:** ❌ offen · **Aufwand:** M · **Wirkung:** mittel
+**Status:** ✅ **erledigt 2026-09-20** · **Wirkung:** mittel
 
 Ticket `orchestrator-crash-CancelledError-entwickle_eventforge_ein_webhook`, Stelle:
 `agents/base_agent.py:427` in `_run_agentic_loop` → `generate_with_tools`. Ein `CancelledError`
@@ -640,7 +640,7 @@ verschärfen.
 ## 6. 🟣 P5 – Kosten, Kapazität & Modell-Realität
 
 ### P5-1 · Alle Premium-Modelle liegen auf Cooldown – das Team läuft dauerhaft im Notbetrieb
-**Status:** ❌ offen · **Aufwand:** S (Framework-Seite) / extern (Kontingente) · **Wirkung:** sehr hoch
+**Status:** 🟡 **Punkt 2 erledigt 2026-09-20**, Punkte 1 und 3 offen · **Wirkung:** sehr hoch
 
 `memory/provider_cooldowns.json` – aktueller Stand:
 
@@ -705,17 +705,39 @@ noch 2×.
 ---
 
 ### P5-3 · Budget-Abbruch trifft die Verifikation statt der Produktion
-**Status:** ❌ offen · **Aufwand:** S · **Wirkung:** mittel
+**Status:** ✅ **erledigt 2026-09-20 – aber anders als ursprünglich gedacht**
 
-In `sentinedge` und `eventforge_core` war das Budget aufgebraucht, **bevor** der
-Completeness-Check laufen konnte – die Qualitätssicherung fiel also genau dann aus, wenn sie am
-nötigsten war.
+> **Teil-Korrektur.** Die vorgeschlagene Lösung („eine feste Reserve von z. B. 15 %
+> zurückhalten") **existiert bereits**: `VERIFICATION_TOKEN_RESERVE_RATIO = 0.15`,
+> `_generation_budget_exceeded()` und `_generation_reserve_is_hard_abort()` in
+> `agents/orchestrator/budget.py` (der „Verification Reserve Paradox"-Fix). Sie hat auch
+> funktioniert – `eventforge_core` stoppte die Generierung bei 855.372 von 850.000 zulässigen
+> Tokens.
 
-**Lösung:** Eine feste Reserve (z. B. 15 % von `MAX_RUN_TOKENS`) für die Verifikationsphase
-zurückhalten; die Entwicklungsphase darf sie nicht anfassen.
+**Der tatsächliche Fund, gemessen über die letzten neun Läufe:**
 
-> ⚠️ Das „Verification Reserve Paradox" ist laut CHANGELOG schon einmal aufgetreten – zuerst
-> prüfen, ob `agents/orchestrator/budget.py` das bereits abdeckt und warum es nicht gegriffen hat.
+| | Verifikations-Anteil am Gesamtverbrauch |
+| :--- | :--- |
+| Läufe **ohne** Budget-Abbruch | 6,9 % · 9,7 % · 14,2 % · 15,6 % · 16,0 % |
+| Läufe **mit** Budget-Abbruch | 19,5 % · 30,4 % · 31,8 % · 35,0 % |
+| Konfigurierte Reserve | **15,0 %** |
+
+Die Trennung ist vollständig: Läufe, die grün durchlaufen, sind in der Verifikation billig –
+Läufe, die **Reparatur** brauchen, kosten dort das Doppelte bis Dreifache der Reserve. Die
+Reserve ist also genau für den Fall zu klein bemessen, für den sie existiert. Sie einfach
+hochzusetzen hilft nicht: die Generierungsphase (`dev_lead` allein: 500.000–750.000 Tokens)
+würde dann abgeschnitten und unfertigen Code liefern.
+
+**Was stattdessen behoben wurde:** Das Budget-Gate der Vollständigkeits-Schleife stand **vor**
+dem Aufruf von `verifier.check_completeness()`. Dieser Check ist rein deterministisch
+(AST/Dateisystem) und kostet **keine Tokens** – gegated wurde also nichts gespart, aber bei
+leerem Budget gar nicht erst gemessen. `completeness_report` blieb `None`, die Aufzeichnung
+fiel aus, und der Check galt als „nicht gemessen" statt bestanden oder gerissen (real:
+„🚫 Lauf-Budget erreicht – Vollständigkeits-Check nach Versuch 0 abgebrochen"). Jetzt läuft die
+Messung immer; budgetpflichtig ist nur noch der **Fix-Versuch**, der einen echten
+Agenten-Aufruf kostet.
+
+**Offen bleibt** die eigentliche Ursache – ein Lauf kostet zu viel: siehe **P5-2**.
 
 ---
 
@@ -804,9 +826,9 @@ ruff check && python -m pytest -q
 | P0-5 | Fehler-Kategorisierung kennt Hauptfehlerarten nicht | P0 | ☑ erledigt |
 | P0-6 | `lint` erscheint fälschlich als Fehlschlag | P0 | ☑ erledigt (Teil 2 offen) |
 | P1-1 | `--work-framework-backlog` (autonome Framework-Fixes) | P1 | ☐ |
-| P1-2 | Eskalations-Strategien statt Wiederholung | P1 | ☐ |
+| P1-2 | Eskalations-Strategien statt Wiederholung | P1 | ☑ erledigt |
 | P1-3 | Ticket-Hygiene: `stale` vs. `error` trennen | P1 | ☐ |
-| P1-4 | `CancelledError` reißt den Lauf mit | P1 | ☐ |
+| P1-4 | `CancelledError` reißt den Lauf mit | P1 | ☑ erledigt |
 | P2-1 | Learnings mit Wirksamkeitsmessung | P2 | ☐ |
 | P2-2 | Modell-Auto-Tuning optimiert falsche Zielgröße | P2 | ☐ |
 | P2-3 | 13 ungenutzte Rollen – entscheiden statt melden | P2 | ☐ |
@@ -820,9 +842,9 @@ ruff check && python -m pytest -q
 | P4-3 | Testtiefe fachlich statt nur Routen | P4 | ☐ |
 | P4-4 | Projekt-Steckbrief für jeden Agenten | P4 | ☐ |
 | P4-5 | Write-Guard gegen Fremddatei-Überschreiben | P4 | ☐ |
-| P5-1 | Degraded-Mode ehrlich machen | P5 | ☐ |
+| P5-1 | Degraded-Mode ehrlich machen | P5 | 🟡 Punkt 2 erledigt |
 | P5-2 | Token-Effizienz / Caching | P5 | ☐ |
-| P5-3 | Verifikations-Reserve im Budget | P5 | ☐ |
+| P5-3 | Verifikations-Reserve im Budget | P5 | ☑ erledigt (Reserve existierte, Gate korrigiert) |
 | P6-1 | Gestagte Fixes committet | P6 | ☑ erledigt |
 | P6-2 | ~~Workspace aus Framework-Commits~~ | P6 | ☑ Fehlannahme, siehe oben |
 | P6-3…8 | Hygiene & Aufräumen | P6 | ☐ |

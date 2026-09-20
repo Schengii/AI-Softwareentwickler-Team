@@ -282,11 +282,22 @@ class Orchestrator(
         bekannt, welche Agenten an der steckenden Datei hängen; alle 33 hochzustufen wäre
         unnötiger Mehrverbrauch.
 
-        Gibt die IDs der tatsächlich hochgestuften Agenten zurück.
+        Gibt die IDs der tatsächlich hochgestuften Agenten zurück - eine leere Menge, wenn
+        HEAVY_MODEL gerade nachweislich nicht erreichbar ist (kein Key oder Kontingent auf
+        Cooldown). Der Aufrufer sieht daran, dass eine Modell-Eskalation sinnlos wäre, BEVOR er
+        einen kompletten Agenten-Aufruf dafür verbrennt: `LLMFactory.create_for_model()` würde
+        auch für ein erschöpftes Modell erfolgreich ein Client-Objekt liefern, der Aufruf fiele
+        dann aber intern auf ein schwächeres Modell zurück als das, mit dem der Fix zuvor schon
+        gescheitert ist (realer Fund aetherqueue/eventforge_core, siehe
+        core/capacity_gate.py.model_unreachable_reason()).
         """
         import config
+        from core.capacity_gate import model_unreachable_reason
         from core.llm_factory import LLMFactory, is_same_model
         heavy_model = config.HEAVY_MODEL
+        self.last_model_escalation_blocked_reason = model_unreachable_reason(heavy_model)
+        if self.last_model_escalation_blocked_reason:
+            return set()
         targets = self._agents.items() if agent_ids is None else (
             (aid, self._agents[aid]) for aid in agent_ids if aid in self._agents
         )

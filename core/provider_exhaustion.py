@@ -62,6 +62,10 @@ FAILURE_CLASS_PROVIDER_EXHAUSTED = "provider_exhausted"   # 429 / RESOURCE_EXHAU
 FAILURE_CLASS_PROVIDER_UNAVAILABLE = "provider_unavailable"  # Kein API-Key / Client nicht instanziierbar
 FAILURE_CLASS_TIMEOUT = "timeout"                          # Zeitüberschreitung
 FAILURE_CLASS_AGENT_ERROR = "agent_error"                  # Echter, dem Agenten zurechenbarer Fehler
+# Der Aufruf wurde von aussen abgebrochen (asyncio.CancelledError), ohne dass der Lauf selbst
+# abgebrochen werden sollte - z.B. ein Abbruch tief im Provider-SDK. Wie die PROVIDER_*-Klassen
+# eine Infrastruktur-, keine Agenten-Aussage: der Agent wurde nie zu Ende gefragt.
+FAILURE_CLASS_CANCELLED = "cancelled"
 
 # Meldungen, die eine fehlende/nicht instanziierbare Provider-Anbindung kennzeichnen - also
 # eine Konfigurationslücke, keinen Agentenfehler. Der erste Marker stammt wörtlich aus
@@ -103,11 +107,15 @@ def classify_failure(error: str | None) -> str:
 
 def is_infrastructure_failure(failure_class: str | None) -> bool:
     """
-    True, wenn ein Fehlschlag der Infrastruktur (Kontingent, fehlender Key) zuzurechnen ist und
-    daher NICHT in die Erfolgsquote eines Agenten einfließen darf. Ein Agent, der wegen eines
-    429 gar nicht erst laufen konnte, hat nicht "versagt" - er wurde nie gefragt.
+    True, wenn ein Fehlschlag der Infrastruktur (Kontingent, fehlender Key, Abbruch von außen)
+    zuzurechnen ist und daher NICHT in die Erfolgsquote eines Agenten einfließen darf. Ein
+    Agent, der wegen eines 429 gar nicht erst laufen konnte, hat nicht "versagt" - er wurde nie
+    gefragt. Dasselbe gilt für einen von außen abgebrochenen Aufruf
+    (FAILURE_CLASS_CANCELLED).
     """
-    return failure_class in (FAILURE_CLASS_PROVIDER_EXHAUSTED, FAILURE_CLASS_PROVIDER_UNAVAILABLE)
+    return failure_class in (
+        FAILURE_CLASS_PROVIDER_EXHAUSTED, FAILURE_CLASS_PROVIDER_UNAVAILABLE, FAILURE_CLASS_CANCELLED,
+    )
 
 
 def is_infrastructure_error(error: str | None) -> bool:

@@ -78,15 +78,46 @@ def _candidate_chain(configured_model: str) -> list[str]:
     return list(dict.fromkeys(chain))
 
 
+def model_unreachable_reason(model: str) -> str | None:
+    """Warum `model` gerade NICHT nutzbar ist - `None`, wenn es nutzbar ist.
+
+    Beantwortet die Frage VOR einem Aufruf, statt sie hinterher am `model_used` des Ergebnisses
+    abzulesen. Realer Fund (aetherqueue/eventforge_core, 2026-09-18/19): die Fix-Schleife in
+    `agents/orchestrator/verification.py` verbrennt als letzten Rettungsanker einen kompletten
+    Agenten-Aufruf mit HEAVY_MODEL. Lag dessen Kontingent auf Cooldown, fiel der Aufruf intern
+    auf ein SCHWÄCHERES Modell zurück als das, mit dem der Fix zuvor schon zweimal gescheitert
+    war - der Versuch konnte also gar nichts Neues bringen und kostete trotzdem Zeit und Budget.
+    Im Protokoll von `eventforge_core` steht das wörtlich: "HEAVY_MODEL-Eskalation für tester
+    griff nicht tatsächlich (Kontingent-Erschöpfung o.ä.)".
+
+    Bewusst hier und nicht in core/token_guard.py: beide Teilfragen zusammen ("ist ein Key
+    konfiguriert?" UND "ist das Kontingent gerade erschöpft?") beantwortet bisher nur
+    `role_capacity()` unten, das sie für die Kapazitätsprüfung vor dem Lauf kombiniert.
+    """
+    from core.llm_factory import _provider_available
+
+    if not model:
+        return "kein Modell konfiguriert"
+    if not _provider_available(model):
+        return f"kein API-Key/Anbieter für '{model}' konfiguriert"
+    if token_guard.is_model_exhausted(model):
+        return token_guard.get_exhausted_reason(model) or f"Kontingent für '{model}' erschöpft"
+    return None
+
+
+def model_is_reachable(model: str) -> bool:
+    """Kurzform von `model_unreachable_reason(model) is None`."""
+    return model_unreachable_reason(model) is None
+
+
 def role_capacity(agent_id: str) -> RoleCapacity:
     from config import get_model_for_agent
-    from core.llm_factory import _provider_available
 
     configured = get_model_for_agent(agent_id)
     min_tier = min_tier_for_agent(agent_id, configured)
     usable = [
         model for model in filter_by_floor(_candidate_chain(configured), min_tier)
-        if _provider_available(model) and not token_guard.is_model_exhausted(model)
+        if model_is_reachable(model)
     ]
     return RoleCapacity(agent_id=agent_id, configured_model=configured, min_tier=min_tier, usable_models=usable)
 

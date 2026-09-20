@@ -102,22 +102,23 @@ class TestVerificationNoProgressBreaker(unittest.TestCase):
 
     def test_identical_failures_after_fix_stop_loop_early(self):
         # MAX_VERIFICATION_ITERATIONS ist standardmäßig 2 - ohne Zirkuit-Breaker würde die
-        # Schleife TROTZDEM beide regulären Versuche ausschöpfen. Seit dem Eskalations-
-        # Strategiewechsel (Team-Retrospektive: "letzter Stand wurde übernommen" statt eine
-        # andere Strategie zu versuchen) folgt auf "kein Fortschritt" GENAU EIN zusätzlicher,
-        # sofort geprüfter Eskalationsversuch an den Fachbereichsleiter, UND (Team-Optimierung
-        # 2026-09-05, Punkt 3) danach GENAU EIN weiterer, ebenfalls sofort geprüfter Versuch mit
-        # auf HEAVY_MODEL hochgestuften, stecken gebliebenen Agenten, bevor endgültig aufgegeben
-        # wird - macht 4 echte run_tests-Aufrufe insgesamt (2 reguläre + 1 Eskalations-Recheck +
-        # 1 Modell-Eskalations-Recheck). Ein fünfter Eintrag im side_effect (der nie erreicht
-        # werden darf) macht das weiterhin messbar.
-        result, logs, mock_verifier, mock_upsert_ticket = self._run(
-            [FAILING_REPORT, FAILING_REPORT, FAILING_REPORT, FAILING_REPORT, FAILING_REPORT],
-        )
+        # Schleife TROTZDEM beide regulären Versuche ausschöpfen. Auf "kein Fortschritt" folgt
+        # seither eine begrenzte Eskalationsleiter, deren Stufen jeweils SOFORT per Testlauf
+        # geprüft werden:
+        #   1.+2. die beiden regulären Fixversuche,
+        #   3. Eskalation an den Fachbereichsleiter (andere Strategie, Team-Retrospektive),
+        #   4. HEAVY_MODEL für die stecken gebliebenen Agenten (Team-Optimierung 2026-09-05),
+        #   5. Zweitmeinung einer unbeteiligten Rolle (Roadmap P1-2, 2026-09-20).
+        # Macht 5 echte run_tests-Aufrufe. Stufe 5 kam dazu, weil die Leiter faktisch nach
+        # Stufe 3 endete, sobald HEAVY_MODEL nicht erreichbar war (aetherqueue,
+        # eventforge_core) - sie ist die einzige Stufe, die ohne stärkere Modellstufe auskommt.
+        # Ein sechster Eintrag im side_effect (der nie erreicht werden darf) hält das messbar.
+        result, logs, mock_verifier, mock_upsert_ticket = self._run([FAILING_REPORT] * 6)
 
-        self.assertEqual(mock_verifier.run_tests.call_count, 4)
+        self.assertEqual(mock_verifier.run_tests.call_count, 5)
         self.assertFalse(self.orchestrator.last_verification_ok)
         self.assertTrue(any("Strategiewechsel" in line for line in logs))
+        self.assertTrue(any("Zweitmeinung" in line for line in logs))
         self.assertTrue(any("Kein Fortschritt" in line for line in logs))
         mock_upsert_ticket.assert_called()
 

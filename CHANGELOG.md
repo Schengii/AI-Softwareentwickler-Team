@@ -7,6 +7,79 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Team-Optimierung 2026-09-20 (Sprint 2): Das Team bleibt nicht mehr stecken
+
+Sprint 1 hat die Verifikation aufgehoert, Laeufe ohne Sachgrund rot zu faerben. Sprint 2 setzt
+dort an, wo das Team trotz sachlich korrekter Bewertung **nicht weiterkam**: eine Fix-Schleife,
+die dieselbe Rolle mit demselben Ansatz wiederholt, eine Modell-Eskalation, die ins Leere lief,
+ein einzelner abgebrochener Modell-Aufruf, der den ganzen Lauf mitriss, und eine
+Vollstaendigkeits-Messung, die bei leerem Budget gar nicht erst stattfand. Alle vier Befunde
+stammen aus echten Laeufen (`aetherqueue`, `eventforge_core`, `sentinedge`,
+`entwickle_eventforge_ein_webhook`), nicht aus Spekulation.
+
+* **Zweitmeinung als letzte Eskalationsstufe (`agents/orchestrator/verification.py`):** Die
+  Fix-Schleife kannte bisher genau eine Eskalation - dieselbe Rolle noch einmal, nur mit
+  HEAVY_MODEL. Scheiterte auch die, entstand ein `recurring-failure-<slug>`-Ticket,
+  `queue_red_projects()` stellte das Projekt erneut ein, und der naechste Lauf nahm exakt
+  denselben Weg: acht solcher Tickets standen gleichzeitig auf `blocked`, fast alle mit
+  derselben Begruendung. Neu ist `_second_opinion_fix_round()`: eine **andere** Rolle
+  (bevorzugt eine, deren Kernaufgabe die Analyse fremden Codes ist) diagnostiziert den Fehler,
+  und erst diese Diagnose geht als Kontext in den Fix-Versuch des urspruenglichen Owners. Die
+  Stufe greift bewusst auch dann, wenn HEAVY_MODEL nicht erreichbar ist - sie ist die einzige,
+  die keine staerkere Modellstufe voraussetzt, und damit der einzige Ausweg im Dauer-Notbetrieb.
+* **Modell-Eskalation wird nicht mehr blind verbrannt (`core/capacity_gate.py`,
+  `agents/orchestrator/__init__.py`):** `LLMFactory.create_for_model()` liefert auch fuer ein
+  erschoepftes Modell klaglos ein Client-Objekt - der Aufruf faellt dann intern auf ein
+  **schwaecheres** Modell zurueck als das, mit dem der Fix zuvor schon zweimal gescheitert war.
+  Der letzte Rettungsanker des Laufs kostete so Zeit und Budget, ohne einen neuen Ansatz zu
+  ermoeglichen; im Protokoll von `eventforge_core` steht das woertlich
+  ("HEAVY_MODEL-Eskalation fuer tester griff nicht tatsaechlich"). Neu beantwortet
+  `model_unreachable_reason()` die Frage **vor** dem Aufruf (Key konfiguriert? Kontingent auf
+  Cooldown?); `_escalate_agent_models()` gibt dann eine leere Menge zurueck, die Stufe wird
+  uebersprungen, und der Grund landet sichtbar im Protokoll **und** im Ticket - sonst liest
+  sich das Ergebnis wie ein Agenten- oder Prompt-Problem, obwohl es ein Kontingent-Befund ist.
+  `role_capacity()` nutzt dieselbe Funktion und verhaelt sich unveraendert.
+* **Ein abgebrochener Modell-Aufruf reisst nicht mehr den Lauf mit (`agents/base_agent.py`,
+  `core/provider_exhaustion.py`):** Ticket
+  `orchestrator-crash-CancelledError-entwickle_eventforge_ein_webhook`. `asyncio.CancelledError`
+  erbt von `BaseException`, nicht von `Exception` - der allgemeine Handler in
+  `_run_agentic_loop()` fing ihn deshalb nie, und der Abbruch EINES Aufrufs beendete den
+  gesamten Lauf samt aller bis dahin geleisteten Arbeit. Pauschal schlucken darf man ihn nicht:
+  `CancelledError` ist der Mechanismus, mit dem asyncio kooperative Abbrueche umsetzt. Der neue
+  Handler unterscheidet deshalb ueber `asyncio.current_task().cancelling()`: wurde dieser Task
+  tatsaechlich zum Abbruch angefordert (Nutzer-Abbruch, `wait_for`), fliegt die Ausnahme weiter;
+  ein Abbruch ohne Anforderung (z. B. tief im Provider-SDK) wird zum Fehlschlag **dieses einen
+  Schritts**, und der Orchestrator macht mit dem naechsten Agenten weiter. Die neue Klasse
+  `FAILURE_CLASS_CANCELLED` zaehlt wie die `PROVIDER_*`-Klassen als Infrastruktur- und nicht als
+  Agentenfehler - ein nie zu Ende gestellter Agent hat nicht "versagt".
+* **Vollstaendigkeit wird immer gemessen, nur der Fix kostet Budget
+  (`agents/orchestrator/verification.py`):** Das Budget-Gate der Vollstaendigkeits-Schleife stand
+  **vor** `verifier.check_completeness()`. Dieser Check ist rein deterministisch (AST und
+  Dateisystem, `core/verifier/completeness.py`) und kostet **keine Tokens** - gegated wurde also
+  nichts gespart, aber bei leerem Budget gar nicht erst gemessen. `completeness_report` blieb
+  `None`, die Aufzeichnung fiel aus, und der Check galt als "nicht gemessen" statt bestanden
+  oder gerissen (real: "🚫 Lauf-Budget erreicht - Vollstaendigkeits-Check nach Versuch 0
+  abgebrochen" in `sentinedge` und `eventforge_core`). Die Messung laeuft jetzt immer;
+  budgetpflichtig ist nur noch der **Fix-Versuch**, der einen echten Agenten-Aufruf kostet.
+
+**Zur Verifikations-Reserve, die dabei geprueft wurde:** Die naheliegende Vermutung - es gebe
+keine Reserve fuer die Verifikationsphase - war falsch. `VERIFICATION_TOKEN_RESERVE_RATIO = 0.15`
+existiert in `agents/orchestrator/budget.py` und funktionierte (`eventforge_core` stoppte die
+Generierung bei 855.372 von 850.000 zulaessigen Tokens). Gemessen ueber die letzten neun Laeufe
+ist die Reserve aber genau fuer den Fall zu klein, fuer den sie existiert: Laeufe **ohne**
+Budget-Abbruch verbrauchen in der Verifikation 6,9-16,0 %, Laeufe **mit** Abbruch 19,5-35,0 %.
+Die Trennung ist vollstaendig - wer Reparatur braucht, zahlt dort das Doppelte bis Dreifache.
+Die Reserve hochzusetzen hilft trotzdem nicht (die Generierung, `dev_lead` allein 500-750k
+Tokens, wuerde abgeschnitten und lieferte unfertigen Code). Die eigentliche Ursache ist der
+Gesamtverbrauch eines Laufs und bleibt offen.
+
+Abgedeckt durch `tests/test_second_opinion_escalation.py`,
+`tests/test_agent_cancellation_resilience.py`,
+`tests/test_completeness_measured_despite_budget.py` sowie Erweiterungen in
+`tests/test_orchestrator_model_escalation.py` und `tests/test_verification_no_progress_breaker.py`.
+
+---
+
 ## 🟢 Team-Optimierung 2026-09-20: Vier Verifikations-Bugs faerbten Laeufe ohne Sachgrund rot
 
 Bestandsaufnahme ueber 152 Laeufe (`memory/run_history.json`): nur 20 davon endeten mit

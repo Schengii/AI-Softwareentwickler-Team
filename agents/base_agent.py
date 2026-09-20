@@ -36,7 +36,12 @@ from core.handoff_check import HANDOFF_GATE_AGENT_IDS, check_handoff
 from core.llm_factory import AgentMessage, GeminiClient, LLMFactory, LLMResponse, require_tool_call
 from core.message_bus import AgentResult, AgentTask
 from core.model_capability import min_tier_for_agent, pop_capability_floor, push_capability_floor
-from core.provider_exhaustion import FAILURE_CLASS_AGENT_ERROR, classify_failure, is_infrastructure_failure
+from core.provider_exhaustion import (
+    FAILURE_CLASS_AGENT_ERROR,
+    FAILURE_CLASS_CANCELLED,
+    classify_failure,
+    is_infrastructure_failure,
+)
 from core.workspace import extract_file_blocks, text_has_extractable_file_blocks
 
 logger = logging.getLogger(__name__)
@@ -224,6 +229,46 @@ class BaseAgent(ABC):
                 clarification_questions=list(toolbox.clarification_requests) if toolbox else [],
                 context_chars_compacted=toolbox.context_chars_compacted if toolbox else 0,
                 watchdog_events=list(toolbox.watchdog_events) if toolbox else [],
+            )
+
+        except asyncio.CancelledError:
+            # Realer Fund (Ticket `orchestrator-crash-CancelledError-entwickle_eventforge_ein_
+            # webhook`, Absturz in `_run_agentic_loop` -> `generate_with_tools`): ein
+            # `CancelledError` erbt von BaseException, NICHT von Exception - der allgemeine
+            # Handler unten fing ihn deshalb nie, und der Abbruch EINES Agenten-Aufrufs riss
+            # den GESAMTEN Lauf mit, samt aller bis dahin geleisteten Arbeit.
+            #
+            # Pauschal schlucken darf man ihn trotzdem nicht: `CancelledError` ist der
+            # Mechanismus, mit dem asyncio kooperative Abbrüche umsetzt (Nutzer-Abbruch,
+            # `asyncio.wait_for`). Wurde der laufende Task tatsächlich zum Abbruch angefordert,
+            # MUSS die Ausnahme weiterlaufen, sonst hängt der Abbruch. Nur ein Abbruch, der
+            # NICHT von einer Abbruch-Anforderung an diesen Task stammt (z.B. tief im
+            # Provider-SDK), wird zu einem gewöhnlichen Fehlschlag dieses einen Schritts -
+            # der Orchestrator macht dann mit dem nächsten Agenten weiter.
+            current = asyncio.current_task()
+            if current is not None and current.cancelling() > 0:
+                raise
+            duration = time.monotonic() - start_time
+            logger.warning(
+                "Agent '%s': Aufruf wurde abgebrochen (CancelledError) ohne Abbruch-Anforderung "
+                "an diesen Task - wird als Fehlschlag dieses Schritts gewertet, der Lauf geht weiter.",
+                self.agent_id,
+            )
+            return AgentResult(
+                task_id=task.task_id,
+                agent_id=self.agent_id,
+                agent_name=self.name,
+                success=False,
+                content="",
+                error=(
+                    "Der Modell-Aufruf wurde von außen abgebrochen (CancelledError) - dieser "
+                    "Schritt konnte nicht zu Ende geführt werden."
+                ),
+                duration_seconds=duration,
+                model_used="",
+                failure_class=FAILURE_CLASS_CANCELLED,
+                files_written=sorted(toolbox.files_written) if toolbox else [],
+                tool_calls_count=toolbox.call_count if toolbox else 0,
             )
 
         except Exception as e:

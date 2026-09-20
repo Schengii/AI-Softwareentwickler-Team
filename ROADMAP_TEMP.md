@@ -358,7 +358,7 @@ Agenten fortsetzen; nur ein echtes Nutzer-Cancel (`cancel_requested`) bricht glo
 ---
 
 ### P1-5 · „Hard Delivery Gate" hat keine eigene `failure_class` – der Fix-Loop wiederholt denselben Ansatz blind
-**Status:** ❌ offen · **Aufwand:** S · **Wirkung:** mittel
+**Status:** 🟡 **failure_class erledigt 2026-09-20**, Fix-Loop-Kurzschluss zurückgestellt · **Aufwand:** S · **Wirkung:** mittel
 
 Neuer Fund aus den Läufen `synapsegate` und `chronosvault` (2026-09-20), gegengeprüft über alle
 `workspace/*/.ai_team_runs/*_trace.jsonl`: in **7 von ~20** ausgewerteten Projekten
@@ -386,6 +386,19 @@ identischer Anlauf strukturell dasselbe Ergebnis erwarten lässt.
 Wiederholung und geht direkt zur nächsten Eskalationsstufe (P1-2 Zweitmeinung, oder bei
 erreichbarem HEAVY_MODEL sofort die Modell-Eskalation aus P5-1) – ein Wiederholungsversuch mit
 identischem Prompt hat hier keine Grundlage, auf der er anders ausfallen könnte.
+
+> **Umsetzung 2026-09-20, bewusst in zwei Schritten getrennt:** `FAILURE_CLASS_NO_DELIVERY`
+> existiert jetzt (`core/provider_exhaustion.py`, gesetzt in `agents/base_agent.py`), inklusive
+> Test, dass der Fall weiterhin NICHT als Infrastruktur-Fehler zählt (`is_infrastructure_failure`
+> unverändert – dem Agenten zurechenbar, er wurde befragt). Die zweite Hälfte – den Fix-Loop in
+> `agents/orchestrator/verification.py` bei dieser Klasse aktiv zur nächsten Eskalationsstufe
+> springen zu lassen, statt auf den bereits vorhandenen `_no_progress`-Kreisunterbrecher zu warten
+> – wurde bewusst **zurückgestellt**: die 2000+ Zeilen lange, vielfach getestete Fix-Loop-Funktion
+> ist ein zu hohes Risiko für eine ungeprüfte Kontrollfluss-Änderung in dieser Sitzung. Der
+> `_no_progress`-Signaturvergleich fängt den Fall bereits **eine Runde später** ab (ohne Dateien
+> ist die nächste Testfehler-Signatur zwangsläufig identisch) – die neue `failure_class` liefert
+> das Signal jetzt schon sofort und macht diesen zweiten Schritt zu einer risikoarmen, punktuellen
+> Ergänzung für eine künftige Sitzung, statt selbst blockierend zu sein.
 
 ---
 
@@ -719,7 +732,7 @@ bezeichnet sich selbst als „eher ein Infrastruktur-/Kontingent- als ein Agente
 ---
 
 ### P5-2 · Ein Lauf kostet ~870k Tokens, davon der Großteil wiederholter Prompt-Kontext
-**Status:** ❌ offen · **Aufwand:** M · **Wirkung:** hoch
+**Status:** 🟡 **Aufgabe 1 (Gemini-Caching) erledigt 2026-09-20**, Aufgaben 2+3 offen · **Aufwand:** M · **Wirkung:** hoch
 
 Aus dem `cachegrid_proxy`-Trace: `prompt_tokens` 638.581 bei `cache_read_tokens` 182.588 →
 **Cache-Trefferquote 28,6 %**. Ein einzelner `backend`-Aufruf: 237.401 Prompt-Tokens bei 13
@@ -750,6 +763,24 @@ noch 2×.
    > `cachegrid_proxy` notierte Trefferquote von 28,6 % ließ sich aus dem aktuellen Trace nicht
    > reproduzieren (das Feld ist dort `None`) – vermutlich aus einer anderen Quelle berechnet;
    > als verbindliche Zahl gilt die durchgängige 0 %-Messung.
+   >
+   > **Umgesetzt 2026-09-20:** `core/llm_factory.py._gemini_cached_content_name()` legt bei
+   > System-Prompts ab 6.000 Zeichen ein `CachedContent`-Objekt an (`client.caches.create(...)`,
+   > TTL 15 min) und cached es prozesslokal über `(API-Key, Modell, sha256(Prompt))`, sodass
+   > wiederholte Iterationen desselben Agentic-Loops UND spätere Aufrufe derselben Rolle mit
+   > identischem System-Prompt (z.B. über mehrere Verifikations-Fixrunden) sich einen einzigen
+   > Cache teilen, statt jedes Mal neu zu bezahlen. Bewusst maximal defensiv: jede
+   > Cache-Erstellung ist reiner Best-Effort mit vollständigem Try/Except (`_gemini_config_with_cache`)
+   > – scheitert sie (Modell ohne Unterstützung, Prompt zu kurz, API-Fehler), verhält sich der
+   > Aufruf exakt wie zuvor (inline `system_instruction`, kein `cached_content`); ein
+   > fehlschlagender Cache-Versuch darf den eigentlichen `generate_content`-Aufruf nie gefährden.
+   > Ein Modell, bei dem die Erstellung fehlschlägt, wird für eine Stunde übersprungen statt bei
+   > jedem Aufruf erneut zu scheitern. Abgedeckt durch `tests/test_gemini_context_caching.py`
+   > (11 Tests, inkl. End-to-End-Nachweis, dass `cached_content` tatsächlich bei
+   > `models.generate_content()` ankommt, und dass eine scheiternde Cache-Erstellung den
+   > eigentlichen Aufruf unverändert durchlässt). **Nicht live gegen die Gemini-API verifiziert**
+   > (kein API-Zugriff in dieser Sitzung) – die Wirkung sollte im nächsten echten Lauf am
+   > `cache_read_tokens`-Feld der Traces abgelesen werden, bevor der Punkt als voll bestätigt gilt.
 2. **Kontext-Kompaktierung früher greifen lassen.** `context_chars_compacted` lag im letzten Lauf
    bei nur 24.839 Zeichen über den *ganzen* Lauf. Die Empfehlung aus der Fehleranalyse
    (> 15 Tool-Calls oder > 100k Tokens ⇒ Zwischenergebnis erzwingen) ist noch nicht umgesetzt.
@@ -886,7 +917,7 @@ ruff check && python -m pytest -q
 | P1-2 | Eskalations-Strategien statt Wiederholung | P1 | ☑ erledigt |
 | P1-3 | Ticket-Hygiene: `stale` vs. `error` trennen | P1 | ☐ |
 | P1-4 | `CancelledError` reißt den Lauf mit | P1 | ☑ erledigt |
-| P1-5 | Hard Delivery Gate ohne eigene `failure_class` | P1 | ☐ |
+| P1-5 | Hard Delivery Gate ohne eigene `failure_class` | P1 | 🟡 failure_class erledigt, Fix-Loop-Kurzschluss offen |
 | P2-1 | Learnings mit Wirksamkeitsmessung | P2 | ☐ |
 | P2-2 | Modell-Auto-Tuning optimiert falsche Zielgröße | P2 | ☐ |
 | P2-3 | 13 ungenutzte Rollen – entscheiden statt melden | P2 | ☐ |
@@ -901,7 +932,7 @@ ruff check && python -m pytest -q
 | P4-4 | Projekt-Steckbrief für jeden Agenten | P4 | ☐ |
 | P4-5 | Write-Guard gegen Fremddatei-Überschreiben | P4 | ☐ |
 | P5-1 | Degraded-Mode ehrlich machen | P5 | 🟡 Punkt 2 erledigt |
-| P5-2 | Token-Effizienz / Caching | P5 | ☐ |
+| P5-2 | Token-Effizienz / Caching | P5 | 🟡 Gemini-Caching erledigt (Aufgabe 1), Rest offen |
 | P5-3 | Verifikations-Reserve im Budget | P5 | ☑ erledigt (Reserve existierte, Gate korrigiert) |
 | P6-1 | Gestagte Fixes committet | P6 | ☑ erledigt |
 | P6-2 | ~~Workspace aus Framework-Commits~~ | P6 | ☑ Fehlannahme, siehe oben |

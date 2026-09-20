@@ -9,10 +9,13 @@ für Rate-Limits/Kontingent-/Auth-Fehler (via core/token_guard.py) und sichtbare
 import asyncio
 import contextlib
 import contextvars
+import hashlib
 import json
+import logging
 import os
 import re
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -40,6 +43,8 @@ from core.model_capability import CapabilityFloorError, filter_by_floor, record_
 from core.rate_limiter import RateLimiter
 from core.token_guard import token_guard
 
+logger = logging.getLogger(__name__)
+
 # ──────────────────────────────────────────
 # Gemini API-Key-Pool & Client-Manager
 # ──────────────────────────────────────────
@@ -59,6 +64,105 @@ class _ExhaustedKeysDict(dict):
 
 
 _gemini_exhausted_keys: dict[str, float] = _ExhaustedKeysDict()  # key -> timestamp bis wann key global erschöpft
+
+# ──────────────────────────────────────────
+# Gemini Explizites Context-Caching (P5-2, ROADMAP_TEMP.md)
+# ──────────────────────────────────────────
+# Realer Fund 2026-09-20: core/llm_factory.py hat bisher nur `cached_content_token_count` aus der
+# Antwort GELESEN (Zeile weiter unten in _parse_gemini_tool_response), aber nie ein Cache-Objekt
+# ERZEUGT - Gemini betreibt (anders als Anthropic) kein implizites Prompt-Caching, ohne ein
+# explizites `caches.create(...)` gibt es schlicht nichts zu lesen. Scan über alle 264
+# `agent_call`-Events in `workspace/*/.ai_team_runs/*_trace.jsonl`: 0% Cache-Trefferquote,
+# ausnahmslos. Bei 19,56 Mio. Prompt-Tokens in Summe (Stand 2026-09-20) der groesste bezifferbare
+# Hebel aus P5-2.
+#
+# Design bewusst maximal defensiv: JEDE Cache-Erstellung ist reiner Best-Effort. Scheitert sie
+# (Modell unterstuetzt kein Caching, Prompt unter dem Mindest-Token-Wert des Modells, API-Version
+# ohne `caches`-Endpunkt, Netzwerkfehler) faellt der Aufruf exakt auf das bisherige Verhalten
+# zurueck (system_instruction inline, kein cached_content) - eine fehlgeschlagene Cache-Erstellung
+# darf NIEMALS den eigentlichen generate_content-Aufruf verhindern oder verfaelschen.
+#
+# Registry-Schluessel enthaelt den API-Key: ein Cache-Objekt ist an den Key/das Projekt gebunden,
+# unter dem er angelegt wurde (_get_gemini_client() kann je nach Erschoepfungs-Zustand zwischen
+# mehreren Keys rotieren). Ohne den Key im Schluessel wuerde bei Key-Rotation ein Cache-Name aus
+# einem fremden Key weitergereicht - das API-seitige Scheitern faengt der Try/Except zwar sicher
+# ab, verschenkt die Trefferquote aber unnoetig.
+_gemini_cache_registry: dict[tuple[str, str, str], tuple[str, float]] = {}
+# Modelle, bei denen eine Cache-Erstellung zuletzt fehlgeschlagen ist (z.B. weil das Modell/die
+# Free-Tier-Stufe explizites Caching gar nicht anbietet) - verhindert, dass jeder einzelne
+# Agenten-Aufruf erneut denselben aussichtslosen API-Roundtrip verschwendet. Zeitbasiert statt
+# dauerhaft (analog zu _gemini_exhausted_keys): eine einzelne transiente Ursache (Netzwerk,
+# kurzzeitiger 503) soll Caching nicht fuer den Rest des Prozesses abschalten.
+_gemini_cache_unsupported_models: dict[str, float] = {}  # model -> Zeitpunkt (monotonic), ab dem erneut versucht wird
+GEMINI_CACHE_UNSUPPORTED_COOLDOWN_SECONDS = 3600  # 1 Stunde
+GEMINI_CACHE_MIN_CHARS = 6000  # konservativ oberhalb der dokumentierten Modell-Mindestwerte
+GEMINI_CACHE_TTL_SECONDS = 900  # 15 Minuten - deckt einen typischen Agentic-Loop-Durchlauf ab
+
+
+def _gemini_config_with_cache(
+    base_config: "genai_types.GenerateContentConfig", model: str, system_prompt: str | None,
+) -> "genai_types.GenerateContentConfig":
+    """Liefert `base_config` mit `cached_content` gesetzt, wenn ein Cache-Treffer/-Erstellung
+    gelingt - sonst UNVERÄNDERT `base_config`. Für Aufrufstellen, die bereits ein fertiges
+    `GenerateContentConfig` gebaut haben (z.B. `_call_with_retry_and_usage`, gemeinsam genutzt von
+    mehreren Aufrufern) und keine eigene Cache-fähige Konstruktion rechtfertigen."""
+    try:
+        cache_name = _gemini_cached_content_name(model, system_prompt)
+        if not cache_name:
+            return base_config
+        return base_config.model_copy(update={"cached_content": cache_name, "system_instruction": None})
+    except Exception:
+        # Doppelt abgesichert (auch wenn _gemini_cached_content_name selbst schon nie werfen
+        # sollte): der eigentliche generate_content-Aufruf darf durch diese Optimierung nie
+        # gefaehrdet werden - im Zweifel unveraendert ohne Caching weitermachen.
+        return base_config
+
+
+def _gemini_cached_content_name(model: str, system_prompt: str | None) -> str | None:
+    """Best-Effort: liefert den Namen eines Gemini-Cache-Objekts fuer `system_prompt`, oder
+    `None`, wenn Caching fuer diesen Aufruf nicht sinnvoll/moeglich ist. Wirft NIE - jeder Fehler
+    (Modell ohne Cache-Unterstuetzung, Prompt zu kurz, API-Fehler) fuehrt zu `None`, der Aufrufer
+    verhaelt sich dann exakt wie vor dieser Optimierung."""
+    # Defensive Typpruefung statt Annahme: an einigen Aufrufstellen koennte hier theoretisch ein
+    # bereits von der SDK umgewandeltes Objekt statt eines rohen Strings ankommen (z.B. ueber
+    # `config.system_instruction` zurückgelesen) - `isinstance` statt `len()`/`.encode()` direkt
+    # aufzurufen verhindert, dass ein unerwarteter Typ hier unabgefangen crasht.
+    if not isinstance(system_prompt, str) or not model:
+        return None
+    now = time.monotonic()
+    if len(system_prompt) < GEMINI_CACHE_MIN_CHARS:
+        return None
+    if now < _gemini_cache_unsupported_models.get(model, 0.0):
+        return None
+    try:
+        client, active_key = _get_gemini_client(model=model)
+        if client is None or not active_key:
+            return None
+        prompt_hash = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
+        registry_key = (active_key, model, prompt_hash)
+        cached = _gemini_cache_registry.get(registry_key)
+        if cached and cached[1] > now:
+            return cached[0]
+        cache = client.caches.create(
+            model=model,
+            config=genai_types.CreateCachedContentConfig(
+                system_instruction=system_prompt,
+                ttl=f"{GEMINI_CACHE_TTL_SECONDS}s",
+            ),
+        )
+        cache_name = getattr(cache, "name", None)
+        if not cache_name:
+            return None
+        _gemini_cache_registry[registry_key] = (cache_name, now + GEMINI_CACHE_TTL_SECONDS - 30)
+        return cache_name
+    except Exception as e:
+        # Best-Effort: einmal pro Modell protokollieren statt bei jedem Aufruf erneut - danach
+        # gilt das Modell fuer eine Stunde als "kein Caching" (siehe Docstring der Registry oben).
+        was_already_marked = now < _gemini_cache_unsupported_models.get(model, 0.0)
+        if not was_already_marked:
+            logger.debug("Gemini Context-Caching fuer Modell '%s' nicht verfuegbar: %s", model, e)
+        _gemini_cache_unsupported_models[model] = now + GEMINI_CACHE_UNSUPPORTED_COOLDOWN_SECONDS
+        return None
 
 
 def _get_gemini_client(model: str = "") -> tuple[genai.Client | None, str]:
@@ -1023,16 +1127,26 @@ class GeminiClient:
         ]) if tools else None
 
         contents = self._build_gemini_contents(messages)
-        config = genai_types.GenerateContentConfig(
-            temperature=TEMPERATURE,
-            max_output_tokens=MAX_OUTPUT_TOKENS,
-            system_instruction=system_prompt if system_prompt else None,
-            tools=[genai_tool] if genai_tool else None,
-            tool_config=(
-                genai_types.ToolConfig(function_calling_config=genai_types.FunctionCallingConfig(mode="ANY"))
-                if genai_tool and tool_call_required() else None
-            ),
+        tool_config = (
+            genai_types.ToolConfig(function_calling_config=genai_types.FunctionCallingConfig(mode="ANY"))
+            if genai_tool and tool_call_required() else None
         )
+
+        def _build_config(for_model: str) -> "genai_types.GenerateContentConfig":
+            # P5-2 (ROADMAP_TEMP.md): system_instruction ist bei jeder Iteration des Agentic-Loops
+            # identisch (nur `contents` wächst) - Best-Effort explizites Gemini-Context-Caching
+            # statt es bei jedem Aufruf erneut komplett zu senden. cached_content ersetzt
+            # system_instruction (beide gleichzeitig sind laut Gemini-API nicht vorgesehen);
+            # schlägt die Cache-Erstellung fehl, bleibt system_instruction inline wie zuvor.
+            cache_name = _gemini_cached_content_name(for_model, system_prompt)
+            return genai_types.GenerateContentConfig(
+                temperature=TEMPERATURE,
+                max_output_tokens=MAX_OUTPUT_TOKENS,
+                system_instruction=None if cache_name else (system_prompt if system_prompt else None),
+                cached_content=cache_name,
+                tools=[genai_tool] if genai_tool else None,
+                tool_config=tool_config,
+            )
 
         all_candidates = _resolve_gemini_candidates(self.model_name, _allow_self_fallback)
         models_to_try = [m for m in all_candidates if _provider_available(m) and not token_guard.is_model_exhausted(m)]
@@ -1065,6 +1179,7 @@ class GeminiClient:
 
             global _gemini_active_model
             _gemini_active_model = model
+            config = await asyncio.to_thread(_build_config, model)
             for attempt in range(MAX_RETRIES):
                 try:
                     await _gemini_rate_limiter.acquire()
@@ -1219,6 +1334,12 @@ class GeminiClient:
 
             global _gemini_active_model
             _gemini_active_model = model
+            # P5-2 (ROADMAP_TEMP.md): Best-Effort Context-Caching, siehe _gemini_config_with_cache().
+            # Wiederholte Aufrufe derselben Rolle (z.B. über mehrere Verifikations-Fixrunden) teilen
+            # sich denselben system_instruction-Text und profitieren so ohne weiteres Zutun.
+            model_config = await asyncio.to_thread(
+                _gemini_config_with_cache, config, model, config.system_instruction,
+            )
             for attempt in range(MAX_RETRIES):
                 try:
                     await _gemini_rate_limiter.acquire()
@@ -1226,7 +1347,7 @@ class GeminiClient:
                         _gemini_client.models.generate_content,
                         model=model,
                         contents=contents,
-                        config=config,
+                        config=model_config,
                     )
                     text = response.text or ""
 

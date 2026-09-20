@@ -519,9 +519,20 @@ class VerificationMixin:
                     summary_lines.append(f"- 📦 Versuch {attempt}: {len(packages)} fehlende Paket(e) deterministisch in {manifest_name} ergänzt: {names}.")
                 remaining_issues = still_open
 
+            # Rollen, die in dieser Phase keine Code-Patches schreiben (z.B. architect, der nur in
+            # Phase 4/5 Verträge/ADRs liefert): file_owners kann so eine Rolle für eine Datei
+            # eintragen, die architect initial angelegt hat (z.B. app/main.py-Grundgerüst). Ein
+            # Pre-Flight-Fixauftrag an eine solche Rolle bleibt wirkungslos (0 Dateien geschrieben)
+            # und lässt den Circuit-Breaker mit dauerhaft negativem pre_flight-Outcome abbrechen -
+            # echter Fund `root-cause-cachegrid_proxy-pre-flight-fixversuche-scheitern-durch-
+            # ineffektive-agentenzu`. Für solche Owner greift die pfadbasierte Heuristik statt der
+            # (nicht code-schreibenden) file_owners-Zuweisung.
+            _NON_CODE_WRITING_ROLES = {"architect"}
             agents_to_fix: dict[str, list[PreFlightIssue]] = {}
             for issue in remaining_issues:
                 owner = file_owners.get(issue.file)
+                if owner in _NON_CODE_WRITING_ROLES:
+                    owner = self._infer_owner_from_path(issue.file, issue.message) or owner
                 if not owner or owner not in self._agents:
                     owner = _FALLBACK_OWNER_BY_ISSUE_TYPE.get(issue.issue_type, "dev_lead")
                 if owner in self._agents:

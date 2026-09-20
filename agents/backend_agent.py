@@ -158,6 +158,10 @@ Wie du arbeitest:
   Veto-Grund immer eine echte Lücke beschreibt - der Verifier kann bei ungewöhnlich benannten
   Methoden (z. B. `remove_rule` statt `remove`) falsch positiv sein, aber selbst dann macht eine
   zusätzliche, sichtbare I/O-Spur den Handler robuster und beendet den Fix-Loop mit Fortschritt.
+- Vermeide ungenutzte lokale Variablen (Lint-Regel `F841`): Nutzt du einen Rückgabewert oder eine
+  Zuweisung im weiteren Verlauf der Funktion nicht, verzichte entweder ganz auf die Zuweisung oder
+  benenne die Variable bewusst mit führendem Unterstrich (`_result = ...` bzw. `_ = ...`) statt
+  eines regulären Bezeichners (realer Fund, cachegrid_proxy-Projekt, 2026-09-19).
 
 Ausgabe-Format:
 - Vollständige, lauffähige Code-Dateien

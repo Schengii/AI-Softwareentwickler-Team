@@ -126,6 +126,49 @@ class TestPreflightCheckFixLoop(unittest.TestCase):
         self.assertTrue(any("Beauftrage backend" in line and "Pre-Flight-Check" in line for line in logs))
         self.assertTrue(self.orchestrator.last_verification_ok)
 
+    def test_missing_dependency_owned_by_architect_reroutes_to_backend(self):
+        """Root-Cause-Fund (cachegrid_proxy, 2026-09-19): file_owners kann fuer app/main.py
+        'architect' eintragen (Grundgerüst aus Phase 4/5), obwohl architect in dieser Phase
+        keine Code-Patches schreibt. Ein Fixauftrag an architect blieb bisher wirkungslos (0
+        Dateien geschrieben) und liess den Pre-Flight-Circuit-Breaker mit dauerhaft negativem
+        pre_flight-Outcome abbrechen. Der Auftrag muss stattdessen ueber die pfadbasierte
+        Heuristik an 'backend' gehen (app/main.py endet auf .py)."""
+        self.orchestrator._agents["architect"]._llm = _ScriptedLLM(written_file="app/main.py")
+        self.orchestrator._agents["backend"]._llm = _ScriptedLLM(written_file="app/main.py")
+        self.orchestrator.last_project_slug = "preflight_test_proj"
+
+        @patch("agents.orchestrator.verification.run_pre_flight_check")
+        @patch("agents.orchestrator.verification.ProjectVerifier")
+        def _inner(mock_verifier_cls, mock_pre_flight):
+            mock_verifier = mock_verifier_cls.return_value
+            mock_verifier.ensure_environment.return_value = ""
+            mock_verifier.run_tests.return_value = PASSED_REPORT
+            mock_verifier.check_completeness.return_value = CLEAN_COMPLETENESS
+            mock_verifier.check_docker_build.return_value.attempted = False
+            mock_verifier.check_load_test.return_value.attempted = False
+            mock_verifier.check_dependency_vulnerabilities.return_value = []
+            mock_verifier.check_lint.return_value = []
+            mock_pre_flight.side_effect = [
+                _report_with_missing_dependency(),
+                _clean_report(),
+            ]
+
+            status_logs: list[str] = []
+            # file_owners simuliert den realen Zustand nach Phase 4/5: architect hat app/main.py
+            # als Grundgerüst angelegt, ist aber (anders als backend) keine code-schreibende Rolle
+            # fuer den Pre-Flight-Fix.
+            file_owners = {"app/main.py": "architect"}
+            result = asyncio.run(self.orchestrator._run_verification_loop(
+                self.temp_workspace, [], file_owners, status_logs.append,
+            ))
+            return result, status_logs
+
+        (all_results, summary, budget_aborted, manually_cancelled, verification_ok), logs = _inner()
+
+        self.assertTrue(any("Beauftrage backend" in line and "Pre-Flight-Check" in line for line in logs))
+        self.assertFalse(any("Beauftrage architect" in line and "Pre-Flight-Check" in line for line in logs))
+        self.assertTrue(verification_ok)
+
     def test_empty_test_suite_dispatched_to_tester_not_dev_lead(self):
         """KI-Team-Zustandsbericht 2026-09-08: 'empty_test_suite' hat nie einen bekannten
         file_owners-Eintrag (der Fund zeigt auf das Verzeichnis 'tests/', keine konkrete Datei,

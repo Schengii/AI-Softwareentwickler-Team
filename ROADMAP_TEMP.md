@@ -357,6 +357,38 @@ Agenten fortsetzen; nur ein echtes Nutzer-Cancel (`cancel_requested`) bricht glo
 
 ---
 
+### P1-5 · „Hard Delivery Gate" hat keine eigene `failure_class` – der Fix-Loop wiederholt denselben Ansatz blind
+**Status:** ❌ offen · **Aufwand:** S · **Wirkung:** mittel
+
+Neuer Fund aus den Läufen `synapsegate` und `chronosvault` (2026-09-20), gegengeprüft über alle
+`workspace/*/.ai_team_runs/*_trace.jsonl`: in **7 von ~20** ausgewerteten Projekten
+(`aetherqueue` 2×, `chronoflow`, `chronosvault`, `entwickle_das_projekt_sentinel`,
+`entwickle_eventforge_ein_webhook`, `logstream_sentinel`, `synapsegate`) schlägt ein
+Agenten-Aufruf mit exakt derselben Meldung fehl:
+
+> „Hard Delivery Gate: Agent hat trotz Korrektur-Hinweis keine einzige Datei über
+> write_file/edit_file gespeichert – der Tokenverbrauch ist verpufft."
+
+Betroffen ausschließlich Rollen, die einen **Fix auf Basis einer Fehlerdiagnose** liefern sollen
+(`tester` 4×, `backend` 2×, `security` 2×) – nicht das Erstschreiben. Bei `chronosvault` war das
+der Fehlschlag, der den ganzen Lauf rot färbte (`git log`-Stand vor Sprint 2). Der Mechanismus
+selbst (`agents/base_agent.py:608-641`) ist bereits mehrfach nachgeschärft worden (siehe
+`agents/team_directives.py:241`/`277`), verhindert False Positives also gut – das Problem liegt
+eine Ebene höher: `AgentResult` bekommt dabei `failure_class="agent_error"` wie jeder andere
+inhaltliche Fehler (bestätigt im `chronosvault`-Trace). Der Fix-Loop in
+`agents/orchestrator/verification.py` kann diesen Fall damit nicht von „Agent hat geliefert, aber
+falsch" unterscheiden und schickt beim nächsten Versuch **dieselbe Rolle mit demselben Prompt**
+erneut los – obwohl der Agent beim letzten Mal nachweislich gar nichts geliefert hat und ein
+identischer Anlauf strukturell dasselbe Ergebnis erwarten lässt.
+
+**Lösung:** Eigene `FAILURE_CLASS_NO_DELIVERY` in `core/provider_exhaustion.py` (analog zu
+`FAILURE_CLASS_CANCELLED` aus P1-4). Der Fix-Loop überspringt bei dieser Klasse die normale
+Wiederholung und geht direkt zur nächsten Eskalationsstufe (P1-2 Zweitmeinung, oder bei
+erreichbarem HEAVY_MODEL sofort die Modell-Eskalation aus P5-1) – ein Wiederholungsversuch mit
+identischem Prompt hat hier keine Grundlage, auf der er anders ausfallen könnte.
+
+---
+
 ## 3. 🟡 P2 – Selbstoptimierung der Agenten (wirksam statt gut gemeint)
 
 ### P2-1 · Learnings haben keine Wirksamkeitsmessung – die Verdrängung rät
@@ -624,6 +656,18 @@ Projekt-Steckbrief** in den Prompt injizieren (kein LLM): tatsächlich vorhanden
 Modul-Symbole und Modelle, direkt aus `core/code_graph.py` / `core/contract_verifier.py`.
 Ein Tester, der die echte Routenliste im Kontext hat, erfindet keine.
 
+> **Präzisierung 2026-09-20, Fund in `synapsegate`:** Dieselbe Fehlerklasse trat erneut auf –
+> `tests/test_events_api.py` ruft `POST /api/v1/events/` und `GET /api/v1/events/dlq` auf, beide
+> existieren im Backend nicht (Completeness-Check deckte es auf, nach bereits verbrauchten
+> Tokens für die falschen Tests). Die genaue Lücke ist jetzt lokalisiert: `contract_review`
+> (Trace-Event `contract_review`, `endpoints=3, calls=0` bei diesem Backend-only-Projekt) prüft
+> **ausschließlich** Frontend↔Backend-Feldabgleich – zwischen `tester` und `backend` gibt es
+> **keinen** äquivalenten Abgleich, weder vorher (Prompt-Injektion) noch güterschützend danach
+> (der Vergleich läuft erst spät im AST-Completeness-Check mit). `interface_contract.json` wird
+> für Backend-only-Projekte offenbar gar nicht erst angelegt (bei `synapsegate` fehlt die Datei
+> komplett, bei `chronosvault` mit Frontend existiert sie) – die Lösung oben darf sich also nicht
+> auf `contract_review` stützen, sondern muss unabhängig von einem vorhandenen Frontend laufen.
+
 ---
 
 ### P4-5 · Foreign-Changes: Agenten überschreiben fremden Code
@@ -693,6 +737,19 @@ noch 2×.
    auf dem Anthropic-Pfad (Zeilen 1641/1721/1736). Da faktisch alles über Gemini läuft (P5-1),
    hängt die Trefferquote am impliziten Caching. Gemini-Context-Caching für den stabilen
    Prompt-Anteil (System-Prompt + Learnings + Projekt-Steckbrief) explizit setzen.
+
+   > **Root Cause bestätigt, 2026-09-20:** Zeile 1168/1243 **liest** zwar
+   > `cached_content_token_count` aus der Gemini-Antwort, aber nirgends im Modul wird ein
+   > `CachedContent`-Objekt via `client.caches.create(...)` angelegt oder `cached_content=` an
+   > `generate_content()`/`generate_with_tools()` übergeben – die Lese-Seite existiert, die
+   > Schreib-Seite (Cache überhaupt erst anlegen) fehlt komplett. Direkter Scan aller
+   > `workspace/*/.ai_team_runs/*_trace.jsonl` (264 `agent_call`-Events, alle Projekte,
+   > nicht nur `cachegrid_proxy`): **kein einziger** Aufruf hat einen `cache_read_tokens`-Wert
+   > größer 0 – das Feld fehlt im Event durchgängig ganz (`None`, nicht `0`). Bei 19,56 Mio.
+   > Prompt-Tokens in Summe macht das den größten bezifferbaren Hebel in P5-2. Die zuvor für
+   > `cachegrid_proxy` notierte Trefferquote von 28,6 % ließ sich aus dem aktuellen Trace nicht
+   > reproduzieren (das Feld ist dort `None`) – vermutlich aus einer anderen Quelle berechnet;
+   > als verbindliche Zahl gilt die durchgängige 0 %-Messung.
 2. **Kontext-Kompaktierung früher greifen lassen.** `context_chars_compacted` lag im letzten Lauf
    bei nur 24.839 Zeichen über den *ganzen* Lauf. Die Empfehlung aus der Fehleranalyse
    (> 15 Tool-Calls oder > 100k Tokens ⇒ Zwischenergebnis erzwingen) ist noch nicht umgesetzt.
@@ -829,6 +886,7 @@ ruff check && python -m pytest -q
 | P1-2 | Eskalations-Strategien statt Wiederholung | P1 | ☑ erledigt |
 | P1-3 | Ticket-Hygiene: `stale` vs. `error` trennen | P1 | ☐ |
 | P1-4 | `CancelledError` reißt den Lauf mit | P1 | ☑ erledigt |
+| P1-5 | Hard Delivery Gate ohne eigene `failure_class` | P1 | ☐ |
 | P2-1 | Learnings mit Wirksamkeitsmessung | P2 | ☐ |
 | P2-2 | Modell-Auto-Tuning optimiert falsche Zielgröße | P2 | ☐ |
 | P2-3 | 13 ungenutzte Rollen – entscheiden statt melden | P2 | ☐ |

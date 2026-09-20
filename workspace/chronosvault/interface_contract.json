@@ -1,0 +1,37 @@
+{
+  "modules": {
+    "app/core/settings.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/domain/models.py": {
+      "WorkflowDefinition": "class",
+      "WorkflowInstance": "class",
+      "AuditLogEntry": "class"
+    },
+    "app/domain/schemas.py": {
+      "WorkflowDefinitionCreate": "class",
+      "WorkflowDefinitionRead": "class",
+      "WorkflowInstanceCreate": "class",
+      "WorkflowInstanceRead": "class",
+      "TransitionRequest": "class",
+      "AuditLogRead": "class"
+    },
+    "app/engine/state_machine.py": {
+      "StateMachineEngine": "class"
+    },
+    "app/engine/hash_chain.py": {
+      "HashChainService": "class"
+    },
+    "app/infrastructure/database.py": {
+      "get_db": "function",
+      "Base": "class",
+      "engine": "instance",
+      "SessionLocal": "class"
+    },
+    "app/infrastructure/repositories.py": {
+      "WorkflowRepository": "class",
+      "AuditLogRepository": "class"
+    }
+  }
+}

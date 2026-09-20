@@ -1,0 +1,15 @@
+[
+  {
+    "timestamp": "2026-09-20T11:44:56+00:00",
+    "task_summary": "FastAPI State-Machine-Engine mit Hash-Chain implementiert",
+    "verification_ok": false,
+    "budget_aborted": true,
+    "cancelled": false,
+    "files_written_count": 20,
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 📦 ✅ pip install -r requirements.txt (exit_code=0)\n- 📦 ✅ pip install -r requirements-dev.txt (exit_code=0)\n- 🚦 Smoke-Test-Gate bestanden (`app/main.py` startet).\n- 🛠️ Versuch 1: 4 echte Testfehler → gezielt zur Korrektur an backend, tester zurückgespielt.\n- 🛠️ Versuch 2: 2 echte Testfehler → gezielt zur Korrektur an backend, tester zurückgespielt.\n… (gekürzt, vollständig in detail_file)",
+    "detail_file": ".ai_team_runs/20260920_113524_verification.md",
+    "failed_checks": [
+      "tests"
+    ]
+  }
+]

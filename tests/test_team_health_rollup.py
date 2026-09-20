@@ -33,6 +33,45 @@ class TestCategorizeFailure(unittest.TestCase):
     def test_unknown_text_falls_back(self):
         self.assertEqual(categorize_failure("irgendein unbekannter Text"), "Sonstiger Fehler")
 
+    def test_blocking_veto_categories_are_recognized(self):
+        """Roadmap P0-5 (2026-09-20): die drei Fehlerarten, die die Verifikation am häufigsten
+        erzeugt, hatten gar keinen Marker - 8 von 12 roten Projekten landeten deshalb unter
+        'Sonstiger Fehler', obwohl aegisflow und ecotrack_ai nachweislich dasselbe Muster
+        teilten. Genau dieses Muster sichtbar zu machen ist der Zweck von shared_patterns."""
+        cases = {
+            "- 🛡️ ❌ **Verifikations-Veto durch offene Sicherheits-Übergabe:** 1 vom security-Agenten …":
+                "Sicherheits-Übergabe offen",
+            "- ❌ **Verifikations-Veto durch Completeness-Check:** 2 Vollständigkeits-Fund(e) …":
+                "Vollständigkeit (Stub/Platzhalter)",
+            "- ❌ **Verifikations-Veto durch Test-Schrumpfung:** 1 Testfunktion verschwunden":
+                "Test-Schrumpfung (Tests statt Fehler entfernt)",
+            "- 🔍 🛑 Pre-Flight-Check, Versuch 2: dieselben 2 Fund(e) wie nach dem vorherigen Fixversuch":
+                "Pre-Flight-Check (Schleife ohne Fortschritt)",
+            "- 🚫 Lauf-Budget (`MAX_RUN_TOKENS=1,000,000`) erreicht – Vollständigkeits-Check abgebrochen.":
+                "Token-Budget erreicht",
+        }
+        for detail, expected in cases.items():
+            with self.subTest(expected=expected):
+                self.assertEqual(categorize_failure(detail), expected)
+
+    def test_informational_lint_never_outranks_a_blocking_category(self):
+        """`lint` ist ein informativer Check (INFORMATIONAL_CHECK_KEYS) und beeinflusst
+        `verification_ok` nie. Stand der Lint-Marker vor `Testfehler`, verdrängte eine harmlose
+        ruff-Warnung den echten, blockierenden Grund als Kategorie - real in 5 von 6 der letzten
+        Läufe, die alle eine ruff-Zeile im Protokoll trugen."""
+        detail = (
+            "- 🎨 ⚠️ ruff: 2 Lint-Fund(e): app/worker/loop.py:53 [BLE001]\n"
+            "- ❌ **Verifikations-Veto durch Completeness-Check:** 1 Fund"
+        )
+        self.assertEqual(categorize_failure(detail), "Vollständigkeit (Stub/Platzhalter)")
+
+        detail_tests = "- 🎨 ⚠️ ruff: 1 Lint-Fund(e)\n- 🛠️ Versuch 1: 3 echte Testfehler"
+        self.assertEqual(categorize_failure(detail_tests), "Testsuite")
+
+    def test_pure_lint_finding_is_still_categorized_as_lint(self):
+        """Gegenprobe: ohne blockierenden Grund bleibt Lint die richtige Kategorie."""
+        self.assertEqual(categorize_failure("- 🎨 ⚠️ ruff: 1 Lint-Fund(e): app/main.py:16 [F841]"), "Lint")
+
 
 class TestBuildTeamHealthRollup(unittest.TestCase):
     def setUp(self):
@@ -77,6 +116,30 @@ class TestBuildTeamHealthRollup(unittest.TestCase):
         self.assertEqual(p.status, "failed")
         self.assertEqual(p.red_streak, 2)
         self.assertEqual(p.failure_category, "Lint")
+
+    def test_category_comes_from_the_full_protocol_not_the_truncated_excerpt(self):
+        """Roadmap P0-5 (2026-09-20): `.ai_team_status.json` kappt `failure_detail` auf
+        MAX_FAILURE_DETAIL_CHARS (500). Das Verifikationsprotokoll beginnt mit den frühen,
+        informativen Schritten und trägt die blockierende Veto-Zeile am ENDE - sie fiel damit
+        aus dem gespeicherten Ausschnitt heraus. Real beobachtet bei devpulse, eventstream_zero,
+        nexus_resilience_gateway und nexusforge: alle vier trugen exakt 500 Zeichen Detail und
+        landeten unter 'Sonstiger Fehler', obwohl der echte Grund im vollständigen Protokoll
+        (.ai_team_runs/<ts>_verification.md) steht."""
+        proj = self._project_dir("truncated_app")
+        padding = "\n".join(
+            f"- 📦 Versuch {i}: fehlendes Paket deterministisch in requirements.txt ergänzt."
+            for i in range(1, 15)
+        )
+        summary = f"{padding}\n- ❌ **Verifikations-Veto durch Completeness-Check:** 1 Fund"
+        self.assertGreater(len(summary), 500)
+        record_run(proj, "Lauf", verification_ok=False, budget_aborted=False,
+                   files_written_count=1, verification_summary=summary)
+
+        p = build_team_health_rollup(self.workspace).projects[0]
+        self.assertEqual(p.failure_category, "Vollständigkeit (Stub/Platzhalter)")
+        # Angezeigt wird weiterhin der gekürzte Auszug - die volle Fassung gehört nicht in
+        # eine Übersicht.
+        self.assertLessEqual(len(p.failure_detail), 500)
 
     def test_cancelled_run_breaks_the_red_streak(self):
         proj = self._project_dir("cancelled_app")

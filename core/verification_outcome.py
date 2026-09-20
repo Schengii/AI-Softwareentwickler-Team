@@ -43,6 +43,16 @@ CHECK_KEYS: frozenset[str] = frozenset({
     "security_handoff",
 })
 
+# Prüfungen, die ein Ergebnis MELDEN, aber `verification_ok` bewusst NICHT beeinflussen.
+# Lag bis 2026-09-20 in agents/orchestrator/verification_checks.py und wird von dort
+# weiterhin re-exportiert; die Einteilung "blockierend vs. informativ" ist aber eine
+# Eigenschaft der Prüfung selbst und gehört deshalb neben CHECK_KEYS - sonst kann
+# `VerificationOutcome` selbst nicht sagen, welche seiner Fehlschläge etwas bedeuten
+# (Schichtung: core darf nicht aus agents importieren).
+INFORMATIONAL_CHECK_KEYS: frozenset[str] = frozenset({
+    "dependency_audit", "sast", "license", "lint", "accessibility", "interface_fields",
+})
+
 
 @dataclass
 class CheckResult:
@@ -84,10 +94,34 @@ class VerificationOutcome:
     def failed_checks(self) -> list[str]:
         return sorted(k for k, r in self.checks.items() if r.status == "failed")
 
+    @property
+    def blocking_failed_checks(self) -> list[str]:
+        """Nur die fehlgeschlagenen Prüfungen, die `verification_ok` tatsächlich blockieren.
+
+        Realer Fund (Roadmap P0-6, 2026-09-20): `lint` stand in 5 von 6 der letzten Läufe in
+        `failed`, obwohl es informativ ist und `verification_ok` laut
+        `reconcile_verification_ok()` nie beeinflusst. Jeder Konsument von `failed_checks`
+        las das trotzdem als echten Fehlschlag - die Definition of Done nannte bei
+        cachegrid_proxy "fehlgeschlagene Prüfungen: lint, pre_flight", obwohl allein
+        `pre_flight` blockierte, und der Root-Cause-Analyst verbrannte eine vollständige,
+        werkzeugbasierte Tiefenanalyse für eine ungenutzte Variable (ruff F841).
+        """
+        return sorted(k for k in self.failed_checks if k not in INFORMATIONAL_CHECK_KEYS)
+
+    @property
+    def informational_failed_checks(self) -> list[str]:
+        """Gegenstück zu `blocking_failed_checks`: gemeldet, aber ohne Einfluss auf das Urteil."""
+        return sorted(k for k in self.failed_checks if k in INFORMATIONAL_CHECK_KEYS)
+
     def to_dict(self) -> dict:
         return {
             "checks": {k: asdict(v) for k, v in sorted(self.checks.items())},
             "failed": self.failed_checks,
+            # Getrennt ausgewiesen, damit Berichte und spätere Analysen den blockierenden
+            # Grund vom bloßen Hinweis unterscheiden können. `failed` bleibt unverändert -
+            # bestehende Leser (u.a. core/project_status.py) sollen nicht brechen.
+            "failed_blocking": self.blocking_failed_checks,
+            "failed_informational": self.informational_failed_checks,
             "skipped_reason": self.skipped_reason,
         }
 

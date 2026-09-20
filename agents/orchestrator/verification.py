@@ -68,6 +68,7 @@ from core.failure_triage import (
 from core.message_bus import AgentResult, AgentTask
 from core.model_capability import model_capability_tier
 from core.pre_flight_check import PreFlightIssue, run_pre_flight_check
+from core.team_board import unmet_requirements
 from core.test_depth import analyze_test_depth, collect_test_function_names, restore_test_files, snapshot_test_files
 from core.verification_outcome import VerificationOutcome, parse_install_exit_code
 from core.verifier import ProjectVerifier, VerificationReport
@@ -1786,6 +1787,11 @@ class VerificationMixin:
                     notify(f"  ♿ [bold red]Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße.[/bold red]")
                     summary_lines.append(f"- ♿ ⚠️ Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße: {top}")
 
+        # Blockierende Prüfungen, die FRÜH im Lauf fehlgeschlagen sind, noch einmal messen -
+        # siehe _recheck_stale_blocking_checks() für die beiden realen Funde dahinter.
+        if not (budget_aborted or manually_cancelled):
+            await self._recheck_stale_blocking_checks(project_dir, outcome, summary_lines, notify)
+
         # Rekonziliert `verification_ok` gegen `outcome` - siehe reconcile_verification_ok()-
         # Docstring (agents/orchestrator/verification_checks.py) für den realen Fund und die
         # Begründung. `None` (weder blockierender Fehlschlag noch bestandene Kern-Testsuite)
@@ -1814,3 +1820,61 @@ class VerificationMixin:
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."
         )
         return all_results, verification_summary, budget_aborted, manually_cancelled, verification_ok
+
+    async def _recheck_stale_blocking_checks(
+        self, project_dir: str, outcome: VerificationOutcome,
+        summary_lines: list[str], notify,
+    ) -> None:
+        """Misst `pre_flight` und `security_handoff` am ENDE der Verifikation neu, wenn sie
+        zuvor fehlgeschlagen sind.
+
+        Beide Prüfungen laufen früh im Lauf, blockieren `verification_ok` hart und wurden
+        danach NIE wieder ausgewertet - auch dann nicht, wenn spätere Fix-Runden (Testsuite,
+        Completeness, Integrations-Checkpoint, Frontend-Build) die Ursache längst behoben
+        hatten. Zwei reale Fälle:
+
+        * **`pre_flight` (cachegrid_proxy, 2026-09-19):** Der Check lief nur in der Schleife vor
+          der Testausführung, brach nach dem Circuit-Breaker mit 2 Funden ab und wurde mit genau
+          diesem - inzwischen veralteten - Report aufgezeichnet. `run_pre_flight_check()` gegen
+          denselben Projektstand liefert heute `passed=True`; das Projekt ist de facto fertig und
+          steht trotzdem dauerhaft als rot in der Historie.
+        * **`security_handoff` (aegisflow/sentinedge, 2026-09-18/19):** `_run_security_
+          requirements_checkpoint()` beauftragt genau EINEN Agenten, prüft einmal nach und legt
+          das Ergebnis auf `self._security_unmet_requirements` ab. `verification.py` liest das
+          Feld am Schleifenanfang und trägt das Veto ein - spätere Reparaturen erreichen es nicht
+          mehr.
+
+        Bewusst nur Neu-MESSUNG, kein weiterer Fix-Versuch: hier ist die Verifikation bereits
+        durchlaufen, ein zusätzlicher Agenten-Aufruf würde Budget kosten, ohne dass noch eine
+        Prüfung folgt, die sein Ergebnis bewerten könnte. Ein weiterhin fehlschlagender Check
+        bleibt deshalb unverändert auf `failed`.
+        """
+        if outcome.status("pre_flight") is False:
+            try:
+                report = await asyncio.to_thread(run_pre_flight_check, project_dir)
+            except Exception as e:  # noqa: BLE001 - Neu-Messung darf den Lauf nie abbrechen
+                logging.getLogger(__name__).warning("Pre-Flight-Neumessung fehlgeschlagen: %r", e)
+            else:
+                if not report.error and report.passed:
+                    outcome.record("pre_flight", True, "")
+                    notify("  🔍 [bold green]Pre-Flight-Check: Funde durch spätere Fix-Runden behoben.[/bold green]")
+                    summary_lines.append(
+                        "- 🔍 ✅ Pre-Flight-Check am Laufende erneut gemessen: die früheren Funde "
+                        "wurden durch spätere Fix-Runden behoben."
+                    )
+
+        if outcome.status("security_handoff") is False:
+            try:
+                recheck = await asyncio.to_thread(unmet_requirements, project_dir)
+            except Exception as e:  # noqa: BLE001 - siehe oben
+                logging.getLogger(__name__).warning("Security-Handoff-Neumessung fehlgeschlagen: %r", e)
+            else:
+                remaining = [(agent, req) for agent, req in recheck if agent == "security"]
+                self._security_unmet_requirements = remaining
+                if not remaining:
+                    outcome.record("security_handoff", True, "")
+                    notify("  🛡️ [bold green]Sicherheits-Übergabe: Anforderungen inzwischen erfüllt.[/bold green]")
+                    summary_lines.append(
+                        "- 🛡️ ✅ Sicherheits-Übergabe am Laufende erneut geprüft: alle vom "
+                        "security-Agenten geforderten Anforderungen sind erfüllt."
+                    )

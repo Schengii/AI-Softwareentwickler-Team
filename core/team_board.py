@@ -277,7 +277,118 @@ def derive_provides(project_dir: str | Path, files: list[str]) -> list[str]:
 _FILE_REF_RE = re.compile(r"(?<![\w/])((?:[\w.-]+/)*[\w.-]+\.(?:py|ts|tsx|js|jsx|html|css|json|toml|ini))\b")
 _ROUTE_REF_RE = re.compile(r"(?<![\w.])(/(?:api|ws|v\d)[\w/{}.-]*)")
 _SYMBOL_REF_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]{2,})`")
+# Fallback-Regex für Nicht-Python-Projekte (TS/JS/HTML), wo kein AST-Index gebaut werden kann.
+# Die optionale Gruppe `(?::[^=\n]+)?` deckt annotierte Zuweisungen mit ab: ohne sie greift
+# `\bALLOWED_HOSTS\s*=` bei der idiomatischen pydantic-Settings-Form
+# `ALLOWED_HOSTS: list[str] = ["*"]` NICHT, weil `: list[str]` dazwischensteht (realer Fund,
+# eventforge_core 2026-09-19, siehe unmet_requirements()).
 _SCAN_SKIP_DIRS = frozenset({".venv", "venv", ".ai_team_venv", "node_modules", ".git", "__pycache__", "dist", "build", ".ai_team_runs"})
+
+# Fallback, falls DEPARTMENT_DEFINITIONS nicht importierbar ist (siehe _known_role_ids()).
+_FALLBACK_ROLE_IDS: frozenset[str] = frozenset({
+    "product_owner", "business_analyst", "web_research", "architect", "finops", "team_lead",
+    "ui_ux", "image_generator", "copywriter",
+    "frontend", "backend", "database", "api_integration", "data_engineer", "mobile", "ml",
+    "performance", "prompt_engineer",
+    "accessibility", "i18n", "documentation", "readme",
+    "devops", "tester", "security", "resilience_guard", "github",
+    "code_reviewer", "refactoring", "compliance", "project_cleaner", "agent_trainer",
+    "retrospective",
+    "planning_lead", "design_lead", "dev_lead", "content_lead", "qa_lead", "governance_lead",
+})
+
+_known_role_ids_cache: frozenset[str] | None = None
+
+
+def _known_role_ids() -> frozenset[str]:
+    """Alle bekannten Agenten-/Fachbereichs-IDs des Teams.
+
+    Realer Fund (aegisflow/sentinedge/eventforge_core, 2026-09-19): `_SYMBOL_REF_RE` hält JEDES
+    in Backticks gesetzte Wort für ein Code-Symbol, das im Projekt definiert sein muss. Der
+    security-Agent formuliert seine Übergaben aber praktisch immer als "`backend` muss ..." -
+    und `def backend` wird es in einem generierten Projekt nie geben. Jede so formulierte
+    Anforderung galt dadurch DAUERHAFT als unerfüllt, `security_handoff` blockierte
+    `verification_ok` hart, und der eine Fix-Versuch in
+    agents/orchestrator/integration.py._run_security_requirements_checkpoint() konnte die
+    Bedingung prinzipiell nicht erfüllen. `aegisflow` war fachlich grün (Testsuite bestanden)
+    und wurde allein dadurch rot.
+
+    Rollennamen sind Adressaten der Anforderung, keine geforderten Symbole - sie werden deshalb
+    vor der Symbolprüfung herausgefiltert.
+
+    Import bewusst lokal und mit Fallback: core/team_board.py ist ein Basis-Modul, das
+    agents/base_agent.py seinerseits (lazy) importiert - ein Top-Level-Import von `agents.*`
+    würde diese Schichtung umkehren.
+    """
+    global _known_role_ids_cache
+    if _known_role_ids_cache is not None:
+        return _known_role_ids_cache
+    try:
+        from agents.department_lead_agent import DEPARTMENT_DEFINITIONS
+        ids = set(DEPARTMENT_DEFINITIONS)
+        for dept in DEPARTMENT_DEFINITIONS.values():
+            ids.update(dept.get("members") or [])
+        _known_role_ids_cache = frozenset(ids) | _FALLBACK_ROLE_IDS
+    except Exception as e:  # noqa: BLE001 - Rollenliste ist Filter, kein Blocker
+        logger.debug("DEPARTMENT_DEFINITIONS nicht ladbar, nutze Fallback-Rollenliste: %r", e)
+        _known_role_ids_cache = _FALLBACK_ROLE_IDS
+    return _known_role_ids_cache
+
+
+def _referenced_python_symbols(project_dir: Path, max_files: int = 600) -> set[str] | None:
+    """Alle Namen, die die Python-Dateien des Projekts definieren, importieren ODER benutzen.
+
+    Ersetzt die frühere reine Regex-Suche `\\b(?:def|class)\\s+X\\b|\\bX\\s*=`, die zwei
+    Fehlerklassen hatte (beide real beobachtet, 2026-09-19):
+
+    * **Annotierte Zuweisung:** `ALLOWED_HOSTS: list[str] = ["*"]` (die idiomatische
+      pydantic-Settings-Form) matchte nie, weil `: list[str]` zwischen Name und `=` steht -
+      `eventforge_core` meldete drei tatsächlich vorhandene Settings-Felder als fehlend.
+    * **Benutzung statt Definition:** `await conn.run_sync(Base.metadata.create_all)` in
+      `tests/conftest.py` erfüllt die Anforderung "auf `run_sync` umstellen", definiert aber
+      nichts - `sentinedge` meldete sie trotz Umsetzung als offen.
+
+    Bewusst großzügig (Definition ODER Import ODER Benutzung): `unmet_requirements()` beantwortet
+    laut eigenem Docstring die Frage "wird das im Projekt überhaupt referenziert?", nicht "ist es
+    fachlich korrekt umgesetzt?". Ein Wert-Urteil (etwa ob `ALLOWED_HOSTS` noch `["*"]` enthält)
+    kann diese Prüfung ohnehin nicht fällen - ein falsch-positives Veto ist dort schädlicher als
+    ein falsch-negatives, weil es sich durch keinen Fix-Versuch auflösen lässt.
+
+    Gibt `None` zurück, wenn das Projekt keine lesbare Python-Datei enthält (z. B. ein reines
+    TS/JS-Frontend) - der Aufrufer fällt dann auf die Regex-Suche im Textindex zurück.
+    """
+    names: set[str] = set()
+    seen_python = False
+    count = 0
+    for dirpath, dirnames, filenames in os.walk(project_dir):
+        dirnames[:] = [d for d in dirnames if d not in _SCAN_SKIP_DIRS]
+        for filename in filenames:
+            if not filename.endswith(".py"):
+                continue
+            count += 1
+            if count > max_files:
+                return names if seen_python else None
+            try:
+                source = (Path(dirpath) / filename).read_text(encoding="utf-8", errors="replace")
+                tree = ast.parse(source)
+            except (OSError, SyntaxError, ValueError):
+                continue
+            seen_python = True
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    names.add(node.name)
+                elif isinstance(node, ast.Name):
+                    names.add(node.id)
+                elif isinstance(node, ast.Attribute):
+                    # Deckt `conn.run_sync(...)` und `settings.HMAC_SECRET_KEY` ab.
+                    names.add(node.attr)
+                elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                    names.add(node.target.id)
+                elif isinstance(node, ast.arg):
+                    names.add(node.arg)
+                elif isinstance(node, ast.alias):
+                    names.add((node.asname or node.name).split(".")[0])
+    return names if seen_python else None
 
 
 def _project_text_index(project_dir: Path, max_files: int = 600) -> str:
@@ -302,6 +413,10 @@ def unmet_requirements(project_dir: str | Path) -> list[tuple[str, str]]:
     """(agent_id, Anforderung) für jede `requires`-Angabe, deren Datei/Route/Symbol im Projekt fehlt.
 
     Anforderungen ohne erkennbare Referenz (reiner Fließtext) gelten nicht als unerfüllt.
+    Rollennamen in Backticks ("`backend` muss ...") sind Adressaten, keine geforderten Symbole,
+    und werden herausgefiltert - siehe `_known_role_ids()` für den realen Fund dahinter.
+    Die Symbolprüfung läuft über den AST-Index (`_referenced_python_symbols()`); nur für
+    Projekte ohne lesbare Python-Datei greift die Regex-Suche im Textindex.
     """
     base = Path(project_dir)
     state = load_board(base)
@@ -309,21 +424,37 @@ def unmet_requirements(project_dir: str | Path) -> list[tuple[str, str]]:
     if not pending:
         return []
     corpus = _project_text_index(base)
+    known_symbols = _referenced_python_symbols(base)
+    role_ids = _known_role_ids()
     unmet: list[tuple[str, str]] = []
     for agent_id, requirement in pending:
         files = _FILE_REF_RE.findall(requirement)
         routes = _ROUTE_REF_RE.findall(requirement)
-        symbols = _SYMBOL_REF_RE.findall(requirement)
+        symbols = [s for s in _SYMBOL_REF_RE.findall(requirement) if s not in role_ids]
         if not (files or routes or symbols):
             continue
         missing = (
             any(not (base / f).is_file() for f in files)
             or any(route.split("{")[0].rstrip("/") not in corpus for route in routes)
-            or any(not re.search(rf"\b(?:def|class)\s+{re.escape(s)}\b|\b{re.escape(s)}\s*=", corpus) for s in symbols)
+            or any(not _symbol_is_referenced(s, known_symbols, corpus) for s in symbols)
         )
         if missing and (agent_id, requirement) not in unmet:
             unmet.append((agent_id, requirement))
     return unmet
+
+
+def _symbol_is_referenced(symbol: str, known_symbols: set[str] | None, corpus: str) -> bool:
+    """Ist `symbol` im Projekt definiert, importiert oder benutzt?
+
+    Bevorzugt den AST-Index; ohne Python-Dateien (`known_symbols is None`) bleibt die
+    Regex-Suche im Textindex - dort jetzt mit optionaler Typannotation zwischen Name und `=`,
+    damit `X: list[str] = [...]` nicht länger als fehlend gilt.
+    """
+    if known_symbols is not None:
+        return symbol in known_symbols
+    escaped = re.escape(symbol)
+    pattern = rf"\b(?:def|class|function|const|let|var)\s+{escaped}\b|\b{escaped}\s*(?::[^=\n]+)?="
+    return bool(re.search(pattern, corpus))
 
 
 def contract_status(project_dir: str | Path) -> tuple[list[str], list[str]]:

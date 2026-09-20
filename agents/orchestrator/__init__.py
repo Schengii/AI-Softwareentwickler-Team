@@ -1102,7 +1102,13 @@ class Orchestrator(
                 coverage_percent=getattr(self, "last_coverage_percent", None),
                 min_coverage=float(MIN_TEST_COVERAGE),
                 verification_ok=verification_ok,
-                failed_checks=_outcome.failed_checks,
+                # Nur die BLOCKIERENDEN Fehlschläge: `lint` & Co. sind informativ und
+                # beeinflussen `verification_ok` nie (siehe INFORMATIONAL_CHECK_KEYS).
+                # Mit `failed_checks` nannte die Definition of Done bei cachegrid_proxy
+                # "fehlgeschlagene Prüfungen: lint, pre_flight", obwohl allein `pre_flight`
+                # blockierte - eine irreführende Angabe genau an der Stelle, an der jede
+                # spätere Analyse nach dem Grund sucht.
+                failed_checks=_outcome.blocking_failed_checks,
                 verification_skipped=bool(budget_aborted or manually_cancelled),
                 # Die Verifikations-Pipeline lief hier immer (`_outcome` stammt aus ihr).
                 # Damit gilt ein fehlender Messwert bei einer Pflichtprüfung als Blocker statt

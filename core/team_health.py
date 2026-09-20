@@ -12,23 +12,55 @@ musste bisher jedes .ai_team_status.json einzeln von Hand gelesen werden. `/team
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from core.project_status import STATUS_FILENAME, read_status
+from core.project_status import STATUS_FILENAME, read_full_detail, read_status
 
 # Kategorisierungs-Marker für failure_detail-Texte, wie sie tatsächlich von
 # agents/orchestrator.py._run_verification_loop() in verification_summary erzeugt werden (siehe
 # summary_lines.append(...) dort) - bewusst die ECHTEN, im Projekt bereits konsistent genutzten
 # Icons/Präfixe wiederverwendet statt eigene Marker zu erfinden. Reihenfolge ist Priorität: der
 # erste zutreffende Marker gewinnt, falls ein failure_detail mehrere Zeilen/Kategorien enthält.
+#
+# Realer Fund (Roadmap P0-5, 2026-09-20): die Liste kannte die drei Fehlerarten nicht, die die
+# Verifikation heute am häufigsten erzeugt - offene Sicherheits-Übergabe, Vollständigkeits-Veto
+# und Pre-Flight-Abbruch. 8 von 12 roten Projekten landeten dadurch im Sammeltopf "Sonstiger
+# Fehler" (aegisflow, cachegrid_proxy, devpulse, ecotrack_ai, eventstream_zero,
+# nexus_resilience_gateway, nexusforge, pipeline_pilot), obwohl aegisflow und ecotrack_ai
+# nachweislich dasselbe Muster teilten. Genau dieses Muster sichtbar zu machen ist der Zweck
+# von shared_patterns - für die dominanten Fehlerklassen war es blind.
+#
+# Die `❌ **Verifikations-Veto durch X`-Zeilen sind die verlässlichsten Marker: sie werden in
+# agents/orchestrator/verification.py an genau einer Stelle je Veto-Art erzeugt und benennen den
+# blockierenden Grund, während ein Icon wie `🔍` auch in rein informativen Fortschrittszeilen
+# ("Pre-Flight-Check, Versuch 1: 2 Problem(e) → zur Korrektur zurückgespielt") vorkommt und
+# deshalb allein nichts über einen Fehlschlag aussagt.
+#
+# Lint steht bewusst GANZ HINTEN: `lint` ist ein informativer Check (siehe
+# agents/orchestrator/verification_checks.py.INFORMATIONAL_CHECK_KEYS) und beeinflusst
+# `verification_ok` nie. Vor `Testfehler` platziert, hätte eine harmlose ruff-Warnung einen
+# echten Testfehlschlag als Kategorie verdrängt.
 _CATEGORY_MARKERS: list[tuple[str, str]] = [
+    # Blockierende Vetos zuerst - sie benennen den tatsächlichen Grund für den roten Lauf.
+    ("Verifikations-Veto durch offene Sicherheits-Übergabe", "Sicherheits-Übergabe offen"),
+    ("Verifikations-Veto durch Completeness-Check", "Vollständigkeit (Stub/Platzhalter)"),
+    ("Verifikations-Veto durch Test-Schrumpfung", "Test-Schrumpfung (Tests statt Fehler entfernt)"),
+    ("Verifikations-Veto durch Browser-UI-Check", "Frontend/UI-Check"),
+    ("Verifikations-Veto durch Runtime-Smoke-Test", "Runtime-Smoke-Test"),
+    ("Verifikations-Veto durch Lastentest", "Lastentest"),
+    ("Verifikations-Veto durch Coverage-Check", "Testabdeckung unter Schwelle"),
     ("🌐 ❌", "Frontend/UI-Check"),
     ("🚀 ❌", "Runtime-Smoke-Test"),
     ("🏋️ ❌", "Lastentest"),
     ("🐳 ❌", "Docker-Build"),
     ("🔓 ❌", "Dependency-Audit (Schwachstellen)"),
     ("📊 ❌", "Testabdeckung unter Schwelle"),
+    # Abbruch-Marker der Fix-Schleifen: "dieselben Fund(e) wie nach dem vorherigen Fixversuch".
+    ("🔍 🛑", "Pre-Flight-Check (Schleife ohne Fortschritt)"),
+    ("🧩 🛑", "Vorab-/Vollständigkeits-Check (Schleife ohne Fortschritt)"),
+    ("🔍 ❌", "Pre-Flight-Check (ungelöste Funde)"),
+    ("🚫 ", "Token-Budget erreicht"),
+    ("Testfehler", "Testsuite"),
     ("🎨", "Lint"),
     ("ruff:", "Lint (ruff)"),
-    ("Testfehler", "Testsuite"),
 ]
 _FALLBACK_CATEGORY = "Sonstiger Fehler"
 
@@ -121,6 +153,20 @@ def build_team_health_rollup(workspace_dir: str) -> TeamHealthRollup:
             # Abbruch ist kein inhaltlicher Fehler und hat oft gar kein failure_detail, würde
             # sonst fälschlich mit anderen Projekten unter "Sonstiger Fehler" zusammengelegt.
             failure_detail = latest.get("failure_detail", "") if status == "failed" else ""
+            # Kategorisiert gegen das VOLLSTÄNDIGE Protokoll, nicht gegen den in
+            # .ai_team_status.json auf MAX_FAILURE_DETAIL_CHARS (500) gekürzten Auszug:
+            # das Verifikationsprotokoll beginnt mit den frühen, informativen Schritten
+            # (Manifest-Ergänzungen, Pre-Flight-Runden) - die blockierende Veto-Zeile steht
+            # am ENDE und fiel damit genau aus dem gespeicherten Ausschnitt heraus. Real
+            # beobachtet bei devpulse, eventstream_zero, nexus_resilience_gateway und
+            # nexusforge: alle vier trugen exakt 500 Zeichen Detail, endeten mitten in einer
+            # Erfolgsmeldung und landeten deshalb unter "Sonstiger Fehler", obwohl der echte
+            # Grund im vollständigen Protokoll (.ai_team_runs/<ts>_verification.md) steht.
+            # `failure_detail` selbst bleibt der gekürzte Text - er wird angezeigt, und die
+            # volle Fassung gehört nicht in eine Übersicht.
+            detail_for_category = (
+                read_full_detail(str(entry_dir), latest) or failure_detail
+            ) if status == "failed" else ""
             projects.append(
                 ProjectHealth(
                     name=entry_dir.name,
@@ -129,7 +175,7 @@ def build_team_health_rollup(workspace_dir: str) -> TeamHealthRollup:
                     task_summary=latest.get("task_summary", "?"),
                     red_streak=_red_streak(history),
                     failure_detail=failure_detail,
-                    failure_category=categorize_failure(failure_detail) if status == "failed" else "",
+                    failure_category=categorize_failure(detail_for_category) if status == "failed" else "",
                 )
             )
 

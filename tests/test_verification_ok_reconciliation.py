@@ -80,5 +80,53 @@ class TestReconcileVerificationOk(unittest.TestCase):
         self.assertTrue(result)
 
 
+class TestBlockingVsInformationalFailures(unittest.TestCase):
+    """Roadmap P0-6 (2026-09-20): `failed_checks` mischte blockierende und informative
+    Fehlschläge. Bei cachegrid_proxy nannte die Definition of Done deshalb "fehlgeschlagene
+    Prüfungen: lint, pre_flight", obwohl allein `pre_flight` blockierte - irreführend genau an
+    der Stelle, an der jede spätere Analyse nach dem Grund sucht. In 5 von 6 der letzten Läufe
+    stand `lint` in `failed`."""
+
+    def _cachegrid_outcome(self) -> VerificationOutcome:
+        outcome = VerificationOutcome()
+        outcome.record("lint", False, "ruff: 1 Fund(e)")
+        outcome.record("pre_flight", False, "2 Fund(e)")
+        outcome.record("tests", True)
+        outcome.record("smoke", True)
+        return outcome
+
+    def test_blocking_failed_checks_excludes_informational_ones(self):
+        outcome = self._cachegrid_outcome()
+        self.assertEqual(outcome.failed_checks, ["lint", "pre_flight"])
+        self.assertEqual(outcome.blocking_failed_checks, ["pre_flight"])
+        self.assertEqual(outcome.informational_failed_checks, ["lint"])
+
+    def test_only_informational_failures_means_no_blocking_failure(self):
+        """Ein Lauf, dessen einziger Fehlschlag informativ ist, hat keinen blockierenden Grund -
+        genau der Fall von nexus_mesh (`failed: ["lint"]`, Lauf trotzdem grün)."""
+        outcome = VerificationOutcome()
+        outcome.record("lint", False, "ruff: 1 Fund(e)")
+        outcome.record("tests", True)
+        self.assertEqual(outcome.blocking_failed_checks, [])
+        self.assertTrue(reconcile_verification_ok(outcome, tests_ran=True, tests_passed=True))
+
+    def test_to_dict_reports_both_groups_and_keeps_failed_for_compatibility(self):
+        data = self._cachegrid_outcome().to_dict()
+        self.assertEqual(data["failed"], ["lint", "pre_flight"])
+        self.assertEqual(data["failed_blocking"], ["pre_flight"])
+        self.assertEqual(data["failed_informational"], ["lint"])
+
+    def test_round_trip_through_from_dict_preserves_the_split(self):
+        restored = VerificationOutcome.from_dict(self._cachegrid_outcome().to_dict())
+        self.assertEqual(restored.blocking_failed_checks, ["pre_flight"])
+        self.assertEqual(restored.informational_failed_checks, ["lint"])
+
+    def test_blocking_set_matches_the_one_reconciliation_uses(self):
+        """Die Einteilung darf nicht an zwei Stellen auseinanderlaufen: beide nutzen jetzt
+        dieselbe Definition aus core/verification_outcome.py."""
+        from core.verification_outcome import INFORMATIONAL_CHECK_KEYS as core_keys
+        self.assertIs(INFORMATIONAL_CHECK_KEYS, core_keys)
+
+
 if __name__ == "__main__":
     unittest.main()

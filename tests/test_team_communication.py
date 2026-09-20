@@ -86,6 +86,55 @@ class TestHandoffNotes:
         assert "`GET /api/metrics`" not in unmet
         assert "gute Laune" not in unmet
 
+    def test_agent_role_name_in_backticks_is_not_treated_as_code_symbol(self, tmp_path):
+        """Realer Fund (aegisflow/sentinedge/eventforge_core, 2026-09-19): der security-Agent
+        formuliert seine Übergaben als "`backend` muss ...". `_SYMBOL_REF_RE` hielt den
+        Rollennamen für ein Code-Symbol, das als `def backend` definiert sein müsste - die
+        Anforderung galt dadurch DAUERHAFT als unerfüllt, `security_handoff` blockierte
+        `verification_ok`, und kein Fix-Versuch konnte die Bedingung je erfüllen. `aegisflow`
+        war fachlich grün und wurde allein dadurch rot."""
+        _write(tmp_path / "app" / "main.py", "def setup_security(app):\n    return app\n")
+        team_board.record_handoff(tmp_path, team_board.Handoff(
+            agent_id="security",
+            requires=["`backend` muss `setup_security(app)` in `app/main.py` aufrufen."],
+        ))
+        assert team_board.unmet_requirements(tmp_path) == []
+
+    def test_annotated_assignment_counts_as_defined_symbol(self, tmp_path):
+        """`ALLOWED_HOSTS: list[str] = ["*"]` (idiomatische pydantic-Settings-Form) matchte den
+        alten Regex `\\bALLOWED_HOSTS\\s*=` nicht, weil `: list[str]` dazwischensteht -
+        eventforge_core meldete drei tatsächlich vorhandene Settings-Felder als fehlend."""
+        _write(tmp_path / "app" / "core" / "config.py",
+               "class Settings:\n    ALLOWED_HOSTS: list[str] = [\"*\"]\n    CORS_ORIGINS: list[str] = [\"*\"]\n")
+        team_board.record_handoff(tmp_path, team_board.Handoff(
+            agent_id="security",
+            requires=["In `app/core/config.py` `ALLOWED_HOSTS` und `CORS_ORIGINS` auf eine Whitelist umstellen."],
+        ))
+        assert team_board.unmet_requirements(tmp_path) == []
+
+    def test_used_but_not_defined_symbol_counts_as_referenced(self, tmp_path):
+        """`await conn.run_sync(...)` erfüllt die Anforderung "auf `run_sync` umstellen",
+        definiert aber nichts - sentinedge meldete sie trotz Umsetzung als offen."""
+        _write(tmp_path / "tests" / "conftest.py",
+               "async def setup_db(conn):\n    await conn.run_sync(lambda c: None)\n")
+        team_board.record_handoff(tmp_path, team_board.Handoff(
+            agent_id="backend",
+            requires=["`tester` muss `tests/conftest.py` auf `run_sync` umstellen."],
+        ))
+        assert team_board.unmet_requirements(tmp_path) == []
+
+    def test_genuinely_missing_symbol_and_route_still_block(self, tmp_path):
+        """Gegenprobe zu den drei Tests darüber: die Lockerung darf echte Lücken NICHT
+        verschlucken. `POST /api/v1/dlq/replay` und `CircuitBreaker` existieren nicht - beides
+        sind reale, korrekt erkannte Funde aus dem aegisflow-Lauf."""
+        _write(tmp_path / "app" / "main.py", "@app.get('/api/v1/events')\nasync def events():\n    return []\n")
+        team_board.record_handoff(tmp_path, team_board.Handoff(
+            agent_id="resilience_guard",
+            requires=["`backend` muss `CircuitBreaker` einbinden und `POST /api/v1/dlq/replay` registrieren."],
+        ))
+        unmet = [req for _, req in team_board.unmet_requirements(tmp_path)]
+        assert len(unmet) == 1
+
     def test_contract_status_separates_implemented_and_planned(self, tmp_path):
         _write(tmp_path / "interface_contract.json", json.dumps({"modules": {
             "app/core/config.py": {"Settings": "class"}, "app/core/security.py": {"SecurityManager": "class"},

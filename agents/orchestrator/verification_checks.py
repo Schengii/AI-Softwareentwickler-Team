@@ -19,6 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from core.contract_verifier import find_response_field_mismatches
+from core.verification_outcome import INFORMATIONAL_CHECK_KEYS as _INFORMATIONAL_CHECK_KEYS
 from core.verification_outcome import VerificationOutcome
 
 
@@ -149,9 +150,11 @@ INFORMATIONAL_CHECKS: tuple[Callable[[CheckContext], object], ...] = (
 # Pipeline läuft). Zentral an einer Stelle gepflegt, damit die Abgleich-Logik am Ende von
 # verification.py (die `verification_ok` gegen `outcome` rekonziliert) nicht mit der Definition
 # hier auseinanderlaufen kann.
-INFORMATIONAL_CHECK_KEYS: frozenset[str] = frozenset({
-    "dependency_audit", "sast", "license", "lint", "accessibility", "interface_fields",
-})
+#
+# Die Definition liegt seit 2026-09-20 in core/verification_outcome.py neben CHECK_KEYS -
+# `VerificationOutcome.blocking_failed_checks` braucht sie selbst, und core darf nicht aus
+# agents importieren. Der Re-Export hier hält alle bestehenden Importe gültig.
+INFORMATIONAL_CHECK_KEYS = _INFORMATIONAL_CHECK_KEYS
 
 
 async def run_informational_checks(ctx: CheckContext) -> CheckContext:

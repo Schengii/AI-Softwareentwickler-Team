@@ -118,11 +118,28 @@ def _gemini_config_with_cache(
         return base_config
 
 
-def _gemini_cached_content_name(model: str, system_prompt: str | None) -> str | None:
-    """Best-Effort: liefert den Namen eines Gemini-Cache-Objekts fuer `system_prompt`, oder
-    `None`, wenn Caching fuer diesen Aufruf nicht sinnvoll/moeglich ist. Wirft NIE - jeder Fehler
-    (Modell ohne Cache-Unterstuetzung, Prompt zu kurz, API-Fehler) fuehrt zu `None`, der Aufrufer
-    verhaelt sich dann exakt wie vor dieser Optimierung."""
+def _gemini_cached_content_name(
+    model: str,
+    system_prompt: str | None,
+    tools: "list[genai_types.Tool] | None" = None,
+    tool_config: "genai_types.ToolConfig | None" = None,
+) -> str | None:
+    """Best-Effort: liefert den Namen eines Gemini-Cache-Objekts fuer `system_prompt` (und, falls
+    gesetzt, `tools`/`tool_config`), oder `None`, wenn Caching fuer diesen Aufruf nicht
+    sinnvoll/moeglich ist. Wirft NIE - jeder Fehler (Modell ohne Cache-Unterstuetzung, Prompt zu
+    kurz, API-Fehler) fuehrt zu `None`, der Aufrufer verhaelt sich dann exakt wie vor dieser
+    Optimierung.
+
+    WICHTIG (live an der echten API gefunden, 2026-09-20 - der erste Versuch dieser Optimierung
+    ohne `tools`/`tool_config` schlug in JEDEM Aufruf mit Werkzeugkatalog fehl, siehe
+    ROADMAP_TEMP.md P5-2): die Gemini-API akzeptiert `cached_content` NICHT gleichzeitig mit
+    `system_instruction`, `tools` ODER `tool_config` im GenerateContentConfig - wörtliche
+    Fehlermeldung: "CachedContent can not be used with GenerateContent request setting
+    system_instruction, tools or tool_config. Proposed fix: move those values to CachedContent
+    from GenerateContent request." Alle drei muessen deshalb, wenn vorhanden, TEIL des
+    Cache-Objekts selbst sein, nicht nur der System-Prompt - der Aufrufer darf sie dann im
+    GenerateContentConfig NICHT mehr zusaetzlich setzen (siehe _gemini_config_with_cache() bzw.
+    generate_with_tools()."""
     # Defensive Typpruefung statt Annahme: an einigen Aufrufstellen koennte hier theoretisch ein
     # bereits von der SDK umgewandeltes Objekt statt eines rohen Strings ankommen (z.B. ueber
     # `config.system_instruction` zurückgelesen) - `isinstance` statt `len()`/`.encode()` direkt
@@ -138,7 +155,14 @@ def _gemini_cached_content_name(model: str, system_prompt: str | None) -> str | 
         client, active_key = _get_gemini_client(model=model)
         if client is None or not active_key:
             return None
-        prompt_hash = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
+        # tools/tool_config gehen als STRING mit in den Hash ein: unterschiedliche Werkzeug-
+        # Kataloge (verschiedene Rollen) brauchen unterschiedliche Caches, sonst würde eine Rolle
+        # versehentlich den Werkzeugkatalog einer anderen Rolle aus dem Cache bekommen.
+        try:
+            tools_repr = repr(tools) + repr(tool_config)
+        except Exception:
+            tools_repr = ""
+        prompt_hash = hashlib.sha256((system_prompt + tools_repr).encode("utf-8")).hexdigest()
         registry_key = (active_key, model, prompt_hash)
         cached = _gemini_cache_registry.get(registry_key)
         if cached and cached[1] > now:
@@ -147,6 +171,8 @@ def _gemini_cached_content_name(model: str, system_prompt: str | None) -> str | 
             model=model,
             config=genai_types.CreateCachedContentConfig(
                 system_instruction=system_prompt,
+                tools=tools or None,
+                tool_config=tool_config,
                 ttl=f"{GEMINI_CACHE_TTL_SECONDS}s",
             ),
         )
@@ -1133,17 +1159,28 @@ class GeminiClient:
         )
 
         def _build_config(for_model: str) -> "genai_types.GenerateContentConfig":
-            # P5-2 (ROADMAP_TEMP.md): system_instruction ist bei jeder Iteration des Agentic-Loops
-            # identisch (nur `contents` wächst) - Best-Effort explizites Gemini-Context-Caching
-            # statt es bei jedem Aufruf erneut komplett zu senden. cached_content ersetzt
-            # system_instruction (beide gleichzeitig sind laut Gemini-API nicht vorgesehen);
-            # schlägt die Cache-Erstellung fehl, bleibt system_instruction inline wie zuvor.
-            cache_name = _gemini_cached_content_name(for_model, system_prompt)
+            # P5-2 (ROADMAP_TEMP.md): system_instruction UND der Werkzeugkatalog sind bei jeder
+            # Iteration des Agentic-Loops identisch (nur `contents` wächst) - Best-Effort
+            # explizites Gemini-Context-Caching statt sie bei jedem Aufruf erneut komplett zu
+            # senden. Live an der echten API gefunden (siehe _gemini_cached_content_name()-
+            # Docstring): `cached_content` verträgt sich NICHT mit gleichzeitig gesetztem
+            # `system_instruction`, `tools` ODER `tool_config` im selben Request - alle drei
+            # müssen deshalb, wenn ein Cache existiert, NUR im Cache-Objekt stehen und hier
+            # weggelassen werden. Schlägt die Cache-Erstellung fehl, bleiben alle drei inline
+            # wie vor dieser Optimierung.
+            cache_name = _gemini_cached_content_name(
+                for_model, system_prompt, tools=[genai_tool] if genai_tool else None, tool_config=tool_config,
+            )
+            if cache_name:
+                return genai_types.GenerateContentConfig(
+                    temperature=TEMPERATURE,
+                    max_output_tokens=MAX_OUTPUT_TOKENS,
+                    cached_content=cache_name,
+                )
             return genai_types.GenerateContentConfig(
                 temperature=TEMPERATURE,
                 max_output_tokens=MAX_OUTPUT_TOKENS,
-                system_instruction=None if cache_name else (system_prompt if system_prompt else None),
-                cached_content=cache_name,
+                system_instruction=system_prompt if system_prompt else None,
                 tools=[genai_tool] if genai_tool else None,
                 tool_config=tool_config,
             )

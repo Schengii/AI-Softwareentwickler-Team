@@ -810,9 +810,36 @@ noch 2×.
    > jedem Aufruf erneut zu scheitern. Abgedeckt durch `tests/test_gemini_context_caching.py`
    > (11 Tests, inkl. End-to-End-Nachweis, dass `cached_content` tatsächlich bei
    > `models.generate_content()` ankommt, und dass eine scheiternde Cache-Erstellung den
-   > eigentlichen Aufruf unverändert durchlässt). **Nicht live gegen die Gemini-API verifiziert**
-   > (kein API-Zugriff in dieser Sitzung) – die Wirkung sollte im nächsten echten Lauf am
-   > `cache_read_tokens`-Feld der Traces abgelesen werden, bevor der Punkt als voll bestätigt gilt.
+   > eigentlichen Aufruf unverändert durchlässt).
+   >
+   > **Live verifiziert 2026-09-20, Referenzlauf `notecatcher`, UND dabei ein echter Bug
+   > gefunden und behoben:** Der erste Live-Versuch schlug in JEDEM Werkzeug-Aufruf
+   > (backend/security/tester) mit `400 INVALID_ARGUMENT` fehl – die Gemini-API lehnt
+   > `cached_content` zusammen mit gleichzeitig gesetztem `system_instruction`, `tools` ODER
+   > `tool_config` im selben Request kategorisch ab ("Proposed fix: move those values to
+   > CachedContent from GenerateContent request"). Die ursprüngliche Unit-Test-Abdeckung prüfte
+   > nur den Fall `tools=[]` und deckte das nicht auf. Behoben: `tools`/`tool_config` werden jetzt
+   > mit ins Cache-Objekt gelegt (`CreateCachedContentConfig(tools=..., tool_config=...)`) und im
+   > `GenerateContentConfig` weggelassen, sobald ein Cache greift; der Registry-Schlüssel enthält
+   > jetzt zusätzlich einen Hash von `tools`/`tool_config`, damit unterschiedliche Rollen (andere
+   > Werkzeugkataloge) keinen fremden Cache treffen. Neuer Regressionstest
+   > `test_real_tools_are_never_set_alongside_cached_content` deckt genau diesen Fall ab. Nach dem
+   > Fix lief `notecatcher` fehlerfrei durch, Abschlussbericht: **63 % Cache-Trefferquote bei
+   > 470.809 Prompt-Tokens**; isolierter Zweitaufruf mit identischem Prompt bestätigt
+   > `cache_read_tokens=3336` bei Aufruf 1 UND 2 (Wiederverwendung greift).
+   >
+   > **Dabei zusätzlich gefunden (kleinere, eigenständige Lücke):** Die 63 % stammen aus
+   > `token_guard`s Aggregat-Zähler (korrekt gespeist über `record_usage(...,
+   > cache_read_tokens=...)`), NICHT aus den einzelnen `agent_call`-Trace-Events – dort steht
+   > weiterhin `cache_read_tokens=0` bei jedem Aufruf. Ursache: `core/message_bus.py.AgentResult`
+   > hat gar kein `cache_read_tokens`-Feld, und `core/run_logger.py.log_agent_result()` liest nur
+   > `prompt_tokens`/`completion_tokens`/`total_tokens` vom `AgentResult`. Der ursprüngliche
+   > „0 % über alle 264 Traces"-Befund oben war also selbst teilweise ein Artefakt dieser
+   > Beobachtungslücke, nicht nur fehlenden Cachings – zum Zeitpunkt der Messung stimmte aber
+   > wahrscheinlich beides gleichzeitig (kein Cache UND keine Sichtbarkeit). Separates, kleines
+   > Ticket wert: `cache_read_tokens`/`cache_write_tokens` durch `AgentResult` bis in den Trace
+   > durchreichen, sonst bleibt jede künftige Cache-Analyse auf den Abschlussbericht-Text
+   > angewiesen statt auf strukturierte Trace-Daten.
 2. **Kontext-Kompaktierung früher greifen lassen.** `context_chars_compacted` lag im letzten Lauf
    bei nur 24.839 Zeichen über den *ganzen* Lauf. Die Empfehlung aus der Fehleranalyse
    (> 15 Tool-Calls oder > 100k Tokens ⇒ Zwischenergebnis erzwingen) ist noch nicht umgesetzt.

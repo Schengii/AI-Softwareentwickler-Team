@@ -192,6 +192,58 @@ class TestGenerateWithToolsUsesCache(unittest.TestCase):
 
     @patch("core.llm_factory.GEMINI_API_KEYS", ["key_1"])
     @patch("core.llm_factory._gemini_rate_limiter")
+    def test_real_tools_are_never_set_alongside_cached_content(self, mock_limiter):
+        """Regressionstest für einen realen Live-API-Fund (2026-09-20, Referenzlauf 'notecatcher'):
+        die Gemini-API lehnt `cached_content` zusammen mit `system_instruction`, `tools` ODER
+        `tool_config` im selben Request mit 400 INVALID_ARGUMENT ab ("CachedContent can not be
+        used with GenerateContent request setting system_instruction, tools or tool_config").
+        Der erste Versuch dieser Optimierung ohne diesen Test ließ JEDEN echten Werkzeug-Aufruf
+        (Backend, Security, Tester - alle nutzen den Werkzeugkatalog) im Live-Lauf fehlschlagen,
+        weil `tools=[]` in den bisherigen Tests den Fall nie abdeckte."""
+        mock_limiter.acquire = AsyncMock()
+        captured_configs = []
+
+        def fake_generate_content(model, contents, config):
+            captured_configs.append(config)
+            part = MagicMock()
+            part.text = "ok mit Werkzeugen"
+            part.function_call = None
+            candidate = MagicMock()
+            candidate.content.parts = [part]
+            resp = MagicMock()
+            resp.candidates = [candidate]
+            resp.usage_metadata = None
+            return resp
+
+        mock_client = MagicMock()
+        mock_client.models.generate_content = fake_generate_content
+        mock_client.caches.create.return_value = _fake_cache("cachedContents/mit-tools")
+        _gemini_clients_by_key["key_1"] = mock_client
+
+        real_tools = [{
+            "name": "read_file", "description": "liest eine Datei",
+            "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+        }]
+        client = GeminiClient(model_name="gemini-3.8-flash")
+        res = asyncio.run(client.generate_with_tools(
+            [AgentMessage(role="user", text="hello")], LONG_SYSTEM_PROMPT, real_tools,
+        ))
+
+        self.assertEqual(res.text, "ok mit Werkzeugen")
+        self.assertEqual(len(captured_configs), 1)
+        cfg = captured_configs[0]
+        self.assertEqual(cfg.cached_content, "cachedContents/mit-tools")
+        # Der eigentliche Fund: mit gesetztem cached_content dürfen diese drei Felder NICHT
+        # zusätzlich gesetzt sein - genau das lehnte die echte API mit 400 ab.
+        self.assertIsNone(cfg.system_instruction)
+        self.assertIsNone(cfg.tools)
+        self.assertIsNone(cfg.tool_config)
+        # Die tools sind stattdessen TEIL des Cache-Objekts selbst.
+        _, create_kwargs = mock_client.caches.create.call_args
+        self.assertIsNotNone(create_kwargs["config"].tools)
+
+    @patch("core.llm_factory.GEMINI_API_KEYS", ["key_1"])
+    @patch("core.llm_factory._gemini_rate_limiter")
     def test_cache_creation_failure_still_delivers_inline_system_instruction(self, mock_limiter):
         mock_limiter.acquire = AsyncMock()
         captured_configs = []
@@ -213,15 +265,18 @@ class TestGenerateWithToolsUsesCache(unittest.TestCase):
         mock_client.caches.create.side_effect = RuntimeError("caching not supported for this model")
         _gemini_clients_by_key["key_1"] = mock_client
 
+        real_tools = [{"name": "read_file", "description": "liest eine Datei", "parameters": {"type": "object", "properties": {}}}]
         client = GeminiClient(model_name="gemini-3.1-flash-lite")
         res = asyncio.run(client.generate_with_tools(
-            [AgentMessage(role="user", text="hello")], LONG_SYSTEM_PROMPT, [],
+            [AgentMessage(role="user", text="hello")], LONG_SYSTEM_PROMPT, real_tools,
         ))
 
         self.assertEqual(res.text, "ok trotz Cache-Fehler")
         self.assertEqual(len(captured_configs), 1)
         self.assertIsNone(captured_configs[0].cached_content)
         self.assertEqual(captured_configs[0].system_instruction, LONG_SYSTEM_PROMPT)
+        # Fällt die Cache-Erstellung aus, müssen tools/tool_config wie zuvor inline bleiben.
+        self.assertIsNotNone(captured_configs[0].tools)
 
 
 if __name__ == "__main__":

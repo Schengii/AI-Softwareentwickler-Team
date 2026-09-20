@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+sqlalchemy>=2.0
+aiosqlite
+greenlet
+PyJWT
+python-multipart

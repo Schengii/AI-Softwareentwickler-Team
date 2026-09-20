@@ -37,8 +37,8 @@ from core.llm_factory import AgentMessage, GeminiClient, LLMFactory, LLMResponse
 from core.message_bus import AgentResult, AgentTask
 from core.model_capability import min_tier_for_agent, pop_capability_floor, push_capability_floor
 from core.provider_exhaustion import (
-    FAILURE_CLASS_AGENT_ERROR,
     FAILURE_CLASS_CANCELLED,
+    FAILURE_CLASS_NO_DELIVERY,
     classify_failure,
     is_infrastructure_failure,
 )
@@ -206,7 +206,11 @@ class BaseAgent(ABC):
                     total_tokens=prompt_tokens + completion_tokens,
                     files_written=[],
                     tool_calls_count=toolbox.call_count if toolbox else 0,
-                    failure_class=FAILURE_CLASS_AGENT_ERROR,
+                    # NO_DELIVERY statt AGENT_ERROR (Ticket-Vorlage P1-5): der Agent hat kein
+                    # inhaltliches Ergebnis geliefert, an dem ein identischer Wiederholungsversuch
+                    # ansetzen koennte - der Fix-Loop soll das von einem Fall unterscheiden
+                    # koennen, in dem der Agent etwas (falsches) geliefert hat.
+                    failure_class=FAILURE_CLASS_NO_DELIVERY,
                     needs_human_input=bool(toolbox and toolbox.clarification_requests),
                     clarification_questions=list(toolbox.clarification_requests) if toolbox else [],
                 )

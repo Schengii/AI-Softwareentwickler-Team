@@ -293,6 +293,15 @@ class TestCodeInTextWithoutFileWriteRetry(unittest.TestCase):
         self.assertIn("Hard Delivery Gate", result.error)
         self.assertEqual(fake_llm.call_count, 2)  # nur EIN Retry, kein zweiter trotz erneut fehlender Datei
         self.assertEqual(result.files_written, [])
+        # Ticket P1-5 (ROADMAP_TEMP.md, realer Fund über 7 Projekte): eigene failure_class statt
+        # des generischen "agent_error" - der Fix-Loop kann diesen Fall damit von einem Agenten
+        # unterscheiden, der etwas (falsches) geliefert hat, und braucht keinen identischen
+        # Wiederholungsversuch mit derselben Grundlage abzuwarten.
+        from core.provider_exhaustion import FAILURE_CLASS_NO_DELIVERY, is_infrastructure_failure
+        self.assertEqual(result.failure_class, FAILURE_CLASS_NO_DELIVERY)
+        # Kein Infrastruktur-Fehler: der Agent WURDE befragt, hat sich aber gegen das Liefern
+        # entschieden - das darf nicht wie ein 429/fehlender API-Key aus der Erfolgsquote fallen.
+        self.assertFalse(is_infrastructure_failure(result.failure_class))
 
     def test_plain_text_without_code_fence_also_triggers_the_hard_delivery_gate(self):
         """Realer Fund (pulseflow_gateway, 20260911_095217): ein backend-Agent schloss mit reinem

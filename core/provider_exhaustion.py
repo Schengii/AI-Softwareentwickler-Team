@@ -66,6 +66,16 @@ FAILURE_CLASS_AGENT_ERROR = "agent_error"                  # Echter, dem Agenten
 # abgebrochen werden sollte - z.B. ein Abbruch tief im Provider-SDK. Wie die PROVIDER_*-Klassen
 # eine Infrastruktur-, keine Agenten-Aussage: der Agent wurde nie zu Ende gefragt.
 FAILURE_CLASS_CANCELLED = "cancelled"
+# Das "Hard Delivery Gate" (agents/base_agent.py) hat gegriffen: ein code-schreibender Agent hat
+# trotz explizitem Korrektur-Hinweis keine einzige Datei gespeichert. ANDERS als
+# FAILURE_CLASS_AGENT_ERROR (dem der Fall bis 2026-09-20 zugeschlagen wurde): hier gibt es kein
+# inhaltliches Ergebnis, das ein Fix-Loop-Wiederholungsversuch mit demselben Prompt reparieren
+# koennte - der Agent hat nichts geliefert, an dem sich "Testfehler X beheben" festmachen liesse.
+# Ein identischer Wiederholungsversuch hat strukturell keine neue Grundlage und sollte deshalb
+# sofort zur naechsten Eskalationsstufe springen (Zweitmeinung/Modell-Eskalation), statt Budget
+# fuer einen voraussichtlich identischen Fehlschlag zu verbrennen (realer Fund: 7 von ~20
+# ausgewerteten Projekten, siehe ROADMAP_TEMP.md P1-5).
+FAILURE_CLASS_NO_DELIVERY = "no_delivery"
 
 # Meldungen, die eine fehlende/nicht instanziierbare Provider-Anbindung kennzeichnen - also
 # eine Konfigurationslücke, keinen Agentenfehler. Der erste Marker stammt wörtlich aus

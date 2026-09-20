@@ -6,6 +6,7 @@ LLM-Aufruf delegieren, sein Fachteam parallel/sequenziell arbeiten und die Ergeb
 anschließend per weiterem LLM-Aufruf konsolidieren.
 """
 
+import asyncio
 import logging
 import time
 from collections.abc import Callable
@@ -29,9 +30,11 @@ from core.checkpoint import clear_checkpoint, load_checkpoint, save_phase_checkp
 from core.definition_of_done import check_entrypoint_exists
 from core.message_bus import AgentResult, AgentTask
 from core.model_capability import complex_run
+from core.project_scaffold import is_safe_project_dir
 from core.provider_exhaustion import FAILURE_CLASS_PROVIDER_EXHAUSTED
 from core.task_manager import is_complex_task, is_micro_task
 from core.token_guard import token_guard
+from core.verifier import ProjectVerifier
 
 # Nach welcher Phase der statische Einstiegspunkt-Pre-Flight läuft: "dev_lead" liegt direkt
 # nach der Entwicklung, aber VOR den teuren Content-/QA-/Governance-Phasen.
@@ -45,6 +48,20 @@ _ENTRYPOINT_PREFLIGHT_PHASE_ID = "dev_lead"
 _SECURITY_HANDOFF_CHECKPOINT_PHASE_ID = "qa_lead"
 
 _TEST_FIRST_NOTE = '## 🧪 Test-First (du arbeitest PARALLEL zu den Entwicklern)\nSchreibe die Testsuite jetzt aus den Akzeptanzkriterien und `interface_contract.json` - nicht erst, wenn der Code fertig ist. Teste das vereinbarte Verhalten (Endpunkte, Klassen, Funktionen laut Vertrag), nicht Implementierungsdetails. Existiert Code bereits, führe `run_tests` aus. Scheitert ein Test, weil der Code vom Vertrag abweicht, ist das ein gültiger Befund für die Entwickler - passe den Test NICHT an falsches Verhalten an.'
+
+# Realer Fund (synapsegate, ROADMAP_TEMP.md P4-4, 2026-09-20): Im Test-First-Modus schreibt
+# `tester` seine Tests GEGEN `interface_contract.json`/die Akzeptanzkriterien, PARALLEL zu
+# `backend` - der reale Code existiert zum Startzeitpunkt oft noch gar nicht. War
+# `interface_contract.json` unvollständig oder fehlte (hier: reines Backend-Projekt ohne
+# Frontend), erfand `tester` zwei nie deklarierte Routen (`POST /api/v1/events/`,
+# `GET /api/v1/events/dlq`). `core/contract_verifier.py` prüft NUR Frontend<->Backend, ein
+# Äquivalent für Tester<->Backend gab es nicht - der Mismatch wurde bisher erst spät vom
+# AST-Completeness-Check am Laufende gefunden, NACHDEM bereits performance/readme/qa_lead/
+# security/resilience_guard-Phasen auf dem fehlerhaften Stand weitergearbeitet hatten.
+# `_test_requests_undeclared_routes()`/`_unwired_api_routers()` (core/verifier/completeness.py)
+# sind rein statisch (kein LLM-Aufruf, keine Testausführung) - deshalb hier, direkt nach der
+# Entwicklungsphase und VOR den teuren Folgephasen, wie schon beim Einstiegspunkt-Pre-Flight.
+_TEST_ROUTE_MISMATCH_KINDS = frozenset({"test_route_mismatch", "unwired_api_router"})
 
 
 class DepartmentMixin:
@@ -431,6 +448,8 @@ class DepartmentMixin:
                 and not budget_aborted and not provider_exhausted_abort and not manually_cancelled
             ):
                 await self._run_entrypoint_preflight(project_dir, member_ids, all_results, file_owners, notify)
+                if test_first_active and "tester" in member_ids:
+                    await self._run_test_route_mismatch_preflight(project_dir, all_results, file_owners, notify)
                 if ENABLE_INTEGRATION_CHECKPOINT and enable_phase_checkpoint:
                     self.last_integration_checkpoint_lines = await self._run_integration_checkpoint(
                         project_dir, all_results, file_owners, notify, run_start_tokens=run_start_tokens,
@@ -571,6 +590,83 @@ class DepartmentMixin:
             "  ❌ [red]Einstiegspunkt weiterhin fehlend[/red]",
             agent_name, dur, result.success, result.error,
         ))
+
+    async def _run_test_route_mismatch_preflight(
+        self,
+        project_dir: str,
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        notify: Callable[[str], None],
+    ) -> None:
+        """P4-4 (ROADMAP_TEMP.md, realer Fund synapsegate): fängt erfundene Test-Routen und tote
+        (nie `include_router`te) API-Router direkt nach der Test-First-Entwicklungsphase ab -
+        rein statisch, kein LLM-Aufruf, keine Testausführung (`check_completeness()` scannt nur
+        Dateien). Läuft NUR im Test-First-Modus, denn nur dort können Tests entstehen, bevor der
+        reale Code existiert; ohne Test-First liest `tester` beim Schreiben ohnehin schon den
+        echten Backend-Code (QA-Phase, nach der Entwicklung)."""
+        # Wie _run_integration_checkpoint(): Tests rufen die Fachbereichs-Hierarchie mit
+        # project_dir="." (Framework-Root) auf - ohne diese Schranke würde check_completeness()
+        # das gesamte Framework-Repository samt workspace/ (20+ generierte Projekte) scannen.
+        if not is_safe_project_dir(project_dir):
+            return
+        try:
+            report = await asyncio.to_thread(lambda: ProjectVerifier(project_dir).check_completeness())
+        except Exception as e:
+            notify(f"  ⚠️ [dim yellow]Statischer Routen-Abgleich übersprungen (Fehler: {e}).[/dim yellow]")
+            return
+        if not report.attempted:
+            return
+        mismatches = [i for i in report.issues if i.kind in _TEST_ROUTE_MISMATCH_KINDS]
+        if not mismatches:
+            return
+
+        agents_to_fix: dict[str, list] = {}
+        for issue in mismatches:
+            owner = (
+                "tester" if issue.kind == "test_route_mismatch"
+                else file_owners.get(issue.file_path, "backend")
+            )
+            if owner in self._agents:
+                agents_to_fix.setdefault(owner, []).append(issue)
+        if not agents_to_fix:
+            return
+
+        notify(
+            f"  🔀 [bold yellow]Statischer Routen-Abgleich:[/bold yellow] {len(mismatches)} "
+            f"Fund(e) (Test gegen nicht-deklarierte Route / toter Router) - beauftrage "
+            f"{', '.join(agents_to_fix.keys())} gezielt, BEVOR QA und Reviews auf dem "
+            "fehlerhaften Stand weiterarbeiten."
+        )
+        fix_tasks = []
+        for agent_id, issues in agents_to_fix.items():
+            finding_text = "\n".join(f"- {i.file_path}:{i.line_number} – {i.message}" for i in issues[:10])
+            fix_tasks.append(AgentTask(
+                task_id=f"dev_lead_route_mismatch_{agent_id}",
+                agent_id=agent_id,
+                description=(
+                    "Statischer Pre-Flight-Befund (Test-First-Modus): ein oder mehrere Tests "
+                    "rufen eine Route auf, die im Backend nicht erreichbar ist - entweder nie "
+                    "deklariert oder über einen nie mit `include_router(...)` verbundenen "
+                    "Router. Prüfe per read_file den TATSÄCHLICHEN Backend-Code (nicht die "
+                    "geplante Spezifikation) und behebe GENAU diese Fund(e): entweder den Test "
+                    "auf die real existierende Route korrigieren, oder - falls die Route laut "
+                    "Auftrag tatsächlich fehlt - den Router korrekt verbinden bzw. den "
+                    f"Endpunkt ergänzen.\n\n{finding_text}"
+                ),
+                project_dir=project_dir,
+                allow_tools=True,
+            ))
+        start_t = time.monotonic()
+        results = await self._run_agents_parallel(fix_tasks, notify=notify)
+        dur = time.monotonic() - start_t
+        all_results.extend(results)
+        self._update_file_owners(file_owners, results)
+        for res, agent_id in zip(results, agents_to_fix.keys(), strict=False):
+            notify(self._status_notify_line(
+                f"  ✅ [green]{agent_id}: Routen-Abgleich behoben[/green]",
+                f"  ❌ [red]{agent_id}: Routen-Abgleich weiterhin offen[/red]",
+                agent_id, dur, res.success, res.error,
+            ))
 
     async def _run_department_delegation(
         self,

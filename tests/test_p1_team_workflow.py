@@ -219,6 +219,32 @@ class TestDepartmentWorkflow:
             ))
         assert "Test-First" not in tasks[1].context
 
+    def test_route_mismatch_preflight_runs_after_test_first_dev_phase(self, orchestrator):
+        """P4-4 (ROADMAP_TEMP.md): der statische Routen-Abgleich läuft NUR im Test-First-Modus
+        und NUR, wenn tester tatsächlich an der dev_lead-Phase beteiligt war - direkt nach ihr,
+        vor QA/Reviews (wie der Einstiegspunkt-Pre-Flight direkt daneben)."""
+        tasks = [
+            AgentTask(task_id="1", agent_id="backend", description="API"),
+            AgentTask(task_id="2", agent_id="tester", description="Tests"),
+        ]
+        orchestrator._run_test_route_mismatch_preflight = AsyncMock()
+        asyncio.run(orchestrator._run_department_hierarchy(
+            user_request="API", task_summary="API", agent_tasks=tasks, project_dir=".", notify=lambda m: None,
+        ))
+        orchestrator._run_test_route_mismatch_preflight.assert_awaited_once()
+
+    def test_route_mismatch_preflight_skipped_without_test_first(self, orchestrator):
+        tasks = [
+            AgentTask(task_id="1", agent_id="backend", description="API"),
+            AgentTask(task_id="2", agent_id="tester", description="Tests"),
+        ]
+        orchestrator._run_test_route_mismatch_preflight = AsyncMock()
+        with patch("agents.orchestrator.department.ENABLE_TEST_FIRST", False):
+            asyncio.run(orchestrator._run_department_hierarchy(
+                user_request="API", task_summary="API", agent_tasks=tasks, project_dir=".", notify=lambda m: None,
+            ))
+        orchestrator._run_test_route_mismatch_preflight.assert_not_awaited()
+
     def test_optional_phase_skipped_when_core_phases_would_starve(self, orchestrator):
         with patch.object(budget_module, "MAX_RUN_TOKENS", 100_000), \
                 patch.object(Orchestrator, "_tokens_used_since", return_value=70_000):

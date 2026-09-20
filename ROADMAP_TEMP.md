@@ -656,7 +656,7 @@ aufgerufen werden. `core/code_graph.py` (495 Zeilen) liefert die Grundlage dafü
 ---
 
 ### P4-4 · Kein geteiltes Kurzzeitgedächtnis während der Entwicklungsphase
-**Status:** ❌ offen · **Aufwand:** M · **Wirkung:** mittel
+**Status:** 🟡 **früher Abfang erledigt 2026-09-20**, echte Prompt-Injektion weiterhin offen · **Aufwand:** M · **Wirkung:** mittel
 
 `core/message_bus.py` sagt im eigenen Docstring, dass die echte Publish/Subscribe-Klasse entfernt
 wurde, weil sie nie genutzt wurde. Die Koordination läuft über `core/team_board.py` – ein
@@ -680,6 +680,38 @@ Ein Tester, der die echte Routenliste im Kontext hat, erfindet keine.
 > für Backend-only-Projekte offenbar gar nicht erst angelegt (bei `synapsegate` fehlt die Datei
 > komplett, bei `chronosvault` mit Frontend existiert sie) – die Lösung oben darf sich also nicht
 > auf `contract_review` stützen, sondern muss unabhängig von einem vorhandenen Frontend laufen.
+
+> **Umsetzung 2026-09-20, Analyse und bewusste Entscheidung:** Die ursprünglich vorgeschlagene
+> Prompt-Injektion (echte Routen VOR dem Schreiben in den Kontext geben) griffe hier NICHT: im
+> Test-First-Modus (`ENABLE_TEST_FIRST`, Standard aktiv) arbeitet `tester` laut
+> `agents/orchestrator/department.py._TEST_FIRST_NOTE` bewusst **parallel** zu `backend` in
+> derselben Phase, gegen `interface_contract.json`/die Akzeptanzkriterien statt gegen fertigen
+> Code – bei ≥3 Mitgliedern der dev_lead-Phase laufen beide Rollen sogar echt gleichzeitig
+> (`asyncio.gather`, siehe `effective_run_mode`). Zum Zeitpunkt der Prompt-Erstellung existieren
+> die realen Backend-Routen oft schlicht noch nicht - es gäbe nichts zu injizieren. Die
+> eigentliche Ursache liegt eine Ebene höher (verlässt sich `interface_contract.json`,
+> geschrieben vom Architekten, das aber für Backend-only-Projekte laut Fund oben nicht
+> zuverlässig entsteht) und wäre ein eigener, größerer Eingriff in die Planungsphase.
+>
+> **Stattdessen umgesetzt: ein deterministischer, verzögerter Abfang statt einer Vermeidung.**
+> `_run_test_route_mismatch_preflight()` (`agents/orchestrator/department.py`) läuft direkt nach
+> der Test-First-Entwicklungsphase – am selben Punkt wie der bereits vorhandene
+> Einstiegspunkt-Pre-Flight, nur EINMAL, BEVOR performance/readme/qa_lead/security/
+> resilience_guard (bei `synapsegate` fünf weitere Phasen) auf dem fehlerhaften Stand
+> weiterarbeiten. Nutzt die bereits vorhandenen, rein statischen Detektoren
+> `_test_requests_undeclared_routes()` und `_unwired_api_routers()`
+> (`core/verifier/completeness.py`, kein LLM-Aufruf, keine Testausführung) und dispatcht bei
+> einem Fund GENAU EINEN gezielten Fix-Task – an `tester` bei erfundenen Testrouten, an den
+> bekannten Datei-Eigentümer (Fallback `backend`) bei einem nie verbundenen Router. Abgesichert
+> mit demselben `is_safe_project_dir()`-Framework-Root-Schutz wie der bestehende
+> Integrations-Checkpoint. Läuft NUR, wenn `test_first_active` UND `tester` tatsächlich an der
+> Phase beteiligt war – ohne Test-First liest `tester` beim Schreiben in der QA-Phase ohnehin
+> schon den echten Code. Abgedeckt durch `tests/test_route_mismatch_preflight.py` (6 Tests,
+> inkl. Reproduktion des synapsegate- UND des hyperion_metrics-Funds) sowie zwei neue Tests in
+> `tests/test_p1_team_workflow.py`, die den Aufruf nur unter Test-First erwarten. **Offen bleibt**
+> die eigentliche Prompt-Injektions-Lösung als Vermeidung statt Nach-Korrektur – dafür müsste
+> zuerst sichergestellt werden, dass `interface_contract.json` auch für Backend-only-Projekte
+> zuverlässig entsteht.
 
 ---
 
@@ -929,7 +961,7 @@ ruff check && python -m pytest -q
 | P4-1 | Code-Review verbindlich | P4 | ☐ |
 | P4-2 | Abnahme gegen die Anforderung | P4 | ☐ |
 | P4-3 | Testtiefe fachlich statt nur Routen | P4 | ☐ |
-| P4-4 | Projekt-Steckbrief für jeden Agenten | P4 | ☐ |
+| P4-4 | Projekt-Steckbrief für jeden Agenten | P4 | 🟡 früher Abfang erledigt, Prompt-Injektion offen |
 | P4-5 | Write-Guard gegen Fremddatei-Überschreiben | P4 | ☐ |
 | P5-1 | Degraded-Mode ehrlich machen | P5 | 🟡 Punkt 2 erledigt |
 | P5-2 | Token-Effizienz / Caching | P5 | 🟡 Gemini-Caching erledigt (Aufgabe 1), Rest offen |

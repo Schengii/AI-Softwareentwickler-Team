@@ -7,6 +7,87 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Team-Optimierung 2026-09-20: Vier Verifikations-Bugs faerbten Laeufe ohne Sachgrund rot
+
+Bestandsaufnahme ueber 152 Laeufe (`memory/run_history.json`): nur 20 davon endeten mit
+`verification_ok=true` (13 %), ueber die letzten 25 Laeufe 5 (20 %). Die Analyse der sechs
+juengsten Live-Laeufe (`aegisflow`, `aetherqueue`, `nexus_mesh`, `sentinedge`,
+`eventforge_core`, `cachegrid_proxy`) zeigte, dass das Team die Software durchaus liefert -
+Tests, Smoke-Test, pip-audit, bandit, Testtiefe und Completeness liefen ueberwiegend gruen -,
+aber an der eigenen Qualitaetsmechanik scheitert. Vier Befunde, alle an echten Projektdaten
+reproduziert:
+
+* **Rollennamen galten als geforderte Code-Symbole (`core/team_board.py`):**
+  `_SYMBOL_REF_RE` hielt JEDES in Backticks gesetzte Wort fuer ein Symbol, das im Projekt als
+  `def X`/`class X`/`X =` definiert sein muss. Der `security`-Agent formuliert seine Uebergaben
+  aber praktisch immer als "`backend` muss ..." - `def backend` wird es in einem generierten
+  Projekt nie geben. Jede so formulierte Anforderung galt damit DAUERHAFT als unerfuellt,
+  `security_handoff` blockierte `verification_ok` hart, und der eine Fix-Versuch in
+  `agents/orchestrator/integration.py._run_security_requirements_checkpoint()` konnte die
+  Bedingung prinzipiell nicht erfuellen - Ergebnis: `recurring-failure-<slug>`-Ticket,
+  `queue_red_projects()` queued erneut, dieselbe Schleife. **`aegisflow` war fachlich gruen
+  (Testsuite bestanden) und wurde allein dadurch rot.** Zwei weitere Fehlerklassen derselben
+  Funktion: `ALLOWED_HOSTS: list[str] = ["*"]` (die idiomatische pydantic-Settings-Form)
+  matchte `ALLOWED_HOSTS\s*=` nie, weil `: list[str]` dazwischensteht, und ein benutztes
+  statt definiertes Symbol (`await conn.run_sync(...)` in `tests/conftest.py`) galt als
+  fehlend. `unmet_requirements()` filtert jetzt bekannte Rollen-IDs heraus und prueft Symbole
+  ueber einen AST-Index aus Definitionen, Importen und Benutzungen; der Regex bleibt nur noch
+  Fallback fuer Projekte ohne Python-Datei. Gegenprobe: die verbleibenden Funde sind
+  nachweislich echt - `POST /api/v1/dlq/replay` existiert in `aegisflow` nicht, und
+  `HMAC_SECRET_KEY` kommt in `eventforge_core` nur als Zeichenkette in einem
+  `getattr(settings, 'HMAC_SECRET_KEY', ...)` vor.
+* **Blockierende Pruefungen wurden nie neu bewertet (`agents/orchestrator/verification.py`):**
+  `pre_flight` und `security_handoff` laufen frueh im Lauf, blockieren `verification_ok` hart
+  und wurden danach nie wieder gemessen - auch dann nicht, wenn spaetere Fix-Runden die Ursache
+  laengst behoben hatten. `cachegrid_proxy` steht mit `failed: ["lint", "pre_flight"]` in der
+  Historie, obwohl `run_pre_flight_check()` gegen denselben Projektstand heute `passed=True`
+  liefert - das Projekt ist de facto fertig und dauerhaft als rot verbucht. Neu:
+  `_recheck_stale_blocking_checks()` misst beide am Laufende erneut, bewusst nur als
+  Neu-MESSUNG ohne weiteren Fix-Versuch (hier folgt keine Pruefung mehr, die dessen Ergebnis
+  bewerten koennte). Ein weiterhin fehlschlagender Check bleibt unveraendert auf `failed`.
+* **Die Fehler-Kategorisierung war fuer die haeufigsten Fehlerarten blind
+  (`core/team_health.py`):** `_CATEGORY_MARKERS` kannte weder die offene Sicherheits-Uebergabe
+  noch das Vollstaendigkeits-Veto, den Pre-Flight-Abbruch oder den Budget-Stop - 8 von 12 roten
+  Projekten landeten im Sammeltopf "Sonstiger Fehler", obwohl `aegisflow` und `ecotrack_ai`
+  nachweislich dasselbe Muster teilten. Genau dieses Muster sichtbar zu machen ist der Zweck
+  von `shared_patterns`. Zusaetzlich kategorisiert der Rollup jetzt gegen das VOLLSTAENDIGE
+  Protokoll statt gegen den in `.ai_team_status.json` auf `MAX_FAILURE_DETAIL_CHARS` (500)
+  gekappten Auszug: das Protokoll beginnt mit den frueh laufenden, informativen Schritten, die
+  blockierende Veto-Zeile steht am ENDE und fiel damit aus dem gespeicherten Ausschnitt heraus
+  (real bei `devpulse`, `eventstream_zero`, `nexus_resilience_gateway`, `nexusforge` - alle vier
+  trugen exakt 500 Zeichen Detail). "Sonstiger Fehler" faellt von 8 auf 4 Projekte, und die
+  Zuordnung wird nachpruefbar richtiger: `pipeline_pilot` gilt jetzt als "Test-Schrumpfung"
+  (deckt sich mit seinem Ticket `test-regression-pipeline_pilot`), `entwickle_eventforge_ein_
+  webhook` als "Vollstaendigkeit" (deckt sich mit dem CHANGELOG-Eintrag zu dessen
+  Completeness-Fund). Lint steht bewusst ganz hinten - es ist informativ und darf einen echten
+  Blocker nicht als Kategorie verdraengen.
+* **`lint` erschien als echter Fehlschlag (`core/verification_outcome.py`):** In 5 von 6 der
+  letzten Laeufe stand `lint` in `failed`, obwohl es in `INFORMATIONAL_CHECK_KEYS` steht und
+  `verification_ok` nie beeinflusst. Die Definition of Done nannte bei `cachegrid_proxy`
+  deshalb "fehlgeschlagene Pruefungen: lint, pre_flight", obwohl allein `pre_flight` blockierte
+  - irrefuehrend genau an der Stelle, an der jede spaetere Analyse nach dem Grund sucht, und
+  Ausloeser einer vollstaendigen, werkzeugbasierten Root-Cause-Tiefenanalyse fuer eine
+  ungenutzte Variable (`ruff F841`). Neu: `blocking_failed_checks` /
+  `informational_failed_checks`, `to_dict()` weist beide Gruppen getrennt aus (`failed` bleibt
+  unveraendert fuer bestehende Leser). `INFORMATIONAL_CHECK_KEYS` liegt jetzt neben `CHECK_KEYS`
+  in `core/` - `VerificationOutcome` braucht die Einteilung selbst, und `core` darf nicht aus
+  `agents` importieren; `verification_checks.py` re-exportiert sie.
+
+**Zwei Punkte der Voranalyse waren Fehlannahmen** und sind in `ROADMAP_TEMP.md` mit der
+jeweiligen Gegenpruefung ersetzt statt stillschweigend entfernt: `queue_red_projects()` kennt
+`budget_aborted` in seiner Ueberspring-Bedingung gar nicht und greift solche Projekte laengst
+auf (die fehlende Fehlerkategorie fuer Budget-Abbrueche ist in `core/team_health.py:119-123`
+ausdruecklich begruendet), und `workspace/` ist bewusst versioniert (1068 getrackte Dateien) -
+richtig bleibt nur, generierte Projekte getrennt vom Framework-Fix zu committen.
+
+Tests: `tests/test_stale_blocking_check_recheck.py` (neu, 7 Tests),
+`tests/test_team_communication.py::TestHandoffNotes` (4 neu),
+`tests/test_team_health_rollup.py` (4 neu),
+`tests/test_verification_ok_reconciliation.py::TestBlockingVsInformationalFailures` (5 neu).
+Gesamt 2400 passed, 1 skipped; `ruff check` sauber.
+
+---
+
 ## 🟢 Backlog-Reconciliation 2026-09-19: Zwei Handlungsempfehlungen aus der Team-Retrospektive waren bereits umgesetzt
 
 Vor der Abarbeitung einer priorisierten 7-Punkte-Liste aus einer Team-Retrospektive

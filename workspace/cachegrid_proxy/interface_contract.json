@@ -1,0 +1,34 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/core/concurrency.py": {
+      "KeyLockManager": "class",
+      "key_lock_manager": "instance"
+    },
+    "app/storage/memory.py": {
+      "MemoryLRUCache": "class"
+    },
+    "app/storage/disk.py": {
+      "DiskTierStorage": "class"
+    },
+    "app/storage/tag_index.py": {
+      "TagIndex": "class"
+    },
+    "app/storage/queue.py": {
+      "WriteBehindQueue": "class"
+    },
+    "app/services/cache_service.py": {
+      "CacheGridService": "class",
+      "cache_service": "instance"
+    },
+    "app/exports.py": {
+      "CacheGridService": "class",
+      "cache_service": "instance",
+      "Settings": "class",
+      "get_settings": "function"
+    }
+  }
+}

@@ -1733,21 +1733,8 @@ class VerificationMixin:
         # Opt-in-Abdeckungsschwelle (MIN_TEST_COVERAGE, Standard 0): Pass/Fail allein sagt nichts
         # über ungetesteten Code. Nur sinnvoll bei gelaufener UND bestandener Testsuite.
         if not (budget_aborted or manually_cancelled) and MIN_TEST_COVERAGE > 0 and report is not None and report.ran and report.passed:
-            coverage_report = await asyncio.to_thread(verifier.check_coverage)
-            if coverage_report.attempted:
-                self.last_coverage_percent = coverage_report.percent
-                outcome.record("coverage", coverage_report.percent >= MIN_TEST_COVERAGE, f"{coverage_report.percent}%")
-                if coverage_report.percent >= MIN_TEST_COVERAGE:
-                    notify(f"  📊 [bold green]Testabdeckung: {coverage_report.percent}%[/bold green] (Schwelle: {MIN_TEST_COVERAGE}%).")
-                    summary_lines.append(f"- 📊 Testabdeckung: {coverage_report.percent}% (Schwelle von {MIN_TEST_COVERAGE}% erreicht).")
-                else:
-                    # Eine explizit konfigurierte Schwelle ist eine echte Anforderung - verification_ok zurücksetzen.
-                    notify(f"  📊 [bold red]Testabdeckung {coverage_report.percent}% UNTER der Schwelle von {MIN_TEST_COVERAGE}%.[/bold red]")
-                    summary_lines.append(f"- 📊 ❌ Testabdeckung {coverage_report.percent}% UNTER der konfigurierten Schwelle (`MIN_TEST_COVERAGE={MIN_TEST_COVERAGE}%`).")
-                    verification_ok = False
-                    _grund = f"Testabdeckung {coverage_report.percent}% liegt unter der konfigurierten Schwelle von {MIN_TEST_COVERAGE}%."
-                    notify(f"  ❌ [bold red]Verifikations-Veto durch Coverage-Check:[/bold red] {_grund}")
-                    summary_lines.append(f"- ❌ **Verifikations-Veto durch Coverage-Check:** {_grund}")
+            if await self._check_coverage_threshold(verifier, outcome, summary_lines, notify) is False:
+                verification_ok = False
 
         # Runtime Smoke-Check: Prüft, ob die generierte App tatsächlich hochfährt / antwortet (Tests grün != App startet)
         #
@@ -2012,6 +1999,34 @@ class VerificationMixin:
         outcome.record("domain_logic_depth", domain_depth.passed, "" if domain_depth.passed else domain_depth.format_summary())
         if not domain_depth.passed:
             summary_lines.append(f"- 🧬 ⚠️ {domain_depth.format_summary()}")
+
+    async def _check_coverage_threshold(
+        self, verifier: ProjectVerifier, outcome: VerificationOutcome,
+        summary_lines: list[str], notify: Callable[[str], None],
+    ) -> bool | None:
+        """P6-5 (ROADMAP_TEMP.md, Teilschritt): aus `_run_verification_loop_impl()` extrahiert -
+        die Opt-in-Abdeckungsschwelle (MIN_TEST_COVERAGE). Anders als Accessibility/Fachlogik-
+        Testtiefe KANN dieser Check `verification_ok` zurücksetzen (echte, explizit
+        konfigurierte Anforderung) - da eine Methode eine lokale bool-Variable des Aufrufers
+        nicht direkt mutieren kann, meldet sie das per Rückgabewert statt eines geteilten
+        Zustandsobjekts: `False` = Veto (Aufrufer setzt `verification_ok = False`), `None` =
+        kein Veto (Schwelle erreicht oder Check nicht durchgeführt)."""
+        coverage_report = await asyncio.to_thread(verifier.check_coverage)
+        if not coverage_report.attempted:
+            return None
+        self.last_coverage_percent = coverage_report.percent
+        outcome.record("coverage", coverage_report.percent >= MIN_TEST_COVERAGE, f"{coverage_report.percent}%")
+        if coverage_report.percent >= MIN_TEST_COVERAGE:
+            notify(f"  📊 [bold green]Testabdeckung: {coverage_report.percent}%[/bold green] (Schwelle: {MIN_TEST_COVERAGE}%).")
+            summary_lines.append(f"- 📊 Testabdeckung: {coverage_report.percent}% (Schwelle von {MIN_TEST_COVERAGE}% erreicht).")
+            return None
+        # Eine explizit konfigurierte Schwelle ist eine echte Anforderung - verification_ok zurücksetzen.
+        notify(f"  📊 [bold red]Testabdeckung {coverage_report.percent}% UNTER der Schwelle von {MIN_TEST_COVERAGE}%.[/bold red]")
+        summary_lines.append(f"- 📊 ❌ Testabdeckung {coverage_report.percent}% UNTER der konfigurierten Schwelle (`MIN_TEST_COVERAGE={MIN_TEST_COVERAGE}%`).")
+        _grund = f"Testabdeckung {coverage_report.percent}% liegt unter der konfigurierten Schwelle von {MIN_TEST_COVERAGE}%."
+        notify(f"  ❌ [bold red]Verifikations-Veto durch Coverage-Check:[/bold red] {_grund}")
+        summary_lines.append(f"- ❌ **Verifikations-Veto durch Coverage-Check:** {_grund}")
+        return False
 
     # Rollen, die eine Zweitmeinung abgeben können: analysieren fremden Code als Kernaufgabe
     # und sind nicht selbst Eigentümer der steckenden Dateien. Reihenfolge ist Priorität.

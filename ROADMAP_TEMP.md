@@ -868,7 +868,7 @@ entweder behoben oder mit Begründung als `wontfix` im Team-Board quittiert. `co
 ---
 
 ### P4-2 · Keine Abnahme gegen die ursprüngliche Anforderung
-**Status:** ❌ offen · **Aufwand:** M · **Wirkung:** hoch
+**Status:** ✅ erledigt 2026-09-21 · **Aufwand:** M · **Wirkung:** hoch
 
 Die Definition of Done prüft technische Eigenschaften (Tests laufen, App startet, keine Secrets).
 Niemand prüft: *Haben wir gebaut, was bestellt war?* Beispiel `cachegrid_proxy` – bestellt waren
@@ -884,6 +884,27 @@ DoD-Kriterium `requirements_met` aufzeichnen.
 
 **Akzeptanzkriterium:** Ein Lauf mit 6 bestellten Features, von denen 3 fehlen, endet mit
 `is_done: false` und benennt die 3 fehlenden Features namentlich.
+
+> **Umsetzung:** Neues Modul `core/acceptance_check.py`, zwei zusätzliche `product_owner`-
+> LLM-Aufrufe je Lauf (nur wenn `ENABLE_ACCEPTANCE_CHECK`, Standard an): Phase 1
+> (`extract_requirements()`, ohne Tool-Zugriff) destilliert den Auftragstext direkt nach
+> Projekt-Anlage, VOR jeder Fachbereichs-Phase, in eine nummerierte Anforderungsliste und
+> persistiert sie als `.ai_team_acceptance.json`. Phase 2 (`verify_acceptance()`, mit
+> Lese-Tool-Zugriff `tools_read_only=True` - derselbe Modus wie `core/roadmap_advisor.py`) läuft
+> nach Entwicklung/Verifikation, nur wenn tatsächlich Code geschrieben wurde, und prüft jede
+> Anforderung `list_files`/`read_file`/`search_code` GEGEN DEN ECHTEN CODE. Beide Antworten
+> werden strikt über die Zeilennummer geparst (nicht per Textähnlichkeit, robuster gegen
+> Umformulierung) - lässt sich eine Antwort nicht sauber im geforderten Format auswerten
+> (Zeilenzahl passt nicht zur Anforderungszahl), blockiert das bewusst NICHT (`parsed=False` →
+> `requirements_met=None`), damit ein Formatfehler im LLM-Text nie fälschlich ein sonst fertiges
+> Projekt blockiert. `core/definition_of_done.py` bekommt das neue, verpflichtende Kriterium
+> `requirements_met` (nur `applicable`, wenn die Prüfung überhaupt lief), das die fehlenden
+> Anforderungen im `detail`-Feld namentlich benennt. 20 neue Tests (`tests/test_acceptance_
+> check.py`, `tests/test_definition_of_done.py`). Ergänzt, nicht ersetzt, die bereits bestehende
+> `ACCEPTANCE_CRITERIA_CHECK_INSTRUCTION` in `core/result_aggregator.py` (dort nur eine
+> Prompt-Anweisung an den ohnehin laufenden Synthese-Aufruf ohne echten Code-Zugriff - genau die
+> Schwäche, die der reale `cachegrid_proxy`-Fund zeigte). Gegen 70 bestehende End-to-End-
+> Integrationstests verifiziert, keine Regression.
 
 ---
 
@@ -1238,7 +1259,7 @@ ruff check && python -m pytest -q
 | P3-3 | Root-Cause nur bei blockierenden Befunden | P3 | ☑ erledigt |
 | P3-4 | `team_lessons.jsonl` Schema vereinheitlichen | P3 | ☑ erledigt |
 | P4-1 | Code-Review verbindlich | P4 | ☑ erledigt |
-| P4-2 | Abnahme gegen die Anforderung | P4 | ☐ |
+| P4-2 | Abnahme gegen die Anforderung | P4 | ☑ erledigt |
 | P4-3 | Testtiefe fachlich statt nur Routen | P4 | ☐ |
 | P4-4 | Projekt-Steckbrief für jeden Agenten | P4 | 🟡 früher Abfang erledigt, Prompt-Injektion offen |
 | P4-5 | Write-Guard gegen Fremddatei-Überschreiben | P4 | ☐ |

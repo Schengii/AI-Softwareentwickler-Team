@@ -736,6 +736,13 @@ ENABLE_TEST_FIRST: bool = os.getenv("ENABLE_TEST_FIRST", "true").lower() in ("tr
 # Review-Funde werden danach behoben und durch einen kurzen Regressionstest bestätigt.
 ENABLE_REVIEW_AFTER_VERIFICATION: bool = os.getenv("ENABLE_REVIEW_AFTER_VERIFICATION", "true").lower() in ("true", "1", "yes")
 
+# Abnahme gegen die ursprüngliche Anforderung (P4-2, ROADMAP_TEMP.md, core/acceptance_check.py):
+# der product_owner-Agent destilliert den Auftragstext zu Beginn in eine Anforderungsliste und
+# prüft sie am Ende read-only gegen den tatsächlichen Code - die Definition of Done prüft sonst
+# nur technische Eigenschaften (Tests grün, App startet), nie ob geliefert wurde, was bestellt
+# war. Zwei zusätzliche product_owner-LLM-Aufrufe je Lauf mit geschriebenem Code.
+ENABLE_ACCEPTANCE_CHECK: bool = os.getenv("ENABLE_ACCEPTANCE_CHECK", "true").lower() in ("true", "1", "yes")
+
 # Budget-Anteile der Generierungsphase je Fachbereich (Summe <= 1.0). Ein Fachbereich, der seinen
 # Anteil nicht braucht, gibt ihn an die folgenden ab; ein optionaler Fachbereich (Design/Content)
 # wird übersprungen, wenn sonst Entwicklung/QA nicht mehr ihren Mindestanteil erreichen würden.

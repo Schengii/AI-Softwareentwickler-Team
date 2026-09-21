@@ -432,6 +432,8 @@ def build_definition_of_done(
     test_depth_ok: bool | None = None,
     verification_ok: bool | None = None,
     failed_checks: list[str] | None = None,
+    requirements_met: bool | None = None,
+    missing_requirements: list[str] | None = None,
 ) -> DefinitionOfDone:
     """
     Setzt die Einzelsignale eines Laufs zu einer Gesamtaussage zusammen.
@@ -449,6 +451,14 @@ def build_definition_of_done(
     `verification_ok=False` (Gesamtergebnis der Verifikation) blockiert immer, sofern die
     Verifikation nicht übersprungen wurde - ein Projekt kann nie gleichzeitig "fertig" und
     "Verifikation fehlgeschlagen" sein. `failed_checks` benennt die gescheiterten Prüfungen.
+
+    `requirements_met` (P4-2, ROADMAP_TEMP.md): Ergebnis der Abnahme-Prüfung gegen den
+    ursprünglichen Auftragstext (core/acceptance_check.py.verify_acceptance()) - anders als
+    die übrigen technischen Kriterien prüft dieses, OB GELIEFERT WURDE, WAS BESTELLT WAR, nicht
+    nur, ob Tests grün sind. `None` (Standard) heißt: die Prüfung lief nicht oder ihre Antwort
+    ließ sich nicht sicher auswerten - blockiert bewusst NICHT (ein Formatfehler im LLM-Text
+    soll nie fälschlich ein sonst fertiges Projekt blockieren). `missing_requirements` benennt
+    die konkret fehlenden Anforderungen namentlich.
     """
     pfad = Path(project_dir)
     kriterien: list[Criterion] = []
@@ -688,6 +698,15 @@ def build_definition_of_done(
         passed=hat_readme,
         required=False,
     ))
+
+    if requirements_met is not None:
+        fehlend = ", ".join(missing_requirements or [])
+        kriterien.append(Criterion(
+            key="requirements_met",
+            label="Abnahme: alle Anforderungen aus dem Auftragstext erfüllt",
+            passed=requirements_met,
+            detail="" if requirements_met else f"fehlt: {fehlend}" if fehlend else "mindestens eine Anforderung nicht erfüllt",
+        ))
 
     return DefinitionOfDone(
         project_slug=project_slug,

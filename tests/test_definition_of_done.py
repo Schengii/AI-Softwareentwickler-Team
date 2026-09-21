@@ -118,6 +118,27 @@ class TestCoverage:
         assert next(c for c in dod.criteria if c.key == "coverage").passed is True
 
 
+class TestAbnahmeGegenAnforderung:
+    """P4-2 (ROADMAP_TEMP.md): requirements_met, gespeist von core/acceptance_check.py."""
+
+    def test_ohne_abnahmepruefung_kein_kriterium(self, tmp_path):
+        dod = _dod(tmp_path)
+        assert "requirements_met" not in [c.key for c in dod.criteria]
+
+    def test_fehlende_anforderungen_blockieren_und_werden_benannt(self, tmp_path):
+        dod = _dod(tmp_path, requirements_met=False, missing_requirements=["Write-Behind-Strategie", "Key-Tagging"])
+        assert dod.is_done is False
+        assert "requirements_met" in _blocking(dod)
+        kriterium = next(c for c in dod.criteria if c.key == "requirements_met")
+        assert "Write-Behind-Strategie" in kriterium.detail
+        assert "Key-Tagging" in kriterium.detail
+
+    def test_erfuellte_anforderungen_blockieren_nicht(self, tmp_path):
+        dod = _dod(tmp_path, requirements_met=True, missing_requirements=[])
+        assert dod.is_done is True
+        assert "requirements_met" not in _blocking(dod)
+
+
 class TestPersistenz:
     def test_schreiben_und_lesen(self, tmp_path):
         dod = _dod(tmp_path)

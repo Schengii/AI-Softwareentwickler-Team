@@ -74,11 +74,13 @@ from config import (
     AUTO_SAVE_WORKSPACE,
     BASE_DIR,
     CAPACITY_GATE_MODE,
+    ENABLE_ACCEPTANCE_CHECK,
     ENABLE_REVIEW_AFTER_VERIFICATION,
     MIN_TEST_COVERAGE,
     ORCHESTRATOR_MODEL,
     PLAN_CONFIRMATION_MIN_TASKS,
 )
+from core.acceptance_check import extract_requirements, verify_acceptance
 from core.adr import format_adr_summary_for_context
 from core.backlog_store import get_ticket, upsert_ticket
 from core.capacity_gate import assess_run_capacity
@@ -573,6 +575,17 @@ class Orchestrator(
         self._start_team_board(
             project_dir, getattr(self._run_logger, "stamp", None) or datetime.now().strftime("%Y%m%d_%H%M%S"),
         )
+
+        # Abnahme-Phase 1/2 (P4-2, core/acceptance_check.py): Anforderungsliste AUS DEM
+        # AUFTRAGSTEXT destillieren, BEVOR irgendein Fachbereich zu arbeiten beginnt - Phase 2
+        # (Abgleich gegen den tatsächlichen Code) läuft erst nach der Entwicklung/Verifikation
+        # weiter unten. Best-effort: ein Fehler hier blockiert den Lauf nie.
+        self.last_acceptance_requirements: list[str] = []
+        if ENABLE_ACCEPTANCE_CHECK and "product_owner" in self._agents:
+            try:
+                self.last_acceptance_requirements = await extract_requirements(self, user_request, project_dir)
+            except Exception as e:
+                notify(f"⚠️ [dim yellow]Anforderungs-Extraktion für die Abnahme konnte nicht laufen: {e}[/dim yellow]")
 
         # Ab der dritten Runde ohne bestandene Verifikation in Folge wird die Warnung deutlich
         # direkter und nennt konkrete Handlungsoptionen - "einfach nochmal versuchen" wirkt
@@ -1079,6 +1092,27 @@ class Orchestrator(
         trainer_result = None
         self.last_budget_aborted = budget_aborted
 
+        # Abnahme-Phase 2/2 (P4-2, core/acceptance_check.py): die in Phase 1 destillierten
+        # Anforderungen jetzt read-only GEGEN DEN TATSÄCHLICHEN CODE prüfen - nur, wenn
+        # überhaupt Code geschrieben wurde und der Lauf nicht schon vorher abgebrochen ist.
+        self.last_acceptance_result = None
+        if (
+            ENABLE_ACCEPTANCE_CHECK and self.last_acceptance_requirements
+            and geschriebene_dateien > 0 and not (budget_aborted or manually_cancelled)
+        ):
+            try:
+                self.last_acceptance_result = await verify_acceptance(
+                    self, project_dir, self.last_acceptance_requirements,
+                )
+                if self.last_acceptance_result.parsed and self.last_acceptance_result.missing:
+                    notify(
+                        f"📋 [bold yellow]Abnahme:[/bold yellow] {len(self.last_acceptance_result.missing)} von "
+                        f"{len(self.last_acceptance_requirements)} Anforderung(en) aus dem Auftrag fehlen noch: "
+                        + "; ".join(self.last_acceptance_result.missing[:3])
+                    )
+            except Exception as e:
+                notify(f"⚠️ [dim yellow]Abnahme-Prüfung konnte nicht laufen: {e}[/dim yellow]")
+
         # Maschinenlesbare "Definition of Done" (core/definition_of_done.py): ein Prosa-Status
         # kann "fast fertig", "gar nicht angefangen" und "an der Infrastruktur gescheitert"
         # nicht unterscheiden. Rein additiv - ein Fehler hier darf den Lauf nicht kippen.
@@ -1132,6 +1166,12 @@ class Orchestrator(
                 # wenn ein frontend-Agent eingeplant war - unabhängig von dessen Erfolg, denn
                 # gerade ein gescheitertes Hard Delivery Gate soll hier sichtbar werden.
                 frontend_planned=any(r.agent_id == "frontend" for r in results),
+                requirements_met=(
+                    self.last_acceptance_result.requirements_met if self.last_acceptance_result else None
+                ),
+                missing_requirements=(
+                    self.last_acceptance_result.missing if self.last_acceptance_result else None
+                ),
             )
             write_definition_of_done(project_dir, self.last_definition_of_done)
             if self._run_logger is not None:

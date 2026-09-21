@@ -1934,18 +1934,7 @@ class VerificationMixin:
         # Accessibility-Check: echter axe-core-Scan (WCAG 2.x) gegen die gerenderte Seite.
         # Rein informativ, beeinflusst verification_ok nicht.
         if not (budget_aborted or manually_cancelled):
-            a11y_report = await asyncio.to_thread(verifier.check_accessibility)
-            if a11y_report.attempted:
-                outcome.record("accessibility", bool(a11y_report.passed))
-                if a11y_report.passed:
-                    notify(f"  ♿ [bold green]Accessibility-Check (axe-core) erfolgreich:[/bold green] `{a11y_report.tested_url}`.")
-                    summary_lines.append(f"- ♿ Accessibility-Check (axe-core): `{a11y_report.tested_url}` keine WCAG-Verstöße.")
-                else:
-                    top = "; ".join(f"{v.rule_id} [{v.impact}] {v.target}" for v in a11y_report.violations[:5])
-                    if len(a11y_report.violations) > 5:
-                        top += f" … und {len(a11y_report.violations) - 5} weitere"
-                    notify(f"  ♿ [bold red]Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße.[/bold red]")
-                    summary_lines.append(f"- ♿ ⚠️ Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße: {top}")
+            await self._record_accessibility_check(verifier, outcome, summary_lines, notify)
 
         # Fachlogik-Testtiefe (P4-3, ROADMAP_TEMP.md): ergänzendes, rein informatives Signal
         # zur routenbasierten Testtiefe oben - misst, ob öffentliche Funktionen/Klassen in
@@ -1953,11 +1942,7 @@ class VerificationMixin:
         # aufgerufen werden (siehe core/test_depth.py.analyze_domain_logic_depth()-Docstring für
         # den realen cachegrid_proxy-Fund, den die Routenmessung allein nicht sehen konnte).
         if not (budget_aborted or manually_cancelled) and ENABLE_DOMAIN_LOGIC_DEPTH_SIGNAL:
-            domain_depth = await asyncio.to_thread(analyze_domain_logic_depth, project_dir, MIN_DOMAIN_LOGIC_TEST_RATIO)
-            if domain_depth.applicable:
-                outcome.record("domain_logic_depth", domain_depth.passed, "" if domain_depth.passed else domain_depth.format_summary())
-                if not domain_depth.passed:
-                    summary_lines.append(f"- 🧬 ⚠️ {domain_depth.format_summary()}")
+            await self._record_domain_logic_depth_check(project_dir, outcome, summary_lines)
 
         # Blockierende Prüfungen, die FRÜH im Lauf fehlgeschlagen sind, noch einmal messen -
         # siehe _recheck_stale_blocking_checks() für die beiden realen Funde dahinter.
@@ -1992,6 +1977,41 @@ class VerificationMixin:
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."
         )
         return all_results, verification_summary, budget_aborted, manually_cancelled, verification_ok
+
+    async def _record_accessibility_check(
+        self, verifier: ProjectVerifier, outcome: VerificationOutcome,
+        summary_lines: list[str], notify: Callable[[str], None],
+    ) -> None:
+        """P6-5 (ROADMAP_TEMP.md, Teilschritt): aus `_run_verification_loop_impl()` extrahiert -
+        echter axe-core-Scan (WCAG 2.x), rein informativ, beeinflusst `verification_ok` nicht,
+        deshalb ohne Rückgabewert sicher isolierbar (kein geteilter Kontrollfluss-Zustand)."""
+        a11y_report = await asyncio.to_thread(verifier.check_accessibility)
+        if not a11y_report.attempted:
+            return
+        outcome.record("accessibility", bool(a11y_report.passed))
+        if a11y_report.passed:
+            notify(f"  ♿ [bold green]Accessibility-Check (axe-core) erfolgreich:[/bold green] `{a11y_report.tested_url}`.")
+            summary_lines.append(f"- ♿ Accessibility-Check (axe-core): `{a11y_report.tested_url}` keine WCAG-Verstöße.")
+        else:
+            top = "; ".join(f"{v.rule_id} [{v.impact}] {v.target}" for v in a11y_report.violations[:5])
+            if len(a11y_report.violations) > 5:
+                top += f" … und {len(a11y_report.violations) - 5} weitere"
+            notify(f"  ♿ [bold red]Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße.[/bold red]")
+            summary_lines.append(f"- ♿ ⚠️ Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße: {top}")
+
+    async def _record_domain_logic_depth_check(
+        self, project_dir: str, outcome: VerificationOutcome, summary_lines: list[str],
+    ) -> None:
+        """P6-5 (ROADMAP_TEMP.md, Teilschritt): aus `_run_verification_loop_impl()` extrahiert -
+        P4-3s Fachlogik-Testtiefe-Signal, rein informativ (siehe
+        `core/test_depth.py.analyze_domain_logic_depth()`-Docstring), beeinflusst
+        `verification_ok` nicht, deshalb ohne Rückgabewert sicher isolierbar."""
+        domain_depth = await asyncio.to_thread(analyze_domain_logic_depth, project_dir, MIN_DOMAIN_LOGIC_TEST_RATIO)
+        if not domain_depth.applicable:
+            return
+        outcome.record("domain_logic_depth", domain_depth.passed, "" if domain_depth.passed else domain_depth.format_summary())
+        if not domain_depth.passed:
+            summary_lines.append(f"- 🧬 ⚠️ {domain_depth.format_summary()}")
 
     # Rollen, die eine Zweitmeinung abgeben können: analysieren fremden Code als Kernaufgabe
     # und sind nicht selbst Eigentümer der steckenden Dateien. Reihenfolge ist Priorität.

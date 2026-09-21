@@ -1558,11 +1558,28 @@ Agenten-Aufruf kostet.
 > - eine grundsätzlich andere, riskantere Aufgabenklasse als reine Code-Verschiebung. Angesichts
 > der zentralen Rolle dieser Methode (Governance-Fix-Schleife, in praktisch jedem Lauf aktiv)
 > ist das eine eigene, sorgfältig geplante künftige Sitzung wert, keine mechanische
-> Fortsetzung der ersten beiden Teile. Keine Code-Änderung vorgenommen.
+> Fortsetzung der ersten beiden Teile.
 
-**Zusammenfassung P6-5:** 1 von 3 Dateien gesplittet (`interface/cli.py`), die anderen beiden
-mit konkreten, dokumentierten Befunden bewusst zurückgestellt statt unbegründet als "zu
-riskant" abgehakt.
+> **Umsetzung 2026-09-21, sicherer Teilschritt statt eines riskanten Komplett-Umbaus:** Zwei
+> der wenigen tatsächlich eigenständigen Blöcke innerhalb von `_run_verification_loop_impl()`
+> (Accessibility-Check, Fachlogik-Testtiefe/P4-3 - beide rein informativ, beeinflussen
+> `verification_ok` NICHT, kein geteilter Kontrollfluss-Zustand mit dem Rest der Methode) wurden
+> in zwei neue, unabhängig benannte Methoden extrahiert: `_record_accessibility_check()` und
+> `_record_domain_logic_depth_check()`. Bewusst NUR diese beiden - der überwiegende Rest der
+> Methode fädelt 7+ veränderliche Zustände (`verification_ok`, `budget_aborted`,
+> `manually_cancelled`, `summary_lines`, `outcome`, `all_results`, `report`) durch nahezu jeden
+> Block, eine sichere Extraktion bräuchte dort entweder Rückgabewerte für jeden mutierten
+> Zustand einzeln oder ein Bündel-Objekt - das ist der eigentliche, größere Umbau aus der
+> Untersuchung oben, hier bewusst NICHT angegangen. Verifiziert: `ruff check` sauber, 90
+> bestehende Tests (`test_accessibility_verifier.py`, `test_test_depth.py`,
+> `test_verification_no_progress_breaker.py`, `test_governance_fix_loop.py`,
+> `test_p1_team_workflow.py`, `test_p0_structured_verification.py`) unverändert grün - reine
+> Verhaltens-Erhaltung bestätigt.
+
+**Zusammenfassung P6-5:** 1 von 3 Dateien vollständig gesplittet (`interface/cli.py`), ein
+sicherer Teilschritt für die dritte (`verification.py`: 2 von ~15 eigenständigen Blöcken
+extrahiert), `core/llm_factory.py` mit konkretem, dokumentiertem Befund bewusst zurückgestellt
+statt unbegründet als "zu riskant" abgehakt.
 
 | P6-6 | `core/message_bus.py` enthält nur noch zwei Dataclasses – in `core/agent_contracts.py` umbenennen (60+ Importe, daher mit Alias-Übergang) | S |
 
@@ -1705,4 +1722,4 @@ ruff check && python -m pytest -q
 | P5-3 | Verifikations-Reserve im Budget | P5 | ☑ erledigt (Reserve existierte, Gate korrigiert) |
 | P6-1 | Gestagte Fixes committet | P6 | ☑ erledigt |
 | P6-2 | ~~Workspace aus Framework-Commits~~ | P6 | ☑ Fehlannahme, siehe oben |
-| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-6, P6-7, P6-8 erledigt; P6-5 1/3 (`interface/cli.py` erledigt; `core/llm_factory.py` untersucht, bewusst zurückgestellt - konkreter Befund s.o.; `agents/orchestrator/verification.py` offen) |
+| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-6, P6-7, P6-8 erledigt; P6-5 ~1.5/3 (`interface/cli.py` erledigt; `verification.py` sicherer Teilschritt (2 Blöcke extrahiert), Rest bewusst zurückgestellt; `core/llm_factory.py` untersucht, bewusst zurückgestellt - konkrete Befunde s.o.) |

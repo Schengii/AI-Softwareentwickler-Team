@@ -71,6 +71,12 @@ def main():
     Mit `--weekly-digest [--days N]` (Standard: core/team_retro.DIGEST_WINDOW_DAYS=7) zeigt ein
     Sprint-Review-artiger Überblick abgeschlossene/neu eröffnete Tickets, Velocity, Token-
     verbrauch und Verifikations-Erfolgsquote der letzten N Tage, plus denselben liegengebliebenen
+    Ticket-Überblick wie --team-retro.
+    Mit `--team-trend [--days N]` (Standard: core/team_trend.DEFAULT_TREND_WINDOW_DAYS=30)
+    beantwortet die Frage "werden wir besser?": rollierende Wochen-Erfolgsquote, Ø Tokens/Lauf,
+    eine Regressions-Warnung (letzte 10 Läufe schlechter als die 10 davor), die Top-5-Blocker
+    nach Häufigkeit über ALLE Läufe im Zeitfenster (setzt P0-5 voraus) sowie die gemessene
+    Wirksamkeit der Agent-Learnings (setzt P2-1 voraus) - siehe core/team_trend.py.
     Mit `--workspace-hygiene [--days N] [--dry-run]` läuft die smarte Speicher-Hygiene
     über den Workspace (Option 1): Projekte, deren Quellcode seit > N Tagen (Standard: 7) nicht
     mehr geändert wurde, werden von reproduzierbaren Artefakten (.ai_team_venv, node_modules,
@@ -274,6 +280,18 @@ def main():
             except (IndexError, ValueError):
                 pass
         print(build_weekly_digest(window_days=window).format_for_humans())
+        return
+
+    if "--team-trend" in sys.argv:
+        from core.team_trend import DEFAULT_TREND_WINDOW_DAYS, build_team_trend
+
+        window = DEFAULT_TREND_WINDOW_DAYS
+        if "--days" in sys.argv:
+            try:
+                window = int(sys.argv[sys.argv.index("--days") + 1])
+            except (IndexError, ValueError):
+                pass
+        print(build_team_trend(window_days=window).format_for_humans())
         return
 
     if "--check-pr-reviews" in sys.argv:

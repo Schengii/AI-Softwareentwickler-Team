@@ -730,7 +730,7 @@ zusätzlichen LLM-Aufruf für **jeden** Lauf, auch für grüne.
 ---
 
 ### P3-2 · Kein Trendbericht über Läufe hinweg
-**Status:** ❌ offen · **Aufwand:** M · **Wirkung:** hoch
+**Status:** ✅ erledigt 2026-09-21 · **Aufwand:** M · **Wirkung:** hoch
 
 `--team-retro` und `--weekly-digest` existieren, aber die wichtigste Frage – *„Werden wir
 besser?"* – beantwortet nichts. Die Zahl „13 % grün über 152 Läufe" musste für diese Roadmap von
@@ -743,6 +743,22 @@ Hand ausgerechnet werden.
 * Wirksamkeit der Learnings (setzt P2-1 voraus): welche Regeln haben ihren Befund verschwinden
   lassen, welche nicht.
 * Regressions-Warnung: Kennzahl über die letzten 10 Läufe schlechter als über die 10 davor.
+
+> **Umsetzung:** Neues Modul `core/team_trend.py.build_team_trend()`, `python main.py
+> --team-trend [--days N]` (Standard 30 Tage). Rein deterministisch, komplett aus bereits
+> bestehenden Datenquellen zusammengesetzt: rollierende Wochen-Erfolgsquote und Ø Tokens/Lauf
+> aus `memory/run_history.json`; Top-5-Blocker über ALLE (nicht nur die jeweils neuesten)
+> Läufe je Projekt aus `workspace/*/.ai_team_status.json` mittels `core/team_health.py.
+> categorize_failure()` (P0-5); Wirksamkeit der Learnings aus `memory/agent_learnings.json`
+> über die in P2-1 eingeführten `effectiveness`-Werte (Vorzeichen für die Anzeige umgedreht:
+> `_effectiveness_rate()` liefert `violations_after / injections`, niedriger = besser - der
+> Bericht zeigt wie `interface/cli.py._show_learnings()` "% wirksam", höher = besser);
+> Regressions-Warnung durch Vergleich der letzten 10 mit den 10 Läufen davor. Ø
+> Reparatur-Aufrufe/Lauf liest die `Reparatur (...): N Tokens (M Aufruf(e))`-Zeile aus den in
+> P3-1 neu eingeführten `workspace/*/.ai_team_runs/*_postmortem.md`-Berichten - liegen (noch)
+> keine vor, weist der Bericht das offen als "keine Post-Mortem-Berichte gefunden" aus statt
+> stillschweigend 0 anzuzeigen. Gegen echte Produktivdaten geprüft (`--team-trend --days 30`
+> über 155 reale Läufe). 8 neue Tests in `tests/test_team_trend.py`.
 
 ---
 
@@ -1195,7 +1211,7 @@ ruff check && python -m pytest -q
 | P2-3 | 13 ungenutzte Rollen – entscheiden statt melden | P2 | 🟡 teilweise |
 | P2-4 | Retrospektive arbeitet blind | P2 | ☑ erledigt |
 | P3-1 | Post-Mortem-Artefakt pro Lauf | P3 | ☑ erledigt |
-| P3-2 | `--team-trend` Trendbericht | P3 | ☐ |
+| P3-2 | `--team-trend` Trendbericht | P3 | ☑ erledigt |
 | P3-3 | Root-Cause nur bei blockierenden Befunden | P3 | ☑ erledigt |
 | P3-4 | `team_lessons.jsonl` Schema vereinheitlichen | P3 | ☑ erledigt |
 | P4-1 | Code-Review verbindlich | P4 | ☐ |

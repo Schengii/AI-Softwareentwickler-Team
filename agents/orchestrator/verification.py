@@ -1754,55 +1754,14 @@ class VerificationMixin:
         # Kein Benchmark, aber fehlgeschlagene Requests unter Last sind eine echte
         # Anforderungsverletzung. Für die meisten Projekte ein No-Op (Skript + Tool nötig).
         if ENABLE_LOAD_TEST_CHECK and not (budget_aborted or manually_cancelled) and report is not None and report.ran and report.passed:
-            def _build_load_fix_task(perf_report, attempt):
-                owner = file_owners.get(perf_report.script) if perf_report.script else None
-                agent_id = owner if owner in self._agents else ("backend" if "backend" in self._agents else None)
-                if agent_id is None:
-                    return None
-                return AgentTask(
-                    task_id=f"verify_fix_load_{agent_id}_{attempt}",
-                    agent_id=agent_id,
-                    description=(
-                        f"Der ECHTE Lastentest (`{perf_report.script}`, {perf_report.tool}) ist fehlgeschlagen: "
-                        f"{perf_report.failed_requests} von {perf_report.total_requests} Requests scheiterten "
-                        f"unter simultaner Last. Nutze read_file, um die betroffene(n) Datei(en) zu prüfen, "
-                        f"und edit_file/write_file, um die Ursache (z.B. fehlende Nebenläufigkeitssicherung, "
-                        f"blockierende I/O) zu beheben."
-                    ),
-                    context="",
-                    project_dir=project_dir,
-                )
-
-            perf_report, all_results, lb_aborted, lb_cancelled = await self._run_runtime_check_with_fix(
-                check_fn=lambda: verifier.check_load_test(LOAD_TEST_DURATION_SECONDS, LOAD_TEST_TIMEOUT_SECONDS),
-                build_fix_task=_build_load_fix_task,
-                all_results=all_results,
-                file_owners=file_owners,
-                notify=notify,
-                run_start_tokens=run_start_tokens,
-                cancel_requested=cancel_requested,
-                is_attempted=lambda r: r.attempted,
-                is_passed=lambda r: r.passed,
+            lb_aborted, lb_cancelled, lb_veto = await self._run_load_test_check(
+                verifier, project_dir, all_results, file_owners, outcome, summary_lines, notify,
+                run_start_tokens, cancel_requested,
             )
             budget_aborted = budget_aborted or lb_aborted
             manually_cancelled = manually_cancelled or lb_cancelled
-            if perf_report.attempted:
-                outcome.record("load_test", bool(perf_report.passed))
-                stats = f"{perf_report.total_requests} Requests, {perf_report.failed_requests} fehlgeschlagen"
-                # isinstance() statt "is not None": hält Tests mit unvollständig gemocktem Verifier
-                # robust (MagicMock würde an ":.0f" mit TypeError crashen).
-                if isinstance(perf_report.p95_ms, (int, float)):
-                    stats += f", p95={perf_report.p95_ms:.0f}ms"
-                if perf_report.passed:
-                    notify(f"  🏋️ [bold green]Lastentest ({perf_report.tool}) bestanden:[/bold green] `{perf_report.script}` [{stats}].")
-                    summary_lines.append(f"- 🏋️ Lastentest ({perf_report.tool}) bestanden: `{perf_report.script}` [{stats}].")
-                else:
-                    notify(f"  🏋️ [bold red]Lastentest ({perf_report.tool}) fehlgeschlagen:[/bold red] `{perf_report.script}` [{stats}].")
-                    summary_lines.append(f"- 🏋️ ❌ Lastentest ({perf_report.tool}) fehlgeschlagen: `{perf_report.script}` [{stats}].")
-                    verification_ok = False
-                    _grund = f"Lastentest ({perf_report.tool}) fehlgeschlagen: `{perf_report.script}` [{stats}]."
-                    notify(f"  ❌ [bold red]Verifikations-Veto durch Lastentest:[/bold red] {_grund}")
-                    summary_lines.append(f"- ❌ **Verifikations-Veto durch Lastentest:** {_grund}")
+            if lb_veto:
+                verification_ok = False
 
         # Browser / Frontend UI-Check: Prüft statische Assets, Rendering und JS-Konsolenfehler.
         # Blockiert verification_ok, da er oft die EINZIGE Instanz ist, die echten Browser-Code
@@ -2080,6 +2039,70 @@ class VerificationMixin:
         notify(f"  ❌ [bold red]Verifikations-Veto durch Runtime-Smoke-Test:[/bold red] {_grund}")
         summary_lines.append(f"- ❌ **Verifikations-Veto durch Runtime-Smoke-Test:** {_grund}")
         return sb_aborted, sb_cancelled, True
+
+    async def _run_load_test_check(
+        self,
+        verifier: ProjectVerifier,
+        project_dir: str,
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        outcome: VerificationOutcome,
+        summary_lines: list[str],
+        notify: Callable[[str], None],
+        run_start_tokens: int | None,
+        cancel_requested: Callable[[], bool] | None,
+    ) -> tuple[bool, bool, bool]:
+        """P6-5 (ROADMAP_TEMP.md, Teilschritt): aus `_run_verification_loop_impl()` extrahiert -
+        Lastentest (k6/Locust) inkl. gezielter Auto-Fix-Schleife. Gleiches Rückgabemuster wie
+        `_run_browser_ui_check()`/`_run_smoke_check()`."""
+        def _build_load_fix_task(perf_report, attempt):
+            owner = file_owners.get(perf_report.script) if perf_report.script else None
+            agent_id = owner if owner in self._agents else ("backend" if "backend" in self._agents else None)
+            if agent_id is None:
+                return None
+            return AgentTask(
+                task_id=f"verify_fix_load_{agent_id}_{attempt}",
+                agent_id=agent_id,
+                description=(
+                    f"Der ECHTE Lastentest (`{perf_report.script}`, {perf_report.tool}) ist fehlgeschlagen: "
+                    f"{perf_report.failed_requests} von {perf_report.total_requests} Requests scheiterten "
+                    f"unter simultaner Last. Nutze read_file, um die betroffene(n) Datei(en) zu prüfen, "
+                    f"und edit_file/write_file, um die Ursache (z.B. fehlende Nebenläufigkeitssicherung, "
+                    f"blockierende I/O) zu beheben."
+                ),
+                context="",
+                project_dir=project_dir,
+            )
+
+        perf_report, all_results, lb_aborted, lb_cancelled = await self._run_runtime_check_with_fix(
+            check_fn=lambda: verifier.check_load_test(LOAD_TEST_DURATION_SECONDS, LOAD_TEST_TIMEOUT_SECONDS),
+            build_fix_task=_build_load_fix_task,
+            all_results=all_results,
+            file_owners=file_owners,
+            notify=notify,
+            run_start_tokens=run_start_tokens,
+            cancel_requested=cancel_requested,
+            is_attempted=lambda r: r.attempted,
+            is_passed=lambda r: r.passed,
+        )
+        if not perf_report.attempted:
+            return lb_aborted, lb_cancelled, False
+        outcome.record("load_test", bool(perf_report.passed))
+        stats = f"{perf_report.total_requests} Requests, {perf_report.failed_requests} fehlgeschlagen"
+        # isinstance() statt "is not None": hält Tests mit unvollständig gemocktem Verifier
+        # robust (MagicMock würde an ":.0f" mit TypeError crashen).
+        if isinstance(perf_report.p95_ms, (int, float)):
+            stats += f", p95={perf_report.p95_ms:.0f}ms"
+        if perf_report.passed:
+            notify(f"  🏋️ [bold green]Lastentest ({perf_report.tool}) bestanden:[/bold green] `{perf_report.script}` [{stats}].")
+            summary_lines.append(f"- 🏋️ Lastentest ({perf_report.tool}) bestanden: `{perf_report.script}` [{stats}].")
+            return lb_aborted, lb_cancelled, False
+        notify(f"  🏋️ [bold red]Lastentest ({perf_report.tool}) fehlgeschlagen:[/bold red] `{perf_report.script}` [{stats}].")
+        summary_lines.append(f"- 🏋️ ❌ Lastentest ({perf_report.tool}) fehlgeschlagen: `{perf_report.script}` [{stats}].")
+        _grund = f"Lastentest ({perf_report.tool}) fehlgeschlagen: `{perf_report.script}` [{stats}]."
+        notify(f"  ❌ [bold red]Verifikations-Veto durch Lastentest:[/bold red] {_grund}")
+        summary_lines.append(f"- ❌ **Verifikations-Veto durch Lastentest:** {_grund}")
+        return lb_aborted, lb_cancelled, True
 
     # Rollen, die eine Zweitmeinung abgeben können: analysieren fremden Code als Kernaufgabe
     # und sind nicht selbst Eigentümer der steckenden Dateien. Reihenfolge ist Priorität.

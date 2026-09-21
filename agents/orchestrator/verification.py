@@ -52,6 +52,7 @@ from config import (
     MIN_TEST_COVERAGE,
 )
 from core.backlog_store import get_ticket, upsert_ticket
+from core.code_graph import generate_project_brief
 from core.decision_log import log_decision
 from core.dependency_manifest import (
     add_requirement,
@@ -117,6 +118,17 @@ def _classify_browser_failure_owner(
     if "backend" in available_agents:
         return "backend"
     return None
+
+
+def _build_project_brief_context(project_dir: str | Path | None) -> str:
+    """Erzeugt einen kompakten Projekt-Steckbrief für Fix- und Eskalations-Tasks."""
+    if not project_dir:
+        return ""
+    try:
+        brief = generate_project_brief(project_dir)
+        return f"[PROJEKT-STECKBRIEF]\n{brief}\n\n" if brief else ""
+    except Exception:
+        return ""
 
 
 class VerificationMixin:
@@ -967,6 +979,7 @@ class VerificationMixin:
                                 f"einem wirkungslosen Fixversuch – ziehe Fachbereichsleiter "
                                 f"({', '.join(sorted(lead_targets))}) statt derselben Wiederholung hinzu..."
                             )
+                            escalation_brief_ctx = _build_project_brief_context(project_dir)
                             escalation_tasks = [
                                 AgentTask(
                                     task_id=f"verify_escalation_{dept_id}_{attempt}",
@@ -980,7 +993,7 @@ class VerificationMixin:
                                         f"Team mit einer GEÄNDERTEN Strategie an, statt denselben Fix zu wiederholen.\n\n{top_failures}"
                                         + no_delivery_notice
                                     ),
-                                    context="", project_dir=project_dir,
+                                    context=escalation_brief_ctx, project_dir=project_dir,
                                 )
                                 for dept_id in lead_targets
                             ]
@@ -1050,6 +1063,7 @@ class VerificationMixin:
                                     f"{', '.join(sorted(escalated_agent_ids))} laufen für diesen Fix-Auftrag "
                                     "auf HEAVY_MODEL, statt direkt aufzugeben."
                                 )
+                                model_brief_ctx = _build_project_brief_context(project_dir)
                                 model_escalation_tasks = [
                                     AgentTask(
                                         task_id=f"verify_model_escalation_{owner}_{attempt}",
@@ -1061,7 +1075,7 @@ class VerificationMixin:
                                             "Analysiere die Grundannahme neu, statt denselben Ansatz ein drittes Mal "
                                             f"zu wiederholen.\n\n{top_failures}"
                                         ),
-                                        context="", project_dir=project_dir,
+                                        context=model_brief_ctx, project_dir=project_dir,
                                     )
                                     for owner in sorted(escalated_agent_ids)
                                 ]
@@ -1237,6 +1251,7 @@ class VerificationMixin:
                 summary_lines.append(f"- ⚠️ Versuch {attempt}: {len(report.failures)} Testfehler blieben ungelöst (keine eindeutige Dateizuordnung im Traceback).")
                 break
 
+            fix_brief_ctx = _build_project_brief_context(project_dir)
             fix_tasks = []
             for agent_id, fails in agents_to_fix.items():
                 failure_text = _format_failures_for_agent(fails, triages=triages, max_failures=5, max_msg_chars=1200)
@@ -1261,7 +1276,7 @@ class VerificationMixin:
                         + delivery_prompt_hint
                         + (_prior_run_context(test_ticket_id) if attempt == 1 and test_ticket_id else "")
                     ),
-                    context="",
+                    context=fix_brief_ctx,
                     project_dir=project_dir,
                     max_tool_iterations=8,
                 ))
@@ -1351,7 +1366,7 @@ class VerificationMixin:
                                     "OHNE die Testfunktion zu entfernen). Test NICHT löschen oder überspringen "
                                     f"(kein `skip`/`xfail`).\n\n{ft.description}"
                                 ),
-                                context="", project_dir=project_dir, max_tool_iterations=8,
+                                context=fix_brief_ctx, project_dir=project_dir, max_tool_iterations=8,
                             )
                             for ft in fix_tasks
                         ]

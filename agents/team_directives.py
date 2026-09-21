@@ -188,6 +188,21 @@ _ASYNC_EVENT_LOOP_DIRECTIVE = """
     (niemals auf Modulebene oder via veraltetes `@app.on_event("startup")`).
 """
 
+SQLITE_CONCURRENCY_DIRECTIVE = """
+## 🗄️ SQLite In-Memory & Concurrency Guard (VERBINDLICH)
+- Verwendet das Projekt oder die Testsuite SQLite (insbesondere In-Memory `sqlite:///:memory:` oder
+  Datei `sqlite:///./dev.db` mit Multi-Threading/FastAPI):
+  1. Multi-Threading Guard: Übergib `connect_args={"check_same_thread": False}` an `create_engine()`,
+     damit FastAPI-Worker und asynchrone Tasks threadsicher auf dieselbe Verbindung zugreifen können.
+  2. In-Memory StaticPool Guard: Verwendest du eine In-Memory SQLite-Datenbank (`:memory:`), MUSST du
+     zwingend `poolclass=StaticPool` importieren (`from sqlalchemy.pool import StaticPool`) und an
+     `create_engine()` übergeben (`create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)`).
+     Ohne `StaticPool` erzeugt jeder Verbindungsaufruf eine separate, leere In-Memory-Instanz,
+     wodurch Tabellen nach dem Initialisieren nicht auffindbar sind (`OperationalError: no such table`).
+  3. Fremdschlüssel-Aktivierung: Führe bei SQLite-Verbindungen `PRAGMA foreign_keys=ON` aus, um
+     Datenintegrität konsistent zu halten.
+"""
+
 PYTHON_CODE_CONTRACT_DIRECTIVE = f"""
 ## 📜 Contract First – verbindlich für alle Python-Code schreibenden Agenten
 - Prüfe IMMER ZUERST `{INTERFACE_CONTRACT_FILE}` (per read_file/search_code), bevor du neue Dateien,
@@ -199,7 +214,8 @@ PYTHON_CODE_CONTRACT_DIRECTIVE = f"""
   du dies explizit im Task-Output (Dateipfad + Zweck) und hältst dich an den Standardpfad
   `app/<modul>/...`.
 {_SETTINGS_RULE}
-{_ASYNC_EVENT_LOOP_DIRECTIVE}"""
+{_ASYNC_EVENT_LOOP_DIRECTIVE}
+{SQLITE_CONCURRENCY_DIRECTIVE}"""
 
 # Team-Optimierung (`/goal`-Auftrag, Schwachstelle 1 aus den Läufen eventstream_zero/
 # aethermesh/chronospulse/incident_pulse): mehrere reale Läufe lieferten ein Backend, das
@@ -244,7 +260,8 @@ BACKEND_CONTRACT_DIRECTIVE = f"""
   read_file/search_code, statt eine Signatur anzunehmen.
 {_BACKEND_ENTRYPOINT_DIRECTIVE}
 {_SETTINGS_RULE}
-{_ASYNC_EVENT_LOOP_DIRECTIVE}"""
+{_ASYNC_EVENT_LOOP_DIRECTIVE}
+{SQLITE_CONCURRENCY_DIRECTIVE}"""
 
 TESTER_CONTRACT_DIRECTIVE = f"""
 ## 📜 Contract First – Tests gegen die echte Schnittstelle
@@ -295,6 +312,18 @@ TESTER_CONTRACT_DIRECTIVE = f"""
 {TESTER_NO_DUPLICATE_INTERFACE_DIRECTIVE}
 {TESTER_HARD_DELIVERY_GATE_DIRECTIVE}"""
 
+FRONTEND_BACKEND_URL_SYNC_DIRECTIVE = """
+## 🌐 Frontend ↔ Backend URL- & Port-Synchronisation (VERBINDLICH)
+- Hardcodierte Ports und Hostnamen (`http://localhost:8000`, `http://127.0.0.1:8000`) sind in
+  Frontend-Code (HTML/JS/TS) STRIKT VERBOTEN. In Testumgebungen, Docker-Containern oder unter
+  abweichenden Ports scheitern solche Aufrufe mit `ERR_CONNECTION_REFUSED` oder CORS-Fehlern.
+- Verwende für API-Aufrufe (`fetch`, `axios`) AUSSCHLIESSLICH relative Pfade (z. B. `/api/...`,
+  `/api/v1/...`) oder eine dynamische Base-URL:
+  `const API_BASE = window.location.origin + '/api';` bzw. einen konfigurierbaren Präfix.
+- Werden API-Endpunkte aufgerufen, müssen die Pfade exakt mit den im Backend registrierten Routen
+  übereinstimmen (inklusive abschließendem Slash, falls im Backend so definiert).
+"""
+
 FRONTEND_CONTRACT_DIRECTIVE = f"""
 ## 📜 Contract First – Web-Assets sofort physisch speichern
 - Speichere JEDES Web-Asset (HTML, CSS, JS) SOFORT als erste Aktion per `write_file("static/<datei>", ...)`
@@ -304,7 +333,8 @@ FRONTEND_CONTRACT_DIRECTIVE = f"""
   als kompletten Fehlschlag – die eigentlich fertige Arbeit fehlte danach ganz im Projekt.
 - Erst NACH dem `write_file`-Aufruf erklärst du wichtige Entscheidungen kurz in Prosa, nie als
   Ersatz für die physische Datei.
-{EXTERNAL_API_SDK_SYNC_DIRECTIVE}"""
+{EXTERNAL_API_SDK_SYNC_DIRECTIVE}
+{FRONTEND_BACKEND_URL_SYNC_DIRECTIVE}"""
 
 # Team-Optimierung (Gesamtsystem-Analyse 2026-09-14, Punkt 3.2 "Wiederverwendung statt
 # Neuerfindung"): core/component_library.py sammelt bereits verifizierte Implementierungen

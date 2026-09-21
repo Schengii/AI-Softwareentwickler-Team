@@ -74,6 +74,19 @@ class TestCoreRolePrompts(unittest.TestCase):
         self.assertIn("engine.py", prompt)
         self.assertIn("core/", prompt)
 
+    def test_frontend_forbids_hardcoded_ports_and_enforces_relative_urls(self):
+        from agents.frontend_agent import FrontendAgent
+        prompt = _prompt(FrontendAgent)
+        self.assertIn("Frontend ↔ Backend URL- & Port-Synchronisation", prompt)
+        self.assertIn("localhost:8000", prompt)
+        self.assertIn("relative Pfade", prompt)
+
+    def test_backend_enforces_sqlite_concurrency_and_static_pool(self):
+        prompt = _prompt(BackendAgent)
+        self.assertIn("SQLite In-Memory & Concurrency Guard", prompt)
+        self.assertIn("check_same_thread", prompt)
+        self.assertIn("StaticPool", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

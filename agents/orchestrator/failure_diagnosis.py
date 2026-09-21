@@ -593,6 +593,39 @@ def _prune_failure_message(message: str, max_chars: int = 1200) -> str:
     return f"{message[:head_len]}\n... [Traceback gekürzt für Token-Budget] ...\n{message[-tail_len:]}"
 
 
+def extract_failure_core(message: str) -> str:
+    """Extrahiert den Kern eines Testfehlers (fehlschlagende Assertion oder Exception).
+
+    Isoliert aus Tracebacks gezielt:
+    - Pytest-Assertion- und Exception-Zeilen (z.B. '>   assert 404 == 200' oder 'E   assert 404 == 200')
+    - Letzte Exception-Zeile (z.B. 'ModuleNotFoundError: ...' oder 'AssertionError: ...')
+    Gibt die prägnantesten 1-4 Zeilen zurück oder Leerstring, falls nichts isoliert werden kann.
+    """
+    if not message:
+        return ""
+
+    lines = [line.rstrip() for line in message.splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    # 1. Pytest-spezifische Markierungen: Zeilen mit '>' (Code) und 'E ' (Fehlerdetail)
+    pytest_markers = [
+        line.strip() for line in lines
+        if line.strip().startswith(">") or line.strip().startswith("E ") or line.strip() == "E"
+    ]
+    if pytest_markers:
+        return "\n".join(pytest_markers[-4:])
+
+    # 2. Standard Python Exception (z.B. 'AssertionError: ...', 'ValueError: ...')
+    exc_re = re.compile(r"^[A-Z][A-Za-z0-9_]*(?:Error|Exception|Warning):\s*.*")
+    for line in reversed(lines):
+        stripped = line.strip()
+        if exc_re.match(stripped):
+            return stripped
+
+    return ""
+
+
 def _format_failures_for_agent(
     failures: list,
     triages: dict | None = None,
@@ -603,16 +636,20 @@ def _format_failures_for_agent(
     selected = failures[:max_failures]
     parts = []
     for f in selected:
-        msg = _prune_failure_message(getattr(f, "message", str(f)), max_chars=max_msg_chars)
+        raw_msg = getattr(f, "message", str(f))
+        core = extract_failure_core(raw_msg)
+        msg = _prune_failure_message(raw_msg, max_chars=max_msg_chars)
         test_id = getattr(f, "test_id", "unbekannt")
         files = getattr(f, "files", []) or []
+        core_str = f"🎯 FEHLER-FOKUS:\n{core}\n\n" if core else ""
         part = (
             f"Test: {test_id}\n"
+            f"{core_str}"
             f"Fehlermeldung: {msg}\n"
             f"Betroffene Dateien: {', '.join(str(x) for x in files) or 'unbekannt'}"
         )
         if triages:
-            diag = _failure_diagnosis(getattr(f, "message", ""), triages.get(id(f)))
+            diag = _failure_diagnosis(raw_msg, triages.get(id(f)))
             if diag:
                 part += f"\n{diag}"
         parts.append(part)
@@ -624,3 +661,4 @@ def _format_failures_for_agent(
             "(konzentriere dich zuerst auf die oben genannten Kernfehler)."
         )
     return text
+

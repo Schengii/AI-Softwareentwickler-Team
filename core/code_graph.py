@@ -493,3 +493,56 @@ class CodebaseGraph:
             lines.append("Haupt-Module: " + ", ".join(file_summaries))
 
         return "\n".join(lines)
+
+
+def generate_project_brief(project_dir: str | Path, max_chars: int = 800) -> str:
+    """Erzeugt einen deterministischen, kompakten Projekt-Steckbrief aus dem Quellcode.
+
+    Enthält tatsächlich vorhandene Endpunkte (aus extract_backend_endpoints) und die wichtigsten
+    Module mit ihren Klassen/Funktionen aus dem CodebaseGraph.
+    """
+    from core.contract_verifier import extract_backend_endpoints
+
+    p = Path(project_dir)
+    if not p.is_dir():
+        return ""
+
+    graph = CodebaseGraph(p)
+    if graph.indexed_files_count == 0:
+        return ""
+
+    lines: list[str] = ["## 🗺️ Projekt-Steckbrief (bestehender Code):"]
+
+    # Endpunkte
+    endpoints = extract_backend_endpoints(p)
+    if endpoints:
+        seen_routes = set()
+        route_labels = []
+        for ep in endpoints:
+            key = (ep.method.upper(), ep.path)
+            if key not in seen_routes:
+                seen_routes.add(key)
+                route_labels.append(f"{ep.method.upper()} {ep.path}")
+        if route_labels:
+            lines.append(f"- Endpunkte ({len(route_labels)}): {', '.join(route_labels[:12])}")
+
+    # Module und Klassen/Funktionen
+    mod_summaries = []
+    for rel_path, symbols in sorted(graph.file_symbols.items()):
+        # Überspringe Tests und Hilfsverzeichnisse
+        if rel_path.startswith(("tests/", "test/")) or "/test_" in rel_path or rel_path.startswith("."):
+            continue
+        key_symbols = [
+            sym.name for sym in symbols
+            if sym.kind in ("class", "function") and not sym.name.startswith("_") and "." not in sym.name
+        ]
+        if key_symbols:
+            mod_summaries.append(f"{rel_path} ({', '.join(key_symbols[:4])})")
+
+    if mod_summaries:
+        lines.append(f"- Module: {'; '.join(mod_summaries[:8])}")
+
+    result = "\n".join(lines)
+    if len(result) > max_chars:
+        result = result[:max_chars - 3].rstrip() + "..."
+    return result

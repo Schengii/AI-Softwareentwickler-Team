@@ -268,6 +268,18 @@ class DepartmentMixin:
                     if task.agent_id == "tester" and _TEST_FIRST_NOTE not in task.context:
                         task.context += f"\n\n{_TEST_FIRST_NOTE}"
 
+            # P4-4: Projekt-Steckbrief für nachfolgende Phasen injizieren (deterministisch aus CodebaseGraph)
+            if dept_id != "dev_lead" and project_dir:
+                try:
+                    from core.code_graph import generate_project_brief
+                    brief = generate_project_brief(project_dir, max_chars=600)
+                    if brief:
+                        for task in member_tasks:
+                            if brief not in task.context:
+                                task.context += f"\n\n{brief}"
+                except Exception:
+                    pass
+
             phase_start_tokens = token_guard.get_summary()["grand_total_tokens"]
             phase_start_time = time.monotonic()
             self._trace_event("phase_started", phase_id=dept_id, agents=[t.agent_id for t in member_tasks])

@@ -17,6 +17,10 @@ import unittest
 from unittest.mock import patch
 
 from agents.orchestrator import Orchestrator
+from agents.orchestrator.failure_diagnosis import (
+    _format_failures_for_agent,
+    extract_failure_core,
+)
 from agents.orchestrator.verification import _diagnose_runtime_failure
 from core.message_bus import AgentResult
 from core.verifier import TestFailure, VerificationReport
@@ -202,6 +206,36 @@ class TestRuntimeFailureRouting(unittest.TestCase):
             ["tests/test_api.py"],
         )
         self.assertIn("backend", dispatched)
+
+    def test_extract_failure_core_pytest(self):
+        msg = (
+            "def test_foo():\n"
+            ">       assert response.status_code == 200\n"
+            "E       assert 404 == 200\n"
+        )
+        core = extract_failure_core(msg)
+        self.assertIn(">       assert response.status_code == 200", core)
+        self.assertIn("E       assert 404 == 200", core)
+
+    def test_extract_failure_core_python_exception(self):
+        msg = (
+            "Traceback (most recent call last):\n"
+            "  File 'test.py', line 1, in <module>\n"
+            "    import missing_mod\n"
+            "ModuleNotFoundError: No module named 'missing_mod'\n"
+        )
+        core = extract_failure_core(msg)
+        self.assertEqual(core, "ModuleNotFoundError: No module named 'missing_mod'")
+
+    def test_format_failures_for_agent_includes_failure_focus(self):
+        failure = TestFailure(
+            test_id="tests/test_api.py::test_create",
+            message=">   assert False\nE   assert False",
+            files=["tests/test_api.py"],
+        )
+        formatted = _format_failures_for_agent([failure])
+        self.assertIn("🎯 FEHLER-FOKUS:", formatted)
+        self.assertIn(">   assert False", formatted)
 
 
 if __name__ == "__main__":

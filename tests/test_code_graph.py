@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from core.agent_toolbox import AgentToolbox
-from core.code_graph import CodebaseGraph
+from core.code_graph import CodebaseGraph, generate_project_brief
 
 
 class TestCodebaseGraph(unittest.TestCase):
@@ -122,6 +122,25 @@ class TestCodebaseGraph(unittest.TestCase):
         res_impact = asyncio.run(toolbox.dispatch("analyze_code_impact", {"symbol_name": "User"}))
         self.assertEqual(res_impact["defining_file"], "models.py")
         self.assertIn("service.py", res_impact["imported_in"])
+
+    def test_generate_project_brief(self):
+        self._create_sample_files()
+        # Add FastAPI main file with endpoint
+        (self.project_dir / "api.py").write_text(
+            "from fastapi import FastAPI\napp = FastAPI()\n@app.get('/items')\ndef get_items(): return []\n",
+            encoding="utf-8",
+        )
+        brief = generate_project_brief(self.project_dir, max_chars=1000)
+        self.assertIn("Endpunkte", brief)
+        self.assertIn("GET /items", brief)
+        self.assertIn("Module:", brief)
+        self.assertIn("models.py", brief)
+        self.assertIn("User", brief)
+
+        # Test empty dir
+        empty_dir = self.project_dir / "empty_sub"
+        empty_dir.mkdir()
+        self.assertEqual(generate_project_brief(empty_dir), "")
 
 
 if __name__ == "__main__":

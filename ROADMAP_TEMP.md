@@ -413,7 +413,7 @@ Agenten fortsetzen; nur ein echtes Nutzer-Cancel (`cancel_requested`) bricht glo
 ---
 
 ### P1-5 · „Hard Delivery Gate" hat keine eigene `failure_class` – der Fix-Loop wiederholt denselben Ansatz blind
-**Status:** 🟡 **failure_class erledigt 2026-09-20**, Fix-Loop-Kurzschluss zurückgestellt · **Aufwand:** S · **Wirkung:** mittel
+**Status:** ✅ **erledigt 2026-09-21** · **Aufwand:** S · **Wirkung:** mittel
 
 Neuer Fund aus den Läufen `synapsegate` und `chronosvault` (2026-09-20), gegengeprüft über alle
 `workspace/*/.ai_team_runs/*_trace.jsonl`: in **7 von ~20** ausgewerteten Projekten
@@ -454,6 +454,19 @@ identischem Prompt hat hier keine Grundlage, auf der er anders ausfallen könnte
 > ist die nächste Testfehler-Signatur zwangsläufig identisch) – die neue `failure_class` liefert
 > das Signal jetzt schon sofort und macht diesen zweiten Schritt zu einer risikoarmen, punktuellen
 > Ergänzung für eine künftige Sitzung, statt selbst blockierend zu sein.
+
+> **Umsetzung 2026-09-21, zweiter Schritt:** `agents/orchestrator/verification.py` überspringt bei
+> `FAILURE_CLASS_NO_DELIVERY` jetzt aktiv den normalen Wiederholungs-Zyklus, statt auf den
+> `_no_progress`-Kreisunterbrecher eine Runde später zu warten. Umgesetzt über ein einmalig
+> gesetztes und sofort wieder gelesenes Flag (`previous_fix_all_no_delivery`, im Fix-Dispatch-Block
+> gesetzt, unmittelbar vor der nächsten `_no_progress`-Prüfung ausgelesen und zurückgesetzt), damit
+> es garantiert nur den einen beabsichtigten Kontrollfluss beeinflusst und keine anderen
+> Schleifenzustände verunreinigt. `tests/test_verification_no_progress_breaker.py` deckt den Fall
+> ab (inkl. eines dedizierten `_AlwaysWritesLLM`-Test-Doubles, da das bisher geteilte
+> `ScriptedWriteFileLLM` nur beim ersten Aufruf schreibt und damit echten Fortschritt über mehrere
+> Fixrunden hinweg nicht simulieren konnte). Alle 40 Tests aus
+> `test_verification_no_progress_breaker.py`, `test_governance_fix_loop.py` und
+> `test_p1_team_workflow.py` grün.
 
 ---
 
@@ -1444,7 +1457,7 @@ ruff check && python -m pytest -q
 | P1-2 | Eskalations-Strategien statt Wiederholung | P1 | ☑ erledigt |
 | P1-3 | Ticket-Hygiene: `stale` vs. `error` trennen | P1 | ☑ erledigt |
 | P1-4 | `CancelledError` reißt den Lauf mit | P1 | ☑ erledigt |
-| P1-5 | Hard Delivery Gate ohne eigene `failure_class` | P1 | 🟡 failure_class erledigt, Fix-Loop-Kurzschluss offen |
+| P1-5 | Hard Delivery Gate ohne eigene `failure_class` | P1 | ☑ erledigt |
 | P2-1 | Learnings mit Wirksamkeitsmessung | P2 | ☑ erledigt |
 | P2-2 | Modell-Auto-Tuning optimiert falsche Zielgröße | P2 | ☑ erledigt |
 | P2-3 | 13 ungenutzte Rollen – entscheiden statt melden | P2 | 🟡 teilweise |

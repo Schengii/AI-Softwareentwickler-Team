@@ -65,11 +65,13 @@ class HygieneReport:
     orphans_cancelled: list[str] = field(default_factory=list)
     stale_open_cancelled: list[str] = field(default_factory=list)
     archived: list[str] = field(default_factory=list)
+    traces_archived: int = 0
 
     @property
     def changed(self) -> int:
         return (len(self.recovered) + len(self.duplicates_cancelled) + len(self.closed_by_commit)
-                + len(self.orphans_cancelled) + len(self.stale_open_cancelled) + len(self.archived))
+                + len(self.orphans_cancelled) + len(self.stale_open_cancelled) + len(self.archived)
+                + self.traces_archived)
 
     def format_summary(self) -> str:
         lines = ["🧹 Backlog-Hygiene:"]
@@ -79,6 +81,8 @@ class HygieneReport:
         lines.append(f"  - {len(self.orphans_cancelled)} Tickets ohne existierendes Projekt geschlossen")
         lines.append(f"  - {len(self.stale_open_cancelled)} dauerhaft liegengebliebene Tickets geschlossen")
         lines.append(f"  - {len(self.archived)} abgeschlossene Tickets nach backlog_archive.json ausgelagert")
+        if self.traces_archived:
+            lines.append(f"  - {self.traces_archived} alte Projekt-Traces nach archive/ verschoben")
         for label, ids in (("zurückgesetzt", self.recovered), ("Dublette", self.duplicates_cancelled),
                            ("per Commit erledigt", self.closed_by_commit),
                            ("Projekt existiert nicht mehr", self.orphans_cancelled),
@@ -272,8 +276,70 @@ def close_tickets_referenced_in_commits(tickets: list[Ticket], commit_messages: 
     return closed
 
 
-def run_backlog_hygiene(commit_messages: str | None = None, now: datetime | None = None,
-                        workspace_dir: str | Path | None = None) -> HygieneReport:
+def archive_old_run_traces(
+    project_dir: str | Path | None = None,
+    max_age_days: float = 30.0,
+    workspace_dir: str | Path | None = None,
+    now: datetime | None = None,
+) -> int:
+    """Archiviert veraltete Lauf-Traces (.ai_team_runs/*_trace.jsonl / *_verification.md).
+
+    Verschiebt Traces, die älter als max_age_days sind, in einen 'archive/'-Unterordner,
+    um das aktive Projektverzeichnis aufgeräumt zu halten, ohne die Historie zu löschen.
+    Wird project_dir nicht angegeben, werden alle Projektordner in workspace_dir geprüft.
+    Gibt die Anzahl der ins Archiv verschobenen Dateien zurück.
+    """
+    import shutil
+    import time
+
+    target_dirs: list[Path] = []
+    if project_dir:
+        p_dir = Path(project_dir)
+        runs_dir = p_dir / ".ai_team_runs"
+        if runs_dir.is_dir():
+            target_dirs.append(runs_dir)
+    else:
+        ws = Path(workspace_dir or WORKSPACE_DIR)
+        if ws.is_dir():
+            try:
+                for child in ws.iterdir():
+                    if child.is_dir():
+                        runs_dir = child / ".ai_team_runs"
+                        if runs_dir.is_dir():
+                            target_dirs.append(runs_dir)
+            except OSError:
+                pass
+
+    cutoff_ts = (now.timestamp() if now else time.time()) - (max_age_days * 86400.0)
+    archived_count = 0
+
+    for r_dir in target_dirs:
+        archive_subdir = r_dir / "archive"
+        try:
+            items = list(r_dir.iterdir())
+        except OSError:
+            continue
+
+        for item in items:
+            if item.is_file() and (item.name.endswith("_trace.jsonl") or item.name.endswith("_verification.md")):
+                try:
+                    if item.stat().st_mtime < cutoff_ts:
+                        archive_subdir.mkdir(parents=True, exist_ok=True)
+                        dest = archive_subdir / item.name
+                        shutil.move(str(item), str(dest))
+                        archived_count += 1
+                except OSError as e:
+                    logger.warning("Konnte Trace %s nicht nach archive/ verschieben: %r", item, e)
+
+    return archived_count
+
+
+def run_backlog_hygiene(
+    commit_messages: str | None = None,
+    now: datetime | None = None,
+    workspace_dir: str | Path | None = None,
+    max_trace_age_days: float = 30.0,
+) -> HygieneReport:
     """Führt alle Hygiene-Regeln aus. `commit_messages`/`workspace_dir` sind für Tests injizierbar."""
     report = HygieneReport()
     report.closed_by_commit = close_tickets_referenced_in_commits(
@@ -290,4 +356,7 @@ def run_backlog_hygiene(commit_messages: str | None = None, now: datetime | None
     # eben erst hier "cancelled" wurde, hat noch keine Ruhezeit hinter sich und soll nicht im
     # selben Durchlauf gleich mitarchiviert werden).
     report.archived = archive_completed_tickets(now=now)
+    report.traces_archived = archive_old_run_traces(
+        workspace_dir=workspace_dir, max_age_days=max_trace_age_days, now=now,
+    )
     return report

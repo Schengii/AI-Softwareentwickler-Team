@@ -1026,13 +1026,26 @@ Ein Tester, der die echte Routenliste im Kontext hat, erfindet keine.
 ---
 
 ### P4-5 · Foreign-Changes: Agenten überschreiben fremden Code
-**Status:** ⚠️ teilweise adressiert · **Aufwand:** S · **Wirkung:** mittel
+**Status:** ✅ erledigt (bereits vor dieser Sitzung behoben, hier nur nachgeprüft) · **Aufwand:** S · **Wirkung:** mittel
 
 Aus `logs/FEHLERANALYSE_KI_TEAM_20260916.md`, Problem 4: der `security`-Agent überschrieb
 `app/main.py` und `app/api/endpoints.py` (Eigentümer: `backend`); der Security-Report konnte
 deshalb nicht sauber geschrieben werden. `core/write_guard.py` existiert – prüfen, ob es diesen
 Fall abdeckt, und ggf. auf „Fremddatei nur per `edit_file` mit Begründung im Team-Board"
 verschärfen.
+
+> **Nachprüfung 2026-09-21:** `config.py.AGENT_WRITE_SCOPES["security"]` deckt genau diesen
+> Fund bereits ab (Kommentar dort datiert auf den cloudpulse-Lauf vom 16.09., derselbe Vorfall)
+> - `security` darf seither nur noch eigene Dateien (`*security*`, `*auth*`,
+> `.env.example`, Abhängigkeits-/Tooling-Manifeste, `*__init__.py`) schreiben, `app/main.py`/
+> `app/api/endpoints.py` sind für die Rolle über `check_write_scope()`
+> (`core/write_guard.py`, in `core/agent_toolbox.py` an allen vier Schreib-Werkzeugen verankert)
+> blockiert - Änderungen an fremden Backend-Dateien beschreibt `security` seitdem im eigenen
+> Bericht statt sie selbst zu schreiben (noch strenger als die vorgeschlagene "edit_file mit
+> Begründung", die einen Fremdzugriff mit Begründung weiterhin erlaubt hätte). Belegt durch
+> `tests/test_cloudpulse_regressions.py` (u.a. `foreign_changes`-Fall) und
+> `tests/test_write_guard.py`, beide grün (29 Tests). Kein Code-Fund mehr offen - lediglich der
+> Roadmap-Status war seit der Umsetzung nicht aktualisiert worden.
 
 ---
 
@@ -1305,7 +1318,7 @@ ruff check && python -m pytest -q
 | P4-2 | Abnahme gegen die Anforderung | P4 | ☑ erledigt |
 | P4-3 | Testtiefe fachlich statt nur Routen | P4 | 🟡 teilweise (informativ, nicht blockierend) |
 | P4-4 | Projekt-Steckbrief für jeden Agenten | P4 | 🟡 Abfang + zuverlässige Vertragsdatei erledigt, Prompt-Injektion vor 1. Schreiben offen |
-| P4-5 | Write-Guard gegen Fremddatei-Überschreiben | P4 | ☐ |
+| P4-5 | Write-Guard gegen Fremddatei-Überschreiben | P4 | ☑ erledigt (bereits vorhanden, nachgeprüft) |
 | P5-1 | Degraded-Mode ehrlich machen | P5 | 🟡 Punkt 2 erledigt |
 | P5-2 | Token-Effizienz / Caching | P5 | 🟡 Gemini-Caching erledigt (Aufgabe 1), Rest offen |
 | P5-3 | Verifikations-Reserve im Budget | P5 | ☑ erledigt (Reserve existierte, Gate korrigiert) |

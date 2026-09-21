@@ -164,6 +164,25 @@ class TestAnalyzeDomainLogicDepth(unittest.TestCase):
             report = analyze_domain_logic_depth(project_dir)
             self.assertFalse(report.applicable)  # kein öffentliches Symbol -> nichts zu messen
 
+    def test_detects_domain_symbol_by_filename_stem(self):
+        """Prüft, dass Dateien wie app/engine.py auch ohne core/services-Verzeichnis als Domain erfasst werden."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app").mkdir(parents=True)
+            (project_dir / "app" / "engine.py").write_text(
+                "class MetricEngine:\n    def calculate(self):\n        pass\n", encoding="utf-8",
+            )
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_engine.py").write_text(
+                "from app.engine import MetricEngine\n\n"
+                "def test_engine():\n    e = MetricEngine()\n    e.calculate()\n",
+                encoding="utf-8",
+            )
+            report = analyze_domain_logic_depth(project_dir)
+            self.assertTrue(report.applicable)
+            self.assertTrue(report.passed)
+            self.assertEqual(len(report.untested_symbols), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

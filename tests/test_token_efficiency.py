@@ -59,6 +59,46 @@ class TestCompaction:
         turns = [_assistant(), _tool("z" * 9000)]
         assert compact_tool_results(turns, keep_recent_rounds=2).messages_compacted == 0
 
+    def test_read_tools_compact_at_lower_threshold_with_clean_preview(self):
+        # Lesewerkzeuge (read_file) ab 400 Zeichen statt erst ab 800/1500 Zeichen verdichten
+        content = "print('hello world')\n" * 25  # ~525 Zeichen
+        read_result = json.dumps({"path": "app/core/engine.py", "content": content})
+        generic_result = json.dumps({"status": "ok", "detail": "x" * 525})
+        turns = [
+            _assistant(), _tool(read_result, name="read_file"), _tool(generic_result, name="other_tool"),
+            _assistant(), _assistant(),
+        ]
+        stats = compact_tool_results(turns, keep_recent_rounds=2, min_chars=800)
+        # read_file mit 525 Zeichen wird kompaktiert, generic_result mit 525 Zeichen bleibt (unter 800)
+        assert stats.messages_compacted == 1
+        compacted = json.loads(turns[1].text)
+        assert compacted["compacted"] is True
+        assert "[read_file: app/core/engine.py" in compacted["preview"]
+        assert turns[2].text == generic_result
+
+    def test_stale_read_results_are_deduplicated(self):
+        # Wenn dieselbe Datei mehrfach gelesen wird, wird das frühere Ergebnis sofort durch
+        # einen schlanken Stale-Marker ersetzt, selbst wenn es innerhalb von keep_recent_rounds liegt.
+        content_v1 = json.dumps({"path": "app/models.py", "content": "class User: id: int\n" * 20})
+        content_v2 = json.dumps({"path": "app/models.py", "content": "class User: id: int; name: str\n" * 20})
+        turns = [
+            _assistant(), _tool(content_v1, name="read_file"),
+            _assistant(), _tool(content_v2, name="read_file"),
+        ]
+        # Ohne deduplicate_reads bliebe content_v1 bei keep_recent_rounds=2 unverändert
+        stats_no_dedup = compact_tool_results(turns, keep_recent_rounds=2, deduplicate_reads=False)
+        assert stats_no_dedup.messages_compacted == 0
+
+        # Mit deduplicate_reads wird content_v1 sofort als veraltet dedupliziert
+        stats_dedup = compact_tool_results(turns, keep_recent_rounds=2, deduplicate_reads=True)
+        assert stats_dedup.messages_compacted == 1
+        compacted_first = json.loads(turns[1].text)
+        assert compacted_first["compacted"] is True
+        assert compacted_first["stale"] is True
+        assert compacted_first["path"] == "app/models.py"
+        # Der neuere Read bleibt vollständig erhalten
+        assert turns[3].text == content_v2
+
     def test_agent_loop_sends_compacted_history_and_reports_savings(self, tmp_path):
         (tmp_path / "app").mkdir()
         (tmp_path / "app" / "big.py").write_text("# " + "a" * 6000 + "\n", encoding="utf-8")

@@ -192,10 +192,30 @@ def _route_regex(route_path: str) -> re.Pattern[str]:
     return re.compile(r"(?:^|/)" + "/".join(segments) + r"$")
 
 
-# P4-3 (ROADMAP_TEMP.md): Verzeichnisnamen, die typischerweise die eigentliche Fachlogik tragen
-# (nicht Routing/Controller-Code). Bewusst grob - ein deterministisches, projektübergreifend
-# funktionierendes Signal statt einer Stack-spezifischen Konvention.
+# P4-3 (ROADMAP_TEMP.md): Verzeichnisnamen und Dateistämme, die typischerweise die eigentliche
+# Fachlogik tragen (nicht Routing/Controller-Code). Bewusst grob - ein deterministisches,
+# projektübergreifend funktionierendes Signal statt einer Stack-spezifischen Konvention.
 _DOMAIN_DIR_MARKERS = frozenset({"core", "services", "domain", "logic"})
+_DOMAIN_FILE_STEMS = frozenset({
+    "engine", "service", "worker", "models", "pipeline", "manager", "calculator", "processor", "aggregator"
+})
+
+
+def _is_domain_file(rel_path: str) -> bool:
+    """Prüft, ob eine Datei zur Kern-Fachlogik gehört (über Verzeichnis-Marker oder Dateistamm)."""
+    parts = rel_path.split("/")
+    dir_parts = parts[:-1]
+    if any(p in _DOMAIN_DIR_MARKERS for p in dir_parts):
+        return True
+    filename = parts[-1]
+    stem = filename.rsplit(".", 1)[0].lower()
+    return stem in _DOMAIN_FILE_STEMS
+
+
+def _is_domain_dir(rel_path: str) -> bool:
+    """Abwärtskompatibler Helper für reine Verzeichnisprüfung."""
+    parts = rel_path.split("/")[:-1]
+    return any(p in _DOMAIN_DIR_MARKERS for p in parts)
 
 
 @dataclass
@@ -235,11 +255,11 @@ class DomainDepthReport:
 
     def format_summary(self) -> str:
         if not self.applicable:
-            return "Fachlogik-Testtiefe: keine Symbole in core/services/domain/logic-Verzeichnissen gefunden – nicht anwendbar."
+            return "Fachlogik-Testtiefe: keine Symbole in Fachlogik-Dateien (core/services/domain/engine/worker/...) gefunden – nicht anwendbar."
         tested = len(self.symbols) - len(self.untested_symbols)
         text = (
             f"Fachlogik-Testtiefe: {tested}/{len(self.symbols)} öffentliche Funktionen/Klassen in "
-            f"core/services/domain/logic in mindestens einem Test importiert UND aufgerufen "
+            f"Fachlogik-Modulen in mindestens einem Test importiert UND aufgerufen "
             f"({self.tested_ratio:.0%}, Richtwert {self.min_ratio:.0%})"
         )
         if self.untested_symbols:
@@ -247,11 +267,6 @@ class DomainDepthReport:
             if len(self.untested_symbols) > 10:
                 text += f" … und {len(self.untested_symbols) - 10} weitere"
         return text
-
-
-def _is_domain_dir(rel_path: str) -> bool:
-    parts = rel_path.split("/")[:-1]
-    return any(p in _DOMAIN_DIR_MARKERS for p in parts)
 
 
 def analyze_domain_logic_depth(project_dir: str | Path, min_ratio: float = 0.5) -> DomainDepthReport:
@@ -290,7 +305,7 @@ def analyze_domain_logic_depth(project_dir: str | Path, min_ratio: float = 0.5) 
 
     seen: set[str] = set()
     for file_path, symbols in graph.file_symbols.items():
-        if not _is_domain_dir(file_path) or _is_test_file(file_path):
+        if not _is_domain_file(file_path) or _is_test_file(file_path):
             continue
         for sym in symbols:
             if sym.kind not in ("function", "class", "method"):
@@ -301,7 +316,11 @@ def analyze_domain_logic_depth(project_dir: str | Path, min_ratio: float = 0.5) 
             seen.add(base_name)
             ref = DomainSymbolRef(name=sym.name, kind=sym.kind, file_path=file_path)
             report.symbols.append(ref)
-            if not (base_name in imported_in_tests and base_name in called_in_tests):
+            is_imported = (
+                base_name in imported_in_tests
+                or (sym.kind == "method" and "." in sym.name and sym.name.split(".", 1)[0] in imported_in_tests)
+            )
+            if not (is_imported and base_name in called_in_tests):
                 report.untested_symbols.append(ref)
     return report
 

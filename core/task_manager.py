@@ -260,7 +260,14 @@ AVAILABLE_AGENTS = {
     "database": {
         "name": "Datenbank-Entwickler",
         "phase": 3,
-        "description": "Entwirft SQL/NoSQL Datenmodelle, ORM-Schemas, Indizes und Migrationen.",
+        "description": (
+            "Entwirft relationale und NoSQL-Datenmodelle, ORM-Schemas (SQLAlchemy, SQLModel, Tortoise), "
+            "Tabellen-Indizes und Migrationen (Alembic). Einsetzen bei: (1) Projekten mit Datenbank-Persistenz "
+            "(SQLite, PostgreSQL, MySQL), (2) ORM-Datenmodellen mit Tabellenrelationen (ForeignKeys, Many-to-Many), "
+            "(3) Schema-Migrationen oder Indizierung. Verhindert inkompatible ORM-Base-Deklarationen und "
+            "Laufzeitfehler beim Initialisieren der Datenbank. Abgrenzung: reine In-Memory-Dicts oder einfache "
+            "Dateispeicherung kann 'backend' direkt umsetzen."
+        ),
     },
     "api_integration": {
         "name": "API & Integration Specialist",
@@ -605,6 +612,7 @@ Wichtige Regeln:
   Wahl offen ist oder ein SaaS-Produkt für viele Nutzer entstehen soll
 - data_engineer einbeziehen, sobald Message-Queues (Kafka, RabbitMQ), Event-Streaming, Redis-Caching-Layer
   oder Multi-Source ETL-Pipelines entstehen (Abgrenzung: einfache CRUD-APIs macht backend)
+- database einbeziehen, sobald relationale Datenmodelle, ORM-Schemas (SQLAlchemy, SQLModel, Tortoise), Tabellen-Migrationen (Alembic) oder persistente Datenbankanbindung (SQLite, PostgreSQL) entstehen - verhindert fehlerhafte ORM-Base-Definitionen und Schema-Inkonsistenzen
 - mobile einbeziehen, sobald eine App für iOS, Android, Flutter oder React Native gewünscht ist oder
   native Device-APIs/Offline-Fähigkeit gefordert sind (Abgrenzung: responsive Websites macht frontend)
 - ml einbeziehen, sobald RAG-Pipelines, Vector-Embeddings, Ähnlichkeitssuche oder klassische ML-Modelle

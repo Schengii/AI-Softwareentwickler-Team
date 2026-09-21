@@ -955,6 +955,12 @@ class VerificationMixin:
                             if stuck_owners & set(defn["members"]) and dept_id in self._dept_leads
                         }
                         top_failures = _format_failures_for_agent(report.failures or [], max_failures=5, max_msg_chars=1200)
+                        no_delivery_notice = (
+                            "\n\n🚨 HARD DELIVERY GATE HINWEIS: Der vorherige Fixversuch hat keine einzige Datei gespeichert "
+                            "(reine Textantwort ohne Tool-Aufruf). Deine Antwort gilt als Totalausfall, wenn du nicht zwingend "
+                            "edit_file oder write_file aufrufst, um die Änderungen physisch im Dateisystem zu speichern!"
+                            if skip_retry_no_delivery else ""
+                        )
                         if lead_targets:
                             notify(
                                 f"  🔀 [bold yellow]Strategiewechsel (Eskalation):[/bold yellow] Derselbe Fehler nach "
@@ -972,6 +978,7 @@ class VerificationMixin:
                                         "aus einer anderen Perspektive (z.B. falsche Grundannahme, fehlende "
                                         "Abhängigkeit zwischen Dateien, falscher zuständiger Agent) und weise dein "
                                         f"Team mit einer GEÄNDERTEN Strategie an, statt denselben Fix zu wiederholen.\n\n{top_failures}"
+                                        + no_delivery_notice
                                     ),
                                     context="", project_dir=project_dir,
                                 )
@@ -1233,6 +1240,16 @@ class VerificationMixin:
             fix_tasks = []
             for agent_id, fails in agents_to_fix.items():
                 failure_text = _format_failures_for_agent(fails, triages=triages, max_failures=5, max_msg_chars=1200)
+                prior_no_delivery = any(
+                    r.agent_id == agent_id and r.failure_class == FAILURE_CLASS_NO_DELIVERY
+                    for r in (all_results or [])
+                )
+                delivery_prompt_hint = (
+                    "\n\n🚨 ACHTUNG (Hard Delivery Gate): Dein vorheriger Fixversuch hat KEINE Datei gespeichert! "
+                    "Reine Textantworten ohne Werkzeugaufruf gelten als Totalausfall. Du MUSST jetzt sofort "
+                    "edit_file oder write_file aufrufen, um die Korrekturen anzuwenden!\n"
+                    if prior_no_delivery else ""
+                )
                 fix_tasks.append(AgentTask(
                     task_id=f"verify_fix_{agent_id}_{attempt}",
                     agent_id=agent_id,
@@ -1241,6 +1258,7 @@ class VerificationMixin:
                         f"pytest/unittest-Output). Nutze read_file, um die betroffene(n) Datei(en) zu prüfen, und "
                         f"edit_file/write_file, um den Fehler zu beheben. Verifiziere deinen Fix danach mit run_tests.\n\n"
                         f"{failure_text}"
+                        + delivery_prompt_hint
                         + (_prior_run_context(test_ticket_id) if attempt == 1 and test_ticket_id else "")
                     ),
                     context="",

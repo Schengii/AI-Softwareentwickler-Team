@@ -1064,7 +1064,8 @@ TEAMMATE_ANSWER_TOOL_ITERATIONS: int = int(os.getenv("TEAMMATE_ANSWER_TOOL_ITERA
 # als die letzten N Modell-Runden werden durch eine Vorschau ersetzt (~95 % der Tokens waren Prompt).
 ENABLE_CONTEXT_COMPACTION: bool = _env_flag("ENABLE_CONTEXT_COMPACTION", True)
 CONTEXT_COMPACTION_KEEP_ROUNDS: int = int(os.getenv("CONTEXT_COMPACTION_KEEP_ROUNDS", "2"))
-CONTEXT_COMPACTION_MIN_CHARS: int = int(os.getenv("CONTEXT_COMPACTION_MIN_CHARS", "1500"))
+CONTEXT_COMPACTION_MIN_CHARS: int = int(os.getenv("CONTEXT_COMPACTION_MIN_CHARS", "800"))
+CONTEXT_COMPACTION_DEDUPLICATE_READS: bool = _env_flag("CONTEXT_COMPACTION_DEDUPLICATE_READS", True)
 # Fachbereichs-Konsolidierung per LLM (10k-18k Tokens je Lead) oder deterministisch aus Ergebnissen
 # und Team-Board-Übergaben (0 Tokens). Die Delegation zu Phasenbeginn bleibt ein LLM-Aufruf.
 ENABLE_LLM_DEPARTMENT_CONSOLIDATION: bool = _env_flag("ENABLE_LLM_DEPARTMENT_CONSOLIDATION", False)

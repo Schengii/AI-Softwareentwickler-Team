@@ -249,6 +249,31 @@ class TestProjectVerifier(unittest.TestCase):
         self.assertTrue(report.success)
         self.assertIn("Daemon", report.reason_skipped)
 
+    @patch("core.verifier.CodeSandbox.run_command")
+    def test_pytest_timeout_is_parsed_as_specific_failure(self, mock_run):
+        """Wenn ein Testprozess im Timeout abbricht (timed_out=True), muss dies strukturiert
+        als pytest (timeout) TestFailure mit aussagekräftigem Hinweis gemeldet werden."""
+        (self.project_dir / "test_worker.py").write_text("def test_hang(): pass\n")
+        # Simuliere Timeout im Subprozess
+        mock_run.return_value = ExecutionResult(
+            exit_code=1,
+            stdout="running tests...\n",
+            stderr="",
+            duration_seconds=15.0,
+            timed_out=True,
+        )
+
+        verifier = ProjectVerifier(self.project_dir)
+        report = verifier.run_tests()
+
+        self.assertTrue(report.ran)
+        self.assertFalse(report.passed)
+        self.assertEqual(len(report.failures), 1)
+        fail = report.failures[0]
+        self.assertEqual(fail.test_id, "pytest (timeout)")
+        self.assertIn("TIMEOUT", fail.message)
+        self.assertIn("Deadlock", fail.message)
+
 
 if __name__ == "__main__":
     unittest.main()

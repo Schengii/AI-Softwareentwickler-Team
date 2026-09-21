@@ -178,6 +178,14 @@ _ASYNC_EVENT_LOOP_DIRECTIVE = """
   oder gezielt triggerbar sein (z.B. Parameter `sleep_interval: float = 5.0` oder `run_once: bool = False`,
   oder `max_age_seconds: int = 60`). Niemals starre `await asyncio.sleep(5)` ohne Parameter hardcoden,
   damit Tests nicht minutenlang warten müssen oder asynchron ins Leere laufen.
+- Worker-Lifecycle & Graceful Shutdown (VERBINDLICH):
+  * Jede Hintergrund-Worker- oder Loop-Klasse MUSS eine saubere `stop()`-Methode bzw. ein
+    `asyncio.Event` (`self._stop_event = asyncio.Event()`) oder `self.is_running: bool`-Flag besitzen.
+    Die Arbeitsschleife prüft dieses Flag (`while not self._stop_event.is_set():`) und beendet sich bei
+    Aufruf von `stop()` unverzüglich. Dies verhindert hängende Hintergrund-Tasks im Testlauf.
+  * Hintergrund-Tasks/Worker in FastAPI werden AUSSCHLIESSLICH im Lifespan-Handler
+    (`@asynccontextmanager async def lifespan(app: FastAPI):`) gestartet und sauber via `stop()` gestoppt
+    (niemals auf Modulebene oder via veraltetes `@app.on_event("startup")`).
 """
 
 PYTHON_CODE_CONTRACT_DIRECTIVE = f"""
@@ -273,6 +281,12 @@ TESTER_CONTRACT_DIRECTIVE = f"""
   * Achte auf Zeitfenster/Eviction: Wenn ein Service alte Einträge nach z.B. 60 Sekunden verwirft, sende
     in Tests niemals feste historische Timestamps (z.B. aus 2023), die sofort als veraltet gedroppt werden,
     sondern nutze aktuelle Zeitstempel (`datetime.now(timezone.utc)`).
+- Fachlogik isoliert testen (nicht nur HTTP-Routen):
+  * Beschränke dich NICHT ausschließlich auf HTTP-Routen-Aufrufe (`client.get/post(...)`).
+  * Für Kernkomponenten in Fachlogik-Modulen (`core/`, `services/`, `domain/` oder Dateien wie
+    `engine.py`, `service.py`, `worker.py`, `models.py`) MÜSSEN dedizierte Unit-Tests geschrieben werden:
+    importiere die Kernklassen direkt und teste Berechnungen, State-Übergänge, Algorithmen und Edge Cases
+    (z. B. leere Eingaben, Extremwerte, Fehlerbehandlung) isoliert ohne HTTP-Overhead.
 - Direkt nach dem Schreiben führst du `run_tests` aus; Collection-Fehler (ImportError/SyntaxError)
   behebst du vor allem anderen.
 {_PYTEST_ASYNCIO_CONFIG_RULE}

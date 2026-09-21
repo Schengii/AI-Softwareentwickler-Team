@@ -46,6 +46,27 @@ testpaths = tests
 asyncio_mode = auto
 """
 
+_FASTAPI_CONFTEST = '''import pytest
+from httpx import ASGITransport, AsyncClient
+
+try:
+    from app.main import app
+except ImportError:
+    try:
+        from main import app
+    except ImportError:
+        app = None
+
+
+@pytest.fixture
+async def async_client():
+    """Standardisierter AsyncClient mit ASGITransport für FastAPI-Tests."""
+    if app is None:
+        pytest.skip("FastAPI-App noch nicht importierbar")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        yield client
+'''
+
 _ENV_EXAMPLE = """# Vorlage - echte Werte gehören in eine lokale .env (nie committen)
 APP_ENV=development
 SECRET_KEY=change-me
@@ -75,6 +96,7 @@ class ScaffoldReport:
             "Konventionen:",
             "- Abhängigkeiten nur per `add_dependency` ergänzen (Laufzeit -> requirements.txt, Tests/Werkzeuge -> requirements-dev.txt).",
             "- `pytest.ini` existiert (pythonpath = ., asyncio_mode = auto) - keine zweite Pytest-Konfiguration anlegen.",
+            "- `tests/conftest.py` existiert mit Fixture `async_client` (ASGITransport) - nutze `async def test_*(async_client)` für API-Tests.",
             "- Module exakt unter den Pfaden aus `interface_contract.json` anlegen; Re-Exporte in `__init__.py` erst, wenn das Zielmodul existiert.",
         ]
         # Volltext des Auftrags mitgeben, nicht nur das grobe Stack-Label ("fastapi"/
@@ -272,6 +294,7 @@ def apply_scaffold(project_dir: str | Path, user_request: str = "") -> ScaffoldR
                 _write_if_missing(base, "requirements-dev.txt", "\n".join(dev) + "\n", report)
         if stack == STACK_FASTAPI:
             _write_if_missing(base, ".env.example", _ENV_EXAMPLE, report)
+            _write_if_missing(base, "tests/conftest.py", _FASTAPI_CONFTEST, report)
     except OSError as e:
         report.error = str(e)
         logger.warning("Projektgerüst konnte nicht vollständig angelegt werden (%s): %r", base, e)

@@ -62,6 +62,18 @@ class TestCoreRolePrompts(unittest.TestCase):
         self.assertIn(FIX_LOOP_DIRECTIVE, prompt)
         self.assertIn("requirements.txt", FIX_LOOP_DIRECTIVE)
 
+    def test_backend_enforces_worker_lifecycle_and_lifespan(self):
+        prompt = _prompt(BackendAgent)
+        self.assertIn("Worker-Lifecycle & Graceful Shutdown", prompt)
+        self.assertIn("stop()", prompt)
+        self.assertIn("lifespan", prompt)
+
+    def test_tester_enforces_domain_logic_unit_tests(self):
+        prompt = _prompt(TesterAgent)
+        self.assertIn("Fachlogik isoliert testen", prompt)
+        self.assertIn("engine.py", prompt)
+        self.assertIn("core/", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

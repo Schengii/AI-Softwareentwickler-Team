@@ -28,6 +28,7 @@ _SHARPENED_ROLE_IDS = (
     "documentation",
     "refactoring",
     "github",
+    "database",
 )
 
 

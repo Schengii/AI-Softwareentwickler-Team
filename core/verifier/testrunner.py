@@ -265,7 +265,16 @@ class TestRunnerMixin:
 
         implicated_files = self._project_relative_files(output)
 
-        if not failures:
+        if exec_result.timed_out:
+            timeout_msg = (
+                f"TIMEOUT: Die Testsuite wurde nach {exec_result.duration_seconds:.1f}s abgebrochen (Zeitlimit überschritten). "
+                "Mögliche Ursachen: Deadlock, Endlosschleife oder ein nicht gestoppter Hintergrund-Worker "
+                "(z. B. fehlendes asyncio.Event / stop()-Signal)."
+            )
+            if output.strip():
+                timeout_msg += f"\nLetzte Ausgabe vor dem Timeout:\n{output.strip()[-600:]}"
+            failures["pytest (timeout)"] = TestFailure(test_id="pytest (timeout)", message=timeout_msg)
+        elif not failures:
             # Kein strukturiertes FAILED/FAIL/ERROR-Muster erkannt (z.B. Sammel-/Importfehler
             # beim Einsammeln der Tests) – trotzdem als generischer Fehlschlag mit realem Output melden.
             failures["<Testlauf>"] = TestFailure(test_id="<Testlauf>", message=output.strip()[-800:])

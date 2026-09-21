@@ -449,6 +449,7 @@ class DepartmentMixin:
                 and not budget_aborted and not provider_exhausted_abort and not manually_cancelled
             ):
                 await self._run_entrypoint_preflight(project_dir, member_ids, all_results, file_owners, notify)
+                await self._run_static_import_preflight(project_dir, all_results, file_owners, notify)
                 if test_first_active and "tester" in member_ids:
                     await self._run_test_route_mismatch_preflight(project_dir, all_results, file_owners, notify)
                 # P4-4 (ROADMAP_TEMP.md): interface_contract.json entstand für Backend-only-
@@ -676,6 +677,68 @@ class DepartmentMixin:
             notify(self._status_notify_line(
                 f"  ✅ [green]{agent_id}: Routen-Abgleich behoben[/green]",
                 f"  ❌ [red]{agent_id}: Routen-Abgleich weiterhin offen[/red]",
+                agent_id, dur, res.success, res.error,
+            ))
+
+    async def _run_static_import_preflight(
+        self,
+        project_dir: str,
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        notify: Callable[[str], None],
+    ) -> None:
+        """Prüft direkt nach dev_lead rein statisch auf nicht-existierende lokale Imports
+        (missing_local_import) - fängt ImportError-Fallen VOR QA, Security und Verifikation ab."""
+        if not is_safe_project_dir(project_dir):
+            return
+        try:
+            report = await asyncio.to_thread(lambda: ProjectVerifier(project_dir).check_completeness())
+        except Exception as e:
+            notify(f"  ⚠️ [dim yellow]Statischer Import-Check übersprungen (Fehler: {e}).[/dim yellow]")
+            return
+        if not report.attempted:
+            return
+        missing_imports = [i for i in report.issues if i.kind == "missing_local_import"]
+        if not missing_imports:
+            return
+
+        agents_to_fix: dict[str, list] = {}
+        for issue in missing_imports:
+            owner = file_owners.get(issue.file_path, "backend")
+            if owner in self._agents:
+                agents_to_fix.setdefault(owner, []).append(issue)
+        if not agents_to_fix:
+            return
+
+        notify(
+            f"  📦 [bold yellow]Statischer Import-Pre-Flight:[/bold yellow] {len(missing_imports)} "
+            f"ungültige(r) lokale(r) Import(e) entdeckt - beauftrage {', '.join(agents_to_fix.keys())} "
+            "gezielt, BEVOR QA, Security und Verifikation starten."
+        )
+        fix_tasks = []
+        for agent_id, issues in agents_to_fix.items():
+            finding_text = "\n".join(f"- {i.file_path}:{i.line_number} – {i.message}" for i in issues[:10])
+            fix_tasks.append(AgentTask(
+                task_id=f"dev_lead_missing_import_{agent_id}",
+                agent_id=agent_id,
+                description=(
+                    "Statischer Pre-Flight-Befund: Dein Code importiert lokale Module oder Symbole, "
+                    "die im Dateisystem nicht existieren. Dies führt zu einem sofortigen ImportError. "
+                    "Lege entweder die fehlende Datei/das Symbol an oder korrigiere den Import-Pfad:\n\n"
+                    f"{finding_text}"
+                ),
+                project_dir=project_dir,
+                allow_tools=True,
+            ))
+        start_t = time.monotonic()
+        results = await self._run_agents_parallel(fix_tasks, notify=notify)
+        dur = time.monotonic() - start_t
+        all_results.extend(results)
+        self._update_file_owners(file_owners, results)
+        for res, agent_id in zip(results, agents_to_fix.keys(), strict=False):
+            notify(self._status_notify_line(
+                f"  ✅ [green]{agent_id}: Lokale Imports korrigiert[/green]",
+                f"  ❌ [red]{agent_id}: Lokale Imports weiterhin ungelöst[/red]",
                 agent_id, dur, res.success, res.error,
             ))
 

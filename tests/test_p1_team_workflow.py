@@ -70,8 +70,9 @@ class TestProjectScaffold:
         }}))
         report = apply_scaffold(tmp_path, "FastAPI Aufgaben-API mit Datenbank und JWT Login")
         assert report.stack == STACK_FASTAPI
-        for rel in ("app/__init__.py", "app/core/__init__.py", "app/db/__init__.py", "pytest.ini", ".env.example"):
+        for rel in ("app/__init__.py", "app/core/__init__.py", "app/db/__init__.py", "pytest.ini", ".env.example", "tests/conftest.py"):
             assert (tmp_path / rel).is_file(), rel
+        assert "async_client" in (tmp_path / "tests/conftest.py").read_text(encoding="utf-8")
         runtime = (tmp_path / "requirements.txt").read_text(encoding="utf-8")
         dev = (tmp_path / "requirements-dev.txt").read_text(encoding="utf-8")
         assert "greenlet" in runtime and "PyJWT" in runtime and "python-multipart" in runtime

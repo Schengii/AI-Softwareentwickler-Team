@@ -17,6 +17,7 @@ import time
 from abc import ABC, abstractmethod
 
 from config import (
+    CONTEXT_COMPACTION_DEDUPLICATE_READS,
     CONTEXT_COMPACTION_KEEP_ROUNDS,
     CONTEXT_COMPACTION_MIN_CHARS,
     ENABLE_AGENT_WATCHDOG,
@@ -479,7 +480,10 @@ class BaseAgent(ABC):
             allow_fallback = active_llm is self._llm
             if ENABLE_CONTEXT_COMPACTION:
                 compaction = compact_tool_results(
-                    turns, keep_recent_rounds=CONTEXT_COMPACTION_KEEP_ROUNDS, min_chars=CONTEXT_COMPACTION_MIN_CHARS,
+                    turns,
+                    keep_recent_rounds=CONTEXT_COMPACTION_KEEP_ROUNDS,
+                    min_chars=CONTEXT_COMPACTION_MIN_CHARS,
+                    deduplicate_reads=CONTEXT_COMPACTION_DEDUPLICATE_READS,
                 )
                 toolbox.context_chars_compacted += compaction.chars_saved
             # Code-Rollen ohne bisher gespeicherte Datei: in der ersten Iteration und in der
@@ -682,7 +686,7 @@ class BaseAgent(ABC):
                 ):
                     if intervention.compact:
                         toolbox.context_chars_compacted += compact_tool_results(
-                            turns, keep_recent_rounds=1, min_chars=500,
+                            turns, keep_recent_rounds=1, min_chars=500, deduplicate_reads=True,
                         ).chars_saved
                     if intervention.stop:
                         hard_limit = min(hard_limit, iteration + 1)

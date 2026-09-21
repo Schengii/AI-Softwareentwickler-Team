@@ -1848,75 +1848,14 @@ class VerificationMixin:
         # Blockiert verification_ok, da er oft die EINZIGE Instanz ist, die echten Browser-Code
         # ausführt (Unit-Tests mocken Canvas/DOM häufig komplett weg).
         if not (budget_aborted or manually_cancelled):
-            def _build_browser_fix_task(browser_report, attempt):
-                agent_id = _classify_browser_failure_owner(
-                    browser_report.console_errors, browser_report.missing_assets, self._agents,
-                )
-                if agent_id is None:
-                    return None
-                details = browser_report.missing_assets + browser_report.console_errors + [
-                    f"Canvas nie gezeichnet: {c}" for c in browser_report.blank_canvases
-                ]
-                backend_hint = (
-                    " Die Fehlermeldung deutet auf eine Backend-Ursache hin (CORS, 5xx-Antwort, "
-                    "WebSocket-Handshake oder Netzwerkfehler) - prüfe zuerst die betroffenen "
-                    "Endpunkte/Middleware, nicht das Frontend-Rendering."
-                    if agent_id == "backend"
-                    else ""
-                )
-                return AgentTask(
-                    task_id=f"verify_fix_browser_{agent_id}_{attempt}",
-                    agent_id=agent_id,
-                    description=(
-                        f"Der ECHTE Browser/UI-Check (Playwright) gegen `{browser_report.tested_url}` ist "
-                        f"fehlgeschlagen: {'; '.join(details)[:800]}.{backend_hint} Nutze read_file, um die "
-                        f"betroffene(n) Datei(en) zu prüfen, und edit_file/write_file, um den Fehler zu "
-                        f"beheben (z.B. fehlendes Asset, JS-Konsolenfehler, nie gezeichnetes Canvas-Element)."
-                    ),
-                    context="",
-                    project_dir=project_dir,
-                )
-
-            browser_report, all_results, br_aborted, br_cancelled = await self._run_runtime_check_with_fix(
-                check_fn=verifier.check_browser_ui,
-                build_fix_task=_build_browser_fix_task,
-                all_results=all_results,
-                file_owners=file_owners,
-                notify=notify,
-                run_start_tokens=run_start_tokens,
-                cancel_requested=cancel_requested,
-                is_attempted=lambda r: r.attempted,
-                is_passed=lambda r: r.passed,
+            br_aborted, br_cancelled, br_veto = await self._run_browser_ui_check(
+                verifier, project_dir, all_results, file_owners, outcome, summary_lines, notify,
+                run_start_tokens, cancel_requested,
             )
             budget_aborted = budget_aborted or br_aborted
             manually_cancelled = manually_cancelled or br_cancelled
-            if browser_report.attempted:
-                outcome.record(
-                    "browser_ui",
-                    bool(browser_report.passed),
-                    "" if browser_report.passed else "; ".join(
-                        browser_report.missing_assets + browser_report.console_errors
-                    )[:300],
-                )
-                if browser_report.passed:
-                    if browser_report.engine == "playwright":
-                        notify(f"  🌐 [bold green]Frontend/UI-Check erfolgreich:[/bold green] `{browser_report.tested_url}` [playwright, echter Browser-Lauf].")
-                        summary_lines.append(f"- 🌐 Frontend/UI-Check: `{browser_report.tested_url}` [playwright] fehlerfrei (JS wurde echt ausgeführt).")
-                    else:
-                        # static_dom-Fallback führt KEIN JavaScript aus - deutlich als eingeschränkt
-                        # kennzeichnen, damit er nicht wie ein echter Playwright-Pass wirkt.
-                        notify(f"  🌐 [bold yellow]Frontend/UI-Check eingeschränkt:[/bold yellow] `{browser_report.tested_url}` [static_dom] - kein echter Browser installiert, JavaScript wurde NICHT ausgeführt (nur Dateiexistenz geprüft).")
-                        summary_lines.append(f"- 🌐 ⚠️ Frontend/UI-Check nur eingeschränkt (`static_dom`, `{browser_report.tested_url}`): referenzierte Dateien existieren, aber JavaScript lief NICHT in einem echten Browser (Playwright fehlt/nicht nutzbar) - Laufzeitfehler bleiben so unentdeckt.")
-                else:
-                    details = browser_report.missing_assets + browser_report.console_errors + [
-                        f"Canvas nie gezeichnet: {c}" for c in browser_report.blank_canvases
-                    ]
-                    err_details = "; ".join(details)[:150]
-                    notify(f"  🌐 [bold red]Frontend/UI-Check fehlgeschlagen:[/bold red] {err_details}.")
-                    summary_lines.append(f"- 🌐 ❌ Frontend/UI-Check fehlgeschlagen: {err_details}.")
-                    verification_ok = False
-                    notify(f"  ❌ [bold red]Verifikations-Veto durch Browser-UI-Check:[/bold red] {err_details}.")
-                    summary_lines.append(f"- ❌ **Verifikations-Veto durch Browser-UI-Check:** {err_details}.")
+            if br_veto:
+                verification_ok = False
 
         # Accessibility-Check: echter axe-core-Scan (WCAG 2.x) gegen die gerenderte Seite.
         # Rein informativ, beeinflusst verification_ok nicht.
@@ -2027,6 +1966,94 @@ class VerificationMixin:
         notify(f"  ❌ [bold red]Verifikations-Veto durch Coverage-Check:[/bold red] {_grund}")
         summary_lines.append(f"- ❌ **Verifikations-Veto durch Coverage-Check:** {_grund}")
         return False
+
+    async def _run_browser_ui_check(
+        self,
+        verifier: ProjectVerifier,
+        project_dir: str,
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        outcome: VerificationOutcome,
+        summary_lines: list[str],
+        notify: Callable[[str], None],
+        run_start_tokens: int | None,
+        cancel_requested: Callable[[], bool] | None,
+    ) -> tuple[bool, bool, bool]:
+        """P6-5 (ROADMAP_TEMP.md, Teilschritt): aus `_run_verification_loop_impl()` extrahiert -
+        Browser/Frontend-UI-Check inkl. gezielter Auto-Fix-Schleife. `all_results` wird über
+        `_run_runtime_check_with_fix()` in-place erweitert (`.extend()`, dieselbe Liste bleibt
+        bestehen) - keine Rückgabe nötig. `budget_aborted`/`manually_cancelled`/`verification_ok`
+        sind dagegen lokale bool-Variablen des Aufrufers, die eine Methode nicht direkt mutieren
+        kann - deshalb als Drei-Tupel (budget_aborted, manually_cancelled, verification_ok_veto)
+        zurückgegeben statt über ein geteiltes Zustandsobjekt."""
+        def _build_browser_fix_task(browser_report, attempt):
+            agent_id = _classify_browser_failure_owner(
+                browser_report.console_errors, browser_report.missing_assets, self._agents,
+            )
+            if agent_id is None:
+                return None
+            details = browser_report.missing_assets + browser_report.console_errors + [
+                f"Canvas nie gezeichnet: {c}" for c in browser_report.blank_canvases
+            ]
+            backend_hint = (
+                " Die Fehlermeldung deutet auf eine Backend-Ursache hin (CORS, 5xx-Antwort, "
+                "WebSocket-Handshake oder Netzwerkfehler) - prüfe zuerst die betroffenen "
+                "Endpunkte/Middleware, nicht das Frontend-Rendering."
+                if agent_id == "backend"
+                else ""
+            )
+            return AgentTask(
+                task_id=f"verify_fix_browser_{agent_id}_{attempt}",
+                agent_id=agent_id,
+                description=(
+                    f"Der ECHTE Browser/UI-Check (Playwright) gegen `{browser_report.tested_url}` ist "
+                    f"fehlgeschlagen: {'; '.join(details)[:800]}.{backend_hint} Nutze read_file, um die "
+                    f"betroffene(n) Datei(en) zu prüfen, und edit_file/write_file, um den Fehler zu "
+                    f"beheben (z.B. fehlendes Asset, JS-Konsolenfehler, nie gezeichnetes Canvas-Element)."
+                ),
+                context="",
+                project_dir=project_dir,
+            )
+
+        browser_report, all_results, br_aborted, br_cancelled = await self._run_runtime_check_with_fix(
+            check_fn=verifier.check_browser_ui,
+            build_fix_task=_build_browser_fix_task,
+            all_results=all_results,
+            file_owners=file_owners,
+            notify=notify,
+            run_start_tokens=run_start_tokens,
+            cancel_requested=cancel_requested,
+            is_attempted=lambda r: r.attempted,
+            is_passed=lambda r: r.passed,
+        )
+        if not browser_report.attempted:
+            return br_aborted, br_cancelled, False
+        outcome.record(
+            "browser_ui",
+            bool(browser_report.passed),
+            "" if browser_report.passed else "; ".join(
+                browser_report.missing_assets + browser_report.console_errors
+            )[:300],
+        )
+        if browser_report.passed:
+            if browser_report.engine == "playwright":
+                notify(f"  🌐 [bold green]Frontend/UI-Check erfolgreich:[/bold green] `{browser_report.tested_url}` [playwright, echter Browser-Lauf].")
+                summary_lines.append(f"- 🌐 Frontend/UI-Check: `{browser_report.tested_url}` [playwright] fehlerfrei (JS wurde echt ausgeführt).")
+            else:
+                # static_dom-Fallback führt KEIN JavaScript aus - deutlich als eingeschränkt
+                # kennzeichnen, damit er nicht wie ein echter Playwright-Pass wirkt.
+                notify(f"  🌐 [bold yellow]Frontend/UI-Check eingeschränkt:[/bold yellow] `{browser_report.tested_url}` [static_dom] - kein echter Browser installiert, JavaScript wurde NICHT ausgeführt (nur Dateiexistenz geprüft).")
+                summary_lines.append(f"- 🌐 ⚠️ Frontend/UI-Check nur eingeschränkt (`static_dom`, `{browser_report.tested_url}`): referenzierte Dateien existieren, aber JavaScript lief NICHT in einem echten Browser (Playwright fehlt/nicht nutzbar) - Laufzeitfehler bleiben so unentdeckt.")
+            return br_aborted, br_cancelled, False
+        details = browser_report.missing_assets + browser_report.console_errors + [
+            f"Canvas nie gezeichnet: {c}" for c in browser_report.blank_canvases
+        ]
+        err_details = "; ".join(details)[:150]
+        notify(f"  🌐 [bold red]Frontend/UI-Check fehlgeschlagen:[/bold red] {err_details}.")
+        summary_lines.append(f"- 🌐 ❌ Frontend/UI-Check fehlgeschlagen: {err_details}.")
+        notify(f"  ❌ [bold red]Verifikations-Veto durch Browser-UI-Check:[/bold red] {err_details}.")
+        summary_lines.append(f"- ❌ **Verifikations-Veto durch Browser-UI-Check:** {err_details}.")
+        return br_aborted, br_cancelled, True
 
     # Rollen, die eine Zweitmeinung abgeben können: analysieren fremden Code als Kernaufgabe
     # und sind nicht selbst Eigentümer der steckenden Dateien. Reihenfolge ist Priorität.

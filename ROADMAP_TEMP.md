@@ -1323,6 +1323,19 @@ Agenten-Aufruf kostet.
 
 | P6-5 | `interface/cli.py` 2.378 Zeilen, `core/llm_factory.py` 1.848, `agents/orchestrator/verification.py` 1.816 – die drei größten Module nach Verantwortlichkeiten aufteilen | L |
 | P6-6 | `core/message_bus.py` enthält nur noch zwei Dataclasses – in `core/agent_contracts.py` umbenennen (60+ Importe, daher mit Alias-Übergang) | S |
+
+> **Umsetzung 2026-09-21:** `core/agent_contracts.py` ist jetzt die kanonische Definition von
+> `AgentTask`/`AgentResult` (unverändert übernommen, nur der Moduldocstring aktualisiert).
+> `core/message_bus.py` wurde auf einen reinen Re-Export-Alias reduziert
+> (`from core.agent_contracts import AgentResult, AgentTask`) - Import-IDENTITÄT bleibt erhalten
+> (`core.message_bus.AgentTask is core.agent_contracts.AgentTask`), damit `isinstance()`,
+> Dataclass-Vergleiche und Pickling über beide Importpfade hinweg wie EIN Typ funktionieren,
+> nicht wie zwei. Keine der über 60 bestehenden `from core.message_bus import ...`-Stellen
+> musste geändert werden; neue Importe verwenden `core.agent_contracts` direkt. 2 neue Tests in
+> `tests/test_agent_contracts_alias.py`. Gegen 333 bestehende Tests aus einem breiten
+> Querschnitt des Repos verifiziert (u.a. `test_governance_fix_loop.py`, `test_p1_team_
+> workflow.py`, `test_backlog_worker.py`, `test_orchestrator_model_escalation.py`,
+> `test_p0_structured_verification.py`, `test_p2_self_optimization.py`), keine Regression.
 | P6-7 | `run_closed` meldete `agent_calls: 6` bei 9 `agent_call`-Events im selben Trace – Zählweise vereinheitlichen | XS |
 
 > **Umsetzung 2026-09-21 (P6-7):** Root Cause: `agent_calls=len(results)` in
@@ -1450,4 +1463,4 @@ ruff check && python -m pytest -q
 | P5-3 | Verifikations-Reserve im Budget | P5 | ☑ erledigt (Reserve existierte, Gate korrigiert) |
 | P6-1 | Gestagte Fixes committet | P6 | ☑ erledigt |
 | P6-2 | ~~Workspace aus Framework-Commits~~ | P6 | ☑ Fehlannahme, siehe oben |
-| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-7, P6-8 erledigt; P6-5, P6-6 offen |
+| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-6, P6-7, P6-8 erledigt; P6-5 offen |

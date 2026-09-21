@@ -247,6 +247,7 @@ def should_trigger(
     files_written: int,
     aborted: bool = False,
     recurring_signature_seen_before: bool = False,
+    has_blocking_failure: bool = True,
 ) -> RootCauseTrigger:
     """Rein deterministisch (kein LLM-Aufruf nötig - dieselbe Philosophie wie core/optimization_
     advisor.py, das bereits vorhandene harte Zahlen auswertet statt zu interpretieren).
@@ -256,22 +257,35 @@ def should_trigger(
     - `aborted`: der Lauf endete durch eine unbehandelte Exception (siehe Orchestrator.process()
       und dessen orchestrator_crash-Ticket) - IMMER analysewürdig, unabhängig von files_written,
       da ein Absturz per Definition keine sinnvolle Verifikation mehr erreicht hat.
-    - `not verification_ok and files_written > 0`: echte Arbeit wurde geleistet, aber die
-      Verifikation blieb rot - genau der Fall, der bei devpulse/chronospulse/hyperionsentinel zu
-      den wertvollsten manuellen Funden führte. `files_written == 0` wird bewusst ausgeschlossen:
-      das ist bereits ein eigenständiges, andersartiges Signal (false_success_no_source_files in
-      agents/orchestrator/retrospective.py), keine Verifikationsursache, die sich im Code
-      nachvollziehen ließe.
+    - `not verification_ok and files_written > 0 and has_blocking_failure`: echte Arbeit wurde
+      geleistet, aber die Verifikation blieb rot - genau der Fall, der bei devpulse/
+      chronospulse/hyperionsentinel zu den wertvollsten manuellen Funden führte. `files_written
+      == 0` wird bewusst ausgeschlossen: das ist bereits ein eigenständiges, andersartiges Signal
+      (false_success_no_source_files in agents/orchestrator/retrospective.py), keine
+      Verifikationsursache, die sich im Code nachvollziehen ließe.
+    - `has_blocking_failure` (P3-3, ROADMAP_TEMP.md, echter Fund): `verification_ok=False`
+      allein reicht NICHT mehr - core/verification_outcome.py.VerificationOutcome.
+      blocking_failed_checks unterscheidet echte Blocker von rein informativen Prüfungen
+      (z. B. `lint`, siehe INFORMATIONAL_CHECK_KEYS). Ohne diese Kopplung löste ein einzelner
+      ruff-F841-Fund ("unbenutzte Variablenzuweisung" - in Millisekunden per `ruff --fix
+      --unsafe-fixes` behebbar) eine vollständige, werkzeugbasierte LLM-Tiefenanalyse mit
+      Repository-Zugriff aus (Ticket `root-cause-cachegrid_proxy-unbenutzte-
+      variablenzuweisung-…`). Default `True` (statt `False`), damit bestehende Aufrufer ohne
+      dieses neue Argument ihr bisheriges Verhalten behalten.
     - `recurring_signature_seen_before`: dasselbe Fehlermuster trat schon einmal an diesem
       Projekt auf (has_repeated_failure() in agents/orchestrator/__init__.py) - der reguläre
       Fix-/Governance-Loop hat es offenbar NICHT dauerhaft gelöst, ein zweiter, tieferer Blick
-      lohnt sich unabhängig vom aktuellen files_written-Stand.
+      lohnt sich unabhängig vom aktuellen files_written-/has_blocking_failure-Stand.
     """
     if aborted:
         return RootCauseTrigger(True, "Lauf durch unbehandelte Exception abgebrochen")
     if recurring_signature_seen_before:
         return RootCauseTrigger(True, "Wiederkehrendes Fehlermuster erneut an diesem Projekt aufgetreten")
     if not verification_ok and files_written > 0:
+        if not has_blocking_failure:
+            return RootCauseTrigger(
+                False, "Verifikation zwar rot, aber ohne blockierenden Befund (nur informativ, z.B. lint)"
+            )
         return RootCauseTrigger(True, "Verifikation nicht bestanden trotz geschriebener Dateien")
     return RootCauseTrigger(False, "Kein Warnsignal - Tiefenanalyse würde sich nicht lohnen")
 

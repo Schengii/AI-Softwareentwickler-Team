@@ -75,6 +75,25 @@ class TestShouldTrigger(unittest.TestCase):
         result = should_trigger(verification_ok=True, files_written=5, recurring_signature_seen_before=True)
         self.assertTrue(result.should_run)
 
+    def test_does_not_trigger_on_purely_informational_failure(self):
+        """P3-3 (ROADMAP_TEMP.md): ein rein informativer Befund (z.B. lint/F841, in
+        Millisekunden per ruff --fix --unsafe-fixes behebbar) darf allein keine kostenpflichtige
+        Tiefenanalyse mehr auslösen, selbst wenn verification_ok=False und Dateien geschrieben
+        wurden - echter Fund: root-cause-cachegrid_proxy-unbenutzte-variablenzuweisung."""
+        result = should_trigger(verification_ok=False, files_written=3, has_blocking_failure=False)
+        self.assertFalse(result.should_run)
+        self.assertIn("informativ", result.reason)
+
+    def test_still_triggers_when_a_real_blocking_failure_is_present(self):
+        result = should_trigger(verification_ok=False, files_written=3, has_blocking_failure=True)
+        self.assertTrue(result.should_run)
+
+    def test_default_has_blocking_failure_preserves_prior_behavior(self):
+        """Aufrufer ohne das neue Argument (z.B. bestehende Tests) verhalten sich unverändert -
+        has_blocking_failure ist bewusst standardmäßig True."""
+        result = should_trigger(verification_ok=False, files_written=3)
+        self.assertTrue(result.should_run)
+
 
 class TestGatherEvidence(unittest.TestCase):
     def test_includes_request_and_capped_log_tails(self):
@@ -380,6 +399,46 @@ class TestActionRate(unittest.TestCase):
         self.assertEqual(rate.done, 1)
         self.assertEqual(rate.open, 2)
         self.assertAlmostEqual(rate.action_rate_pct, 33.3, places=1)
+
+
+class TestMaybeRunRootCauseAnalysisWiring(unittest.TestCase):
+    """P3-3 (ROADMAP_TEMP.md): Orchestrator._maybe_run_root_cause_analysis() muss
+    self.last_verification_outcome auswerten und has_blocking_failure entsprechend an
+    should_trigger() weiterreichen - nicht mehr nur das grobe verification_ok."""
+
+    def setUp(self):
+        from agents.orchestrator import Orchestrator
+        from core.verification_outcome import VerificationOutcome
+
+        self.VerificationOutcome = VerificationOutcome
+        self.orchestrator = Orchestrator()
+        self.orchestrator.last_project_slug = "proj"
+
+    def _run(self, outcome):
+        self.orchestrator.last_verification_outcome = outcome
+        with patch("core.root_cause_analyst.run_analysis", new_callable=AsyncMock) as mock_run:
+            asyncio.run(self.orchestrator._maybe_run_root_cause_analysis(
+                user_request="baue etwas", verification_ok=False, verification_summary="rot",
+                files_written=3, project_dir=str(Path(tempfile.gettempdir()) / "nie_existierend_xyz"),
+                notify=lambda msg: None,
+            ))
+        return mock_run
+
+    def test_purely_informational_failure_does_not_trigger_analysis(self):
+        outcome = self.VerificationOutcome()
+        outcome.record("lint", False, "F841")
+
+        mock_run = self._run(outcome)
+
+        mock_run.assert_not_awaited()
+
+    def test_real_blocking_failure_triggers_analysis(self):
+        outcome = self.VerificationOutcome()
+        outcome.record("tests", False, "2 failed")
+
+        mock_run = self._run(outcome)
+
+        mock_run.assert_awaited_once()
 
 
 class TestRunAnalysisEndToEnd(unittest.TestCase):

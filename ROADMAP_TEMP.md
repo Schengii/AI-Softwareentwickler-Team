@@ -727,7 +727,7 @@ Hand ausgerechnet werden.
 ---
 
 ### P3-3 · Root-Cause-Analyse verbrennt Aufrufe für Trivialbefunde
-**Status:** ❌ offen · **Aufwand:** S · **Wirkung:** mittel
+**Status:** ✅ erledigt 2026-09-21 · **Aufwand:** S · **Wirkung:** mittel
 
 `root-cause-cachegrid_proxy-unbenutzte-variablenzuweisung-…`: eine vollständige, werkzeugbasierte
 LLM-Tiefenanalyse mit Repository-Zugriff für **eine ungenutzte Variable** (ruff `F841`), die
@@ -736,6 +736,31 @@ LLM-Tiefenanalyse mit Repository-Zugriff für **eine ungenutzte Variable** (ruff
 **Lösung:** `should_trigger()` (`core/root_cause_analyst.py:244`) zusätzlich an `failed_blocking`
 koppeln (P0-6) und eine Ausschlussliste für rein informative bzw. deterministisch behebbare
 Befundklassen einführen.
+
+> **Umsetzung (2026-09-21):** `should_trigger()` bekommt ein neues Argument
+> `has_blocking_failure` (Default `True` - bestehende Aufrufer ohne dieses Argument behalten ihr
+> bisheriges Verhalten). Der `not verification_ok and files_written > 0`-Zweig löst nur noch
+> aus, wenn zusätzlich `has_blocking_failure=True` ist.
+> `agents/orchestrator/retrospective.py._maybe_run_root_cause_analysis()` liest dafür
+> `self.last_verification_outcome` (bereits seit P0-6 vorhanden) aus und reicht
+> `bool(outcome.blocking_failed_checks)` durch - ein rein informativer Befund wie `lint`
+> (F841 & co., `INFORMATIONAL_CHECK_KEYS`) landet damit nicht mehr in `blocking_failed_checks`
+> und löst folglich keine kostenpflichtige Tiefenanalyse mehr aus. Fällt `last_verification_
+> outcome` aus irgendeinem Grund nicht auf eine echte `VerificationOutcome`-Instanz zurück
+> (z. B. in Alt-Tests), greift sicherheitshalber das bisherige, gröbere `not verification_ok`
+> als Ersatzsignal, statt stillschweigend nie mehr auszulösen.
+>
+> Eine SEPARATE Ausschlussliste für "deterministisch behebbare Befundklassen" (zweiter Teil der
+> ursprünglichen Lösungsskizze) wurde bewusst NICHT zusätzlich eingeführt: `INFORMATIONAL_CHECK_
+> KEYS` deckt den beschriebenen Fall (lint/F841) bereits vollständig über die `has_blocking_
+> failure`-Kopplung ab, ohne einen zweiten, separat zu pflegenden Mechanismus mit potenziell
+> abweichender Klassifikation zu benötigen.
+>
+> 5 neue Tests in `tests/test_root_cause_analyst.py`: `should_trigger()` mit/ohne
+> `has_blocking_failure`, Rückwärtskompatibilität ohne das neue Argument, sowie zwei
+> Orchestrator-Integrationstests (`TestMaybeRunRootCauseAnalysisWiring`), die belegen, dass ein
+> reiner `lint`-Fehlschlag `run_analysis()` NICHT aufruft, ein echter `tests`-Fehlschlag dagegen
+> schon.
 
 ---
 
@@ -1137,7 +1162,7 @@ ruff check && python -m pytest -q
 | P2-4 | Retrospektive arbeitet blind | P2 | ☑ erledigt |
 | P3-1 | Post-Mortem-Artefakt pro Lauf | P3 | ☐ |
 | P3-2 | `--team-trend` Trendbericht | P3 | ☐ |
-| P3-3 | Root-Cause nur bei blockierenden Befunden | P3 | ☐ |
+| P3-3 | Root-Cause nur bei blockierenden Befunden | P3 | ☑ erledigt |
 | P3-4 | `team_lessons.jsonl` Schema vereinheitlichen | P3 | ☐ |
 | P4-1 | Code-Review verbindlich | P4 | ☐ |
 | P4-2 | Abnahme gegen die Anforderung | P4 | ☐ |

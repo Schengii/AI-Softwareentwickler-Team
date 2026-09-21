@@ -206,13 +206,23 @@ class RetrospectiveMixin:
         vorschlagend - siehe dortiger Docstring) erlaubt ein Abschalten ohne Codeänderung."""
         import config
         from core.root_cause_analyst import run_analysis, should_trigger
+        from core.verification_outcome import VerificationOutcome
 
         if not config.ENABLE_ROOT_CAUSE_ANALYST:
             return
 
+        # P3-3 (ROADMAP_TEMP.md): should_trigger() an die ECHTEN blockierenden Fehlschläge
+        # koppeln (siehe dortiger Docstring) - ein rein informativer Befund wie `lint` (F841 &
+        # co., core/verification_outcome.py.INFORMATIONAL_CHECK_KEYS) darf allein keine
+        # kostenpflichtige, werkzeugbasierte Tiefenanalyse mehr auslösen.
+        outcome = getattr(self, "last_verification_outcome", None)
+        has_blocking_failure = (
+            bool(outcome.blocking_failed_checks) if isinstance(outcome, VerificationOutcome) else not verification_ok
+        )
         trigger = should_trigger(
             verification_ok=verification_ok,
             files_written=files_written,
+            has_blocking_failure=has_blocking_failure,
             recurring_signature_seen_before=has_repeated_failure(project_dir),
         )
         if not trigger.should_run:

@@ -84,6 +84,15 @@ class RunLogger:
         self.started_at = datetime.now(UTC)
         self.enabled = enabled
         self._sequence = 0
+        # P6-7 (ROADMAP_TEMP.md): "run_closed" meldete bisher agent_calls=len(results) aus
+        # process() - das zählt nur die Fachbereichs-Ergebnisse, nicht Delegation/Konsolidierung/
+        # Retrospektive/Trainer, die ÜBER DENSELBEN log_agent_result()-Pfad ebenfalls als
+        # "agent_call"-Trace-Events geloggt werden (real beobachtet: 6 gemeldet bei 9
+        # tatsächlichen agent_call-Events im selben Trace). Dieser Zähler zählt jeden
+        # tatsächlich geloggten Agenten-Aufruf, unabhängig davon, ob er in einer results-Liste
+        # landet - die einzig verlässliche Quelle für "wie viele Agenten-Aufrufe gab es wirklich".
+        self.agent_call_count = 0
+        self.failed_agent_call_count = 0
         stamp = self.started_at.strftime("%Y%m%d_%H%M%S")
         self.stamp = stamp
         name = f"{stamp}_{_safe_slug(self.project_slug)}"
@@ -155,6 +164,8 @@ class RunLogger:
             # Fehlermeldungen einzelner Provider können ganze JSON-Bodies enthalten - für die
             # Diagnose reicht der Anfang, der die Ursache trägt.
             entry["error"] = (str(error)[:2000] if error else "")
+            self.failed_agent_call_count += 1
+        self.agent_call_count += 1
         self._write(entry)
 
     def log_verification_output(

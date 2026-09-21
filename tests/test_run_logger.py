@@ -74,6 +74,21 @@ class TestRunLogger:
         assert entry["failure_class"] == FAILURE_CLASS_PROVIDER_EXHAUSTED
         assert "429" in entry["error"]
 
+    def test_agent_call_count_zaehlt_jeden_geloggten_aufruf(self, logdirs):
+        """P6-7 (ROADMAP_TEMP.md): run_closed meldete bisher len(results) - das zählt nur
+        Fachbereichs-Ergebnisse, nicht Delegation/Konsolidierung/Retrospektive/Trainer, die über
+        denselben log_agent_result()-Pfad ebenfalls geloggt werden. agent_call_count muss JEDEN
+        tatsächlich geloggten Aufruf zählen, unabhängig von einer externen results-Liste."""
+        logger = rl.RunLogger(project_slug="demo")
+        ok = AgentResult(task_id="t1", agent_id="backend", agent_name="Backend", success=True, content="ok")
+        failed = AgentResult(task_id="t2", agent_id="tester", agent_name="Tester", success=False, content="", error="Timeout")
+        logger.log_agent_result(ok)
+        logger.log_agent_result(ok)  # z.B. ein zusätzlicher Konsolidierungs-/Retro-Aufruf
+        logger.log_agent_result(failed)
+
+        assert logger.agent_call_count == 3
+        assert logger.failed_agent_call_count == 1
+
     def test_verifikations_rohausgabe_landet_in_eigener_datei(self, logdirs):
         logger = rl.RunLogger(project_slug="demo")
         logger.log_verification_output("pytest (erstlauf)", output="E   assert 1 == 2", exit_code=1)

@@ -1503,8 +1503,11 @@ class Orchestrator(
                 self._run_logger.close(
                     verification_ok=verification_ok,
                     total_tokens=sum(r.total_tokens for r in results),
-                    agent_calls=len(results),
-                    failed_agent_calls=sum(1 for r in results if not r.success),
+                    # P6-7: len(results) zählte nur Fachbereichs-Ergebnisse, nicht Delegation/
+                    # Konsolidierung/Retrospektive/Trainer - self._run_logger.agent_call_count
+                    # zählt JEDEN tatsächlich geloggten Agenten-Aufruf (siehe core/run_logger.py).
+                    agent_calls=self._run_logger.agent_call_count,
+                    failed_agent_calls=self._run_logger.failed_agent_call_count,
                     provider_exhausted=bool(getattr(self, "_provider_exhausted_this_run", False)),
                     budget_aborted=self.last_budget_aborted,
                     **self._efficiency_snapshot(results),

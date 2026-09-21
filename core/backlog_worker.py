@@ -284,6 +284,27 @@ async def run_backlog_poll_cycle(
     except Exception as e:  # Hygiene darf den Worker nie blockieren
         logging.getLogger(__name__).warning("Backlog-Hygiene fehlgeschlagen: %r", e)
 
+    # Test-Rauschen aus der Lern-Historie entfernen (P6-8, ROADMAP_TEMP.md): core/telemetry_
+    # hygiene.py existiert seit core/run_history.py, aber nur als manueller `--clean-telemetry`-
+    # Aufruf - real beobachtet: niemand ruft ihn regelmäßig auf, `*_test_proj`-Läufe blieben
+    # dadurch dauerhaft in memory/run_history.json und verfälschten jede darauf aufbauende
+    # Statistik (P2-2 Modell-Qualität, P3-2 Trendbericht). Dieselbe Begründung wie bei der
+    # Backlog-Hygiene oben: ohne einen automatischen Anker im ohnehin periodisch laufenden
+    # Poll-Zyklus wächst das Rauschen unbegrenzt weiter.
+    try:
+        from core.telemetry_hygiene import clean_eval_history, clean_run_history, clean_team_lessons
+        removed_runs = clean_run_history()[1]
+        removed_evals = clean_eval_history()[1]
+        removed_lessons = clean_team_lessons()[1]
+        if (removed_runs or removed_evals or removed_lessons) and status_callback:
+            status_callback(
+                f"🧹 Telemetrie-Hygiene: {removed_runs} synthetische Lauf-Einträge, "
+                f"{removed_evals} synthetische Benchmark-Einträge, {removed_lessons} "
+                "schema-widrige Team-Lektionen entfernt."
+            )
+    except Exception as e:  # Hygiene darf den Worker nie blockieren
+        logging.getLogger(__name__).warning("Telemetrie-Hygiene fehlgeschlagen: %r", e)
+
     # Rote Projekte zur Nachbesserung einplanen (core/red_project_repair.py) - höchstens eins pro
     # Poll, damit ein Worker-Durchlauf nicht das gesamte Token-Budget auf alte Projekte verteilt.
     if RED_PROJECT_REPAIR_PER_POLL > 0:

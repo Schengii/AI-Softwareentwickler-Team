@@ -70,6 +70,20 @@ class TestBacklogWorkerOrchestration(unittest.TestCase):
         self._backlog_patcher.start()
         self.addCleanup(self._backlog_patcher.stop)
 
+        # P6-8 (ROADMAP_TEMP.md): run_backlog_poll_cycle() ruft jetzt bei jedem Zyklus auch die
+        # Telemetrie-Hygiene auf (core/telemetry_hygiene.py) - die operiert standardmäßig auf den
+        # ECHTEN memory/run_history.json/evals/eval_history.json/memory/team_lessons.jsonl-
+        # Dateien dieses Repos. Ohne diesen Patch würde JEDER Test dieser Datei (nicht nur die
+        # neuen) die echte Lern-Historie berühren, sobald sie synthetische Einträge enthält.
+        self._telemetry_patcher = patch.multiple(
+            "core.telemetry_hygiene",
+            clean_run_history=MagicMock(return_value=(0, 0)),
+            clean_eval_history=MagicMock(return_value=(0, 0)),
+            clean_team_lessons=MagicMock(return_value=(0, 0)),
+        )
+        self._telemetry_patcher.start()
+        self.addCleanup(self._telemetry_patcher.stop)
+
     def test_happy_path_picks_up_ready_todo_ticket(self):
         backlog_store.upsert_ticket("cli-1", "Login-Seite bauen", "cli", "todo")
         report = asyncio.run(run_backlog_poll_cycle())
@@ -235,6 +249,30 @@ class TestBacklogWorkerOrchestration(unittest.TestCase):
         self.assertIn("gh", report.skipped_reason)
         self.fake_orchestrator.process.assert_not_called()
 
+    def test_telemetry_hygiene_runs_each_cycle_and_reports_when_something_was_removed(self):
+        """P6-8 (ROADMAP_TEMP.md): core/telemetry_hygiene.py existierte bisher nur als manueller
+        --clean-telemetry-Aufruf, den real niemand regelmäßig ausführte - Test-Rauschen blieb
+        dauerhaft in der Lern-Historie. run_backlog_poll_cycle() ruft es jetzt bei jedem Zyklus
+        automatisch mit auf, wie die bereits bestehende Backlog-Hygiene."""
+        backlog_store.upsert_ticket("cli-1", "Ticket", "cli", "todo")
+        messages: list[str] = []
+        with patch.multiple(
+            "core.telemetry_hygiene",
+            clean_run_history=MagicMock(return_value=(10, 3)),
+            clean_eval_history=MagicMock(return_value=(5, 1)),
+            clean_team_lessons=MagicMock(return_value=(20, 2)),
+        ):
+            asyncio.run(run_backlog_poll_cycle(status_callback=messages.append))
+
+        self.assertTrue(any("Telemetrie-Hygiene" in m and "3 synthetische Lauf-Einträge" in m for m in messages))
+
+    def test_telemetry_hygiene_stays_silent_when_nothing_needed_cleaning(self):
+        backlog_store.upsert_ticket("cli-1", "Ticket", "cli", "todo")
+        messages: list[str] = []
+        asyncio.run(run_backlog_poll_cycle(status_callback=messages.append))
+
+        self.assertFalse(any("Telemetrie-Hygiene" in m for m in messages))
+
     def test_max_tickets_limits_how_many_are_processed_per_cycle(self):
         backlog_store.upsert_ticket("cli-1", "A", "cli", "todo")
         backlog_store.upsert_ticket("cli-2", "B", "cli", "todo")
@@ -301,6 +339,17 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
         self._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(self.temp_dir) / "backlog.json")
         self._backlog_patcher.start()
         self.addCleanup(self._backlog_patcher.stop)
+
+        # Siehe TestBacklogWorkerOrchestration.setUp() - schützt dieselben echten Telemetrie-
+        # Dateien vor jedem Test in dieser Klasse.
+        self._telemetry_patcher = patch.multiple(
+            "core.telemetry_hygiene",
+            clean_run_history=MagicMock(return_value=(0, 0)),
+            clean_eval_history=MagicMock(return_value=(0, 0)),
+            clean_team_lessons=MagicMock(return_value=(0, 0)),
+        )
+        self._telemetry_patcher.start()
+        self.addCleanup(self._telemetry_patcher.stop)
 
     def test_blocked_governance_ticket_is_picked_up_and_retries_incremented(self):
         backlog_store.upsert_ticket(

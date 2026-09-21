@@ -1284,7 +1284,37 @@ Agenten-Aufruf kostet.
 | P6-5 | `interface/cli.py` 2.378 Zeilen, `core/llm_factory.py` 1.848, `agents/orchestrator/verification.py` 1.816 – die drei größten Module nach Verantwortlichkeiten aufteilen | L |
 | P6-6 | `core/message_bus.py` enthält nur noch zwei Dataclasses – in `core/agent_contracts.py` umbenennen (60+ Importe, daher mit Alias-Übergang) | S |
 | P6-7 | `run_closed` meldete `agent_calls: 6` bei 9 `agent_call`-Events im selben Trace – Zählweise vereinheitlichen | XS |
+
+> **Umsetzung 2026-09-21 (P6-7):** Root Cause: `agent_calls=len(results)` in
+> `agents/orchestrator/__init__.py` zählte nur die Fachbereichs-Ergebnisse, nicht Delegation,
+> Konsolidierung, Retrospektive oder Trainer-Aufrufe - die laufen alle über denselben
+> `core/run_logger.py.log_agent_result()`-Pfad und erzeugen jeweils ein eigenes
+> `agent_call`-Trace-Event, landen aber nicht zwangsläufig in `results`. Neue Zähler
+> `RunLogger.agent_call_count`/`failed_agent_call_count`, direkt in `log_agent_result()`
+> inkrementiert - zählt JEDEN tatsächlich geloggten Aufruf, unabhängig von einer externen
+> Ergebnisliste. `run_closed` liest jetzt diese Zähler statt `len(results)`/
+> `sum(... for r in results)`. 1 neuer Test in `tests/test_run_logger.py`. Gegen 64 bestehende
+> Tests verifiziert (`test_governance_fix_loop.py`, `test_p1_team_workflow.py`,
+> `test_team_communication.py`), keine Regression.
+
 | P6-8 | Test-Rauschen in der Historie: `*_test_proj`-Läufe stehen in `run_history.json` und verfälschen jede Statistik (`--clean-telemetry` existiert, wird offenbar nicht regelmäßig ausgeführt) | XS |
+
+> **Umsetzung 2026-09-21 (P6-8):** `core/telemetry_hygiene.py` existierte bereits vollständig,
+> aber ausschließlich als manueller `python main.py --clean-telemetry`-Aufruf - real beobachtet
+> hat das niemand regelmäßig ausgeführt. `core/backlog_worker.py.run_backlog_poll_cycle()` ruft
+> `clean_run_history()`/`clean_eval_history()`/`clean_team_lessons()` (die letzte davon aus
+> P3-4) jetzt bei JEDEM Poll-Zyklus mit auf - genau dieselbe Begründung wie die bereits
+> bestehende automatische Backlog-Hygiene im selben Zyklus ("ohne einen automatischen Anker im
+> ohnehin periodisch laufenden Poll-Zyklus wächst das Rauschen unbegrenzt weiter"), meldet nur
+> etwas, wenn tatsächlich etwas entfernt wurde (kein Rauschen im Normalfall). Beim Schreiben
+> der Tests aufgefallen und behoben: OHNE expliziten Patch hätte jeder bestehende Test in
+> `tests/test_backlog_worker.py` die ECHTEN `memory/run_history.json`/`evals/eval_history.json`/
+> `memory/team_lessons.jsonl`-Dateien dieses Repos berührt, sobald sie synthetische Einträge
+> enthalten - beide betroffenen Test-Klassen bekommen jetzt einen `setUp()`-Patch, der das
+> verhindert. Aktueller Repo-Zustand bereits sauber (0 von 155/3/102 Einträgen betroffen, siehe
+> `python main.py --clean-telemetry --dry-run`). 2 neue Tests in `tests/test_backlog_worker.py`.
+> Gegen 74 bestehende Tests verifiziert (`test_backlog_worker.py`, `test_issue_watcher.py`),
+> keine Regression, keine echten Telemetrie-Dateien durch den Testlauf verändert.
 
 ---
 
@@ -1380,4 +1410,4 @@ ruff check && python -m pytest -q
 | P5-3 | Verifikations-Reserve im Budget | P5 | ☑ erledigt (Reserve existierte, Gate korrigiert) |
 | P6-1 | Gestagte Fixes committet | P6 | ☑ erledigt |
 | P6-2 | ~~Workspace aus Framework-Commits~~ | P6 | ☑ Fehlannahme, siehe oben |
-| P6-3…8 | Hygiene & Aufräumen | P6 | ☐ |
+| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-7, P6-8 erledigt; P6-3, P6-4, P6-5, P6-6 offen |

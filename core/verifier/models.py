@@ -442,6 +442,8 @@ class LintReport:
     tool: str
     issues: list[LintIssue] = field(default_factory=list)
     reason_skipped: str = ""
+    unsafe_fixes_applied: int = 0
+    unsafe_fixes_reverted: bool = False
 
 
 @dataclass

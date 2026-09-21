@@ -248,7 +248,7 @@ die dominanten Fehlerklassen blind.
 ---
 
 ### P0-6 · `lint` erscheint als `failed`, obwohl es laut Definition of Done irrelevant ist
-**Status:** ✅ **erledigt 2026-09-20** (Teil 2, `--unsafe-fixes`, bleibt offen) · **Wirkung:** niedrig (Kosmetik), verwirrt aber jede Analyse
+**Status:** ✅ **erledigt 2026-09-20** (Teil 1), **Teil 2 erledigt 2026-09-21** · **Wirkung:** niedrig (Kosmetik), verwirrt aber jede Analyse
 
 In **5 von 6** letzten Läufen steht `lint` in `failed`, obwohl es in `INFORMATIONAL_CHECK_KEYS`
 steht und `lint_clean` in der DoD `required: false` ist. Jede spätere Analyse (auch die des
@@ -265,6 +265,23 @@ nur `failed_blocking`.
 `RUF013`, `RUF059`, `F841`) sind fast alle unsafe-fixbar. Vorschlag: ein zweiter, **separat
 protokollierter** Durchlauf mit `--unsafe-fixes`, gefolgt von einem erneuten Testlauf – Änderung
 nur übernehmen, wenn die Tests danach weiterhin grün sind.
+
+> **Umsetzung 2026-09-21:** Neuer, bewusst standardmäßig AUSGESCHALTETER Schalter
+> `ENABLE_AUTO_LINT_UNSAFE_FIX` (`config.py`, Default `false` - konservativer als der sichere
+> Autofix, weil `--unsafe-fixes` in seltenen Fällen echtes Verhalten ändern kann). Ist er aktiv,
+> führt `core/verifier/lint.py._apply_unsafe_lint_fixes()` nach dem sicheren Fix einen ZWEITEN
+> `ruff check --fix --unsafe-fixes`-Durchlauf aus - aber NUR, wenn das Projekt überhaupt eine
+> eigene Python-Testsuite hat (sonst gäbe es nichts, woran sich "Tests bleiben grün" objektiv
+> prüfen ließe, und die Änderung wird gar nicht erst versucht). Vorher wird der Inhalt jeder
+> `.py`-Datei im Projekt im Speicher gesichert; nach dem Fix läuft `self.run_tests()`
+> (`TestRunnerMixin`, bereits Teil derselben `ProjectVerifier`-Klasse) - bleiben die Tests grün,
+> bleibt die Änderung; schlägt auch nur ein Test fehl, werden alle betroffenen Dateien aus dem
+> Snapshot exakt wiederhergestellt. `LintReport` bekommt zwei neue, separat protokollierte Felder
+> `unsafe_fixes_applied`/`unsafe_fixes_reverted` dafür. 5 neue Tests in
+> `tests/test_verifier_lint.py` (`TestPythonUnsafeAutofix`), inkl. je eines Falls für
+> Beibehaltung, Revert und Überspringen ohne eigene Testsuite - alle grün, ebenso die bestehenden
+> 31 Tests in `test_cross_run_ticket_context.py`/`test_lint_integration.py`/`test_verifier.py`
+> (neue, optionale Felder mit Default brechen keine bestehende `LintReport(...)`-Konstruktion).
 
 ---
 
@@ -1488,7 +1505,7 @@ ruff check && python -m pytest -q
 | P0-3 | `pre_flight`-Ergebnis veraltet | P0 | ☑ erledigt |
 | P0-4 | ~~`budget_aborted` fällt aus der Reparaturschleife~~ | P0 | ☑ verifiziert – kein Bug |
 | P0-5 | Fehler-Kategorisierung kennt Hauptfehlerarten nicht | P0 | ☑ erledigt |
-| P0-6 | `lint` erscheint fälschlich als Fehlschlag | P0 | ☑ erledigt (Teil 2 offen) |
+| P0-6 | `lint` erscheint fälschlich als Fehlschlag | P0 | ☑ erledigt |
 | P1-1 | `--work-framework-backlog` (autonome Framework-Fixes) | P1 | ☑ erledigt |
 | P1-2 | Eskalations-Strategien statt Wiederholung | P1 | ☑ erledigt |
 | P1-3 | Ticket-Hygiene: `stale` vs. `error` trennen | P1 | ☑ erledigt |

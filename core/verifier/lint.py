@@ -13,7 +13,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from config import ENABLE_AUTO_LINT_FIX
+from config import ENABLE_AUTO_LINT_FIX, ENABLE_AUTO_LINT_UNSAFE_FIX
 from core.code_sandbox import CodeSandbox, ExecutionResult
 from core.verifier.models import _ESLINT_CONFIG_NAMES, _IGNORED_DIRS, _TSC_ERROR_PATTERN, LintIssue, LintReport
 
@@ -104,9 +104,16 @@ class LintMixin:
         # nötig - dieselbe Idee wie `black`/`prettier` im Pre-Commit-Hook eines echten Teams.
         # Fehlschlag (z.B. Syntaxfehler im Projekt) ist hier kein Fehler des Checks selbst -
         # der nachfolgende reine Check-Lauf liest ohnehin den tatsächlichen Stand danach.
+        unsafe_fixes_applied = 0
+        unsafe_fixes_reverted = False
         if ENABLE_AUTO_LINT_FIX:
             fix_command = ["ruff", "check", str(self.project_dir), "--isolated", "--fix", "--quiet"] + exclude_flags + ignore_flags
             CodeSandbox.run_command(fix_command, cwd=self.project_dir, timeout_seconds=timeout_seconds)
+
+            if ENABLE_AUTO_LINT_UNSAFE_FIX:
+                unsafe_fixes_applied, unsafe_fixes_reverted = self._apply_unsafe_lint_fixes(
+                    exclude_flags, ignore_flags, timeout_seconds,
+                )
 
         # --isolated: ignoriert JEDE gefundene Konfigurationsdatei (auch die eigene
         # ruff.toml des Frameworks, falls das Projekt innerhalb des Repos liegt) und nutzt
@@ -115,7 +122,54 @@ class LintMixin:
         # beliebigen generierten Projekt nicht aufgezwungen werden.
         command = ["ruff", "check", str(self.project_dir), "--isolated", "--output-format=json"] + exclude_flags + ignore_flags
         result = CodeSandbox.run_command(command, cwd=self.project_dir, timeout_seconds=timeout_seconds)
-        return self._parse_ruff_result(result)
+        report = self._parse_ruff_result(result)
+        report.unsafe_fixes_applied = unsafe_fixes_applied
+        report.unsafe_fixes_reverted = unsafe_fixes_reverted
+        return report
+
+    def _apply_unsafe_lint_fixes(
+        self, exclude_flags: list[str], ignore_flags: list[str], timeout_seconds: float,
+    ) -> tuple[int, bool]:
+        """P0-6 Teil 2 (ROADMAP_TEMP.md): zweiter, separat protokollierter Durchlauf mit
+        `--unsafe-fixes`. Nur anwendbar, wenn das Projekt eine eigene Testsuite hat (sonst gibt
+        es nichts, woran sich "Tests bleiben grün" prüfen ließe) - und nur dauerhaft übernommen,
+        wenn `self.run_tests()` danach weiterhin grün ist; andernfalls werden alle betroffenen
+        Dateien aus dem vorher genommenen Snapshot wiederhergestellt.
+        """
+        if not self._find_python_test_files():
+            return 0, False
+
+        py_files = [
+            f for f in self.project_dir.rglob("*.py")
+            if not any(part in _IGNORED_DIRS for part in f.parts)
+        ]
+        snapshot: dict[Path, bytes] = {}
+        for f in py_files:
+            try:
+                snapshot[f] = f.read_bytes()
+            except OSError:
+                continue
+
+        unsafe_command = (
+            ["ruff", "check", str(self.project_dir), "--isolated", "--fix", "--unsafe-fixes", "--quiet"]
+            + exclude_flags + ignore_flags
+        )
+        CodeSandbox.run_command(unsafe_command, cwd=self.project_dir, timeout_seconds=timeout_seconds)
+
+        applied = sum(1 for f, original in snapshot.items() if f.exists() and f.read_bytes() != original)
+        if applied == 0:
+            return 0, False
+
+        test_report = self.run_tests(timeout_seconds=timeout_seconds)
+        if test_report.passed:
+            return applied, False
+
+        for f, original in snapshot.items():
+            try:
+                f.write_bytes(original)
+            except OSError:
+                pass
+        return applied, True
 
     def _parse_ruff_result(self, result: ExecutionResult) -> LintReport:
         try:

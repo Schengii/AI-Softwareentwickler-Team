@@ -23,6 +23,11 @@ from unittest.mock import patch
 
 from core.code_sandbox import ExecutionResult
 from core.verifier import ProjectVerifier
+from core.verifier.models import VerificationReport
+
+
+def _VerificationReport(passed: bool) -> VerificationReport:
+    return VerificationReport(ran=True, passed=passed, exit_code=0 if passed else 1, stdout="", stderr="", duration_seconds=0.1)
 
 
 # Wortgetreue Fixture-Struktur aus einem echten `ruff check --isolated --output-format=json`-
@@ -191,6 +196,87 @@ class TestPythonLintViaRuff(unittest.TestCase):
 
         self.assertFalse(report.attempted)
         self.assertTrue(report.passed)  # neutraler Skip-Default, keine echte Aussage
+
+
+class TestPythonUnsafeAutofix(unittest.TestCase):
+    """P0-6 Teil 2 (ROADMAP_TEMP.md): zweiter, separat protokollierter `--unsafe-fixes`-Durchlauf,
+    nur dauerhaft übernommen, wenn die eigene Testsuite danach weiterhin grün ist."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_dir = Path(self.temp_dir)
+        self.app_file = self.project_dir / "app.py"
+        self.app_file.write_text("import os\nx = 1\n", encoding="utf-8")
+        (self.project_dir / "test_app.py").write_text("def test_x():\n    assert True\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    @patch("core.verifier.lint.ENABLE_AUTO_LINT_UNSAFE_FIX", True)
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
+    def test_unsafe_fix_kept_when_tests_still_pass(self, mock_which, mock_run):
+        def _side_effect(command, **_kwargs):
+            if "--unsafe-fixes" in command:
+                self.app_file.write_text("x = 1\n", encoding="utf-8")  # simuliert F401-Fix
+            return ExecutionResult(exit_code=0, stdout="[]", stderr="", duration_seconds=0.1)
+
+        mock_run.side_effect = _side_effect
+        verifier = ProjectVerifier(self.project_dir)
+        with patch.object(verifier, "run_tests", return_value=_VerificationReport(passed=True)):
+            report = verifier.check_lint()[0]
+
+        self.assertEqual(report.unsafe_fixes_applied, 1)
+        self.assertFalse(report.unsafe_fixes_reverted)
+        self.assertEqual(self.app_file.read_text(encoding="utf-8"), "x = 1\n")
+
+    @patch("core.verifier.lint.ENABLE_AUTO_LINT_UNSAFE_FIX", True)
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
+    def test_unsafe_fix_reverted_when_tests_fail(self, mock_which, mock_run):
+        original = self.app_file.read_text(encoding="utf-8")
+
+        def _side_effect(command, **_kwargs):
+            if "--unsafe-fixes" in command:
+                self.app_file.write_text("x = 1\n", encoding="utf-8")
+            return ExecutionResult(exit_code=0, stdout="[]", stderr="", duration_seconds=0.1)
+
+        mock_run.side_effect = _side_effect
+        verifier = ProjectVerifier(self.project_dir)
+        with patch.object(verifier, "run_tests", return_value=_VerificationReport(passed=False)):
+            report = verifier.check_lint()[0]
+
+        self.assertEqual(report.unsafe_fixes_applied, 1)
+        self.assertTrue(report.unsafe_fixes_reverted)
+        self.assertEqual(self.app_file.read_text(encoding="utf-8"), original)
+
+    @patch("core.verifier.lint.ENABLE_AUTO_LINT_UNSAFE_FIX", True)
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
+    def test_unsafe_fix_skipped_without_own_test_suite(self, mock_which, mock_run):
+        (self.project_dir / "test_app.py").unlink()
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="[]", stderr="", duration_seconds=0.1)
+        verifier = ProjectVerifier(self.project_dir)
+
+        report = verifier.check_lint()[0]
+
+        self.assertEqual(report.unsafe_fixes_applied, 0)
+        for call in mock_run.call_args_list:
+            self.assertNotIn("--unsafe-fixes", call[0][0])
+
+    @patch("core.verifier.lint.ENABLE_AUTO_LINT_UNSAFE_FIX", False)
+    @patch("core.verifier.CodeSandbox.run_command")
+    @patch("core.verifier.shutil.which", return_value="/usr/bin/ruff")
+    def test_unsafe_fix_disabled_via_config_flag_by_default(self, mock_which, mock_run):
+        mock_run.return_value = ExecutionResult(exit_code=0, stdout="[]", stderr="", duration_seconds=0.1)
+        verifier = ProjectVerifier(self.project_dir)
+
+        report = verifier.check_lint()[0]
+
+        self.assertEqual(report.unsafe_fixes_applied, 0)
+        self.assertFalse(report.unsafe_fixes_reverted)
+        for call in mock_run.call_args_list:
+            self.assertNotIn("--unsafe-fixes", call[0][0])
 
 
 class TestNodeEslintIntegration(unittest.TestCase):

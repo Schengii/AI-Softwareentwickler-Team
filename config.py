@@ -589,6 +589,16 @@ ENABLE_NICHE_AGENT_FILTER: bool = os.getenv("ENABLE_NICHE_AGENT_FILTER", "true")
 # Pre-Commit-Hook eines echten Teams.
 ENABLE_AUTO_LINT_FIX: bool = os.getenv("ENABLE_AUTO_LINT_FIX", "true").lower() in ("true", "1", "yes")
 
+# P0-6 Teil 2 (ROADMAP_TEMP.md): die real übrig bleibenden Regeln nach dem sicheren Autofix
+# (SIM102, SIM103, RUF013, RUF059, F841 u.Ä.) sind fast alle nur per `--unsafe-fixes` behebbar -
+# das kann in seltenen Fällen Verhalten ändern (deshalb trennt ruff diese Kategorie überhaupt).
+# ENABLE_AUTO_LINT_UNSAFE_FIX=false (Standard: AUS, bewusst konservativer als der sichere Fix)
+# lässt core/verifier/lint.py._lint_python() bei true einen ZWEITEN, separat protokollierten
+# `ruff check --fix --unsafe-fixes`-Durchlauf ausführen - aber NUR, wenn das Projekt eine eigene
+# Testsuite hat, und NUR dauerhaft, wenn diese danach weiterhin grün ist; andernfalls wird die
+# Änderung sofort verworfen (Datei-Snapshot vorher, Wiederherstellung bei rotem Testlauf).
+ENABLE_AUTO_LINT_UNSAFE_FIX: bool = os.getenv("ENABLE_AUTO_LINT_UNSAFE_FIX", "false").lower() in ("true", "1", "yes")
+
 # ──────────────────────────────────────────
 # Governance-Kritisch-Fix-Schleife (core/review_gate.py, agents/orchestrator.py._run_governance_fix_loop)
 # ──────────────────────────────────────────

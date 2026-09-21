@@ -68,6 +68,12 @@ def main():
     Tagen unverändert liegen (siehe core/team_retro.py) – gedacht für eine periodische, z.B.
     wöchentliche Routine (Cron/Taskplaner/`/loop`/`schedule`-Skill), die genau die Ticket-
     Kategorie sichtbar macht, die --work-backlog bewusst NIE von selbst aufgreift.
+    Mit `--work-framework-backlog [--limit N]` (Standard N=1) greift der refactoring-Agent bis
+    zu N offene `[framework]`-Root-Cause-Tickets (core/root_cause_analyst.py) auf - IMMER in
+    einem isolierten Git-Worktree (core/git_isolation.py, das echte Arbeitsverzeichnis bleibt
+    unberührt), mit mechanischem Rot/Grün-Beweis für einen neuen Regressionstest vor jedem
+    Commit. Ergebnis ist NUR ein Draft-PR (`Closes: <ticket-id>`), nie ein automatischer Merge -
+    siehe core/framework_backlog_worker.py.
     Mit `--weekly-digest [--days N]` (Standard: core/team_retro.DIGEST_WINDOW_DAYS=7) zeigt ein
     Sprint-Review-artiger Überblick abgeschlossene/neu eröffnete Tickets, Velocity, Token-
     verbrauch und Verifikations-Erfolgsquote der letzten N Tage, plus denselben liegengebliebenen
@@ -350,6 +356,22 @@ def main():
                 f"Wiederholungsversuche ausgeschöpft und benötigen jetzt menschliche Prüfung: "
                 f"{', '.join(report.retries_exhausted_ticket_ids)}"
             )
+        return
+
+    if "--work-framework-backlog" in sys.argv:
+        import asyncio
+
+        from agents.orchestrator import Orchestrator
+        from core.framework_backlog_worker import format_results_for_humans, work_framework_backlog
+
+        limit = 1
+        if "--limit" in sys.argv:
+            try:
+                limit = int(sys.argv[sys.argv.index("--limit") + 1])
+            except (IndexError, ValueError):
+                pass
+        results = asyncio.run(work_framework_backlog(Orchestrator(), limit=limit))
+        print(format_results_for_humans(results))
         return
 
     if "--check-deployments" in sys.argv:

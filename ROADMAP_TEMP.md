@@ -271,7 +271,7 @@ nur übernehmen, wenn die Tests danach weiterhin grün sind.
 ## 2. 🟠 P1 – Autonomie: Befunde in Arbeit verwandeln
 
 ### P1-1 · Root-Cause-Tickets werden erzeugt, aber nie bearbeitet
-**Status:** ❌ offen · **Aufwand:** L · **Wirkung:** sehr hoch
+**Status:** ✅ erledigt 2026-09-21 · **Aufwand:** L · **Wirkung:** sehr hoch
 
 `core/root_cause_analyst.py` (`TICKET_SOURCE = "root_cause_analysis"`) legt bewusst Tickets an,
 die **nicht** in `core/backlog_worker.py._AUTONOMOUS_SOURCES` stehen – „Framework-Änderungen
@@ -291,6 +291,37 @@ in einer manuellen Sitzung nachträglich verifiziert wurden.
 
 **Akzeptanzkriterium:** Ein Lauf gegen ein vorhandenes `root-cause-*`-Ticket erzeugt einen
 Branch mit mindestens einem neuen, vorher fehlschlagenden Test und einem Draft-PR.
+
+> **Umsetzung:** `python main.py --work-framework-backlog [--limit N]` (Standard N=1), neues
+> Modul `core/framework_backlog_worker.py`. `find_framework_tickets()` greift offene/blockierte
+> `root_cause_analysis`-Tickets mit `[framework]`-Präfix im `detail`-Feld auf (genau der Marker,
+> den `core/root_cause_analyst.py.record_findings_as_tickets()` für `category == "framework"`
+> bereits schreibt). Jeder Versuch läuft IMMER in einem frischen, per `core/git_isolation.py`
+> isolierten Git-Worktree - das echte Arbeitsverzeichnis des Nutzers wird während des gesamten
+> Laufs nicht berührt. Der `refactoring`-Agent bekommt das Ticket als echten Tool-Aufrag
+> (`allow_tools=True`, `project_dir=<Worktree>`) mit der verpflichtenden Anweisung, zuerst einen
+> neuen Regressionstest zu schreiben, dann den Fix.
+>
+> Statt dem Agenten-Bericht zu vertrauen, erzwingt `_verify_regression_test_proves_the_bug()`
+> einen MECHANISCHEN Beweis: alle geänderten NICHT-Test-Dateien werden kurzzeitig auf ihren
+> `HEAD`-Vorher-Stand zurückgesetzt (neue Dateien gelöscht), der neue Test MUSS dann
+> fehlschlagen ("rot ohne Fix") - schlägt er stattdessen schon ohne Fix nicht fehl, ist das kein
+> echter Beweis und der Versuch wird verworfen. Danach wird der volle Endstand des Agenten IMMER
+> wiederhergestellt (auch bei Fehlschlag, im `finally`) und derselbe Test muss GRÜN sein. Erst
+> danach `ruff check` auf allen geänderten `.py`-Dateien, dann `git commit` mit
+> `Closes: <ticket-id>` (schließt das Ticket automatisch via `--backlog-hygiene`, siehe
+> CLAUDE.md), Push und `gh pr create --draft` (`agents/github_agent.py`, bereits vorhanden) -
+> **niemals** ein automatischer Merge. Ein `git push` vom Framework-Root aus funktioniert für
+> den Worktree-Branch, weil Worktrees denselben `.git`-Objektspeicher/dieselben Refs teilen
+> (kein Checkout des Branches im echten Arbeitsverzeichnis nötig). Jeder Fehlschlag (kein neuer
+> Test, Test bleibt rot, ruff unsauber, Push/PR schlägt fehl) lässt den Worktree für
+> menschliche Inspektion stehen statt aufzuräumen, und der Lauf macht mit dem nächsten Ticket
+> weiter. 8 neue Tests in `tests/test_framework_backlog_worker.py` (u.a. mit einem echten
+> temporären Git-Repo und einem echten Off-by-one-Bug für die Rot/Grün-Probe, gemockter
+> Agenten-Aufruf/GitHub-Push). Aktuell 0 offene `[framework]`-Tickets im echten Backlog - kein
+> Live-Testlauf gegen ein reales Ticket in dieser Sitzung, aber `python main.py
+> --work-framework-backlog` gegen den echten Backlog-Zustand geprüft (meldet korrekt "keine
+> offenen Tickets").
 
 ---
 
@@ -1301,7 +1332,7 @@ ruff check && python -m pytest -q
 | P0-4 | ~~`budget_aborted` fällt aus der Reparaturschleife~~ | P0 | ☑ verifiziert – kein Bug |
 | P0-5 | Fehler-Kategorisierung kennt Hauptfehlerarten nicht | P0 | ☑ erledigt |
 | P0-6 | `lint` erscheint fälschlich als Fehlschlag | P0 | ☑ erledigt (Teil 2 offen) |
-| P1-1 | `--work-framework-backlog` (autonome Framework-Fixes) | P1 | ☐ |
+| P1-1 | `--work-framework-backlog` (autonome Framework-Fixes) | P1 | ☑ erledigt |
 | P1-2 | Eskalations-Strategien statt Wiederholung | P1 | ☑ erledigt |
 | P1-3 | Ticket-Hygiene: `stale` vs. `error` trennen | P1 | ☑ erledigt |
 | P1-4 | `CancelledError` reißt den Lauf mit | P1 | ☑ erledigt |

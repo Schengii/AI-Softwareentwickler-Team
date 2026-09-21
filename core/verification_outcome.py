@@ -41,6 +41,7 @@ CHECK_KEYS: frozenset[str] = frozenset({
     "accessibility",
     "interface_fields",
     "security_handoff",
+    "domain_logic_depth",
 })
 
 # Prüfungen, die ein Ergebnis MELDEN, aber `verification_ok` bewusst NICHT beeinflussen.
@@ -51,6 +52,11 @@ CHECK_KEYS: frozenset[str] = frozenset({
 # (Schichtung: core darf nicht aus agents importieren).
 INFORMATIONAL_CHECK_KEYS: frozenset[str] = frozenset({
     "dependency_audit", "sast", "license", "lint", "accessibility", "interface_fields",
+    # P4-3 (ROADMAP_TEMP.md): AST-basierter Aufruf-Abgleich hat reale blinde Flecken
+    # (Decorators, Dependency Injection, dynamischer Dispatch) - bewusst informativ, bis echte
+    # Laufdaten eine blockierende Schwelle rechtfertigen (core/test_depth.py.analyze_domain_
+    # logic_depth()).
+    "domain_logic_depth",
 })
 
 

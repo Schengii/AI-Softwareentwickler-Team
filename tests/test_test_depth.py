@@ -19,7 +19,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from core.test_depth import analyze_test_depth, collect_test_function_names
+from core.test_depth import analyze_domain_logic_depth, analyze_test_depth, collect_test_function_names
 
 
 class TestCollectTestFunctionNames(unittest.TestCase):
@@ -90,6 +90,79 @@ class TestAnalyzeTestDepth(unittest.TestCase):
             self.assertTrue(report.applicable)
             labels = [r.label() for r in report.untested_routes]
             self.assertTrue(any("/api/buckets" in label for label in labels))
+
+
+class TestAnalyzeDomainLogicDepth(unittest.TestCase):
+    """P4-3 (ROADMAP_TEMP.md): ergänzendes Fachlogik-Signal - misst, ob öffentliche Funktionen
+    in core/services/domain/logic in einem Test importiert UND aufgerufen werden, nicht nur, ob
+    API-Routen getestet sind (real gemessen an cachegrid_proxy: 100% Routenabdeckung, aber
+    komplett ungetestete Fachlogik)."""
+
+    def test_not_applicable_without_domain_symbols(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = analyze_domain_logic_depth(tmp)
+            self.assertFalse(report.applicable)
+            self.assertTrue(report.passed)
+
+    def test_not_applicable_without_any_tests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app" / "core").mkdir(parents=True)
+            (project_dir / "app" / "core" / "cache.py").write_text(
+                "def evict_lru():\n    pass\n", encoding="utf-8",
+            )
+            report = analyze_domain_logic_depth(project_dir)
+            self.assertFalse(report.applicable)
+
+    def test_detects_untested_domain_function(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app" / "core").mkdir(parents=True)
+            (project_dir / "app" / "core" / "cache.py").write_text(
+                "def evict_lru():\n    pass\n\ndef tag_key():\n    pass\n", encoding="utf-8",
+            )
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_cache.py").write_text(
+                "from app.core.cache import evict_lru\n\n"
+                "def test_evict_lru():\n    evict_lru()\n",
+                encoding="utf-8",
+            )
+            report = analyze_domain_logic_depth(project_dir, min_ratio=0.6)
+            self.assertTrue(report.applicable)
+            labels = [r.label() for r in report.untested_symbols]
+            self.assertTrue(any("tag_key" in label for label in labels))
+            self.assertFalse(any("evict_lru" in label for label in labels))
+
+    def test_import_without_call_does_not_count_as_tested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app" / "services").mkdir(parents=True)
+            (project_dir / "app" / "services" / "billing.py").write_text(
+                "def charge_customer():\n    pass\n", encoding="utf-8",
+            )
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_billing.py").write_text(
+                "from app.services.billing import charge_customer\n\n"
+                "def test_placeholder():\n    pass\n",  # importiert, aber nie aufgerufen
+                encoding="utf-8",
+            )
+            report = analyze_domain_logic_depth(project_dir)
+            labels = [r.label() for r in report.untested_symbols]
+            self.assertTrue(any("charge_customer" in label for label in labels))
+
+    def test_private_symbols_are_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "app" / "domain").mkdir(parents=True)
+            (project_dir / "app" / "domain" / "orders.py").write_text(
+                "def _internal_helper():\n    pass\n", encoding="utf-8",
+            )
+            (project_dir / "tests").mkdir()
+            (project_dir / "tests" / "test_orders.py").write_text(
+                "def test_something():\n    pass\n", encoding="utf-8",
+            )
+            report = analyze_domain_logic_depth(project_dir)
+            self.assertFalse(report.applicable)  # kein öffentliches Symbol -> nichts zu messen
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ from agents.orchestrator.verification_checks import (
 )
 from config import (
     ENABLE_COMPLETENESS_CHECK,
+    ENABLE_DOMAIN_LOGIC_DEPTH_SIGNAL,
     ENABLE_LOAD_TEST_CHECK,
     ENABLE_SMOKE_TEST_GATE,
     ENABLE_TEST_DEPTH_GATE,
@@ -46,6 +47,7 @@ from config import (
     LOAD_TEST_DURATION_SECONDS,
     LOAD_TEST_TIMEOUT_SECONDS,
     MAX_VERIFICATION_ITERATIONS,
+    MIN_DOMAIN_LOGIC_TEST_RATIO,
     MIN_ROUTE_TEST_RATIO,
     MIN_TEST_COVERAGE,
 )
@@ -69,7 +71,13 @@ from core.message_bus import AgentResult, AgentTask
 from core.model_capability import model_capability_tier
 from core.pre_flight_check import PreFlightIssue, run_pre_flight_check
 from core.team_board import unmet_requirements
-from core.test_depth import analyze_test_depth, collect_test_function_names, restore_test_files, snapshot_test_files
+from core.test_depth import (
+    analyze_domain_logic_depth,
+    analyze_test_depth,
+    collect_test_function_names,
+    restore_test_files,
+    snapshot_test_files,
+)
 from core.verification_outcome import VerificationOutcome, parse_install_exit_code
 from core.verifier import ProjectVerifier, VerificationReport
 
@@ -1872,6 +1880,18 @@ class VerificationMixin:
                         top += f" … und {len(a11y_report.violations) - 5} weitere"
                     notify(f"  ♿ [bold red]Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße.[/bold red]")
                     summary_lines.append(f"- ♿ ⚠️ Accessibility-Check (axe-core): {len(a11y_report.violations)} WCAG-Verstoß/Verstöße: {top}")
+
+        # Fachlogik-Testtiefe (P4-3, ROADMAP_TEMP.md): ergänzendes, rein informatives Signal
+        # zur routenbasierten Testtiefe oben - misst, ob öffentliche Funktionen/Klassen in
+        # core/services/domain/logic überhaupt in einem Test vorkommen, nicht nur, ob API-Routen
+        # aufgerufen werden (siehe core/test_depth.py.analyze_domain_logic_depth()-Docstring für
+        # den realen cachegrid_proxy-Fund, den die Routenmessung allein nicht sehen konnte).
+        if not (budget_aborted or manually_cancelled) and ENABLE_DOMAIN_LOGIC_DEPTH_SIGNAL:
+            domain_depth = await asyncio.to_thread(analyze_domain_logic_depth, project_dir, MIN_DOMAIN_LOGIC_TEST_RATIO)
+            if domain_depth.applicable:
+                outcome.record("domain_logic_depth", domain_depth.passed, "" if domain_depth.passed else domain_depth.format_summary())
+                if not domain_depth.passed:
+                    summary_lines.append(f"- 🧬 ⚠️ {domain_depth.format_summary()}")
 
         # Blockierende Prüfungen, die FRÜH im Lauf fehlgeschlagen sind, noch einmal messen -
         # siehe _recheck_stale_blocking_checks() für die beiden realen Funde dahinter.

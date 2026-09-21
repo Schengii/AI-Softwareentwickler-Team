@@ -192,6 +192,120 @@ def _route_regex(route_path: str) -> re.Pattern[str]:
     return re.compile(r"(?:^|/)" + "/".join(segments) + r"$")
 
 
+# P4-3 (ROADMAP_TEMP.md): Verzeichnisnamen, die typischerweise die eigentliche Fachlogik tragen
+# (nicht Routing/Controller-Code). Bewusst grob - ein deterministisches, projektübergreifend
+# funktionierendes Signal statt einer Stack-spezifischen Konvention.
+_DOMAIN_DIR_MARKERS = frozenset({"core", "services", "domain", "logic"})
+
+
+@dataclass
+class DomainSymbolRef:
+    name: str
+    kind: str
+    file_path: str
+
+    def label(self) -> str:
+        return f"{self.kind} {self.name} ({self.file_path})"
+
+
+@dataclass
+class DomainDepthReport:
+    """Ergänzendes Signal zu TestDepthReport (siehe Moduldocstring, P4-3): misst nicht, ob
+    API-Routen aufgerufen werden, sondern ob die dahinterliegende FACHLOGIK überhaupt in einem
+    Test vorkommt - `cachegrid_proxy` (1 Route, 100% Routenabdeckung) blieb bei der Fachlogik
+    (LRU-Eviction, TTL-Verfall) komplett ungetestet, ohne dass TestDepthReport das je sehen
+    konnte."""
+    symbols: list[DomainSymbolRef] = field(default_factory=list)
+    untested_symbols: list[DomainSymbolRef] = field(default_factory=list)
+    min_ratio: float = 0.5
+
+    @property
+    def applicable(self) -> bool:
+        return bool(self.symbols)
+
+    @property
+    def tested_ratio(self) -> float:
+        if not self.symbols:
+            return 1.0
+        return (len(self.symbols) - len(self.untested_symbols)) / len(self.symbols)
+
+    @property
+    def passed(self) -> bool:
+        return not self.applicable or self.tested_ratio >= self.min_ratio
+
+    def format_summary(self) -> str:
+        if not self.applicable:
+            return "Fachlogik-Testtiefe: keine Symbole in core/services/domain/logic-Verzeichnissen gefunden – nicht anwendbar."
+        tested = len(self.symbols) - len(self.untested_symbols)
+        text = (
+            f"Fachlogik-Testtiefe: {tested}/{len(self.symbols)} öffentliche Funktionen/Klassen in "
+            f"core/services/domain/logic in mindestens einem Test importiert UND aufgerufen "
+            f"({self.tested_ratio:.0%}, Richtwert {self.min_ratio:.0%})"
+        )
+        if self.untested_symbols:
+            text += " – ungetestet: " + "; ".join(r.label() for r in self.untested_symbols[:10])
+            if len(self.untested_symbols) > 10:
+                text += f" … und {len(self.untested_symbols) - 10} weitere"
+        return text
+
+
+def _is_domain_dir(rel_path: str) -> bool:
+    parts = rel_path.split("/")[:-1]
+    return any(p in _DOMAIN_DIR_MARKERS for p in parts)
+
+
+def analyze_domain_logic_depth(project_dir: str | Path, min_ratio: float = 0.5) -> DomainDepthReport:
+    """Deterministisches Zusatzsignal (kein LLM-Aufruf): baut auf core/code_graph.py auf, das
+    Python/JS/TS/Go/Rust-Quellcode bereits per AST in Symbole (Funktionen/Klassen/Methoden),
+    Imports und Aufrufe zerlegt. Ein Symbol gilt als getestet, wenn sein (unqualifizierter)
+    Name in MINDESTENS EINER Testdatei sowohl importiert als auch aufgerufen wird - reiner
+    Import (z.B. für einen ungenutzten Fixture-Parameter) reicht nicht, reines Aufrufen ohne
+    erkennbaren Import ist bei dynamischen Importmustern ein zu unsicheres Signal.
+
+    Bekannte Grenzen (deshalb bewusst NICHT blockierend, siehe config.ENABLE_DOMAIN_LOGIC_DEPTH_
+    SIGNAL): Decorator-Aufrufe, Dependency-Injection-Container und dynamischer Dispatch zeigen
+    sich im AST nicht als direkter Funktionsaufruf - ein echt getestetes Symbol kann dadurch
+    fälschlich als ungetestet erscheinen. Symbole mit demselben Namen in mehreren Domain-Dateien
+    werden dedupliziert (eine gemeinsame Testtiefen-Bilanz statt einer Datei-genauen)."""
+    from core.code_graph import CodebaseGraph
+
+    base = Path(project_dir)
+    report = DomainDepthReport(min_ratio=min_ratio)
+    if not base.is_dir():
+        return report
+
+    graph = CodebaseGraph(base)
+    test_files = [f for f in graph.file_symbols if _is_test_file(f)]
+    if not test_files:
+        return report
+
+    imported_in_tests: set[str] = set()
+    called_in_tests: set[str] = set()
+    for imp in graph.imports:
+        if imp.file_path in test_files:
+            imported_in_tests.add(imp.imported_name)
+    for f in test_files:
+        for sym in graph.file_symbols.get(f, []):
+            called_in_tests.update(sym.calls)
+
+    seen: set[str] = set()
+    for file_path, symbols in graph.file_symbols.items():
+        if not _is_domain_dir(file_path) or _is_test_file(file_path):
+            continue
+        for sym in symbols:
+            if sym.kind not in ("function", "class", "method"):
+                continue
+            base_name = sym.name.split(".")[-1]
+            if base_name.startswith("_") or base_name in seen:
+                continue
+            seen.add(base_name)
+            ref = DomainSymbolRef(name=sym.name, kind=sym.kind, file_path=file_path)
+            report.symbols.append(ref)
+            if not (base_name in imported_in_tests and base_name in called_in_tests):
+                report.untested_symbols.append(ref)
+    return report
+
+
 def analyze_test_depth(project_dir: str | Path, min_ratio: float = 0.6) -> TestDepthReport:
     base = Path(project_dir)
     report = TestDepthReport(min_ratio=min_ratio)

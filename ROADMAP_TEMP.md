@@ -909,7 +909,7 @@ DoD-Kriterium `requirements_met` aufzeichnen.
 ---
 
 ### P4-3 · Testtiefe misst Routen, nicht Fachlichkeit
-**Status:** ❌ offen · **Aufwand:** M · **Wirkung:** mittel-hoch
+**Status:** 🟡 teilweise 2026-09-21 · **Aufwand:** M · **Wirkung:** mittel-hoch
 
 `core/test_depth.py` misst „Anteil der API-Routen, die im Test aufgerufen werden". Bei
 `cachegrid_proxy` (1 Route) und `nexus_mesh` (2 Routen) ergibt das trivial 100 %, obwohl die
@@ -919,6 +919,27 @@ Circuit-Breaker-Zustände) ungetestet blieb.
 **Lösung:** Zusätzliches, deterministisches Signal: Anteil der öffentlichen Funktionen/Klassen in
 `app/core/`, `app/services/`, `app/domain/`, die in mindestens einem Test importiert **und**
 aufgerufen werden. `core/code_graph.py` (495 Zeilen) liefert die Grundlage dafür bereits.
+
+> **Umsetzung:** `core/test_depth.py.analyze_domain_logic_depth()` (neu) baut auf
+> `core/code_graph.py.CodebaseGraph` auf: identifiziert öffentliche Funktionen/Klassen/Methoden
+> in Verzeichnissen namens `core`/`services`/`domain`/`logic` und prüft je Symbol, ob sein Name
+> in mindestens einer Testdatei sowohl IMPORTIERT als auch AUFGERUFEN wird (reiner Import ohne
+> Aufruf zählt nicht). Neues, eigenständiges `VerificationOutcome`-Check `domain_logic_depth`,
+> in `agents/orchestrator/verification.py` einmalig am Ende der Verifikations-Pipeline erfasst
+> (`ENABLE_DOMAIN_LOGIC_DEPTH_SIGNAL`, Standard an; Schwelle `MIN_DOMAIN_LOGIC_TEST_RATIO`,
+> Standard 0.5). Bewusst **rein informativ** (`INFORMATIONAL_CHECK_KEYS`, `required=False` wie
+> `coverage`/`lint`) statt blockierend, deshalb "teilweise": ein AST-Aufruf-Abgleich hat reale
+> blinde Flecken (Decorator-Aufrufe, Dependency-Injection-Container, dynamischer Dispatch) - ein
+> KI-generiertes Symbol kann trotz echtem Test fälschlich als ungetestet erscheinen. Ohne
+> Kalibrierung an echten Läufen wäre ein blockierendes Gate hier ein Risiko für viele
+> falsch-positive Blockaden bisher grüner Projekte (anders als beim bereits bestehenden,
+> route-basierten `test_depth`, der über mehrere Läufe hinweg beobachtet werden konnte, bevor er
+> blockierend wurde). Auch bewusst kein eigener Fix-Loop (anders als bei `test_depth`) - das
+> Signal ist zunächst nur sichtbar, keine automatische Nachbesserungs-Runde. Sobald echte
+> Lauf-Daten die Falsch-Positiv-Rate belegen, kann das Kriterium regulär auf blockierend
+> umgestellt werden (Analog zu P0-6/P3-3s Blocking-vs-Informational-Unterscheidung). 5 neue
+> Tests in `tests/test_test_depth.py`. Gegen 160 bestehende Tests (u.a. `test_p0_structured_
+> verification.py`, `test_governance_fix_loop.py`) verifiziert, keine Regression.
 
 ---
 
@@ -1260,7 +1281,7 @@ ruff check && python -m pytest -q
 | P3-4 | `team_lessons.jsonl` Schema vereinheitlichen | P3 | ☑ erledigt |
 | P4-1 | Code-Review verbindlich | P4 | ☑ erledigt |
 | P4-2 | Abnahme gegen die Anforderung | P4 | ☑ erledigt |
-| P4-3 | Testtiefe fachlich statt nur Routen | P4 | ☐ |
+| P4-3 | Testtiefe fachlich statt nur Routen | P4 | 🟡 teilweise (informativ, nicht blockierend) |
 | P4-4 | Projekt-Steckbrief für jeden Agenten | P4 | 🟡 früher Abfang erledigt, Prompt-Injektion offen |
 | P4-5 | Write-Guard gegen Fremddatei-Überschreiben | P4 | ☐ |
 | P5-1 | Degraded-Mode ehrlich machen | P5 | 🟡 Punkt 2 erledigt |

@@ -1074,6 +1074,19 @@ ENABLE_LLM_DEPARTMENT_CONSOLIDATION: bool = _env_flag("ENABLE_LLM_DEPARTMENT_CON
 ENABLE_TEST_DEPTH_GATE: bool = _env_flag("ENABLE_TEST_DEPTH_GATE", True)
 MIN_ROUTE_TEST_RATIO: float = float(os.getenv("MIN_ROUTE_TEST_RATIO", "0.6"))
 
+# P4-3 (ROADMAP_TEMP.md): ergänzendes, rein informatives Signal - Anteil der öffentlichen
+# Funktionen/Klassen in app/core/, app/services/, app/domain/, app/logic/, die in mindestens
+# einem Test IMPORTIERT UND AUFGERUFEN werden (core/test_depth.py.analyze_domain_logic_depth(),
+# core/code_graph.py). Deckt genau die Lücke ab, die die rein routenbasierte Testtiefe oben
+# nicht sieht: `cachegrid_proxy` (1 Route) galt mit 100% Routenabdeckung als getestet, obwohl die
+# eigentliche Fachlogik (LRU-Eviction, TTL-Verfall, Thundering-Herd-Mutex) ungetestet blieb.
+# Bewusst NICHT blockierend (kein eigener Fix-Loop, required=False in der Definition of Done):
+# ein AST-Aufruf-Abgleich hat reale blinde Flecken (Decorators, Dependency Injection, dynamischer
+# Dispatch) - ohne Kalibrierung an echten Läufen wäre ein blockierendes Gate hier ein Risiko für
+# viele falsch-positive Blockaden bisher grüner Projekte.
+ENABLE_DOMAIN_LOGIC_DEPTH_SIGNAL: bool = _env_flag("ENABLE_DOMAIN_LOGIC_DEPTH_SIGNAL", True)
+MIN_DOMAIN_LOGIC_TEST_RATIO: float = float(os.getenv("MIN_DOMAIN_LOGIC_TEST_RATIO", "0.5"))
+
 # Erzwungener Werkzeug-Aufruf für Code-Rollen ohne gespeicherte Datei (erste und Rettungs-Iteration):
 # strukturelle Antwort auf "Code im Chat statt write_file", das Lernregeln allein nicht lösten.
 ENABLE_FORCED_TOOL_CALL: bool = _env_flag("ENABLE_FORCED_TOOL_CALL", True)

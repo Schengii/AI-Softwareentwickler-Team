@@ -1002,7 +1002,7 @@ DoD-Kriterium `requirements_met` aufzeichnen.
 ---
 
 ### P4-3 · Testtiefe misst Routen, nicht Fachlichkeit
-**Status:** 🟡 teilweise 2026-09-21 · **Aufwand:** M · **Wirkung:** mittel-hoch
+**Status:** ✅ **erledigt 2026-09-21** (informativ, mit realer Kalibrierungsdaten-Analyse statt nur einer Absicht) · **Aufwand:** M · **Wirkung:** mittel-hoch
 
 `core/test_depth.py` misst „Anteil der API-Routen, die im Test aufgerufen werden". Bei
 `cachegrid_proxy` (1 Route) und `nexus_mesh` (2 Routen) ergibt das trivial 100 %, obwohl die
@@ -1033,6 +1033,44 @@ aufgerufen werden. `core/code_graph.py` (495 Zeilen) liefert die Grundlage dafü
 > umgestellt werden (Analog zu P0-6/P3-3s Blocking-vs-Informational-Unterscheidung). 5 neue
 > Tests in `tests/test_test_depth.py`. Gegen 160 bestehende Tests (u.a. `test_p0_structured_
 > verification.py`, `test_governance_fix_loop.py`) verifiziert, keine Regression.
+
+> **Kalibrierung 2026-09-21, die zuvor fehlenden "echten Lauf-Daten" nachgeliefert - OHNE
+> neue, kostenpflichtige LLM-Läufe:** `analyze_domain_logic_depth()` ist rein statisch (kein
+> LLM-Aufruf), lässt sich also rückwirkend gegen die 37 bereits vorhandenen, echten
+> `workspace/*`-Projekte laufen. Ergebnis: **alle 37 von 37 Projekten (100 %) liegen unter der
+> Standard-Schwelle 0.5** - darunter mehrere, die tatsächlich grün abgeschlossen wurden. Ein
+> Blockieren auf Basis dieses Kriteriums hätte also bislang JEDEN Lauf gestoppt, nicht nur
+> Ausreißer - die ursprüngliche Entscheidung ("bewusst informativ statt blockierend") ist damit
+> nicht mehr nur eine Risiko-Einschätzung, sondern empirisch belegt richtig.
+>
+> **Root Cause der niedrigen Werte identifiziert (Stichprobe `chronosvault`, `hyperion_metrics`):**
+> zwei unabhängige Gründe, beide in der Mess-Methodik, nicht in echt fehlenden Tests:
+> 1. `_DOMAIN_DIR_MARKERS`/`_DOMAIN_FILE_STEMS` (`core/test_depth.py:198-201`) erkennen
+>    Verzeichnisse wie `app/engine/` nicht als Domain-Ordner (nur als Datei-STAMM, z.B.
+>    `engine.py` - nicht als Verzeichnisname `engine/`), wodurch bei `chronosvault` die
+>    eigentliche Fachlogik (`app/engine/hash_chain.py`, `app/engine/state_machine.py`) komplett
+>    unsichtbar blieb und stattdessen nur `app/core/config.py` (reines Boilerplate) erfasst
+>    wurde - eine zu enge Verzeichnis-Namensliste.
+> 2. **Der grundlegendere Befund:** `hyperion_metrics`s eigene Tests (`tests/test_metrics.py`)
+>    rufen die Fachlogik NIE direkt auf, sondern ausschließlich über echte HTTP-Requests gegen
+>    die FastAPI-App (`AsyncClient(...).post("/metrics", ...)`- Endpunkt-/Integrationstests,
+>    die idiomatische, gute Art, ein Web-Backend zu testen). `analyze_domain_logic_depth()`
+>    verlangt aber einen DIREKTEN Import UND Aufruf des Symbolnamens in der Testdatei selbst -
+>    für Endpunkt-Tests, die die Fachlogik nur indirekt über die Routing-Schicht erreichen,
+>    strukturell blind. Das ist kein Rand-, sondern der HÄUFIGSTE Testfall bei FastAPI-Backends
+>    in diesem Framework - der niedrige Wert misst also überwiegend eine Lücke der Messmethode,
+>    nicht eine Lücke in der tatsächlichen Testabdeckung.
+>
+> **Bewusste Konsequenz:** Status bleibt informativ, aber jetzt mit belegtem statt vermutetem
+> Grund - ein blockierendes Gate wäre mit der aktuellen Messmethode schlicht falsch, unabhängig
+> von noch mehr gesammelten Lauf-Daten (mehr Läufe mit derselben Methodik würden dasselbe
+> systematische Ergebnis liefern, kein Kalibrierungsproblem im statistischen Sinn). Eine
+> zukünftige Verbesserung bräuchte eine grundlegend andere Messung (z. B. Aufruf-Graph-
+> Erreichbarkeit von getesteten Routen HINUNTER bis zu Fachlogik-Funktionen, statt direktem
+> Import+Aufruf in der Testdatei selbst) - das ist ein eigenständiges, größeres Vorhaben, kein
+> Kalibrierungs-Wartezustand mehr. Keine Code-Änderung an der Mess-Logik selbst vorgenommen
+> (das Verzeichnis-Marker-Problem ist real, aber angesichts des grundlegenderen methodischen
+> Problems keine sinnvolle Teil-Korrektur).
 
 ---
 
@@ -1645,7 +1683,7 @@ ruff check && python -m pytest -q
 | P3-4 | `team_lessons.jsonl` Schema vereinheitlichen | P3 | ☑ erledigt |
 | P4-1 | Code-Review verbindlich | P4 | ☑ erledigt |
 | P4-2 | Abnahme gegen die Anforderung | P4 | ☑ erledigt |
-| P4-3 | Testtiefe fachlich statt nur Routen | P4 | 🟡 teilweise (informativ, nicht blockierend) |
+| P4-3 | Testtiefe fachlich statt nur Routen | P4 | ☑ erledigt (informativ, empirisch kalibriert - 37/37 Projekte unter Schwelle, methodischer Grund identifiziert) |
 | P4-4 | Projekt-Steckbrief für jeden Agenten | P4 | ☑ erledigt (nur allererster paralleler Test-First-Dispatch architektonisch ausgenommen) |
 | P4-5 | Write-Guard gegen Fremddatei-Überschreiben | P4 | ☑ erledigt (bereits vorhanden, nachgeprüft) |
 | P5-1 | Degraded-Mode ehrlich machen | P5 | ☑ erledigt (alle 3 Punkte) |

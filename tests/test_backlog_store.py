@@ -340,5 +340,79 @@ class TestPruneOrphanedTickets(unittest.TestCase):
         self.assertEqual(pruned, ["audit-deleted_project"])
 
 
+class TestArchiveCompletedTickets(unittest.TestCase):
+    """P6-4 (ROADMAP_TEMP.md): memory/backlog.json lag bei 200 Tickets/143 KB, davon 19
+    "cancelled" + 96 "done" - archive_completed_tickets() verschiebt sie nach einer Ruhezeit
+    nach memory/backlog_archive.json, statt sie im aktiven Board mitzuschleppen."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.file_path = Path(self.temp_dir) / "backlog.json"
+        self.archive_path = Path(self.temp_dir) / "backlog_archive.json"
+        self._patcher = patch.object(backlog_store, "BACKLOG_FILE", self.file_path)
+        self._archive_patcher = patch.object(backlog_store, "BACKLOG_ARCHIVE_FILE", self.archive_path)
+        self._patcher.start()
+        self._archive_patcher.start()
+        self.addCleanup(self._patcher.stop)
+        self.addCleanup(self._archive_patcher.stop)
+
+    def _age(self, ticket_id: str, days: float):
+        import json
+        from datetime import UTC, datetime, timedelta
+
+        raw = json.loads(self.file_path.read_text(encoding="utf-8"))
+        for t in raw:
+            if t["id"] == ticket_id:
+                t["updated_at"] = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        self.file_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    def test_old_completed_tickets_are_archived(self):
+        backlog_store.upsert_ticket("cli-1", "Erledigt", "cli", "done")
+        self._age("cli-1", 30)
+
+        archived = backlog_store.archive_completed_tickets(older_than_days=14)
+
+        self.assertEqual(archived, ["cli-1"])
+        self.assertIsNone(backlog_store.get_ticket("cli-1"))
+        self.assertEqual(len(backlog_store._load_archive()), 1)
+        self.assertEqual(backlog_store._load_archive()[0]["id"], "cli-1")
+
+    def test_recently_completed_tickets_stay_in_the_active_board(self):
+        backlog_store.upsert_ticket("cli-1", "Gerade erledigt", "cli", "done")  # updated_at = jetzt
+
+        archived = backlog_store.archive_completed_tickets(older_than_days=14)
+
+        self.assertEqual(archived, [])
+        self.assertIsNotNone(backlog_store.get_ticket("cli-1"))
+
+    def test_open_tickets_are_never_archived_regardless_of_age(self):
+        backlog_store.upsert_ticket("cli-1", "Noch offen", "cli", "todo")
+        self._age("cli-1", 365)
+
+        archived = backlog_store.archive_completed_tickets(older_than_days=14)
+
+        self.assertEqual(archived, [])
+        self.assertIsNotNone(backlog_store.get_ticket("cli-1"))
+
+    def test_archiving_preserves_previously_archived_tickets(self):
+        backlog_store.upsert_ticket("cli-1", "Alt", "cli", "done")
+        self._age("cli-1", 30)
+        backlog_store.archive_completed_tickets(older_than_days=14)
+
+        backlog_store.upsert_ticket("cli-2", "Auch alt", "cli", "cancelled")
+        self._age("cli-2", 30)
+        backlog_store.archive_completed_tickets(older_than_days=14)
+
+        ids = {t["id"] for t in backlog_store._load_archive()}
+        self.assertEqual(ids, {"cli-1", "cli-2"})
+
+    def test_no_op_when_nothing_qualifies_does_not_write_archive_file(self):
+        backlog_store.upsert_ticket("cli-1", "Offen", "cli", "todo")
+
+        backlog_store.archive_completed_tickets(older_than_days=14)
+
+        self.assertFalse(self.archive_path.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

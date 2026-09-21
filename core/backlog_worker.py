@@ -267,6 +267,7 @@ async def run_backlog_poll_cycle(
             close_tickets_referenced_in_commits,
             read_commit_messages,
         )
+        from core.backlog_store import archive_completed_tickets
         hygiene_closed = close_tickets_referenced_in_commits(list_tickets(), read_commit_messages())
         hygiene_cancelled = cancel_duplicates(list_tickets())
         # Backlog-Analyse 2026-09-16: 25 offene Tickets zeigten auf gelöschte Projekte und 45 lagen
@@ -275,11 +276,17 @@ async def run_backlog_poll_cycle(
         hygiene_orphans = cancel_orphaned_project_tickets(list_tickets())
         # `skip_ids`: die oben gerade wieder aufgegriffenen Tickets nicht im selben Zyklus schließen.
         hygiene_stale = cancel_stale_open_tickets(list_tickets(), skip_ids=recovered_stale_tickets)
-        if (hygiene_closed or hygiene_cancelled or hygiene_orphans or hygiene_stale) and status_callback:
+        # P6-4 (ROADMAP_TEMP.md): 200 Tickets/143 KB im aktiven Board, davon 19 "cancelled" + 96
+        # "done" - dieselbe Begründung wie die übrigen Hygiene-Regeln hier: ohne einen
+        # automatischen Anker im ohnehin periodisch laufenden Poll-Zyklus wächst das aktive
+        # Board mit längst abgeschlossener Arbeit unbegrenzt weiter.
+        hygiene_archived = archive_completed_tickets()
+        if (hygiene_closed or hygiene_cancelled or hygiene_orphans or hygiene_stale or hygiene_archived) and status_callback:
             status_callback(
                 f"🧹 Backlog-Hygiene: {len(hygiene_closed)} per Commit erledigt, "
                 f"{len(hygiene_cancelled)} Dublette(n), {len(hygiene_orphans)} ohne Projekt, "
-                f"{len(hygiene_stale)} liegengeblieben geschlossen."
+                f"{len(hygiene_stale)} liegengeblieben geschlossen, {len(hygiene_archived)} "
+                "abgeschlossene Tickets archiviert."
             )
     except Exception as e:  # Hygiene darf den Worker nie blockieren
         logging.getLogger(__name__).warning("Backlog-Hygiene fehlgeschlagen: %r", e)

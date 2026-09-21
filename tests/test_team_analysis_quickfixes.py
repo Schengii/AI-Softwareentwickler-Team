@@ -173,9 +173,14 @@ class TestBacklogHygiene(unittest.TestCase):
         self.file_path = Path(tempfile.mkdtemp()) / "backlog.json"
         self._patcher = patch.object(backlog_store, "BACKLOG_FILE", self.file_path)
         self._patcher.start()
+        self._archive_patcher = patch.object(
+            backlog_store, "BACKLOG_ARCHIVE_FILE", self.file_path.with_name("backlog_archive.json"),
+        )
+        self._archive_patcher.start()
 
     def tearDown(self):
         self._patcher.stop()
+        self._archive_patcher.stop()
 
     def _age(self, ticket_id: str, hours: float):
         raw = json.loads(self.file_path.read_text(encoding="utf-8"))
@@ -248,10 +253,15 @@ class TestBacklogDrainsOut(unittest.TestCase):
         self.file_path = Path(tempfile.mkdtemp()) / "backlog.json"
         self._patcher = patch.object(backlog_store, "BACKLOG_FILE", self.file_path)
         self._patcher.start()
+        self._archive_patcher = patch.object(
+            backlog_store, "BACKLOG_ARCHIVE_FILE", self.file_path.with_name("backlog_archive.json"),
+        )
+        self._archive_patcher.start()
         self.workspace = Path(tempfile.mkdtemp())
 
     def tearDown(self):
         self._patcher.stop()
+        self._archive_patcher.stop()
 
     def _age(self, ticket_id: str, days: float):
         raw = json.loads(self.file_path.read_text(encoding="utf-8"))
@@ -322,14 +332,31 @@ class TestBacklogDrainsOut(unittest.TestCase):
         self.assertEqual(report.stale_open_cancelled, [])
         self.assertEqual(backlog_store.get_ticket("orch-alt00001").status, "todo")
 
-    def test_bereits_geschlossene_tickets_bleiben_unberuehrt(self):
+    def test_bereits_geschlossene_tickets_bleiben_statusunberuehrt(self):
+        """Keine Status-ändernde Hygiene-Regel (Wiederaufgreifen, Dubletten-Schließung,
+        Stale-Abbruch) darf ein bereits "done"/"cancelled"-Ticket erneut anfassen. Seit P6-4
+        (ROADMAP_TEMP.md) werden solche Tickets nach einer Ruhezeit stattdessen archiviert - das
+        ist eine bewusste, EIGENE Regel (report.archived), keine der Status-Änderungen."""
         from core.backlog_hygiene import run_backlog_hygiene
 
         for tid, status in (("cli-done0001", "done"), ("cli-canc0001", "cancelled")):
             backlog_store.upsert_ticket(tid, "Erledigt", "cli", status, project_slug="weg")
             self._age(tid, 40)
         report = run_backlog_hygiene(commit_messages="", workspace_dir=self.workspace)
-        self.assertEqual(report.changed, 0)
+        self.assertEqual(report.recovered, [])
+        self.assertEqual(report.duplicates_cancelled, [])
+        self.assertEqual(report.closed_by_commit, [])
+        self.assertEqual(report.orphans_cancelled, [])
+        self.assertEqual(report.stale_open_cancelled, [])
+        self.assertCountEqual(report.archived, ["cli-done0001", "cli-canc0001"])
+        # Beide wurden archiviert - nicht mehr im aktiven Board, aber mit unverändertem Status
+        # vollständig in memory/backlog_archive.json erhalten.
+        self.assertIsNone(backlog_store.get_ticket("cli-done0001"))
+        self.assertIsNone(backlog_store.get_ticket("cli-canc0001"))
+        archived_raw = json.loads(backlog_store.BACKLOG_ARCHIVE_FILE.read_text(encoding="utf-8"))
+        archived_by_id = {t["id"]: t for t in archived_raw}
+        self.assertEqual(archived_by_id["cli-done0001"]["status"], "done")
+        self.assertEqual(archived_by_id["cli-canc0001"]["status"], "cancelled")
 
 
 if __name__ == "__main__":

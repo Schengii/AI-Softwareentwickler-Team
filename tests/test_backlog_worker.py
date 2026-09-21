@@ -69,6 +69,11 @@ class TestBacklogWorkerOrchestration(unittest.TestCase):
         self._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(self.temp_dir) / "backlog.json")
         self._backlog_patcher.start()
         self.addCleanup(self._backlog_patcher.stop)
+        self._backlog_archive_patcher = patch.object(
+            backlog_store, "BACKLOG_ARCHIVE_FILE", Path(self.temp_dir) / "backlog_archive.json",
+        )
+        self._backlog_archive_patcher.start()
+        self.addCleanup(self._backlog_archive_patcher.stop)
 
         # P6-8 (ROADMAP_TEMP.md): run_backlog_poll_cycle() ruft jetzt bei jedem Zyklus auch die
         # Telemetrie-Hygiene auf (core/telemetry_hygiene.py) - die operiert standardmäßig auf den
@@ -339,6 +344,11 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
         self._backlog_patcher = patch.object(backlog_store, "BACKLOG_FILE", Path(self.temp_dir) / "backlog.json")
         self._backlog_patcher.start()
         self.addCleanup(self._backlog_patcher.stop)
+        self._backlog_archive_patcher = patch.object(
+            backlog_store, "BACKLOG_ARCHIVE_FILE", Path(self.temp_dir) / "backlog_archive.json",
+        )
+        self._backlog_archive_patcher.start()
+        self.addCleanup(self._backlog_archive_patcher.stop)
 
         # Siehe TestBacklogWorkerOrchestration.setUp() - schützt dieselben echten Telemetrie-
         # Dateien vor jedem Test in dieser Klasse.

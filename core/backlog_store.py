@@ -26,6 +26,16 @@ from pathlib import Path
 from config import BASE_DIR
 
 BACKLOG_FILE = Path(BASE_DIR) / "memory" / "backlog.json"
+# P6-4 (ROADMAP_TEMP.md): memory/backlog.json lag bei 200 Tickets/143 KB, davon 19 "cancelled" +
+# 96 "done" - über die Hälfte des aktiven Boards war längst abgeschlossene Arbeit, die
+# is_ticket_ready()/list_tickets() trotzdem bei jedem Aufruf mitschleppen. archive_completed_
+# tickets() unten verschiebt sie hierher, statt sie zu löschen - die Historie bleibt erhalten,
+# nur außerhalb des aktiven Arbeitszustands.
+BACKLOG_ARCHIVE_FILE = Path(BASE_DIR) / "memory" / "backlog_archive.json"
+# Erst nach dieser Ruhezeit seit dem letzten Update archiviert - ein soeben erst geschlossenes
+# Ticket bleibt eine Weile im aktiven Board sichtbar (z.B. für ein Dashboard-"kürzlich
+# erledigt"), statt sofort im nächsten Poll-Zyklus zu verschwinden.
+ARCHIVE_COMPLETED_AFTER_DAYS = 14
 
 # Kanban-Spaltenreihenfolge (siehe interface/web_dashboard.py Board-Rendering und
 # interface/cli.py /backlog). "review" = ein PR wurde eröffnet und wartet auf Freigabe/Merge
@@ -329,3 +339,60 @@ def prune_orphaned_tickets(existing_project_slugs: set[str] | None = None) -> li
     if pruned_ids:
         _save_raw(kept)
     return pruned_ids
+
+
+def _load_archive() -> list[dict]:
+    if not BACKLOG_ARCHIVE_FILE.exists():
+        return []
+    try:
+        data = json.loads(BACKLOG_ARCHIVE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _save_archive(tickets: list[dict]) -> None:
+    BACKLOG_ARCHIVE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = BACKLOG_ARCHIVE_FILE.with_suffix(f"{BACKLOG_ARCHIVE_FILE.suffix}.tmp-{os.getpid()}-{threading.get_ident()}")
+    try:
+        tmp_path.write_text(json.dumps(tickets, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp_path, BACKLOG_ARCHIVE_FILE)
+    except OSError:
+        tmp_path.unlink(missing_ok=True)
+
+
+def archive_completed_tickets(
+    older_than_days: float = ARCHIVE_COMPLETED_AFTER_DAYS, now: datetime | None = None,
+) -> list[str]:
+    """Verschiebt "done"/"cancelled"-Tickets, deren letzte Aktualisierung mehr als
+    `older_than_days` zurückliegt, nach `memory/backlog_archive.json` - hält das aktive Board
+    (`memory/backlog.json`) klein, OHNE die Historie zu verlieren (die archivierten Tickets
+    bleiben vollständig erhalten, nur außerhalb von `list_tickets()`). Gibt die IDs der
+    archivierten Tickets zurück (leer, wenn nichts zu tun war - dann wird auch nichts
+    geschrieben)."""
+    now = now or datetime.now(UTC)
+    tickets = _load_raw()
+    kept: list[dict] = []
+    archived: list[dict] = []
+    for t in tickets:
+        if t.get("status") not in ("done", "cancelled"):
+            kept.append(t)
+            continue
+        try:
+            updated = datetime.fromisoformat(str(t.get("updated_at", "")))
+        except ValueError:
+            kept.append(t)
+            continue
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=UTC)
+        age_days = (now - updated).total_seconds() / 86400
+        if age_days < older_than_days:
+            kept.append(t)
+            continue
+        archived.append(t)
+
+    if not archived:
+        return []
+    _save_archive(_load_archive() + archived)
+    _save_raw(kept)
+    return [t["id"] for t in archived]

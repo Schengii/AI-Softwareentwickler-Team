@@ -1296,6 +1296,31 @@ Agenten-Aufruf kostet.
 > reduziert (−81 %), alle 195 Nachrichten erhalten. 3 neue Tests in
 > `tests/test_conversation_history_rotation.py`.
 | P6-4 | `memory/backlog.json` 143 KB / 200 Tickets, davon 19 `cancelled` + 96 `done` – abgeschlossene Tickets nach `memory/backlog_archive.json` auslagern | S |
+
+> **Umsetzung 2026-09-21:** Neue Funktion `core/backlog_store.py.archive_completed_tickets()`:
+> verschiebt `done`/`cancelled`-Tickets, deren `updated_at` mehr als
+> `ARCHIVE_COMPLETED_AFTER_DAYS=14` Tage zurückliegt, aus `memory/backlog.json` nach
+> `memory/backlog_archive.json` (append-only, Historie bleibt vollständig erhalten, nur
+> außerhalb der aktiven `list_tickets()`-Arbeitsliste). Die 14-Tage-Ruhezeit verhindert, dass
+> ein soeben erst geschlossenes Ticket im selben Hygiene-Durchlauf sofort verschwindet. Wie bei
+> allen bereits bestehenden Aufräumregeln wird nur geschrieben, wenn tatsächlich etwas zu
+> archivieren war. Verankert an ZWEI Stellen: `core/backlog_hygiene.py.run_backlog_hygiene()`
+> (manueller `python main.py --backlog-hygiene`-Aufruf, neues `HygieneReport.archived`-Feld) UND
+> `core/backlog_worker.py.run_backlog_poll_cycle()` (automatisch bei jedem Poll-Zyklus, dieselbe
+> Begründung wie bei den übrigen dort bereits automatisch laufenden Hygiene-Regeln). Beim
+> Schreiben der Tests aufgefallen und korrigiert: ein bestehender Test
+> (`test_bereits_geschlossene_tickets_bleiben_unberuehrt`) prüfte exakt das alte Verhalten
+> ("geschlossene Tickets werden nie angefasst") - umbenannt und umgestellt, um die neue,
+> bewusst andere Archivierungs-Regel korrekt abzudecken, statt sie zu verdecken. 5 neue Tests in
+> `tests/test_backlog_store.py`; beide betroffenen Test-Dateien
+> (`tests/test_backlog_worker.py`, `tests/test_team_analysis_quickfixes.py`) bekommen denselben
+> `BACKLOG_ARCHIVE_FILE`-Isolations-Patch wie zuvor schon `BACKLOG_FILE`, sonst hätte JEDER Test
+> dort die echte `memory/backlog_archive.json` berühren können. Gegen die reale
+> `memory/backlog.json` geprüft (200 Tickets, 137 `done` + 26 `cancelled`) - aktuell 0 Tickets
+> alt genug (alle innerhalb der letzten 14 Tage aktualisiert, sehr aktives Projekt), der
+> Mechanismus greift ab jetzt automatisch, sobald welche die Ruhezeit erreichen.
+
+
 | P6-5 | `interface/cli.py` 2.378 Zeilen, `core/llm_factory.py` 1.848, `agents/orchestrator/verification.py` 1.816 – die drei größten Module nach Verantwortlichkeiten aufteilen | L |
 | P6-6 | `core/message_bus.py` enthält nur noch zwei Dataclasses – in `core/agent_contracts.py` umbenennen (60+ Importe, daher mit Alias-Übergang) | S |
 | P6-7 | `run_closed` meldete `agent_calls: 6` bei 9 `agent_call`-Events im selben Trace – Zählweise vereinheitlichen | XS |
@@ -1425,4 +1450,4 @@ ruff check && python -m pytest -q
 | P5-3 | Verifikations-Reserve im Budget | P5 | ☑ erledigt (Reserve existierte, Gate korrigiert) |
 | P6-1 | Gestagte Fixes committet | P6 | ☑ erledigt |
 | P6-2 | ~~Workspace aus Framework-Commits~~ | P6 | ☑ Fehlannahme, siehe oben |
-| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-7, P6-8 erledigt; P6-4, P6-5, P6-6 offen |
+| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-7, P6-8 erledigt; P6-5, P6-6 offen |

@@ -37,7 +37,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from config import BASE_DIR, WORKSPACE_DIR
-from core.backlog_store import Ticket, list_tickets, upsert_ticket
+from core.backlog_store import Ticket, archive_completed_tickets, list_tickets, upsert_ticket
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +64,12 @@ class HygieneReport:
     closed_by_commit: list[str] = field(default_factory=list)
     orphans_cancelled: list[str] = field(default_factory=list)
     stale_open_cancelled: list[str] = field(default_factory=list)
+    archived: list[str] = field(default_factory=list)
 
     @property
     def changed(self) -> int:
         return (len(self.recovered) + len(self.duplicates_cancelled) + len(self.closed_by_commit)
-                + len(self.orphans_cancelled) + len(self.stale_open_cancelled))
+                + len(self.orphans_cancelled) + len(self.stale_open_cancelled) + len(self.archived))
 
     def format_summary(self) -> str:
         lines = ["🧹 Backlog-Hygiene:"]
@@ -77,10 +78,12 @@ class HygieneReport:
         lines.append(f"  - {len(self.closed_by_commit)} Tickets per Commit-Referenz als erledigt markiert")
         lines.append(f"  - {len(self.orphans_cancelled)} Tickets ohne existierendes Projekt geschlossen")
         lines.append(f"  - {len(self.stale_open_cancelled)} dauerhaft liegengebliebene Tickets geschlossen")
+        lines.append(f"  - {len(self.archived)} abgeschlossene Tickets nach backlog_archive.json ausgelagert")
         for label, ids in (("zurückgesetzt", self.recovered), ("Dublette", self.duplicates_cancelled),
                            ("per Commit erledigt", self.closed_by_commit),
                            ("Projekt existiert nicht mehr", self.orphans_cancelled),
-                           ("liegengeblieben", self.stale_open_cancelled)):
+                           ("liegengeblieben", self.stale_open_cancelled),
+                           ("archiviert", self.archived)):
             lines.extend(f"    • {tid} ({label})" for tid in ids)
         return "\n".join(lines)
 
@@ -283,4 +286,8 @@ def run_backlog_hygiene(commit_messages: str | None = None, now: datetime | None
     # `updated_at` damit frisch ist - es soll nicht im selben Durchlauf doppelt kommentiert werden.
     report.stale_open_cancelled = cancel_stale_open_tickets(
         list_tickets(), now=now, skip_ids=report.recovered)
+    # Zuletzt: erst NACHDEM alle Status-Änderungen oben passiert sind (ein Ticket, das gerade
+    # eben erst hier "cancelled" wurde, hat noch keine Ruhezeit hinter sich und soll nicht im
+    # selben Durchlauf gleich mitarchiviert werden).
+    report.archived = archive_completed_tickets(now=now)
     return report

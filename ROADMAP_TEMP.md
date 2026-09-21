@@ -944,7 +944,7 @@ aufgerufen werden. `core/code_graph.py` (495 Zeilen) liefert die Grundlage dafü
 ---
 
 ### P4-4 · Kein geteiltes Kurzzeitgedächtnis während der Entwicklungsphase
-**Status:** 🟡 **früher Abfang erledigt 2026-09-20**, echte Prompt-Injektion weiterhin offen · **Aufwand:** M · **Wirkung:** mittel
+**Status:** 🟡 **früher Abfang + zuverlässige Vertragsdatei erledigt 2026-09-21**, echte Prompt-Injektion vor dem ersten Schreiben weiterhin offen · **Aufwand:** M · **Wirkung:** mittel
 
 `core/message_bus.py` sagt im eigenen Docstring, dass die echte Publish/Subscribe-Klasse entfernt
 wurde, weil sie nie genutzt wurde. Die Koordination läuft über `core/team_board.py` – ein
@@ -1000,6 +1000,28 @@ Ein Tester, der die echte Routenliste im Kontext hat, erfindet keine.
 > die eigentliche Prompt-Injektions-Lösung als Vermeidung statt Nach-Korrektur – dafür müsste
 > zuerst sichergestellt werden, dass `interface_contract.json` auch für Backend-only-Projekte
 > zuverlässig entsteht.
+
+> **Umsetzung 2026-09-21, die genannte Voraussetzung geschlossen:** Neues Modul
+> `core/interface_contract.py.ensure_interface_contract()` - rein additiv, überschreibt NIE eine
+> bereits vom architect geschriebene Datei, trägt `interface_contract.json` aber deterministisch
+> (kein LLM-Aufruf, `core/code_graph.py`) nach, wenn sie nach der Entwicklungsphase noch fehlt:
+> alle Top-Level-Klassen/-Funktionen (keine Methoden, keine privaten Namen, keine Testdateien)
+> aus dem tatsächlich geschriebenen Code. Läuft in `agents/orchestrator/department.py` am selben
+> Checkpoint wie der bereits bestehende `_run_test_route_mismatch_preflight()` (nach `dev_lead`),
+> damit `qa_lead`/`governance_lead`/spätere Fix-Runden ab hier wenigstens einen echten Vertrag
+> vorfinden statt gar keinen - schließt die vorherige Analyse-Lücke ("bei `synapsegate` fehlt die
+> Datei komplett"). Deckt bewusst nur `class`/`function` ab, nicht `instance`/`constant` (aus
+> reiner AST-Analyse nicht zuverlässig von einer beliebigen Modulvariable unterscheidbar) - ein
+> gröberer, aber immerhin vorhandener Vertrag statt keinem. Abgesichert mit demselben
+> `is_safe_project_dir()`-Framework-Root-Schutz wie `core/project_scaffold.py` - ein erster
+> Entwurf ohne diese Schranke schrieb bei einem Test mit `project_dir="."` (Framework-Root)
+> tatsächlich eine `interface_contract.json` mit dem gesamten Framework-Quellcode ins Repo-Root;
+> beim Verifizieren aufgefallen, vor dem Commit korrigiert und mit einem eigenen Regressionstest
+> abgesichert. 8 neue Tests in `tests/test_interface_contract.py`. **Weiterhin offen:** die eigentliche Vermeidung (echte
+> Routen VOR dem ersten Schreiben in den Prompt injizieren) bleibt architektonisch schwierig,
+> solange `tester` im Test-First-Modus PARALLEL zu `backend` arbeitet und die Routen zu diesem
+> Zeitpunkt schlicht noch nicht existieren (siehe Analyse 2026-09-20 oben) - dafür bräuchte es
+> einen größeren Eingriff in die Phasen-Reihenfolge selbst, kein reines Kontext-Problem mehr.
 
 ---
 
@@ -1282,7 +1304,7 @@ ruff check && python -m pytest -q
 | P4-1 | Code-Review verbindlich | P4 | ☑ erledigt |
 | P4-2 | Abnahme gegen die Anforderung | P4 | ☑ erledigt |
 | P4-3 | Testtiefe fachlich statt nur Routen | P4 | 🟡 teilweise (informativ, nicht blockierend) |
-| P4-4 | Projekt-Steckbrief für jeden Agenten | P4 | 🟡 früher Abfang erledigt, Prompt-Injektion offen |
+| P4-4 | Projekt-Steckbrief für jeden Agenten | P4 | 🟡 Abfang + zuverlässige Vertragsdatei erledigt, Prompt-Injektion vor 1. Schreiben offen |
 | P4-5 | Write-Guard gegen Fremddatei-Überschreiben | P4 | ☐ |
 | P5-1 | Degraded-Mode ehrlich machen | P5 | 🟡 Punkt 2 erledigt |
 | P5-2 | Token-Effizienz / Caching | P5 | 🟡 Gemini-Caching erledigt (Aufgabe 1), Rest offen |

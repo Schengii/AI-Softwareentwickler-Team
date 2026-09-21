@@ -28,6 +28,7 @@ from config import (
 )
 from core.checkpoint import clear_checkpoint, load_checkpoint, save_phase_checkpoint
 from core.definition_of_done import check_entrypoint_exists
+from core.interface_contract import ensure_interface_contract
 from core.message_bus import AgentResult, AgentTask
 from core.model_capability import complex_run
 from core.project_scaffold import is_safe_project_dir
@@ -450,6 +451,16 @@ class DepartmentMixin:
                 await self._run_entrypoint_preflight(project_dir, member_ids, all_results, file_owners, notify)
                 if test_first_active and "tester" in member_ids:
                     await self._run_test_route_mismatch_preflight(project_dir, all_results, file_owners, notify)
+                # P4-4 (ROADMAP_TEMP.md): interface_contract.json entstand für Backend-only-
+                # Projekte bisher oft gar nicht (architect-Anweisung ohne Garantie, siehe
+                # core/interface_contract.py-Docstring) - Nachtrag NUR, wenn die Datei nach der
+                # Entwicklungsphase noch fehlt, aus dem tatsächlich geschriebenen Code, damit
+                # QA/Governance ab hier wenigstens einen echten Vertrag vorfinden.
+                try:
+                    if ensure_interface_contract(project_dir):
+                        notify("  📜 [dim]interface_contract.json fehlte - deterministisch aus dem geschriebenen Code nachgetragen.[/dim]")
+                except Exception as e:
+                    notify(f"  ⚠️ [dim yellow]interface_contract.json konnte nicht nachgetragen werden: {e}[/dim yellow]")
                 if ENABLE_INTEGRATION_CHECKPOINT and enable_phase_checkpoint:
                     self.last_integration_checkpoint_lines = await self._run_integration_checkpoint(
                         project_dir, all_results, file_owners, notify, run_start_tokens=run_start_tokens,

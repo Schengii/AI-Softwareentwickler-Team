@@ -1388,6 +1388,38 @@ Agenten-Aufruf kostet.
 
 
 | P6-5 | `interface/cli.py` 2.378 Zeilen, `core/llm_factory.py` 1.848, `agents/orchestrator/verification.py` 1.816 – die drei größten Module nach Verantwortlichkeiten aufteilen | L |
+
+> **Umsetzung 2026-09-21, Teil 1/3 (`interface/cli.py`):** nach demselben Mixin-Muster
+> aufgeteilt, das `agents/orchestrator/` bereits etabliert (ein `__init__.py` komponiert
+> mehrere `XxxMixin`-Klassen zu `CLIInterface`). Aus der 2396-Zeilen-Datei mit einer
+> ~50-Methoden-Klasse wurde `interface/cli/` mit neun Dateien nach Verantwortlichkeit:
+> `startup.py` (342 Z., Sitzungsstart/Hauptschleife/Preflight), `task_processing.py`
+> (279 Z., eine Aufgabe entgegennehmen/ausführen), `git_release.py` (553 Z., Push/PR/Release/
+> Rollback/Branch-Protection/Worktrees), `project_management.py` (295 Z., Workspace/Tests/
+> Deployment), `learnings_backlog.py` (332 Z., Learnings/Optimierung/Backlog/Ziel-Loop),
+> `project_docs.py` (365 Z., ADRs/Checkpoint/Team-Health/Konstitution/Design-System/Audit),
+> `command_dispatch.py` (232 Z., nur `_handle_command`), `_shared.py` (125 Z., `console`-
+> Singleton, `BANNER`/`HELP_TEXT`, Eingabe-Hilfsfunktionen) und `__init__.py` (71 Z.).
+>
+> Dabei bewusst gelöst: 24 bestehende Testdateien patchen Namen wie
+> `interface.cli.Confirm.ask`, `interface.cli.notify_external`,
+> `interface.cli.ENABLE_PLAN_CONFIRMATION`, `interface.cli.Live`/`Panel` (wholesale) und
+> `interface.cli._pending_console_input`. Für geteilte MUTABLE Objekte (`console`) und
+> Klassen-Attribute (`Confirm.ask`, `framework_release.create_release`) funktioniert das
+> unabhängig vom tatsächlichen Importort unverändert. Für einfache Werte-/Funktions-/Klassen-
+> Ersetzungen (`notify_external`, `ENABLE_PLAN_CONFIRMATION`, `ENABLE_STARTUP_MODEL_PREFLIGHT`,
+> `BACKLOG_WIP_LIMIT_IN_PROGRESS`, `_pending_console_input`, `Live`, `Panel` als Ganzes) reicht
+> das NICHT - die aufrufende Methode braucht den Namen zur Aufrufzeit erneut aus `interface.cli`
+> importiert (verzögerter Import), sonst hielte sie weiter ihre eigene, beim Modul-Import
+> gebundene, ungepatchte Referenz. Genau dieses Muster hat das Framework an anderer Stelle
+> bereits etabliert (`agents/base_agent.py`, `core/framework_backlog_worker.py`) und wurde hier
+> gezielt in genau den betroffenen Methoden angewendet (`_process_task`,
+> `_render_and_confirm_plan`, `_main_loop`, `_read_user_input`, `_report_ci_status`,
+> `_show_backlog`) - dadurch mussten KEINE der 24 bestehenden Testdateien geändert werden. Alle
+> 163 Tests, die `CLIInterface`/`interface.cli.*` nutzen, laufen unverändert grün; `ruff check`
+> sauber. `core/llm_factory.py` und `agents/orchestrator/verification.py` (Teil 2 und 3)
+> bleiben offen.
+
 | P6-6 | `core/message_bus.py` enthält nur noch zwei Dataclasses – in `core/agent_contracts.py` umbenennen (60+ Importe, daher mit Alias-Übergang) | S |
 
 > **Umsetzung 2026-09-21:** `core/agent_contracts.py` ist jetzt die kanonische Definition von
@@ -1529,4 +1561,4 @@ ruff check && python -m pytest -q
 | P5-3 | Verifikations-Reserve im Budget | P5 | ☑ erledigt (Reserve existierte, Gate korrigiert) |
 | P6-1 | Gestagte Fixes committet | P6 | ☑ erledigt |
 | P6-2 | ~~Workspace aus Framework-Commits~~ | P6 | ☑ Fehlannahme, siehe oben |
-| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-6, P6-7, P6-8 erledigt; P6-5 offen |
+| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-6, P6-7, P6-8 erledigt; P6-5 teilweise (`interface/cli.py` erledigt, `core/llm_factory.py`/`agents/orchestrator/verification.py` offen) |

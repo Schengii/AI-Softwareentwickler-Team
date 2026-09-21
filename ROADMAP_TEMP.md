@@ -1156,7 +1156,7 @@ bezeichnet sich selbst als „eher ein Infrastruktur-/Kontingent- als ein Agente
 ---
 
 ### P5-2 · Ein Lauf kostet ~870k Tokens, davon der Großteil wiederholter Prompt-Kontext
-**Status:** 🟡 **Aufgabe 1 (Gemini-Caching) erledigt 2026-09-20**, Aufgaben 2+3 offen · **Aufwand:** M · **Wirkung:** hoch
+**Status:** 🟡 **alle drei Aufgaben implementiert 2026-09-21**, A/B-Messung (Akzeptanzkriterium) offen · **Aufwand:** M · **Wirkung:** hoch
 
 Aus dem `cachegrid_proxy`-Trace: `prompt_tokens` 638.581 bei `cache_read_tokens` 182.588 →
 **Cache-Trefferquote 28,6 %**. Ein einzelner `backend`-Aufruf: 237.401 Prompt-Tokens bei 13
@@ -1244,8 +1244,30 @@ noch 2×.
 3. **Werkzeug-Ergebnisse deduplizieren:** dieselbe Datei zweimal gelesen ⇒ nur das letzte
    Ergebnis im Kontext behalten, frühere durch einen Verweis ersetzen.
 
+> **Umsetzung 2026-09-21 (Aufgaben 2+3), bereits über einen autonomen
+> `--work-framework-backlog`-Lauf eingespielt und in dieser Sitzung verifiziert/committet:**
+> `core/agent_watchdog.py.AgentWatchdog` beobachtet jede Iteration live und löst
+> `compact=True` bei genau den in der Empfehlung genannten Schwellen aus –
+> `tool_call_soft_limit=15` (ohne bis dahin gespeicherte Datei) und eskalierend bei
+> `max_prompt_tokens=80_000` (Schwelle verdoppelt sich bei jedem weiteren Auslösen, damit ein
+> weiter wachsender Prompt nicht nur einmalig abgefangen wird). Der Aufruf in
+> `agents/base_agent.py._run_agentic_loop()` reicht diese Intervention an
+> `compact_tool_results(turns, keep_recent_rounds=1, min_chars=500, deduplicate_reads=True)`
+> weiter – aggressiver als die reguläre Kompaktierung pro Iteration
+> (`CONTEXT_COMPACTION_KEEP_ROUNDS=2`/`CONTEXT_COMPACTION_MIN_CHARS=800`, ebenfalls per Default
+> aktiv). Aufgabe 3 (Dedupe) ist `core/context_compaction.py.compact_tool_results(...,
+> deduplicate_reads=True)`: frühere `read_file`-Ergebnisse derselben Datei werden auf einen
+> schlanken „veraltet, neuerer Aufruf existiert"-Verweis reduziert, sobald dieselbe Datei später
+> erneut gelesen wurde – standardmäßig aktiv über
+> `CONTEXT_COMPACTION_DEDUPLICATE_READS=True` (`config.py`). Abgedeckt durch
+> `tests/test_token_efficiency.py` (10 Tests) und `tests/test_quality_gates.py` (Watchdog-Tests,
+> 23 Tests), beide grün.
+
 **Akzeptanzkriterium:** Ein Referenzlauf (`ping_service`, minimal) und ein mittlerer Lauf
-(`nexus_mesh`) vorher/nachher gemessen: ≥ 25 % weniger Prompt-Tokens bei gleichem Ergebnis.
+(`nexus_mesh`) vorher/nachher gemessen: ≥ 25 % weniger Prompt-Tokens bei gleichem Ergebnis. Noch
+nicht mit einem dedizierten Vorher/Nachher-A/B-Lauf nachgewiesen (kein aktueller
+`ping_service`/`nexus_mesh`-Referenzlauf in dieser Sitzung durchgeführt) – die Mechanismen selbst
+sind implementiert, getestet und aktiv.
 
 ---
 
@@ -1472,7 +1494,7 @@ ruff check && python -m pytest -q
 | P4-4 | Projekt-Steckbrief für jeden Agenten | P4 | 🟡 Abfang + zuverlässige Vertragsdatei erledigt, Prompt-Injektion vor 1. Schreiben offen |
 | P4-5 | Write-Guard gegen Fremddatei-Überschreiben | P4 | ☑ erledigt (bereits vorhanden, nachgeprüft) |
 | P5-1 | Degraded-Mode ehrlich machen | P5 | ☑ erledigt (alle 3 Punkte) |
-| P5-2 | Token-Effizienz / Caching | P5 | 🟡 Gemini-Caching erledigt (Aufgabe 1), Rest offen |
+| P5-2 | Token-Effizienz / Caching | P5 | 🟡 alle 3 Aufgaben implementiert, A/B-Messung offen |
 | P5-3 | Verifikations-Reserve im Budget | P5 | ☑ erledigt (Reserve existierte, Gate korrigiert) |
 | P6-1 | Gestagte Fixes committet | P6 | ☑ erledigt |
 | P6-2 | ~~Workspace aus Framework-Commits~~ | P6 | ☑ Fehlannahme, siehe oben |

@@ -645,7 +645,7 @@ genau diesen drei Optionen; nach der Abarbeitung liegen ≤ 3 nie genutzte Rolle
 ---
 
 ### P2-4 · Der Retrospektiv-Schritt arbeitet blind
-**Status:** ❌ offen · **Aufwand:** S · **Wirkung:** mittel
+**Status:** ✅ erledigt 2026-09-21 · **Aufwand:** S · **Wirkung:** mittel
 
 Im Lauf `cachegrid_proxy`: `retrospective` = 1.325 Prompt-Tokens, **0 Tool-Calls**, 0 Dateien.
 `agent_trainer` = zwei Aufrufe, 0 Dateien, davon einer mit 88.428 Tokens und 68 s Laufzeit. Der
@@ -660,6 +660,26 @@ einen auf ~1500-2000 Zeichen gekappten Prosa-Auszug ohne `project_dir`/`allow_to
   `outcome`, `run_trace` und `file_owners` zusammenfassen, kein LLM) und die LLM-Analyse allein
   dem Root-Cause-Analysten überlassen. Zwei LLM-Analysen desselben Laufs mit unterschiedlicher
   Evidenztiefe erzeugen widersprüchliche Lektionen – und Variante B spart pro Lauf ~90k Tokens.
+
+> **Umsetzung (2026-09-21, Variante B):** `agents/orchestrator/retrospective.py._run_retrospective()`
+> macht KEINEN LLM-Aufruf mehr. Statt eines auf ~250 Zeichen je Agent gekürzten Prosa-Auszugs an
+> den `retrospective`-Agenten liefert die Funktion jetzt direkt eine deterministische
+> Kennzahlen-Zusammenfassung aus der bereits vorliegenden `results`-Liste (Gesamtdauer,
+> Erfolgsquote, Gesamt-Tokens, fehlgeschlagene Agenten mit Fehlermeldung, die drei
+> token-intensivsten Agenten) - `total_tokens=0`, keine LLM-Latenz. Die eigentliche LLM-
+> Tiefenanalyse bleibt vollständig beim `root_cause_analyst`
+> (`_maybe_run_root_cause_analysis()`), der im Gegensatz zum bisherigen Retrospektiv-Schritt
+> echten `project_dir`/Werkzeug-Zugriff hat - keine zwei widersprüchlichen LLM-Analysen mehr auf
+> unterschiedlicher Evidenztiefe. Der Rückgabewert speist `_run_agent_trainer_self_optimization()`
+> unverändert über `retro_content` weiter.
+>
+> Der `retrospective`-Agent selbst (`agents/retrospective_agent.py`) bleibt registriert/
+> instanziiert (kein Umbau der Agenten-Registrierung, dieselbe Vorsicht wie bei P2-3 - kleinerer,
+> sicherer Blast-Radius) - er wird nur in diesem Aufruf nicht mehr für eine LLM-Anfrage genutzt.
+>
+> 3 neue Tests in `tests/test_deterministic_retrospective.py`: kein LLM-Aufruf mehr (ein
+> absichtlich fehlschlagender Mock beweist das), Zusammenfassung auch ohne Fehlschläge, `None`
+> ohne registrierten `retrospective`-Agenten.
 
 ---
 
@@ -1114,7 +1134,7 @@ ruff check && python -m pytest -q
 | P2-1 | Learnings mit Wirksamkeitsmessung | P2 | ☑ erledigt |
 | P2-2 | Modell-Auto-Tuning optimiert falsche Zielgröße | P2 | ☑ erledigt |
 | P2-3 | 13 ungenutzte Rollen – entscheiden statt melden | P2 | 🟡 teilweise |
-| P2-4 | Retrospektive arbeitet blind | P2 | ☐ |
+| P2-4 | Retrospektive arbeitet blind | P2 | ☑ erledigt |
 | P3-1 | Post-Mortem-Artefakt pro Lauf | P3 | ☐ |
 | P3-2 | `--team-trend` Trendbericht | P3 | ☐ |
 | P3-3 | Root-Cause nur bei blockierenden Befunden | P3 | ☐ |

@@ -45,24 +45,46 @@ class RetrospectiveMixin:
         results: list[AgentResult],
         total_duration: float,
     ) -> AgentResult | None:
-        retro_agent = self._agents.get("retrospective")
-        if not retro_agent:
+        """
+        P2-4 (ROADMAP_TEMP.md, "Variante B"): rein deterministische Kennzahlen-Zusammenfassung,
+        KEIN LLM-Aufruf mehr. Realer Fund (Lauf `cachegrid_proxy`): der bisherige LLM-Retrospektiv-
+        Schritt bekam nur einen auf ~250 Zeichen je Agent gekürzten Prosa-Auszug ohne
+        `project_dir`/Werkzeuge - 1.325 Prompt-Tokens für eine Analyse, die auf derselben
+        unvollständigen Evidenz wie core/root_cause_analyst.py aufsetzte (der ECHTE Werkzeug-
+        Zugriff hat), aber zusätzlich Tokens kostete und bei widersprüchlicher Bewertung
+        (zwei LLM-Analysen desselben Laufs mit unterschiedlicher Evidenztiefe) verwirrende,
+        sich widersprechende Lektionen erzeugen konnte. Die LLM-Tiefenanalyse bleibt jetzt
+        ausschließlich beim root_cause_analyst (siehe _maybe_run_root_cause_analysis), der
+        echten Dateizugriff hat - dieser Schritt liefert nur die harten Zahlen, aus denen
+        _run_agent_trainer_self_optimization() weiterhin fehlerhafte/teure Agenten herausfiltert.
+        """
+        if "retrospective" not in self._agents:
             return None
 
-        retro_context = f"NUTZERAUFGABE: {user_request}\n\nTEAM-ERGEBNISSE:\n"
+        erfolgreich = sum(1 for r in results if r.success)
+        gesamt_tokens = sum(r.total_tokens for r in results)
+        lines = [
+            "## Automatische Kennzahlen-Retrospektive (deterministisch, kein LLM-Aufruf)",
+            f"- Dauer gesamt: {total_duration:.1f}s | Agenten-Aufrufe: {len(results)} "
+            f"({erfolgreich}/{len(results)} erfolgreich) | Tokens gesamt: {gesamt_tokens}",
+        ]
         for r in results:
-            status = "Erfolgreich" if r.success else f"Fehler: {r.error}"
-            retro_context += f"- {r.agent_name} ({r.agent_id}): {status} | Dauer: {r.duration_seconds:.1f}s | Tokens: {r.total_tokens}\n"
-            if r.content:
-                retro_context += f"  Auszug: {r.content[:250]}...\n"
+            if not r.success:
+                lines.append(f"- ❌ {r.agent_name} ({r.agent_id}): {r.error}")
+        top_tokens = sorted(results, key=lambda r: r.total_tokens, reverse=True)[:3]
+        if top_tokens:
+            lines.append(
+                "- Token-intensivste Agenten: "
+                + ", ".join(f"{r.agent_id} ({r.total_tokens})" for r in top_tokens)
+            )
 
-        task = AgentTask(
+        return AgentResult(
             task_id="retro_task",
             agent_id="retrospective",
-            description="Erstelle eine ehrliche und konstruktive Retrospektive für dieses Projekt.",
-            context=retro_context,
+            agent_name="Retrospektive & Lessons Learned Agent",
+            success=True,
+            content="\n".join(lines),
         )
-        return await self._execute_and_log(retro_agent, task)
 
     async def _run_agent_trainer_self_optimization(
         self,

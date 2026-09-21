@@ -760,6 +760,18 @@ class TestRecordUnusedAgentTickets(unittest.TestCase):
         self.assertIn("ml", ml_ticket.detail)
         self.assertIn("100", ml_ticket.detail)
 
+    def test_ticket_detail_names_the_three_roadmap_options_explicitly(self):
+        """P2-3 (ROADMAP_TEMP.md): 'Entscheidung statt Dauer-Meldung' - das Ticket muss die drei
+        Lösungsoptionen wörtlich nennen, statt nur allgemein auf eine Prüfung zu verweisen."""
+        unused = [UnusedAgent(agent_id="ml", configured_model="claude-sonnet-5", sample_runs=100)]
+
+        record_unused_agent_tickets(OptimizationReport(unused_agents=unused))
+
+        detail = next(t for t in list_tickets() if t.id == "unused-agent-ml").detail
+        self.assertIn("Pflicht-Rolle machen", detail)
+        self.assertIn("Planer-Beschreibung schärfen", detail)
+        self.assertIn("Streichen", detail)
+
     def test_repeated_finding_updates_same_ticket_instead_of_duplicating(self):
         unused = [UnusedAgent(agent_id="ml", configured_model="claude-sonnet-5", sample_runs=100)]
 

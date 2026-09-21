@@ -576,7 +576,7 @@ unterdurchschnittlichem Qualitäts-Score **kein** Downgrade vorgeschlagen bekomm
 ---
 
 ### P2-3 · 13 von 33 Rollen wurden in 20 Läufen kein einziges Mal eingesetzt
-**Status:** ❌ offen · **Aufwand:** M · **Wirkung:** mittel-hoch
+**Status:** 🟡 teilweise 2026-09-21 · **Aufwand:** M · **Wirkung:** mittel-hoch
 
 Einsatz in den letzten 20 Läufen: `tester` 48×, `backend` 45×, `dev_lead` 32×, `security` 20×,
 `architect` 19×, `frontend` 15×, `qa_lead` 14× — dann fällt es steil ab: `code_reviewer` 6×,
@@ -603,6 +603,44 @@ umsetzen:
 
 **Akzeptanzkriterium:** `unused_agent`-Lektionen führen automatisch zu einem Backlog-Ticket mit
 genau diesen drei Optionen; nach der Abarbeitung liegen ≤ 3 nie genutzte Rollen vor.
+
+> **Umsetzung (2026-09-21, teilweise):** Von den 14 nie eingesetzten Rollen waren 5
+> (`copywriter`, `i18n`, `image_generator`, `prompt_engineer`, `web_research`) bereits hinter
+> `core/task_manager.py._NICHE_AGENT_TRIGGERS` versteckt - sie erscheinen nur, wenn die Anfrage
+> ein passendes Stichwort enthält, und ihr Nicht-Erscheinen in den letzten 20 Läufen ist damit
+> kein Fund, sondern der Filter funktioniert wie vorgesehen (keine Aktion nötig). `compliance`
+> und `project_cleaner` hatten bereits ein explizites "einbeziehen wenn..."-Kriterium im
+> `DECOMPOSE_SYSTEM_PROMPT` - ihre Seltenheit ist plausibel echt (nicht jedes Projekt betrifft
+> personenbezogene Daten oder braucht Aufräumarbeiten), daher ebenfalls keine Änderung.
+>
+> Die verbleibenden 7 Rollen (`product_owner`, `business_analyst`, `ui_ux`, `devops`,
+> `documentation`, `refactoring`, `github`) standen dagegen IMMER sichtbar im Zerlegungs-Prompt
+> und hatten trotzdem nur eine reine Fähigkeitsbeschreibung ohne WANN-Kriterium - dieselbe
+> Ursache, die bei `accessibility`/`finops`/`web_research`/`performance`/`image_generator`/
+> `copywriter`/`mobile`/`ml`/`prompt_engineer`/`data_engineer`/`i18n`/`team_lead` bereits per
+> "Option 2: Planer-Beschreibung schärfen" behoben wurde (siehe deren Kommentare in
+> `core/task_manager.py`). Alle 7 bekamen jetzt dasselbe Muster: eine `AVAILABLE_AGENTS`-
+> Beschreibung mit konkretem "Einsetzen bei: (1)/(2)/(3)..."-Kriterium (inkl. Abgrenzung zu
+> überlappenden Rollen, z. B. `documentation` vs. `readme`, `refactoring` vs. `code_reviewer`)
+> PLUS eine explizite Regel im `DECOMPOSE_SYSTEM_PROMPT`.
+>
+> `record_unused_agent_tickets()` (`core/optimization_advisor.py`) nennt in der Ticket-Detail
+> jetzt wörtlich alle drei Lösungsoptionen aus diesem Roadmap-Eintrag (Pflicht-Rolle machen /
+> Planer-Beschreibung schärfen / Streichen) statt nur allgemein auf eine Prüfung zu verweisen.
+>
+> **Bewusst NICHT umgesetzt:** Option 1 (Pflicht-Rolle für `database`/`code_reviewer` bei
+> SQLAlchemy-Projekten) und Option 3 (Rollen streichen) - eine Rolle aus `AVAILABLE_AGENTS` zu
+> entfernen hat Blast-Radius über `agents/__init__.py`, `agents/department_lead_agent.py`,
+> `agents/orchestrator/__init__.py`, `config.py` und `core/team_board.py` hinweg und braucht
+> eine eigene, sorgfältig verifizierte Änderung statt einer Prompt-Schärfung; eine erzwungene
+> Pflicht-Teilnahme ändert das Phasen-Routing selbst. Ob ≤ 3 Rollen tatsächlich unused bleiben,
+> lässt sich erst nach künftigen echten Läufen messen (`record_unused_agent_tickets()` schließt
+> ein Ticket automatisch, sobald die Rolle wieder gewählt wird - siehe
+> `close_resolved_unused_agent_tickets()`) - deshalb 🟡 statt ✅.
+>
+> Neue Tests: `tests/test_unused_agent_prompt_guidance.py` (alle 7 Rollen behalten ein
+> "Einsetzen bei"-Kriterium + eine explizite Prompt-Regel) und 1 neuer Test in
+> `tests/test_optimization_advisor.py` (Ticket nennt alle drei Optionen wörtlich).
 
 ---
 
@@ -1075,7 +1113,7 @@ ruff check && python -m pytest -q
 | P1-5 | Hard Delivery Gate ohne eigene `failure_class` | P1 | 🟡 failure_class erledigt, Fix-Loop-Kurzschluss offen |
 | P2-1 | Learnings mit Wirksamkeitsmessung | P2 | ☑ erledigt |
 | P2-2 | Modell-Auto-Tuning optimiert falsche Zielgröße | P2 | ☑ erledigt |
-| P2-3 | 13 ungenutzte Rollen – entscheiden statt melden | P2 | ☐ |
+| P2-3 | 13 ungenutzte Rollen – entscheiden statt melden | P2 | 🟡 teilweise |
 | P2-4 | Retrospektive arbeitet blind | P2 | ☐ |
 | P3-1 | Post-Mortem-Artefakt pro Lauf | P3 | ☐ |
 | P3-2 | `--team-trend` Trendbericht | P3 | ☐ |

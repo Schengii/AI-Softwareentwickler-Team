@@ -569,15 +569,21 @@ def record_unused_agent_tickets(report: OptimizationReport) -> list[str]:
                 source="optimization_advisor",
                 status="todo",
                 project_slug="_team",
+                # P2-3 (ROADMAP_TEMP.md): "Entscheidung statt Dauer-Meldung" - die drei
+                # Lösungsoptionen stehen hier wörtlich, statt nur allgemein auf eine Prüfung zu
+                # verweisen, damit die Abarbeitung nicht bei jedem Ticket neu erfunden werden muss.
                 detail=(
                     f"Agent '{u.agent_id}' (Modell '{u.configured_model}') wurde über die "
                     f"letzten {u.sample_runs} Läufe kein einziges Mal vom Planer ausgewählt. "
-                    "Prüfen: (1) ist die Rolle im Planer-Prompt (core/task_manager.py."
-                    "AVAILABLE_AGENTS) konkret genug beschrieben - nennt sie WANN man sie "
-                    "einsetzt, nicht nur WAS sie kann?, (2) kommen reale Aufgaben für diese "
-                    "Rolle überhaupt vor, oder überschneidet sie sich mit einer anderen Rolle?, "
-                    "(3) falls strukturell nie gebraucht: Konsolidierung mit einer verwandten "
-                    "Rolle erwägen, statt weiterhin Wartungsaufwand ohne Nutzen zu binden."
+                    "Eine der drei Optionen wählen und umsetzen: "
+                    "(1) Pflicht-Rolle machen - als festen Phasen-Teilnehmer verdrahten, wenn "
+                    "ein deterministisches Signal vorliegt (z.B. sqlalchemy in requirements.txt "
+                    "-> database); "
+                    "(2) Planer-Beschreibung schärfen - core/task_manager.py.AVAILABLE_AGENTS["
+                    f"'{u.agent_id}'] und DECOMPOSE_SYSTEM_PROMPT um ein konkretes 'Einsetzen "
+                    "bei: ...'-Kriterium ergänzen (nennt WANN, nicht nur WAS); "
+                    "(3) Streichen - Rolle ohne realistischen Bedarf aus dem Standard-Katalog "
+                    "entfernen bzw. mit einer verwandten Rolle konsolidieren."
                 ),
             )
             ticket_ids.append(ticket_id)

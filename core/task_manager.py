@@ -139,12 +139,30 @@ AVAILABLE_AGENTS = {
     "product_owner": {
         "name": "Product Owner",
         "phase": 1,
-        "description": "Definiert Produktvision, MVP-Scope (MoSCoW), Release-Roadmap und User Journeys.",
+        # Team-Optimierung (P2-3, ROADMAP_TEMP.md, unused_agent-Fund 2026-09-21): in 20 Läufen
+        # kein einziges Mal gewählt, obwohl die Rolle bereits in _COMPLEXITY_SIGNAL_AGENT_IDS
+        # steht - dieselbe Ursache wie bei accessibility/finops/web_research (siehe dort):
+        # die Beschreibung nannte nur WAS die Rolle kann, nicht WANN man sie braucht.
+        "description": (
+            "Definiert Produktvision, MVP-Scope (MoSCoW-Priorisierung), Release-Roadmap und "
+            "User Journeys. Einsetzen bei: (1) mehrdeutigem oder breitem Funktionsumfang, bei "
+            "dem eine Priorisierung/Scope-Entscheidung nötig ist, (2) mehreren denkbaren "
+            "Nutzergruppen/Anwendungsfällen, (3) Aufträgen, die ausdrücklich 'MVP' oder "
+            "stufenweise Auslieferung verlangen. NICHT bei technisch bereits vollständig "
+            "spezifizierten Einzelaufgaben (z.B. 'füge Endpunkt X hinzu')."
+        ),
     },
     "business_analyst": {
         "name": "Business Analyst",
         "phase": 1,
-        "description": "Analysiert Anforderungen, erstellt User Stories und Akzeptanzkriterien (Given/When/Then).",
+        # Team-Optimierung (P2-3): siehe product_owner oben - gleiche Ursache, gleicher Fix.
+        "description": (
+            "Analysiert Anforderungen, erstellt User Stories und Akzeptanzkriterien "
+            "(Given/When/Then). Einsetzen bei: (1) fachlich komplexen Anforderungen mit "
+            "mehreren Akteuren/Rollen, (2) Aufträgen ohne bereits klare Akzeptanzkriterien, "
+            "die architect/backend/tester sonst selbst erraten müssten, (3) regulierten oder "
+            "prozesslastigen Fachdomänen (z.B. Bestellabwicklung, Genehmigungs-Workflows)."
+        ),
     },
     "web_research": {
         "name": "Web-Recherche Specialist",
@@ -189,7 +207,15 @@ AVAILABLE_AGENTS = {
     "ui_ux": {
         "name": "UI/UX Designer",
         "phase": 2,
-        "description": "Wireframes, Design-Systeme, Farbpaletten und Design-Tokens.",
+        # Team-Optimierung (P2-3): siehe product_owner oben - gleiche Ursache, gleicher Fix.
+        "description": (
+            "Entwirft Wireframes, Design-Systeme, Farbpaletten und Design-Tokens VOR der "
+            "Implementierung. Einsetzen bei: (1) neuen Web-/App-Oberflächen ohne bereits "
+            "vorgegebenes Design-System, (2) mehreren zusammengehörigen Screens/Views, die "
+            "visuell konsistent sein müssen, (3) explizitem Design-/Branding-Wunsch. NICHT "
+            "bei reinen Backend-/CLI-/API-Projekten ohne UI, und nicht bei einer einzelnen, "
+            "isolierten UI-Anpassung an bereits bestehendem Design."
+        ),
     },
     "image_generator": {
         "name": "Bild- & Grafik-Designer",
@@ -345,7 +371,18 @@ AVAILABLE_AGENTS = {
     "documentation": {
         "name": "Dokumentant",
         "phase": 4,
-        "description": "API-Dokumentation, Inline-Kommentare und Architekturguides.",
+        # Team-Optimierung (P2-3): siehe product_owner oben - gleiche Ursache, gleicher Fix.
+        # Abgrenzung zu 'readme' ergänzt: readme deckt den EINSTIEG ab (README.md/Quickstart),
+        # documentation die TIEFE (API-Referenz/Architektur) - ohne diese Abgrenzung griff der
+        # Planer bei jedem Doku-Bedarf reflexhaft zu readme.
+        "description": (
+            "Schreibt vertiefte API-Dokumentation (Endpunkt-Referenz, Request/Response-"
+            "Beispiele), Architekturguides und Inline-Kommentare für komplexe Module. "
+            "Einsetzen bei: (1) APIs mit mehreren Endpunkten, die über eine kurze README-"
+            "Erwähnung hinaus eine eigene Referenz brauchen, (2) nicht-trivialer Architektur, "
+            "die ein neuer Entwickler ohne Guide nicht versteht, (3) explizitem Doku-Auftrag. "
+            "Abgrenzung zu 'readme': readme deckt Einstieg/Quickstart, documentation die Tiefe."
+        ),
     },
     "readme": {
         "name": "README & Tech-Writer",
@@ -357,7 +394,14 @@ AVAILABLE_AGENTS = {
     "devops": {
         "name": "DevOps-Ingenieur",
         "phase": 5,
-        "description": "Dockerfile, docker-compose, CI/CD GitHub Actions Pipelines, K8s.",
+        # Team-Optimierung (P2-3): siehe product_owner oben - gleiche Ursache, gleicher Fix.
+        "description": (
+            "Erstellt Dockerfile/docker-compose, CI/CD-Pipelines (GitHub Actions) und K8s-"
+            "Manifeste. Einsetzen bei: (1) Aufträgen, die 'deploybar'/'produktionsreif'/"
+            "'containerisiert' verlangen, (2) Projekten mit eigenem Server-Prozess (Backend-"
+            "API, Web-App) statt reinem lokalem Skript, (3) explizitem CI/CD- oder Docker-"
+            "Wunsch. NICHT bei einmaligen lokalen Skripten/CLI-Tools ohne Deployment-Ziel."
+        ),
     },
     "tester": {
         "name": "QA-Tester",
@@ -384,7 +428,18 @@ AVAILABLE_AGENTS = {
     "refactoring": {
         "name": "Refactoring Specialist",
         "phase": 6,
-        "description": "Beseitigt Code Smells, refaktoriert Module und sichert strikte Typsicherheit.",
+        # Team-Optimierung (P2-3): siehe product_owner oben - gleiche Ursache, gleicher Fix.
+        # Abgrenzung zu 'code_reviewer' ergänzt: code_reviewer FINDET Probleme, refactoring
+        # BEHEBT strukturelle Probleme, die über einen normalen Fix hinausgehen.
+        "description": (
+            "Beseitigt Code Smells (Duplikation, zu lange Funktionen, unklare Verantwortung), "
+            "refaktoriert Module und schärft Typsicherheit NACH der Kern-Implementierung. "
+            "Einsetzen bei: (1) code_reviewer meldet strukturelle Probleme, die über einen "
+            "punktuellen Fix hinausgehen, (2) explizitem Refactoring-Auftrag an bestehendem "
+            "Code, (3) gewachsenem Projekt mit mehreren Iterationen, in dem sich Duplikation "
+            "angesammelt hat. NICHT bei neuem, noch unstrukturiertem Code - dort erledigt der "
+            "jeweilige Entwickler (backend/frontend) sauberen Code direkt in der Erstumsetzung."
+        ),
     },
     "compliance": {
         "name": "Legal & Compliance Specialist",
@@ -411,7 +466,16 @@ AVAILABLE_AGENTS = {
     "github": {
         "name": "GitHub-Agent",
         "phase": 5,
-        "description": "Generiert Commit-Messages und führt automatische Git-Pushes durch.",
+        # Team-Optimierung (P2-3): siehe product_owner oben - gleiche Ursache, gleicher Fix.
+        "description": (
+            "Generiert aussagekräftige Commit-Messages und führt automatische Git-Commits/"
+            "-Pushes zu einem bestehenden Remote-Repository durch. Einsetzen bei: (1) der "
+            "Auftrag ausdrücklich einen Git-Push/Commit in ein vorhandenes Repository "
+            "verlangt, (2) ein bestehendes 'workspace/<projekt>'-Git-Repository referenziert "
+            "und der Stand veröffentlicht werden soll. NICHT bei neuen, noch nicht mit einem "
+            "Remote verbundenen Projekten ohne expliziten Git-Auftrag - dort bleibt die "
+            "reguläre Git-Initialisierung Sache des Frameworks selbst, kein Agenten-Einsatz."
+        ),
     },
 }
 
@@ -551,6 +615,20 @@ Wichtige Regeln:
   oder FAQ-Inhalte benötigen (verhindert unprofessionelles Lorem-Ipsum)
 - image_generator einbeziehen, sobald Icons, SVG-Logos oder Banner für UIs/Landingpages benötigt werden
 - i18n einbeziehen, sobald Mehrsprachigkeit, Lokalisierung oder RTL-Unterstützung relevant sind
+- product_owner einbeziehen, wenn der Funktionsumfang mehrdeutig/breit ist und eine Priorisierung
+  (MVP-Scope) oder mehrere Nutzergruppen/Anwendungsfälle zu berücksichtigen sind
+- business_analyst einbeziehen, wenn fachlich komplexe Anforderungen mit mehreren Akteuren/Rollen
+  oder ohne bereits klare Akzeptanzkriterien vorliegen
+- ui_ux einbeziehen, wenn eine neue Web-/App-Oberfläche ohne bereits vorgegebenes Design-System
+  mit mehreren zusammengehörigen Screens/Views entsteht
+- devops einbeziehen, wenn der Auftrag 'deploybar'/'produktionsreif'/'containerisiert' verlangt
+  oder ein eigener Server-Prozess (Backend-API, Web-App) statt eines reinen lokalen Skripts entsteht
+- documentation einbeziehen, wenn eine API mit mehreren Endpunkten eine eigene Referenz über die
+  README hinaus braucht, oder die Architektur ohne Guide für einen neuen Entwickler unklar bliebe
+- refactoring einbeziehen, wenn code_reviewer strukturelle Probleme meldet, die über einen
+  punktuellen Fix hinausgehen, oder der Auftrag ausdrücklich Refactoring an bestehendem Code verlangt
+- github einbeziehen, wenn der Auftrag ausdrücklich einen Git-Push/Commit in ein bestehendes
+  Remote-Repository verlangt
 - Berücksichtige die bekannten Team-Lektionen. Plane bei Projekten mit APIs oder Web-UIs
   zwingend den Haupteinstiegspunkt (main.py bzw. main.ts/index.html) explizit als Teilaufgabe
   für den zuständigen Entwickler ein, um "missing_entrypoint"-Blocker zu vermeiden.

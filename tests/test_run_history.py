@@ -207,6 +207,27 @@ class TestRunHistory(unittest.TestCase):
         self.assertEqual(entry["calls"], MIN_QUALITY_SAMPLE_RUNS + 1)
         self.assertEqual(entry["quality_rate"], round(100 * (MIN_QUALITY_SAMPLE_RUNS - 1) / MIN_QUALITY_SAMPLE_RUNS, 1))
 
+    def test_degraded_runs_are_excluded_from_quality_rate(self):
+        """P5-1 Punkt 1: ein Lauf ohne erreichbares HEAVY_MODEL darf die quality_rate nicht
+        mitprägen - sein Ergebnis sagt nichts über die Modellqualität aus, nur über die
+        Infrastruktur-Lage zum Startzeitpunkt."""
+        for _ in range(MIN_QUALITY_SAMPLE_RUNS):
+            record_run(
+                project_slug="p", task_summary="x", verification_ok=True, total_tokens=1, duration_seconds=1,
+                agent_results=[{"agent_id": "backend", "success": True, "total_tokens": 10, "model_used": "m"}],
+            )
+        # Degradierte Läufe zählen NICHT mit, egal wie oft und egal ob rot oder grün.
+        for _ in range(5):
+            record_run(
+                project_slug="p", task_summary="x", verification_ok=False, total_tokens=1, duration_seconds=1,
+                agent_results=[{"agent_id": "backend", "success": True, "total_tokens": 10, "model_used": "m"}],
+                degraded=True,
+            )
+
+        entry = next(r for r in get_agent_model_performance() if r["agent_id"] == "backend")
+        self.assertEqual(entry["calls"], MIN_QUALITY_SAMPLE_RUNS + 5)  # success_rate zählt weiterhin alle Aufrufe
+        self.assertEqual(entry["quality_rate"], 100.0)  # aber quality_rate nur die 3 nicht-degradierten, alle grün
+
     def test_verification_success_rate_mixed_runs(self):
         # Team-Retrospektive nach dem taskpulse-Lauf: get_verification_success_rate() macht
         # eine anhaltend niedrige verification_ok-Quote projektübergreifend sichtbar.

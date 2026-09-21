@@ -1083,7 +1083,7 @@ verschärfen.
 ## 6. 🟣 P5 – Kosten, Kapazität & Modell-Realität
 
 ### P5-1 · Alle Premium-Modelle liegen auf Cooldown – das Team läuft dauerhaft im Notbetrieb
-**Status:** 🟡 **Punkt 2 erledigt 2026-09-20**, Punkte 1 und 3 offen · **Wirkung:** sehr hoch
+**Status:** ✅ **alle drei Punkte erledigt 2026-09-21** · **Wirkung:** sehr hoch
 
 `memory/provider_cooldowns.json` – aktueller Stand:
 
@@ -1114,6 +1114,31 @@ bezeichnet sich selbst als „eher ein Infrastruktur-/Kontingent- als ein Agente
 3. **Kapazitäts-Gate schärfen:** `core/capacity_gate.py` blockiert nur, wenn eine kritische Rolle
    *gar kein* Modell über ihrer Mindeststufe hat. Zusätzlich warnen, wenn ≥ 50 % der geplanten
    Rollen herabgestuft starten müssten – und nachfragen, ob der Lauf trotzdem starten soll.
+
+> **Umsetzung Punkt 1 (2026-09-21):** `agents/orchestrator/__init__.py.process()` prüft direkt
+> nach der Plan-Freigabe `core/capacity_gate.py.model_unreachable_reason(HEAVY_MODEL)` (kein
+> zusätzlicher Netzwerk-Ping - derselbe deterministische Key-/Kontingent-Check, den P5-1 Punkt 2
+> bereits nutzt) und hält das Ergebnis als `self.last_run_degraded_reason`. Ist HEAVY_MODEL nicht
+> erreichbar: sofortige Notification, ein `run_degraded_mode`-Trace-Event, ein eigener Absatz im
+> Abschlussbericht, und `memory/run_history.py.record_run()` bekommt ein neues `degraded`-Feld.
+> `get_agent_model_performance()` (P2-2) zählt degradierte Läufe NICHT mehr in `quality_runs`/
+> `quality_ok_runs` mit (weiterhin aber in `calls`/`successes` - die reine Aufruf-Erfolgsquote
+> ist von der Modellstärke unabhängig), damit ein reiner Kontingent-Engpass nie als
+> Qualitätsmangel eines Modells fehlinterpretiert wird.
+>
+> **Umsetzung Punkt 3 (2026-09-21):** `CapacityAssessment` bekommt `downgraded_agent_ids`/
+> `downgraded_ratio`/`mostly_downgraded` (Schwelle `MOSTLY_DOWNGRADED_THRESHOLD = 0.5`) -
+> berechnet über ALLE eingeplanten Rollen (nicht nur die kritischen wie beim Blockade-Check
+> oben), da ein Qualitätsrisiko durch Herabstufung für den GESAMTEN Lauf gilt. Ab der Schwelle
+> erscheint zusätzlich zur Warnung eine aktive Rückfrage - wiederverwendet dasselbe
+> `plan_confirmation_callback`-Bestätigungs-Gate wie die reguläre Plan-Freigabe (kein neues UI
+> nötig); ohne Callback (unbeaufsichtigte Läufe wie `--work-backlog`) bleibt es bei der
+> Warnung, der Lauf startet wie bisher. 5 neue Tests in `tests/test_capacity_gate.py`
+> (`TestMostlyDowngradedWarning`), 2 in `tests/test_run_history.py`, 5 in
+> `tests/test_degraded_mode_and_capacity_confirmation.py`. Gegen 147 bestehende Tests
+> verifiziert (u.a. `test_plan_confirmation_gate.py`, `test_governance_fix_loop.py`,
+> `test_p1_team_workflow.py`), keine Regression. Punkt 2 bereits 2026-09-20 erledigt (siehe
+> `core/capacity_gate.py.model_unreachable_reason()`-Docstring).
 
 ---
 
@@ -1350,7 +1375,7 @@ ruff check && python -m pytest -q
 | P4-3 | Testtiefe fachlich statt nur Routen | P4 | 🟡 teilweise (informativ, nicht blockierend) |
 | P4-4 | Projekt-Steckbrief für jeden Agenten | P4 | 🟡 Abfang + zuverlässige Vertragsdatei erledigt, Prompt-Injektion vor 1. Schreiben offen |
 | P4-5 | Write-Guard gegen Fremddatei-Überschreiben | P4 | ☑ erledigt (bereits vorhanden, nachgeprüft) |
-| P5-1 | Degraded-Mode ehrlich machen | P5 | 🟡 Punkt 2 erledigt |
+| P5-1 | Degraded-Mode ehrlich machen | P5 | ☑ erledigt (alle 3 Punkte) |
 | P5-2 | Token-Effizienz / Caching | P5 | 🟡 Gemini-Caching erledigt (Aufgabe 1), Rest offen |
 | P5-3 | Verifikations-Reserve im Budget | P5 | ☑ erledigt (Reserve existierte, Gate korrigiert) |
 | P6-1 | Gestagte Fixes committet | P6 | ☑ erledigt |

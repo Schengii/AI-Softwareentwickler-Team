@@ -27,6 +27,14 @@ from core.token_guard import token_guard
 # Ab diesem Vielfachen des geschätzten Tagesbudgets gilt ein Anbieter als „stark überzogen“.
 DAILY_OVERUSE_FACTOR = 2.0
 
+# P5-1 Punkt 3 (ROADMAP_TEMP.md): Ab diesem Anteil der EINGEPLANTEN Rollen (nicht nur der
+# kritischen), deren konfiguriertes Modell aktuell nicht erreichbar ist (Key fehlt/Kontingent
+# erschöpft), gilt ein Lauf als "größtenteils herabgestuft" - ein Qualitätsrisiko für den
+# GESAMTEN Lauf, nicht nur für einzelne blockierte Rollen. Bewusst eine eigene, informative
+# Warnung statt einer harten Blockade wie oben: eine Herabstufung bedeutet nicht zwangsläufig
+# Scheitern, nur ein erhöhtes Risiko.
+MOSTLY_DOWNGRADED_THRESHOLD = 0.5
+
 # core/llm_factory.py._provider_of() nennt Anthropic "anthropic", core/quota_estimator.py "claude".
 _PROVIDER_TO_QUOTA_KEY = {"anthropic": "claude"}
 
@@ -44,10 +52,30 @@ class RoleCapacity:
 class CapacityAssessment:
     blocked_roles: list[RoleCapacity] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # P5-1 Punkt 3: Rollen, deren konfiguriertes Modell aktuell nicht erreichbar ist - über ALLE
+    # eingeplanten Rollen, nicht nur die kritischen (siehe MOSTLY_DOWNGRADED_THRESHOLD).
+    downgraded_agent_ids: list[str] = field(default_factory=list)
+    planned_role_count: int = 0
 
     @property
     def blocked(self) -> bool:
         return bool(self.blocked_roles)
+
+    @property
+    def downgraded_ratio(self) -> float:
+        return len(self.downgraded_agent_ids) / self.planned_role_count if self.planned_role_count else 0.0
+
+    @property
+    def mostly_downgraded(self) -> bool:
+        return self.downgraded_ratio >= MOSTLY_DOWNGRADED_THRESHOLD
+
+    def format_downgrade_warning(self) -> str:
+        return (
+            f"⚠️ {len(self.downgraded_agent_ids)} von {self.planned_role_count} eingeplanten Rollen "
+            f"({self.downgraded_ratio * 100:.0f}%) würden mit einem herabgestuften Modell starten "
+            f"(konfiguriertes Modell aktuell nicht erreichbar): {', '.join(self.downgraded_agent_ids)}. "
+            "Qualitätsrisiko für den gesamten Lauf - Kontingent-Reset abwarten oder bewusst so starten."
+        )
 
     def format_block_message(self) -> str:
         rollen = ", ".join(
@@ -142,6 +170,17 @@ def assess_run_capacity(agent_ids: list[str], overuse_factor: float = DAILY_OVER
     from core.llm_factory import _provider_of
 
     assessment = CapacityAssessment()
+    all_roles = sorted(set(agent_ids))
+    assessment.planned_role_count = len(all_roles)
+    if all_roles:
+        from config import get_model_for_agent
+
+        assessment.downgraded_agent_ids = [
+            a for a in all_roles if not model_is_reachable(get_model_for_agent(a))
+        ]
+        if assessment.mostly_downgraded:
+            assessment.warnings.append(assessment.format_downgrade_warning())
+
     critical = sorted({a for a in agent_ids if a in CRITICAL_AGENT_IDS})
     if not critical:
         return assessment

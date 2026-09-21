@@ -76,6 +76,7 @@ from config import (
     CAPACITY_GATE_MODE,
     ENABLE_ACCEPTANCE_CHECK,
     ENABLE_REVIEW_AFTER_VERIFICATION,
+    HEAVY_MODEL,
     MIN_TEST_COVERAGE,
     ORCHESTRATOR_MODEL,
     PLAN_CONFIRMATION_MIN_TASKS,
@@ -83,7 +84,7 @@ from config import (
 from core.acceptance_check import extract_requirements, verify_acceptance
 from core.adr import format_adr_summary_for_context
 from core.backlog_store import get_ticket, upsert_ticket
-from core.capacity_gate import assess_run_capacity
+from core.capacity_gate import assess_run_capacity, model_unreachable_reason
 from core.decision_log import log_decision
 from core.definition_of_done import build_definition_of_done, write_definition_of_done
 from core.design_system import format_design_system_for_agents
@@ -676,6 +677,24 @@ class Orchestrator(
         for warning in QuotaEstimator.get_proactive_daily_budget_warnings():
             self._history.add_assistant_message(warning)
 
+        # P5-1 Punkt 1 (ROADMAP_TEMP.md): ehrlicher Degraded-Mode. Ist config.HEAVY_MODEL - die
+        # letzte Rettung jeder Fix-Schleife - bereits beim Lauf-Start nicht erreichbar (kein Key
+        # oder Kontingent auf Cooldown), kann dieser Lauf strukturell nie die volle Modellstärke
+        # nutzen. Das wird jetzt explizit festgehalten (Trace, Abschlussbericht, run_history),
+        # statt stillschweigend mit schwächeren Modellen weiterzumachen - und speist P2-2s
+        # Modell-Qualitätsstatistik bewusst NICHT (memory/run_history.py.get_agent_model_
+        # performance()), damit ein reiner Kontingent-Engpass nie als Qualitätsmangel eines
+        # Modells fehlinterpretiert wird.
+        self.last_run_degraded_reason = model_unreachable_reason(HEAVY_MODEL)
+        if self.last_run_degraded_reason:
+            notify(
+                f"[bold yellow]⚠️ Degradierter Lauf:[/bold yellow] HEAVY_MODEL ist gerade nicht "
+                f"erreichbar ({self.last_run_degraded_reason}) - dieser Lauf kann die volle "
+                "Modellstärke an keiner Stelle nutzen, auch nicht als letzte Eskalationsstufe "
+                "einer Fix-Schleife."
+            )
+            self._trace_event("run_degraded_mode", reason=self.last_run_degraded_reason)
+
         # Kapazitätsprüfung (core/capacity_gate.py): die Tageswarnung oben ist nur informativ,
         # ein Lauf mit erschöpften Anbietern startete trotzdem und verbrannte Tokens. Hier wird
         # VOR dem ersten Agenten-Aufruf geprüft, ob jede eingeplante kritische Rolle noch ein
@@ -699,6 +718,25 @@ class Orchestrator(
                         self._close_unfinished_run_log("capacity_insufficient")
                         return response
                     notify(f"[bold yellow]⚠️ Kapazität unzureichend für {blocked_ids} – Lauf startet trotzdem (CAPACITY_GATE_MODE=warn).[/bold yellow]")
+                # P5-1 Punkt 3: mindestens die Hälfte der eingeplanten Rollen würde mit einem
+                # herabgestuften Modell starten (die Warnung dazu ist bereits oben ausgegeben) -
+                # zusätzlich aktiv nachfragen, ob der Lauf trotzdem starten soll, statt nur zu
+                # warnen und stillschweigend weiterzumachen. Nutzt DASSELBE Bestätigungs-Gate
+                # wie die reguläre Plan-Freigabe oben (kein eigenes UI nötig) - kein Callback
+                # (z.B. unbeaufsichtigte Läufe wie --work-backlog) heißt: Warnung genügt, der
+                # Lauf startet wie bisher.
+                if capacity.mostly_downgraded and plan_confirmation_callback:
+                    approved = await plan_confirmation_callback(task_summary, project_slug, agent_tasks)
+                    if not approved:
+                        response = (
+                            "↩️ Abgebrochen – der Lauf würde größtenteils mit herabgestuften Modellen "
+                            "starten und wurde deshalb nicht bestätigt. Kontingent-Reset abwarten oder "
+                            "bewusst erneut starten."
+                        )
+                        log_decision(project_dir, "capacity_gate_downgrade_declined", capacity.format_downgrade_warning())
+                        self._history.add_assistant_message(response)
+                        self._close_unfinished_run_log("capacity_downgrade_declined")
+                        return response
 
         # Die folgenden Kontext-Bausteine werden unten in den Kontext jeder Teilaufgabe
         # injiziert. Alle sind leer, wenn nichts vorliegt (kein unnötiger Prompt-Text).
@@ -1283,6 +1321,13 @@ class Orchestrator(
                 "Restliche Fachbereiche, Verifikations-Fixversuche und/oder Retrospektive/Selbstoptimierung "
                 "wurden übersprungen; die bis dahin erarbeiteten Ergebnisse wurden trotzdem oben zusammengefasst."
             )
+        if getattr(self, "last_run_degraded_reason", ""):
+            stats_table += (
+                f"\n\n> ⚠️ **Degradierter Lauf (P5-1):** HEAVY_MODEL war beim Start nicht erreichbar "
+                f"({self.last_run_degraded_reason}) - dieser Lauf konnte an keiner Stelle, auch nicht als "
+                "letzte Fix-Eskalation, die volle Modellstärke nutzen. Ergebnisse mit Vorsicht bewerten; "
+                "die automatische Modell-Qualitätsstatistik (P2-2) berücksichtigt diesen Lauf bewusst nicht."
+            )
 
         # Liest die WIRKLICH geschriebenen Dateien direkt von der Platte (kein LLM-Aufruf, daher
         # exakt): die Synthese oben paraphrasierte Code aus den Agenten-Berichten und wich damit
@@ -1447,6 +1492,7 @@ class Orchestrator(
                     }
                     for r in results
                 ],
+                degraded=bool(getattr(self, "last_run_degraded_reason", "")),
             )
         except Exception as e:
             notify(f"⚠️ [dim yellow]Lauf-Historie (record_run_history) konnte nicht aktualisiert werden: {e}[/dim yellow]")

@@ -91,5 +91,33 @@ class TestAssessRunCapacity(unittest.TestCase):
         self.assertEqual(assessment.warnings, [])
 
 
+class TestMostlyDowngradedWarning(unittest.TestCase):
+    """P5-1 Punkt 3 (ROADMAP_TEMP.md): Warnung, wenn >= 50% der eingeplanten Rollen (nicht nur
+    die kritischen) mit einem herabgestuften Modell starten müssten."""
+
+    def test_warns_over_all_planned_roles_not_only_critical(self):
+        # "documentation" ist NICHT kritisch, zählt aber für den Anteil mit.
+        with patch("core.llm_factory._provider_available", return_value=False):
+            assessment = assess_run_capacity(["documentation", "readme"])
+        self.assertTrue(assessment.mostly_downgraded)
+        self.assertEqual(set(assessment.downgraded_agent_ids), {"documentation", "readme"})
+        self.assertTrue(any("herabgestuft" in w for w in assessment.warnings))
+
+    def test_no_warning_below_threshold(self):
+        def _available(model_name: str) -> bool:
+            return True
+
+        with patch("core.llm_factory._provider_available", side_effect=_available), \
+             patch("core.token_guard.token_guard.is_model_exhausted", return_value=False):
+            assessment = assess_run_capacity(["documentation", "readme"])
+        self.assertFalse(assessment.mostly_downgraded)
+        self.assertEqual(assessment.downgraded_agent_ids, [])
+
+    def test_empty_plan_is_never_mostly_downgraded(self):
+        assessment = assess_run_capacity([])
+        self.assertFalse(assessment.mostly_downgraded)
+        self.assertEqual(assessment.downgraded_ratio, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

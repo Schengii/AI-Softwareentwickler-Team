@@ -39,6 +39,7 @@ MIN_QUALITY_SAMPLE_RUNS = 3
 def record_run(
     project_slug: str, task_summary: str, verification_ok: bool,
     total_tokens: int, duration_seconds: float, agent_results: list[dict],
+    degraded: bool = False,
 ) -> None:
     """
     Speichert eine kompakte Zusammenfassung EINES abgeschlossenen Laufs. `agent_results` ist
@@ -47,6 +48,12 @@ def record_run(
     zählen dabei getrennt, genau wie sie im Ergebnis-Protokoll erscheinen). Rein additiv wie
     core/project_status.py.record_run() – ein I/O-Fehler beim Schreiben darf einen sonst
     erfolgreichen Lauf nie zum Scheitern bringen (siehe _save()).
+
+    `degraded` (P5-1 Punkt 1, ROADMAP_TEMP.md): True, wenn config.HEAVY_MODEL bereits beim
+    Lauf-Start nicht erreichbar war (core/capacity_gate.py.model_is_reachable()) - der Lauf
+    fand dann zwangsläufig mit schwächeren Modellen statt. get_agent_model_performance() (P2-2)
+    schließt solche Läufe aus der quality_rate-Berechnung aus, damit ein reiner
+    Kontingent-Engpass nicht fälschlich als Qualitätsmangel eines Modells gewertet wird.
     """
     # Testprozesse dürfen die echte Lern-Datenbasis nie verfälschen (core/telemetry_hygiene.py).
     if should_skip_real_write(RUN_HISTORY_FILE, _REAL_RUN_HISTORY_FILE):
@@ -60,6 +67,7 @@ def record_run(
         "total_tokens": total_tokens,
         "duration_seconds": round(duration_seconds, 1),
         "agent_results": agent_results,
+        "degraded": degraded,
     })
     runs = runs[-MAX_RUNS_KEPT:]
     _save(runs)
@@ -161,6 +169,11 @@ def get_agent_model_performance(limit_runs: int = 100) -> list[dict]:
     stats: dict[tuple[str, str], dict[str, int]] = {}
     for run in runs:
         run_verification_ok = bool(run.get("verification_ok"))
+        # P5-1 Punkt 1: ein Lauf, der schon beim Start ohne HEAVY_MODEL auskommen musste
+        # (Kontingent-Engpass, siehe record_run()-Docstring "degraded"), darf die quality_rate
+        # nicht mitprägen - sein Ergebnis sagt nichts über die tatsächliche Qualität des
+        # eingesetzten Modells aus, nur über die Infrastruktur-Lage zum Startzeitpunkt.
+        run_is_degraded = bool(run.get("degraded"))
         # Pro Lauf höchstens EINMAL je (Agent, Modell) zählen: verification_ok ist eine
         # Eigenschaft des gesamten Laufs, nicht des einzelnen Aufrufs - ein Agent, der im selben
         # Lauf mehrfach mit demselben Modell aufgerufen wird, darf den Lauf nicht mehrfach werten.
@@ -183,7 +196,7 @@ def get_agent_model_performance(limit_runs: int = 100) -> list[dict]:
             if res.get("success"):
                 entry["successes"] += 1
             entry["total_tokens"] += res.get("total_tokens", 0)
-            if key not in seen_this_run:
+            if key not in seen_this_run and not run_is_degraded:
                 seen_this_run.add(key)
                 entry["quality_runs"] += 1
                 if run_verification_ok:

@@ -1741,54 +1741,14 @@ class VerificationMixin:
         # Läuft auch bei roter Testsuite (z.B. findet er einen ImportError günstiger als ein späteres
         # Review). `report.ran` bleibt Voraussetzung, da sonst keine Dependency-Installation gesichert ist.
         if not (budget_aborted or manually_cancelled) and report is not None and report.ran:
-            def _build_smoke_fix_task(smoke_report, attempt):
-                owner = file_owners.get(smoke_report.entrypoint) if smoke_report.entrypoint else None
-                agent_id = owner if owner in self._agents else ("backend" if "backend" in self._agents else None)
-                if agent_id is None:
-                    return None
-                return AgentTask(
-                    task_id=f"verify_fix_smoke_{agent_id}_{attempt}",
-                    agent_id=agent_id,
-                    description=(
-                        f"Der ECHTE Runtime-Smoke-Test ist fehlgeschlagen: die App startet nicht bzw. "
-                        f"antwortet nicht (Entrypoint `{smoke_report.entrypoint}`, Typ {smoke_report.app_type}). "
-                        f"Tests waren grün, aber 'Tests grün' heißt nicht 'App startet'. Nutze read_file, "
-                        f"um die betroffene(n) Datei(en) zu prüfen, und edit_file/write_file, um den Start-"
-                        f"fehler zu beheben.\n\nFehlerausgabe:\n{smoke_report.output[:1000]}"
-                    ),
-                    context="",
-                    project_dir=project_dir,
-                )
-
-            smoke_report, all_results, sb_aborted, sb_cancelled = await self._run_runtime_check_with_fix(
-                check_fn=verifier.check_runtime_smoke,
-                build_fix_task=_build_smoke_fix_task,
-                all_results=all_results,
-                file_owners=file_owners,
-                notify=notify,
-                run_start_tokens=run_start_tokens,
-                cancel_requested=cancel_requested,
-                is_attempted=lambda r: r.attempted,
-                is_passed=lambda r: r.passed,
+            sb_aborted, sb_cancelled, sb_veto = await self._run_smoke_check(
+                verifier, project_dir, all_results, file_owners, outcome, summary_lines, notify,
+                run_start_tokens, cancel_requested,
             )
             budget_aborted = budget_aborted or sb_aborted
             manually_cancelled = manually_cancelled or sb_cancelled
-            if smoke_report.attempted:
-                outcome.record("smoke", bool(smoke_report.passed), "" if smoke_report.passed else (smoke_report.output or "")[:300])
-                if smoke_report.passed:
-                    code_info = f" (HTTP {smoke_report.status_code})" if smoke_report.status_code else ""
-                    notify(f"  🚀 [bold green]Runtime-Smoke-Test erfolgreich:[/bold green] `{smoke_report.entrypoint}` [{smoke_report.app_type}]{code_info}.")
-                    summary_lines.append(f"- 🚀 Runtime-Smoke-Test: `{smoke_report.entrypoint}` [{smoke_report.app_type}] startet fehlerfrei{code_info}.")
-                else:
-                    # Eine geprüfte, aber nicht startende App ist eine echte Anforderungsverletzung -
-                    # sichtbar melden und verification_ok zurücksetzen.
-                    err = f": {smoke_report.output[:150]}" if smoke_report.output else ""
-                    notify(f"  🚀 [bold red]Runtime-Smoke-Test fehlgeschlagen:[/bold red] `{smoke_report.entrypoint}` [{smoke_report.app_type}]{err}.")
-                    summary_lines.append(f"- 🚀 ❌ Runtime-Smoke-Test fehlgeschlagen: `{smoke_report.entrypoint}` [{smoke_report.app_type}] startet nicht{err}.")
-                    verification_ok = False
-                    _grund = f"`{smoke_report.entrypoint}` [{smoke_report.app_type}] startet nicht{err}."
-                    notify(f"  ❌ [bold red]Verifikations-Veto durch Runtime-Smoke-Test:[/bold red] {_grund}")
-                    summary_lines.append(f"- ❌ **Verifikations-Veto durch Runtime-Smoke-Test:** {_grund}")
+            if sb_veto:
+                verification_ok = False
 
         # Lastentest: führt k6-/Locust-Skripte unter tests/load/ kurz gegen die gestartete App aus.
         # Kein Benchmark, aber fehlgeschlagene Requests unter Last sind eine echte
@@ -2054,6 +2014,72 @@ class VerificationMixin:
         notify(f"  ❌ [bold red]Verifikations-Veto durch Browser-UI-Check:[/bold red] {err_details}.")
         summary_lines.append(f"- ❌ **Verifikations-Veto durch Browser-UI-Check:** {err_details}.")
         return br_aborted, br_cancelled, True
+
+    async def _run_smoke_check(
+        self,
+        verifier: ProjectVerifier,
+        project_dir: str,
+        all_results: list[AgentResult],
+        file_owners: dict[str, str],
+        outcome: VerificationOutcome,
+        summary_lines: list[str],
+        notify: Callable[[str], None],
+        run_start_tokens: int | None,
+        cancel_requested: Callable[[], bool] | None,
+    ) -> tuple[bool, bool, bool]:
+        """P6-5 (ROADMAP_TEMP.md, Teilschritt): aus `_run_verification_loop_impl()` extrahiert -
+        Runtime-Smoke-Check (startet die App tatsächlich?) inkl. gezielter Auto-Fix-Schleife.
+        Gleiches Rückgabemuster wie `_run_browser_ui_check()`: `all_results` wird in-place über
+        `_run_runtime_check_with_fix()` erweitert, `budget_aborted`/`manually_cancelled`/
+        `verification_ok` als Drei-Tupel zurückgegeben, da lokale bool-Variablen des Aufrufers
+        nicht direkt mutierbar sind."""
+        def _build_smoke_fix_task(smoke_report, attempt):
+            owner = file_owners.get(smoke_report.entrypoint) if smoke_report.entrypoint else None
+            agent_id = owner if owner in self._agents else ("backend" if "backend" in self._agents else None)
+            if agent_id is None:
+                return None
+            return AgentTask(
+                task_id=f"verify_fix_smoke_{agent_id}_{attempt}",
+                agent_id=agent_id,
+                description=(
+                    f"Der ECHTE Runtime-Smoke-Test ist fehlgeschlagen: die App startet nicht bzw. "
+                    f"antwortet nicht (Entrypoint `{smoke_report.entrypoint}`, Typ {smoke_report.app_type}). "
+                    f"Tests waren grün, aber 'Tests grün' heißt nicht 'App startet'. Nutze read_file, "
+                    f"um die betroffene(n) Datei(en) zu prüfen, und edit_file/write_file, um den Start-"
+                    f"fehler zu beheben.\n\nFehlerausgabe:\n{smoke_report.output[:1000]}"
+                ),
+                context="",
+                project_dir=project_dir,
+            )
+
+        smoke_report, all_results, sb_aborted, sb_cancelled = await self._run_runtime_check_with_fix(
+            check_fn=verifier.check_runtime_smoke,
+            build_fix_task=_build_smoke_fix_task,
+            all_results=all_results,
+            file_owners=file_owners,
+            notify=notify,
+            run_start_tokens=run_start_tokens,
+            cancel_requested=cancel_requested,
+            is_attempted=lambda r: r.attempted,
+            is_passed=lambda r: r.passed,
+        )
+        if not smoke_report.attempted:
+            return sb_aborted, sb_cancelled, False
+        outcome.record("smoke", bool(smoke_report.passed), "" if smoke_report.passed else (smoke_report.output or "")[:300])
+        if smoke_report.passed:
+            code_info = f" (HTTP {smoke_report.status_code})" if smoke_report.status_code else ""
+            notify(f"  🚀 [bold green]Runtime-Smoke-Test erfolgreich:[/bold green] `{smoke_report.entrypoint}` [{smoke_report.app_type}]{code_info}.")
+            summary_lines.append(f"- 🚀 Runtime-Smoke-Test: `{smoke_report.entrypoint}` [{smoke_report.app_type}] startet fehlerfrei{code_info}.")
+            return sb_aborted, sb_cancelled, False
+        # Eine geprüfte, aber nicht startende App ist eine echte Anforderungsverletzung -
+        # sichtbar melden und verification_ok zurücksetzen.
+        err = f": {smoke_report.output[:150]}" if smoke_report.output else ""
+        notify(f"  🚀 [bold red]Runtime-Smoke-Test fehlgeschlagen:[/bold red] `{smoke_report.entrypoint}` [{smoke_report.app_type}]{err}.")
+        summary_lines.append(f"- 🚀 ❌ Runtime-Smoke-Test fehlgeschlagen: `{smoke_report.entrypoint}` [{smoke_report.app_type}] startet nicht{err}.")
+        _grund = f"`{smoke_report.entrypoint}` [{smoke_report.app_type}] startet nicht{err}."
+        notify(f"  ❌ [bold red]Verifikations-Veto durch Runtime-Smoke-Test:[/bold red] {_grund}")
+        summary_lines.append(f"- ❌ **Verifikations-Veto durch Runtime-Smoke-Test:** {_grund}")
+        return sb_aborted, sb_cancelled, True
 
     # Rollen, die eine Zweitmeinung abgeben können: analysieren fremden Code als Kernaufgabe
     # und sind nicht selbst Eigentümer der steckenden Dateien. Reihenfolge ist Priorität.

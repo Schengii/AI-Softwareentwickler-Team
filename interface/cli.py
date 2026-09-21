@@ -1178,6 +1178,8 @@ class CLIInterface:
         in dessen System-Prompt einfließt (siehe agent_knowledge_base.get_augmented_prompt),
         ohne dass der Mensch je einsehen konnte, was dort eigentlich gelernt wurde.
         """
+        from datetime import UTC, datetime
+
         from memory.agent_knowledge_base import agent_knowledge_base
 
         all_learnings = agent_knowledge_base.get_all_learnings()
@@ -1185,14 +1187,30 @@ class CLIInterface:
             console.print("📭 Noch keine gelernten Regeln vorhanden (memory/agent_learnings.json ist leer).", style="dim")
             return
 
+        # P2-1 (ROADMAP_TEMP.md): Wirksamkeit (violations_after/injections) und Alter statt einer
+        # reinen Textliste - vorher war nicht erkennbar, ob eine Regel tatsächlich wirkt.
         table = Table(title="🧠 Gelernte Regeln (persistentes Gedächtnis)", box=box.ROUNDED)
         table.add_column("Agent", style="cyan")
         table.add_column("Nr.", justify="right", style="dim")
         table.add_column("Regel")
+        table.add_column("Wirksamkeit", justify="right")
+        table.add_column("Alter", justify="right", style="dim")
 
         for agent_id in sorted(all_learnings):
-            for i, rule in enumerate(all_learnings[agent_id], start=1):
-                table.add_row(agent_id, str(i), rule)
+            for i, detail in enumerate(agent_knowledge_base.get_learning_details(agent_id), start=1):
+                effectiveness = detail.get("effectiveness")
+                if effectiveness is None:
+                    wirksamkeit = f"[dim]— ({detail.get('injections', 0)}/{5})[/dim]"
+                else:
+                    style = "green" if effectiveness < 0.3 else ("yellow" if effectiveness < 0.7 else "red")
+                    wirksamkeit = f"[{style}]{1 - effectiveness:.0%}[/{style}]"
+                created_at = detail.get("created_at") or ""
+                try:
+                    age_days = (datetime.now(UTC) - datetime.fromisoformat(created_at)).days
+                    alter = f"{age_days}d"
+                except (ValueError, TypeError):
+                    alter = "?"
+                table.add_row(agent_id, str(i), detail["rule"], wirksamkeit, alter)
 
         console.print(table)
         console.print(

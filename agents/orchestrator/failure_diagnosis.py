@@ -442,6 +442,9 @@ def _record_verification_learning(message: str, agent_id: str = "backend") -> No
             agent_id,
             f"Prüfe vor Abschluss, dass alle in Routern importierten Hilfsfunktionen "
             f"(z. B. {name}) im Modul {module} tatsächlich definiert und exportiert sind.",
+            # P2-1 (ROADMAP_TEMP.md): Signatur je Zielmodul, nicht je Symbol - dieselbe Datei
+            # verursacht i. d. R. wiederkehrend dasselbe Fehlerbild, auch mit wechselndem Symbol.
+            trigger_signature=f"import_name_error:{module}",
         )
     except Exception:
         pass
@@ -465,6 +468,7 @@ def _record_instance_attribute_learning(message: str, agent_id: str = "tester") 
             f"{cls} stets die tatsächliche Klassendefinition - existiert die Methode dort "
             "nicht, nutze die vorhandene primäre Schnittstelle der Klasse, statt eine "
             "nicht existierende Methode aufzurufen.",
+            trigger_signature=f"instance_attribute_error:{cls}",
         )
     except Exception:
         pass

@@ -429,7 +429,7 @@ identischem Prompt hat hier keine Grundlage, auf der er anders ausfallen könnte
 ## 3. 🟡 P2 – Selbstoptimierung der Agenten (wirksam statt gut gemeint)
 
 ### P2-1 · Learnings haben keine Wirksamkeitsmessung – die Verdrängung rät
-**Status:** ❌ offen · **Aufwand:** L · **Wirkung:** sehr hoch
+**Status:** ✅ erledigt 2026-09-21 · **Aufwand:** L · **Wirkung:** sehr hoch
 
 `memory/agent_knowledge_base.py` sagt es im eigenen Kommentar (Zeile 74 ff.): *„Eine echte
 Wirksamkeitsmessung … würde ein anderes Speicherformat erfordern – `memory/agent_learnings.json`
@@ -474,6 +474,39 @@ Kontext.").
 **Akzeptanzkriterium:** `/agent-learnings` (CLI) zeigt pro Regel Wirksamkeit und Alter;
 `_evict_least_valuable()` nutzt die gemessene Rate, wenn ≥ 5 Injektionen vorliegen, sonst den
 bestehenden Spezifitäts-Fallback.
+
+> **Umsetzung (2026-09-21):** `memory/agent_knowledge_base.py` speichert jede Regel jetzt als
+> Metadaten-Objekt (`rule`, `created_at`, `source_project`, `trigger_signature`, `injections`,
+> `violations_before`, `violations_after`) statt als reinen String. Ein alter String-Eintrag wird
+> beim Laden transparent in dieses Schema migriert (`_normalize_entry`) – keine Regel geht
+> verloren, `get_learnings()`/`get_all_learnings()` liefern für bestehende Aufrufer unverändert
+> reine Regeltexte, neu ist `get_learning_details()` für die Metadaten.
+>
+> `add_learning()` bekommt optional `trigger_signature` (z. B. `import_name_error:<modul>`,
+> `instance_attribute_error:<klasse>` – bereits verdrahtet in
+> `agents/orchestrator/failure_diagnosis.py`). Tritt dieselbe Signatur erneut auf, während für
+> sie bereits eine Regel existiert, wird KEINE Dublette angelegt, sondern `violations_after` der
+> bestehenden Regel hochgezählt – das ist die deterministische, LLM-freie Wirksamkeitsmessung aus
+> der Akzeptanzkriterium-Formel (`violations_after / injections`). `get_augmented_prompt()` zählt
+> bei jeder Verwendung eine Injektion je enthaltener Regel.
+>
+> Neue Eviction-Funktion `_evict_least_valuable_entry()`: Liegen für mindestens eine Regel ≥ 5
+> Injektionen vor (`MIN_INJECTIONS_FOR_EFFECTIVENESS`), fliegt darunter die mit der schlechtesten
+> (höchsten) Verletzungsrate; ohne ausreichend vermessene Regeln fällt sie auf die bestehende
+> `_specificity_score`-Heuristik zurück – exakt die im Akzeptanzkriterium geforderte Reihenfolge.
+> Eine Regel mit > 20 Injektionen (`INEFFECTIVE_INJECTION_THRESHOLD`) und weiterhin auftretender
+> Verletzung wird einmalig als `learning_ineffective`-Team-Lektion gemeldet (Flag im Eintrag
+> verhindert Mehrfachmeldung) – dieselbe Grenze, die der `agent_trainer`-Prompt bereits beschreibt.
+>
+> `/learnings` (CLI, `interface/cli.py._show_learnings`) zeigt zwei neue Spalten: **Wirksamkeit**
+> (grün/gelb/rot je nach `1 - effectiveness`, oder `— (n/5)` unterhalb der Mindest-Injektionszahl)
+> und **Alter** in Tagen aus `created_at`. `violations_before` bleibt im Schema als Platzhalter für
+> eine künftige, dedizierte Vor-Regel-Historie reserviert – die Verdrängungs-/Meldeformel des
+> Akzeptanzkriteriums benötigt nur `violations_after`/`injections`.
+>
+> 11 neue Tests in `tests/test_learning_effectiveness.py` (Migration, Signatur-Dedup/-Zählung,
+> Injektionszählung, Wirksamkeitsberechnung, Verdrängungspriorität, einmalige Meldung) plus alle
+> 73 bestehenden Learnings-/Prompt-Cache-Tests unverändert grün.
 
 ---
 
@@ -1007,7 +1040,7 @@ ruff check && python -m pytest -q
 | P1-3 | Ticket-Hygiene: `stale` vs. `error` trennen | P1 | ☑ erledigt |
 | P1-4 | `CancelledError` reißt den Lauf mit | P1 | ☑ erledigt |
 | P1-5 | Hard Delivery Gate ohne eigene `failure_class` | P1 | 🟡 failure_class erledigt, Fix-Loop-Kurzschluss offen |
-| P2-1 | Learnings mit Wirksamkeitsmessung | P2 | ☐ |
+| P2-1 | Learnings mit Wirksamkeitsmessung | P2 | ☑ erledigt |
 | P2-2 | Modell-Auto-Tuning optimiert falsche Zielgröße | P2 | ☐ |
 | P2-3 | 13 ungenutzte Rollen – entscheiden statt melden | P2 | ☐ |
 | P2-4 | Retrospektive arbeitet blind | P2 | ☐ |

@@ -1460,6 +1460,26 @@ Agenten-Aufruf kostet.
 > abhinge. Bewusst kein Workaround erzwungen, keine Datei geändert (`git status` nach der
 > Untersuchung sauber).
 
+> **Untersucht 2026-09-21, Teil 3/3 (`agents/orchestrator/verification.py`) - andere Fehlerart
+> als bei den ersten beiden Teilen, deshalb ebenfalls bewusst zurückgestellt:** Anders als
+> `interface/cli.py` (eine Klasse mit ~50 eigenständigen Methoden, mechanisch auf Dateien
+> verteilbar) besteht diese Datei praktisch aus EINER einzigen Methode:
+> `_run_verification_loop_impl` (Zeile 386-2000, **~1600 Zeilen, keine einzige verschachtelte
+> Hilfsfunktion**, verifiziert per AST-Scan des Methodenkörpers). Eine Aufteilung nach
+> Verantwortlichkeiten wäre hier kein Verschieben bereits abgegrenzter Methoden in neue Dateien
+> (wie bei `interface/cli.py` oder dem `agents/orchestrator/`-Vorbild selbst), sondern ein
+> ECHTER Kontrollfluss-Umbau: aus dem gewachsenen Rumpf müssten zuerst neue, korrekt
+> abgegrenzte Methoden mit den richtigen Ein-/Ausgaben aus einem großen Netz lokaler Variablen
+> herausgeschnitten werden, bevor überhaupt etwas in eine eigene Datei verschoben werden könnte
+> - eine grundsätzlich andere, riskantere Aufgabenklasse als reine Code-Verschiebung. Angesichts
+> der zentralen Rolle dieser Methode (Governance-Fix-Schleife, in praktisch jedem Lauf aktiv)
+> ist das eine eigene, sorgfältig geplante künftige Sitzung wert, keine mechanische
+> Fortsetzung der ersten beiden Teile. Keine Code-Änderung vorgenommen.
+
+**Zusammenfassung P6-5:** 1 von 3 Dateien gesplittet (`interface/cli.py`), die anderen beiden
+mit konkreten, dokumentierten Befunden bewusst zurückgestellt statt unbegründet als "zu
+riskant" abgehakt.
+
 | P6-6 | `core/message_bus.py` enthält nur noch zwei Dataclasses – in `core/agent_contracts.py` umbenennen (60+ Importe, daher mit Alias-Übergang) | S |
 
 > **Umsetzung 2026-09-21:** `core/agent_contracts.py` ist jetzt die kanonische Definition von

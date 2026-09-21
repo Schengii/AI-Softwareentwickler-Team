@@ -26,6 +26,15 @@ RUN_HISTORY_FILE = Path(BASE_DIR) / "memory" / "run_history.json"
 _REAL_RUN_HISTORY_FILE = RUN_HISTORY_FILE
 MAX_RUNS_KEPT = 200
 
+# P2-2 (ROADMAP_TEMP.md): Mindestanzahl an LÄUFEN (nicht Aufrufen - ein Agent kann mehrfach je
+# Lauf aufgerufen werden, verification_ok ist aber eine Eigenschaft des gesamten Laufs), in denen
+# eine (Agent, Modell)-Kombination vorkam, bevor ihre quality_rate als aussagekräftig gilt. Real
+# gefundener Bruch: memory/auto_tuned_models.json stufte mehrere Agenten allein wegen einer
+# höheren `success_rate` (= keine Exception beim Aufruf) herunter, während die Projekt-
+# Erfolgsquote (verification_ok) im selben Zeitraum bei 13% lag - success_rate misst nur, ob der
+# Agent überhaupt geantwortet hat, nie die Qualität des gelieferten Codes.
+MIN_QUALITY_SAMPLE_RUNS = 3
+
 
 def record_run(
     project_slug: str, task_summary: str, verification_ok: bool,
@@ -139,10 +148,23 @@ def get_agent_model_performance(limit_runs: int = 100) -> list[dict]:
     `agent_results`-Einträge aus Läufen VOR dieser Erweiterung enthalten noch kein
     `model_used` – werden unter "unbekannt" gruppiert statt zu crashen oder verworfen zu werden
     (Rückwärtskompatibilität mit bereits bestehenden memory/run_history.json-Einträgen).
+
+    Jeder Eintrag trägt zusätzlich `quality_rate` (P2-1... P2-2, ROADMAP_TEMP.md): Anteil der
+    LÄUFE (nicht Aufrufe), in denen diese (Agent, Modell)-Kombination vorkam, die mit
+    `verification_ok=True` endeten - anders als `success_rate` (misst nur, ob der Aufruf selbst
+    keine Exception warf) prüft das, ob der Lauf, an dem der Agent mit diesem Modell beteiligt
+    war, tatsächlich funktionierenden Code lieferte. `None`, solange weniger als
+    MIN_QUALITY_SAMPLE_RUNS Läufe vorliegen - kein Zufallsausreißer soll als Qualitätsurteil
+    durchgehen.
     """
     runs = _load()[-limit_runs:]
     stats: dict[tuple[str, str], dict[str, int]] = {}
     for run in runs:
+        run_verification_ok = bool(run.get("verification_ok"))
+        # Pro Lauf höchstens EINMAL je (Agent, Modell) zählen: verification_ok ist eine
+        # Eigenschaft des gesamten Laufs, nicht des einzelnen Aufrufs - ein Agent, der im selben
+        # Lauf mehrfach mit demselben Modell aufgerufen wird, darf den Lauf nicht mehrfach werten.
+        seen_this_run: set[tuple[str, str]] = set()
         for res in run.get("agent_results", []):
             agent_id = res.get("agent_id", "?")
             # Infrastruktur-Ausfälle tragen kein aussagekräftiges Modell (agents/base_agent.py
@@ -153,11 +175,19 @@ def get_agent_model_performance(limit_runs: int = 100) -> list[dict]:
             if is_infrastructure_result(res):
                 continue
             model = res.get("model_used") or "unbekannt"
-            entry = stats.setdefault((agent_id, model), {"calls": 0, "successes": 0, "total_tokens": 0})
+            key = (agent_id, model)
+            entry = stats.setdefault(
+                key, {"calls": 0, "successes": 0, "total_tokens": 0, "quality_runs": 0, "quality_ok_runs": 0}
+            )
             entry["calls"] += 1
             if res.get("success"):
                 entry["successes"] += 1
             entry["total_tokens"] += res.get("total_tokens", 0)
+            if key not in seen_this_run:
+                seen_this_run.add(key)
+                entry["quality_runs"] += 1
+                if run_verification_ok:
+                    entry["quality_ok_runs"] += 1
 
     result = [
         {
@@ -167,6 +197,11 @@ def get_agent_model_performance(limit_runs: int = 100) -> list[dict]:
             "successes": s["successes"],
             "success_rate": round(100 * s["successes"] / s["calls"], 1) if s["calls"] else 0.0,
             "avg_tokens": round(s["total_tokens"] / s["calls"], 0) if s["calls"] else 0.0,
+            "quality_rate": (
+                round(100 * s["quality_ok_runs"] / s["quality_runs"], 1)
+                if s["quality_runs"] >= MIN_QUALITY_SAMPLE_RUNS
+                else None
+            ),
         }
         for (agent_id, model), s in stats.items()
     ]

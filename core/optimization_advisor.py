@@ -58,6 +58,15 @@ MIN_SUCCESS_RATE_GAP = 15.0
 # den Mehrverbrauch zu rechtfertigen.
 TOKEN_COST_INCREASE_TOLERANCE = 1.2
 SIGNIFICANT_SUCCESS_RATE_GAP = 30.0
+# P2-2 (ROADMAP_TEMP.md, "Selbst-Degradierungs-Spirale"): success_rate misst nur, ob ein
+# Agenten-Aufruf keine Exception warf - NICHT, ob der Lauf tatsächlich funktionierenden Code
+# lieferte. memory/auto_tuned_models.json stufte mehrere Agenten allein wegen einer höheren
+# success_rate herunter, während die tatsächliche Projekt-Erfolgsquote (verification_ok) im
+# selben Zeitraum bei 13% lag - das schwächere Modell antwortete nur schneller/fehlerfreier,
+# lieferte aber schlechteren Code. Ein Modellwechsel wird deshalb nur noch vorgeschlagen, wenn
+# BEIDE Modelle genug quality_rate-Daten haben (siehe memory/run_history.MIN_QUALITY_SAMPLE_RUNS)
+# UND das vorgeschlagene Modell dabei nicht schlechter abschneidet als das aktuelle.
+MIN_QUALITY_SCORE_GAP_TO_BLOCK = 1.0
 # Team-Retrospektive nach dem taskpulse-Lauf: kleinere Stichprobe als MIN_SAMPLE_SIZE, weil ein
 # GANZER Lauf (nicht ein einzelner Agenten-Aufruf) die Beobachtungseinheit ist - bei nur 1-2
 # aufgezeichneten Läufen wäre jede Quote (0% oder 100%) noch reines Rauschen, ab 3 wird ein
@@ -280,6 +289,14 @@ def analyze(limit_runs: int = 100) -> OptimizationReport:
             current["avg_tokens"] > 0 and best["avg_tokens"] > current["avg_tokens"] * TOKEN_COST_INCREASE_TOLERANCE
         )
         if is_meaningfully_more_expensive and gap < SIGNIFICANT_SUCCESS_RATE_GAP:
+            continue
+        # P2-2: ohne Qualitäts-Daten auf BEIDEN Seiten (zu wenige Läufe, siehe
+        # MIN_QUALITY_SAMPLE_RUNS) lässt sich "nicht schlechter" nicht belegen - dann lieber kein
+        # Vorschlag als ein unbelegter Downgrade. Liegen Daten vor, darf das vorgeschlagene
+        # Modell nicht spürbar schlechter verifizieren als das aktuelle.
+        if current["quality_rate"] is None or best["quality_rate"] is None:
+            continue
+        if current["quality_rate"] - best["quality_rate"] >= MIN_QUALITY_SCORE_GAP_TO_BLOCK:
             continue
         report.model_suggestions.append(ModelSuggestion(
             agent_id=agent_id,

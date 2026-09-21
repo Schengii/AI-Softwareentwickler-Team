@@ -102,6 +102,43 @@ class TestOptimizationAdvisor(unittest.TestCase):
         self.assertEqual(s.suggested_model, "model-b")
         self.assertGreaterEqual(s.suggested_success_rate - s.current_success_rate, MIN_SUCCESS_RATE_GAP)
 
+    def test_no_suggestion_when_better_call_success_hides_worse_verification_quality(self):
+        """
+        P2-2 (ROADMAP_TEMP.md, "Selbst-Degradierungs-Spirale"): success_rate misst nur, ob ein
+        Aufruf keine Exception warf - NICHT, ob der Lauf tatsächlich funktionierenden Code
+        lieferte. Realer Fund: mehrere Agenten wurden auf ein Modell mit 100% Aufruf-Erfolg
+        heruntergestuft, während die tatsächliche Projekt-Erfolgsquote (verification_ok) bei 13%
+        lag. model-b hat hier 100% Aufruf-Erfolg, verifiziert aber in 4 von 5 Läufen NICHT -
+        model-a hat einen schlechteren Aufruf-Erfolg, aber jeder Lauf verifiziert sauber.
+        """
+        for _ in range(5):
+            run_history_module.record_run(
+                project_slug="p", task_summary="x", verification_ok=True, total_tokens=1, duration_seconds=1,
+                agent_results=[{"agent_id": "backend", "success": True, "total_tokens": 100, "model_used": "model-a"}],
+            )
+        for i in range(5):
+            run_history_module.record_run(
+                project_slug="p", task_summary="x", verification_ok=(i == 0), total_tokens=1, duration_seconds=1,
+                agent_results=[{"agent_id": "backend", "success": True, "total_tokens": 100, "model_used": "model-b"}],
+            )
+
+        report = analyze()
+
+        self.assertEqual(report.model_suggestions, [])
+
+    def test_no_suggestion_when_quality_data_is_insufficient_on_either_side(self):
+        """Weniger als MIN_QUALITY_SAMPLE_RUNS Läufe je Modell reichen nicht, um "nicht
+        schlechter" zu belegen - dann lieber kein Vorschlag als ein unbelegter Downgrade."""
+        self._record("backend", "model-a", success=True, calls=1)
+        self._record("backend", "model-a", success=False, calls=4)
+        self._record("backend", "model-b", success=True, calls=4)
+        self._record("backend", "model-b", success=False, calls=1)
+
+        with patch.object(run_history_module, "MIN_QUALITY_SAMPLE_RUNS", 100):
+            report = analyze()
+
+        self.assertEqual(report.model_suggestions, [])
+
     def test_baseline_is_the_configured_model_not_the_most_used_one(self):
         """
         Realer Fund (Laufanalyse 2026-09-16): Als Vergleichsbasis galt das MEISTGENUTZTE Modell

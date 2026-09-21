@@ -511,7 +511,7 @@ bestehenden Spezifitäts-Fallback.
 ---
 
 ### P2-2 · Das Modell-Auto-Tuning optimiert die falsche Zielgröße (Selbst-Degradierungs-Spirale)
-**Status:** ❌ offen · **Aufwand:** M · **Wirkung:** sehr hoch
+**Status:** ✅ erledigt 2026-09-21 · **Aufwand:** M · **Wirkung:** sehr hoch
 
 `memory/auto_tuned_models.json` hat `performance`, `content_lead`, `api_integration`,
 `design_lead`, `frontend`, `qa_lead` u. a. von `gemini-3.8-flash` auf `gemini-3.1-flash-lite`
@@ -539,6 +539,39 @@ Phasen später bestraft, ohne dass diese Strafe je auf den Agenten zurückgerech
 
 **Akzeptanzkriterium:** Test, der belegt, dass ein Agent mit 100 % Aufruf-Erfolg, aber
 unterdurchschnittlichem Qualitäts-Score **kein** Downgrade vorgeschlagen bekommt.
+
+> **Umsetzung (2026-09-21):** `memory/run_history.py.get_agent_model_performance()` liefert je
+> (Agent, Modell) jetzt zusätzlich `quality_rate`: der Anteil der LÄUFE (nicht Aufrufe - ein
+> Agent kann mehrfach je Lauf aufgerufen werden, `verification_ok` ist aber eine Eigenschaft des
+> gesamten Laufs), in denen diese Kombination vorkam UND die mit `verification_ok=True` endeten.
+> Unter `MIN_QUALITY_SAMPLE_RUNS` (3) Läufen bleibt sie `None` (zu wenig Daten für ein Urteil).
+> `core/optimization_advisor.py.analyze()` verlangt jetzt für JEDEN Modell-Vorschlag `quality_rate`
+> auf BEIDEN Seiten und blockt, wenn das vorgeschlagene Modell dabei nicht mindestens
+> gleichauf ist (`MIN_QUALITY_SCORE_GAP_TO_BLOCK`) - ohne Daten lieber kein Vorschlag als ein
+> unbelegter Downgrade. Punkt (b)/(c) der ursprünglichen Lösungsskizze (Fix-Runden je
+> Datei-Owner, Watchdog-Interventionsquote) sind bewusst NICHT umgesetzt: `memory/run_history.json`
+> speichert bisher weder `file_owners` noch Watchdog-Ereignisse je Lauf - das würde eine eigene
+> Erweiterung von `record_run()`/den Aufrufstellen in `agents/orchestrator/` erfordern und bleibt
+> als Folgearbeit offen; `verification_ok` allein ist bereits ein deutlich robusteres Qualitätssignal
+> als die reine Aufruf-Erfolgsquote und reicht für die im Akzeptanzkriterium geforderte Absicherung.
+>
+> **Punkt 3 (bestehende Auto-Downgrades nachgeprüft):** Reale Messung gegen `memory/run_history.json`
+> (200 Läufe) zeigte für 6 der 7 in `memory/auto_tuned_models.json` auf `gemini-3.1-flash-lite`
+> heruntergestuften Agenten eine drastisch schlechtere `quality_rate` als beim zuvor
+> konfigurierten `gemini-3.8-flash` (z. B. `frontend`: 4,3 % vs. 26,9 %; `design_lead`: 0,0 % vs.
+> 40,0 %; `api_integration`: 0,0 % vs. 16,7 %; außerdem `content_lead`, `qa_lead`, `tester`) -
+> exakt die im Befund beschriebene Spirale: 100 % Aufruf-Erfolg bei tatsächlich kaum
+> verifizierenden Läufen. Diese 6 Einträge wurden manuell auf `gemini-3.8-flash` zurückgenommen
+> (mit dokumentierter Begründung + Zeitstempel im jeweiligen Eintrag). `performance` blieb
+> unverändert auf `gemini-3.1-flash-lite` (23,5 % vs. 23,1 % `quality_rate` - kein echter
+> Unterschied). `memory/auto_tuned_models.json` ist git-ignoriert (lokaler Zustand, kein
+> Repo-Commit nötig).
+>
+> Neue Tests: 2 in `tests/test_optimization_advisor.py` (Vorschlag wird bei schlechter
+> Verifikationsqualität trotz besserer Aufruf-Erfolgsquote geblockt; kein Vorschlag ohne
+> ausreichende Qualitäts-Stichprobe) und 3 in `tests/test_run_history.py`
+> (`quality_rate`-Berechnung: unterhalb der Mindest-Stichprobe `None`, spiegelt `verification_ok`
+> statt Aufruf-Erfolg wider, zählt einen Lauf mit mehreren Aufrufen nur einmal).
 
 ---
 
@@ -1041,7 +1074,7 @@ ruff check && python -m pytest -q
 | P1-4 | `CancelledError` reißt den Lauf mit | P1 | ☑ erledigt |
 | P1-5 | Hard Delivery Gate ohne eigene `failure_class` | P1 | 🟡 failure_class erledigt, Fix-Loop-Kurzschluss offen |
 | P2-1 | Learnings mit Wirksamkeitsmessung | P2 | ☑ erledigt |
-| P2-2 | Modell-Auto-Tuning optimiert falsche Zielgröße | P2 | ☐ |
+| P2-2 | Modell-Auto-Tuning optimiert falsche Zielgröße | P2 | ☑ erledigt |
 | P2-3 | 13 ungenutzte Rollen – entscheiden statt melden | P2 | ☐ |
 | P2-4 | Retrospektive arbeitet blind | P2 | ☐ |
 | P3-1 | Post-Mortem-Artefakt pro Lauf | P3 | ☐ |

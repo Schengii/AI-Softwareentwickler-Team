@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import memory.run_history as run_history_module
 from memory.run_history import (
+    MIN_QUALITY_SAMPLE_RUNS,
     get_agent_model_performance,
     get_agent_success_rates,
     get_recent_runs,
@@ -161,6 +162,50 @@ class TestRunHistory(unittest.TestCase):
 
     def test_model_performance_empty_without_history(self):
         self.assertEqual(get_agent_model_performance(), [])
+
+    def test_quality_rate_is_none_below_minimum_sample_runs(self):
+        for _ in range(MIN_QUALITY_SAMPLE_RUNS - 1):
+            record_run(
+                project_slug="p", task_summary="x", verification_ok=True, total_tokens=1, duration_seconds=1,
+                agent_results=[{"agent_id": "backend", "success": True, "total_tokens": 10, "model_used": "m"}],
+            )
+
+        entry = next(r for r in get_agent_model_performance() if r["agent_id"] == "backend")
+        self.assertIsNone(entry["quality_rate"])
+
+    def test_quality_rate_reflects_verification_ok_not_call_success(self):
+        """P2-2: quality_rate misst, ob der LAUF verifiziert wurde - nicht, ob der Aufruf selbst
+        keine Exception warf. Ein Agent mit 100% Aufruf-Erfolg kann trotzdem eine niedrige
+        quality_rate haben, wenn die Läufe nicht verifizieren."""
+        for i in range(MIN_QUALITY_SAMPLE_RUNS + 2):
+            record_run(
+                project_slug="p", task_summary="x", verification_ok=(i == 0), total_tokens=1, duration_seconds=1,
+                agent_results=[{"agent_id": "backend", "success": True, "total_tokens": 10, "model_used": "m"}],
+            )
+
+        entry = next(r for r in get_agent_model_performance() if r["agent_id"] == "backend")
+        self.assertEqual(entry["success_rate"], 100.0)
+        self.assertEqual(entry["quality_rate"], round(100 / (MIN_QUALITY_SAMPLE_RUNS + 2), 1))
+
+    def test_quality_rate_counts_each_run_at_most_once_per_agent_model(self):
+        """Mehrere Aufrufe desselben Agenten/Modells im SELBEN Lauf duerfen den Lauf nicht
+        mehrfach werten - verification_ok ist eine Eigenschaft des gesamten Laufs."""
+        record_run(
+            project_slug="p", task_summary="x", verification_ok=False, total_tokens=1, duration_seconds=1,
+            agent_results=[
+                {"agent_id": "backend", "success": True, "total_tokens": 10, "model_used": "m"},
+                {"agent_id": "backend", "success": True, "total_tokens": 10, "model_used": "m"},
+            ],
+        )
+        for _ in range(MIN_QUALITY_SAMPLE_RUNS - 1):
+            record_run(
+                project_slug="p", task_summary="x", verification_ok=True, total_tokens=1, duration_seconds=1,
+                agent_results=[{"agent_id": "backend", "success": True, "total_tokens": 10, "model_used": "m"}],
+            )
+
+        entry = next(r for r in get_agent_model_performance() if r["agent_id"] == "backend")
+        self.assertEqual(entry["calls"], MIN_QUALITY_SAMPLE_RUNS + 1)
+        self.assertEqual(entry["quality_rate"], round(100 * (MIN_QUALITY_SAMPLE_RUNS - 1) / MIN_QUALITY_SAMPLE_RUNS, 1))
 
     def test_verification_success_rate_mixed_runs(self):
         # Team-Retrospektive nach dem taskpulse-Lauf: get_verification_success_rate() macht

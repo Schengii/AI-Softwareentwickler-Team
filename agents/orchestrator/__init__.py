@@ -117,6 +117,7 @@ from core.project_status import (
 from core.quota_estimator import QuotaEstimator
 from core.result_aggregator import ResultAggregator
 from core.run_logger import RunLogger
+from core.run_postmortem import generate_postmortem
 from core.secret_scanner import scan_directory
 from core.task_manager import TaskManager
 from core.team_memory import auto_link_lessons_to_rules, format_team_lessons_for_agents, record_lesson
@@ -1204,6 +1205,22 @@ class Orchestrator(
                 project_slug=self.last_project_slug,
                 notify=notify,
             )
+
+        # Projekt-Abschlussbericht (P3-1): rein additiv, kein LLM-Aufruf, deshalb für JEDEN Lauf
+        # geschrieben - auch für budget-abgebrochene/manuell abgebrochene, damit auch dort
+        # nachvollziehbar bleibt, wie weit der Lauf kam und wofür die Tokens draufgingen.
+        try:
+            generate_postmortem(
+                project_dir=project_dir,
+                project_slug=self.last_project_slug,
+                results=results,
+                planned_agent_ids=[t.agent_id for t in agent_tasks],
+                total_duration=total_duration,
+                verification_ok=verification_ok,
+                outcome=getattr(self, "last_verification_outcome", None),
+            )
+        except Exception as e:
+            notify(f"⚠️ [dim yellow]Abschlussbericht konnte nicht geschrieben werden: {e}[/dim yellow]")
 
         stats_table = self._build_metrics_summary(
             results=results,

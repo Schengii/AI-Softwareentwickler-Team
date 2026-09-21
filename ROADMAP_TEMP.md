@@ -686,7 +686,7 @@ einen auf ~1500-2000 Zeichen gekappten Prosa-Auszug ohne `project_dir`/`allow_to
 ## 4. 🟢 P3 – Bessere Fehleranalyse nach Projektende
 
 ### P3-1 · Es gibt keinen Projekt-Abschlussbericht als Artefakt
-**Status:** ❌ offen · **Aufwand:** M · **Wirkung:** hoch
+**Status:** ✅ erledigt 2026-09-21 · **Aufwand:** M · **Wirkung:** hoch
 
 Heute entstehen pro Lauf: `.ai_team_runs/<ts>_verification.md` (Prüfprotokoll),
 `.ai_team_dod.json` (Kriterien), `.ai_team_status.json` (Historie), `logs/runs/*.jsonl` (Trace).
@@ -706,6 +706,26 @@ Was fehlt, ist die Zusammenführung: **ein Post-Mortem pro Lauf**, das die Frage
 
 **Akzeptanzkriterium:** Neues Modul `core/run_postmortem.py` plus Test; der Bericht entsteht ohne
 zusätzlichen LLM-Aufruf für **jeden** Lauf, auch für grüne.
+
+> **Umsetzung:** Neues Modul `core/run_postmortem.py.generate_postmortem()` – rein
+> deterministisch (kein LLM-Aufruf, wie die Retrospektive aus P2-4), aus `agents/orchestrator/
+> __init__.py.process()` nach Retrospektive/Trainer/Root-Cause-Analyse aufgerufen (damit auch
+> in diesem Lauf neu angelegte Root-Cause-Tickets schon sichtbar sind) und additiv in
+> `try/except` eingebettet, damit ein Fehler hier nie einen sonst erfolgreichen Lauf kippt.
+> Läuft für JEDEN Lauf, auch bei Budget-Abbruch/manuellem Abbruch, damit auch dort
+> nachvollziehbar bleibt, wie weit der Lauf kam. Schreibt
+> `workspace/<projekt>/.ai_team_runs/<ts>_postmortem.md` mit: Ergebnis (Verifikation, Dauer,
+> Tokens, Dateien, blockierende vs. informative fehlgeschlagene Checks aus P0-6s
+> `VerificationOutcome`), Fix-Ökonomie (Produktion vs. Reparatur-Tokens – ein Aufruf gilt als
+> Reparatur, wenn seine `task_id` eines der Muster `fix`/`recheck`/`escalation`/`governance_`/
+> `verify_`/`autofix` aus dem Verifikations-/Governance-Fixloop enthält), Rollen-Bilanz
+> (geplant aus `agent_tasks` vs. tatsächlich eingesetzt vs. Dateien je Rolle), Zeitachse (aus
+> dem bereits vorhandenen `core/run_trace.py`-Projekt-Trace) und offene Root-Cause-Tickets
+> desselben Projekts (`core/backlog_store.py`, `source == "root_cause_analysis"`). 4 neue Tests
+> in `tests/test_run_postmortem.py`; Wiring zusätzlich gegen 4 bestehende End-to-End-
+> Integrationstests verifiziert (`test_governance_fix_loop.py`,
+> `test_completeness_measured_despite_budget.py`, u.a., 19 Tests grün), um sicherzustellen,
+> dass der neue Aufruf in `process()` echte Läufe nicht bricht.
 
 ---
 
@@ -1174,7 +1194,7 @@ ruff check && python -m pytest -q
 | P2-2 | Modell-Auto-Tuning optimiert falsche Zielgröße | P2 | ☑ erledigt |
 | P2-3 | 13 ungenutzte Rollen – entscheiden statt melden | P2 | 🟡 teilweise |
 | P2-4 | Retrospektive arbeitet blind | P2 | ☑ erledigt |
-| P3-1 | Post-Mortem-Artefakt pro Lauf | P3 | ☐ |
+| P3-1 | Post-Mortem-Artefakt pro Lauf | P3 | ☑ erledigt |
 | P3-2 | `--team-trend` Trendbericht | P3 | ☐ |
 | P3-3 | Root-Cause nur bei blockierenden Befunden | P3 | ☑ erledigt |
 | P3-4 | `team_lessons.jsonl` Schema vereinheitlichen | P3 | ☑ erledigt |

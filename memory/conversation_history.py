@@ -21,6 +21,27 @@ from config import MEMORY_DIR
 # keinen funktionalen Nutzen mehr, nur ungenutztes Gewicht auf der Platte.
 MAX_MESSAGES_KEPT = 200
 
+# P6-3 (ROADMAP_TEMP.md): die 200-Nachrichten-Obergrenze allein begrenzte die Nachrichten-
+# ANZAHL, nicht ihre GRÖSSE - memory/history_default.json lag bei 195 Nachrichten trotzdem bei
+# 2 MB, weil eine assistant-Nachricht der komplette Abschlussbericht eines Laufs ist (bis zu
+# ~50.000 Zeichen je Nachricht, real gemessen). Weder get_context_string() (kürzt auf 500
+# Zeichen je Nachricht für den Prompt-Kontext) noch interface/cli.py._print_history() (kürzt
+# auf 100 Zeichen für die Konsole) lesen je mehr als das - der volle gespeicherte Text hatte
+# also bereits vorher keinen funktionalen Nutzen, nur ungenutztes Gewicht auf der Platte.
+MAX_MESSAGE_CONTENT_CHARS = 4000
+
+
+def _truncate_for_storage(content: str, max_chars: int = MAX_MESSAGE_CONTENT_CHARS) -> str:
+    """Kürzt auf höchstens `max_chars`, an einer Zeilengrenze statt mitten im Wort - dasselbe
+    Prinzip wie core/project_status.py.truncate_on_line_boundary()."""
+    if len(content) <= max_chars:
+        return content
+    marker = "\n… (gekürzt für die Verlaufs-Historie)"
+    budget = max(0, max_chars - len(marker))
+    cut = content.rfind("\n", 0, budget)
+    head = content[:cut] if cut > 0 else content[:budget]
+    return head.rstrip() + marker
+
 
 @dataclass
 class ChatMessage:
@@ -44,13 +65,13 @@ class ConversationHistory:
 
     def add_user_message(self, content: str) -> None:
         """Fügt eine Nutzer-Nachricht hinzu."""
-        self._messages.append(ChatMessage(role="user", content=content))
+        self._messages.append(ChatMessage(role="user", content=_truncate_for_storage(content)))
         self._messages = self._messages[-MAX_MESSAGES_KEPT:]
         self._save_to_disk()
 
     def add_assistant_message(self, content: str) -> None:
         """Fügt eine Assistenten-Nachricht hinzu."""
-        self._messages.append(ChatMessage(role="assistant", content=content))
+        self._messages.append(ChatMessage(role="assistant", content=_truncate_for_storage(content)))
         self._messages = self._messages[-MAX_MESSAGES_KEPT:]
         self._save_to_disk()
 
@@ -121,8 +142,19 @@ class ConversationHistory:
             # nächsten Laden, statt erst auf die nächste neue Nachricht zu warten - eine bereits
             # 13-MB-große Datei würde sonst noch beliebig lange geladen (und jedes Mal neu
             # geparst) werden, bevor die Obergrenze in add_*_message() überhaupt greift.
-            if len(self._messages) > MAX_MESSAGES_KEPT:
+            needs_resave = len(self._messages) > MAX_MESSAGES_KEPT
+            if needs_resave:
                 self._messages = self._messages[-MAX_MESSAGES_KEPT:]
+            # P6-3: dieselbe einmalige Nachverdichtung für bereits VOR MAX_MESSAGE_CONTENT_CHARS
+            # gespeicherte, überlange Nachrichten (z.B. eine 2 MB große Altdatei aus 195
+            # Nachrichten mit bis zu 50.000 Zeichen je Nachricht) - sonst bliebe sie bis zu
+            # MAX_MESSAGES_KEPT weitere Nachrichten lang übergroß.
+            for m in self._messages:
+                truncated = _truncate_for_storage(m.content)
+                if truncated != m.content:
+                    m.content = truncated
+                    needs_resave = True
+            if needs_resave:
                 self._save_to_disk()
         except Exception:
             self._messages = []

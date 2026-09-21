@@ -1280,6 +1280,21 @@ Agenten-Aufruf kostet.
 | P6-1 | Gestagte, nicht committete Fixes einchecken (siehe P0-3) – mit `Closes:`-Zeilen | XS |
 | P6-2 | ~~`workspace/cachegrid_proxy/` gehört nicht in Framework-Commits~~ – **Korrektur 2026-09-20: Fehlannahme.** `workspace/` ist bewusst versioniert (1068 getrackte Dateien, eigene `feat:`-Commits je Projekt). Richtig ist nur, generierte Projekte **getrennt** vom Framework-Fix zu committen. | – |
 | P6-3 | `memory/history_default.json` ist **1,99 MB** – Rotation/Archivierung einführen | S |
+
+> **Umsetzung 2026-09-21:** Die bestehende `MAX_MESSAGES_KEPT=200`-Rotation begrenzte nur die
+> Nachrichten-ANZAHL, nicht ihre GRÖSSE - die Datei lag bei 195 Nachrichten trotzdem bei 2 MB,
+> weil eine einzelne assistant-Nachricht (ein kompletter Lauf-Abschlussbericht) bis zu ~50.000
+> Zeichen groß wird, obwohl weder `get_context_string()` (kürzt auf 500 Zeichen je Nachricht
+> für den Prompt-Kontext) noch `interface/cli.py._print_history()` (100 Zeichen für die Konsole)
+> je mehr als das lesen - der volle gespeicherte Text hatte also bereits vorher keinen
+> funktionalen Nutzen. Neu: `MAX_MESSAGE_CONTENT_CHARS = 4000` in
+> `memory/conversation_history.py`, `_truncate_for_storage()` kürzt an einer Zeilengrenze
+> (dasselbe Prinzip wie `core/project_status.py.truncate_on_line_boundary()`) beim Schreiben
+> UND einmalig beim Laden einer bereits überlangen Altdatei (derselbe Mechanismus, der schon
+> die Anzahl-Rotation einer überlangen Altdatei sofort persistiert statt erst beim nächsten
+> Schreiben). Die reale `memory/history_default.json` dadurch direkt von 2,1 MB auf 402 KB
+> reduziert (−81 %), alle 195 Nachrichten erhalten. 3 neue Tests in
+> `tests/test_conversation_history_rotation.py`.
 | P6-4 | `memory/backlog.json` 143 KB / 200 Tickets, davon 19 `cancelled` + 96 `done` – abgeschlossene Tickets nach `memory/backlog_archive.json` auslagern | S |
 | P6-5 | `interface/cli.py` 2.378 Zeilen, `core/llm_factory.py` 1.848, `agents/orchestrator/verification.py` 1.816 – die drei größten Module nach Verantwortlichkeiten aufteilen | L |
 | P6-6 | `core/message_bus.py` enthält nur noch zwei Dataclasses – in `core/agent_contracts.py` umbenennen (60+ Importe, daher mit Alias-Übergang) | S |
@@ -1410,4 +1425,4 @@ ruff check && python -m pytest -q
 | P5-3 | Verifikations-Reserve im Budget | P5 | ☑ erledigt (Reserve existierte, Gate korrigiert) |
 | P6-1 | Gestagte Fixes committet | P6 | ☑ erledigt |
 | P6-2 | ~~Workspace aus Framework-Commits~~ | P6 | ☑ Fehlannahme, siehe oben |
-| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-7, P6-8 erledigt; P6-3, P6-4, P6-5, P6-6 offen |
+| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-7, P6-8 erledigt; P6-4, P6-5, P6-6 offen |

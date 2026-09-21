@@ -988,7 +988,7 @@ aufgerufen werden. `core/code_graph.py` (495 Zeilen) liefert die Grundlage dafü
 ---
 
 ### P4-4 · Kein geteiltes Kurzzeitgedächtnis während der Entwicklungsphase
-**Status:** 🟡 **früher Abfang + zuverlässige Vertragsdatei erledigt 2026-09-21**, echte Prompt-Injektion vor dem ersten Schreiben weiterhin offen · **Aufwand:** M · **Wirkung:** mittel
+**Status:** ✅ **erledigt 2026-09-21** (Abfang, zuverlässige Vertragsdatei, Prompt-Injektion in alle Phasen nach dev_lead) · **Aufwand:** M · **Wirkung:** mittel
 
 `core/message_bus.py` sagt im eigenen Docstring, dass die echte Publish/Subscribe-Klasse entfernt
 wurde, weil sie nie genutzt wurde. Die Koordination läuft über `core/team_board.py` – ein
@@ -1066,6 +1066,20 @@ Ein Tester, der die echte Routenliste im Kontext hat, erfindet keine.
 > solange `tester` im Test-First-Modus PARALLEL zu `backend` arbeitet und die Routen zu diesem
 > Zeitpunkt schlicht noch nicht existieren (siehe Analyse 2026-09-20 oben) - dafür bräuchte es
 > einen größeren Eingriff in die Phasen-Reihenfolge selbst, kein reines Kontext-Problem mehr.
+
+> **Umsetzung 2026-09-21, Rest-Lücke für ALLE Phasen NACH der Test-First-Parallelität
+> geschlossen:** `core/code_graph.py.generate_project_brief()` (neu) erzeugt einen
+> deterministischen, Token-günstigen Projekt-Steckbrief (tatsächlich vorhandene Endpunkte aus
+> `core/contract_verifier.py.extract_backend_endpoints()` + Haupt-Module/-Symbole aus dem
+> bestehenden `CodebaseGraph`). `agents/orchestrator/department.py` injiziert ihn jetzt in JEDE
+> Phase außer `dev_lead` selbst (`dept_id != "dev_lead"`) - also `qa_lead`, `security`,
+> `performance`, `readme`, `governance_lead` etc. bekommen von Anfang an die echten Routen statt
+> sie zu erfinden. `agents/orchestrator/verification.py` injiziert denselben Steckbrief
+> zusätzlich in jeden Fix- und Eskalations-Task des Verifikations-Loops. Damit bleibt exakt der
+> eine, oben analysierte und architektonisch unvermeidbare Fall offen: der ALLERERSTE parallele
+> `tester`+`backend`-Dispatch in der `dev_lead`-Phase selbst, bevor irgendein Code existiert -
+> für den gibt es strukturell nichts zu injizieren. Jede Phase und jeder Fix-Versuch danach
+> arbeitet jetzt mit dem echten Vertrag.
 
 ---
 
@@ -1491,7 +1505,7 @@ ruff check && python -m pytest -q
 | P4-1 | Code-Review verbindlich | P4 | ☑ erledigt |
 | P4-2 | Abnahme gegen die Anforderung | P4 | ☑ erledigt |
 | P4-3 | Testtiefe fachlich statt nur Routen | P4 | 🟡 teilweise (informativ, nicht blockierend) |
-| P4-4 | Projekt-Steckbrief für jeden Agenten | P4 | 🟡 Abfang + zuverlässige Vertragsdatei erledigt, Prompt-Injektion vor 1. Schreiben offen |
+| P4-4 | Projekt-Steckbrief für jeden Agenten | P4 | ☑ erledigt (nur allererster paralleler Test-First-Dispatch architektonisch ausgenommen) |
 | P4-5 | Write-Guard gegen Fremddatei-Überschreiben | P4 | ☑ erledigt (bereits vorhanden, nachgeprüft) |
 | P5-1 | Degraded-Mode ehrlich machen | P5 | ☑ erledigt (alle 3 Punkte) |
 | P5-2 | Token-Effizienz / Caching | P5 | 🟡 alle 3 Aufgaben implementiert, A/B-Messung offen |

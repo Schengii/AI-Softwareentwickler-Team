@@ -77,12 +77,18 @@ def main():
     dist, build, .pytest_cache) befreit, während Quellcode und Historie vollständig erhalten bleiben.
     """
     if "--clean-telemetry" in sys.argv:
-        from core.telemetry_hygiene import clean_eval_history, clean_run_history
+        from core.telemetry_hygiene import clean_eval_history, clean_run_history, clean_team_lessons
         dry_run = "--dry-run" in sys.argv
-        for label, cleaner in (("Lauf-Historie", clean_run_history), ("Benchmark-Historie", clean_eval_history)):
+        for label, cleaner in (
+            ("Lauf-Historie", clean_run_history),
+            ("Benchmark-Historie", clean_eval_history),
+        ):
             total, removed = cleaner(dry_run=dry_run)
             verb = "würden entfernt" if dry_run else "entfernt (Sicherung *.bak_*)"
             print(f"{label}: {removed} von {total} synthetischen Einträgen {verb}.")
+        total, removed = clean_team_lessons(dry_run=dry_run)
+        verb = "würden entfernt" if dry_run else "entfernt (Sicherung *.bak_*)"
+        print(f"Team-Lektionen: {removed} von {total} schema-widrigen Zeilen {verb}.")
         return
 
     if "--workspace-hygiene" in sys.argv:

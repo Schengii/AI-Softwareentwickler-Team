@@ -102,3 +102,71 @@ def clean_eval_history(path: Path | None = None, *, dry_run: bool = False) -> tu
         from evals import runner
         path = runner.EVALS_HISTORY_FILE
     return _clean_json_list(path, is_synthetic_eval, "Benchmark-Historie", dry_run=dry_run)
+
+
+_LESSON_EVENT_TYPES = frozenset({"lesson_recurrence", "lesson_status"})
+
+
+def _is_valid_team_lessons_line(record: dict) -> bool:
+    """Prüft, ob eine Zeile aus memory/team_lessons.jsonl dem Schema aus core/team_memory.py
+    entspricht: entweder eine Lektion (category/detail/project_slug/timestamp, alle nicht-leer)
+    oder ein Ereignis (event in _LESSON_EVENT_TYPES, signature/timestamp nicht-leer).
+
+    `signature` ist bei Lektionen bewusst NICHT Pflicht: core/team_memory.py._entry_signature()
+    berechnet sie schon heute bei Bedarf aus category+detail nach (lesson_signature()) - ältere
+    Lektionen ganz ohne das Feld (real in memory/team_lessons.jsonl vorhanden, vor Einführung
+    der Signatur-Spalte geschrieben) sind deshalb kein Schemabruch, sondern der erwartete
+    Normalfall für Alteinträge.
+
+    P3-4 (ROADMAP_TEMP.md): frühere Analyse fand 21 von 102 Einträgen ohne `category` -
+    core/team_memory.py trennt Lektionen und Ereignisse inzwischen bereits sauber über das
+    `event`-Feld (read_team_lessons() filtert Ereigniszeilen aus), diese Funktion macht die
+    Schema-Erwartung explizit und entfernt nur Zeilen, die zu keiner der beiden Formen passen
+    (kaputtes JSON, fehlende Pflichtfelder, unbekannter Ereignistyp)."""
+    if "event" in record:
+        return (
+            record.get("event") in _LESSON_EVENT_TYPES
+            and bool(str(record.get("signature", "")).strip())
+            and bool(str(record.get("timestamp", "")).strip())
+        )
+    return all(
+        bool(str(record.get(key, "")).strip())
+        for key in ("category", "detail", "project_slug", "timestamp")
+    )
+
+
+def clean_team_lessons(path: Path | None = None, *, dry_run: bool = False) -> tuple[int, int]:
+    """Entfernt Zeilen aus memory/team_lessons.jsonl, die nicht dem in core/team_memory.py
+    definierten Schema entsprechen (kaputtes JSON, fehlende Pflichtfelder, unbekannter
+    Ereignistyp). Liefert (Zeilen vorher, entfernt). Sichert die Datei vor jeder Änderung."""
+    if path is None:
+        from core.team_memory import TEAM_MEMORY_FILE
+        path = TEAM_MEMORY_FILE
+    path = Path(path)
+    if not path.exists():
+        return 0, 0
+    try:
+        raw_lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except OSError as e:
+        logger.warning("Team-Lektionen konnten nicht gelesen werden (%s): %r", path, e)
+        return 0, 0
+    kept_lines: list[str] = []
+    for line in raw_lines:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict) and _is_valid_team_lessons_line(record):
+            kept_lines.append(line)
+    removed = len(raw_lines) - len(kept_lines)
+    if removed and not dry_run:
+        backup = path.with_suffix(path.suffix + f".bak_{datetime.now():%Y%m%d_%H%M%S}")
+        try:
+            shutil.copy2(path, backup)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text("\n".join(kept_lines) + ("\n" if kept_lines else ""), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError as e:
+            logger.error("Team-Lektionen konnten nicht bereinigt werden (%s): %r", path, e)
+            return len(raw_lines), 0
+    return len(raw_lines), removed

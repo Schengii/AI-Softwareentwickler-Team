@@ -765,16 +765,30 @@ Befundklassen einführen.
 ---
 
 ### P3-4 · `team_lessons.jsonl` ist uneinheitlich und teilweise unlesbar
-**Status:** ❌ offen · **Aufwand:** S · **Wirkung:** mittel
+**Status:** ✅ erledigt 2026-09-21 · **Aufwand:** S · **Wirkung:** mittel
 
-102 Einträge, davon **21 ohne `category`** (reine `lesson_recurrence`-Events mit nur
-`signature`/`project_slug`), und keine einheitlichen Feldnamen (`detail` vs. `event`).
-CLAUDE.md verweist auf diese Datei als „ergiebigste Quelle für echte, bereits belegte
-Framework-Bugs" – dafür ist sie in diesem Zustand schlecht geeignet.
-
-**Lösung:** Einheitliches Schema (`timestamp`, `category`, `project_slug`, `detail`, `signature`,
-`ticket_id`), `lesson_recurrence` als `category` führen statt als `event`, und
-`python main.py --clean-telemetry` um eine Schema-Normalisierung der Altbestände erweitern.
+> **Umsetzung:** Nachprüfung ergab, dass core/team_memory.py die 21 vermeintlich „category-losen"
+> Einträge bereits absichtlich als eigene Ereigniszeilen führt (`event: lesson_recurrence` /
+> `event: lesson_status`, siehe `_append_event()`) und `read_team_lessons()` diese sauber von den
+> 81 echten Lektionen (`category`/`detail`/`project_slug`/`timestamp`) trennt – die ursprüngliche
+> Analyse stammte aus der Zeit vor dieser Trennung. Die reale Datei war beim erneuten Prüfen
+> bereits vollständig valide (0 kaputte/unvollständige Zeilen). Offen war nur, dass diese
+> Schema-Erwartung nirgends **erzwungen** wurde und `python main.py --clean-telemetry` – anders
+> als für `run_history.json`/`eval_history.json` – keine Normalisierung für Altbestände in
+> `team_lessons.jsonl` anbot. Neu: `core/telemetry_hygiene.py.clean_team_lessons()` validiert
+> jede Zeile gegen das Zwei-Formen-Schema (Lektion: `category`/`detail`/`project_slug`/
+> `timestamp` nicht-leer, `signature` optional – wird bei Bedarf aus category+detail
+> nachberechnet wie in `_entry_signature()`; Ereignis: `event` ∈
+> `{lesson_recurrence, lesson_status}` mit `signature`/`timestamp`) und entfernt schema-widrige
+> Zeilen (kaputtes JSON, leere Pflichtfelder, unbekannter Ereignistyp) mit Sicherungskopie,
+> genau wie die bestehenden `clean_run_history()`/`clean_eval_history()`. `--clean-telemetry`
+> ruft das jetzt als dritten Schritt mit auf. Bewusst NICHT umgesetzt: die im Roadmap-Entwurf
+> vorgeschlagene Umbenennung von `lesson_recurrence` zu einem `category`-Wert – das bestehende
+> `event`-Feld-Design trennt Lektionen und Buchführungs-Ereignisse bereits eindeutiger als eine
+> gemeinsame `category`-Spalte es würde, eine Migration hätte hier ohne echten Zusatznutzen nur
+> Risiko für den funktionierenden Lifecycle (`read_lesson_index()`, `update_lesson_status()`)
+> erzeugt. 4 neue Tests in `tests/test_team_lessons_schema.py`, u.a. ein Regressionstest, der die
+> echte `memory/team_lessons.jsonl` gegen das Schema prüft.
 
 ---
 
@@ -1163,7 +1177,7 @@ ruff check && python -m pytest -q
 | P3-1 | Post-Mortem-Artefakt pro Lauf | P3 | ☐ |
 | P3-2 | `--team-trend` Trendbericht | P3 | ☐ |
 | P3-3 | Root-Cause nur bei blockierenden Befunden | P3 | ☑ erledigt |
-| P3-4 | `team_lessons.jsonl` Schema vereinheitlichen | P3 | ☐ |
+| P3-4 | `team_lessons.jsonl` Schema vereinheitlichen | P3 | ☑ erledigt |
 | P4-1 | Code-Review verbindlich | P4 | ☐ |
 | P4-2 | Abnahme gegen die Anforderung | P4 | ☐ |
 | P4-3 | Testtiefe fachlich statt nur Routen | P4 | ☐ |

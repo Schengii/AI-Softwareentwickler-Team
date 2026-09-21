@@ -64,6 +64,16 @@ _TEST_FIRST_NOTE = '## 🧪 Test-First (du arbeitest PARALLEL zu den Entwicklern
 # Entwicklungsphase und VOR den teuren Folgephasen, wie schon beim Einstiegspunkt-Pre-Flight.
 _TEST_ROUTE_MISMATCH_KINDS = frozenset({"test_route_mismatch", "unwired_api_router"})
 
+# P2-3 (ROADMAP_TEMP.md): der database-Agent lief in 20 ausgewerteten Läufen nur 3×, obwohl
+# SQLAlchemy-Fehler (konkurrierende Base-Definitionen, TypeError in Modell-Tests) zu den
+# häufigsten echten Testfehlern gehören - der Planer entscheidet sich beim Zerlegen fast nie
+# für die Rolle, obwohl das Backend tatsächlich ein ORM einsetzt. Option 2 ("Planer-Beschreibung
+# schärfen") half bei anderen Rollen bereits, träfe hier aber das eigentliche Problem nicht: zum
+# Planungszeitpunkt für ein NEUES Projekt steht der Tech-Stack oft noch gar nicht fest. Deshalb
+# stattdessen (Option 1, aber erst NACH der Entwicklungsphase statt zur Planungszeit, wo der
+# tatsächlich verwendete Stack schon feststeht) - siehe _run_database_review_preflight().
+_ORM_MARKERS = ("sqlalchemy", "declarative_base(", "DeclarativeBase")
+
 
 class DepartmentMixin:
     """Führt die Fachbereichs-Phasen mit echter Teamleiter-Delegation/-Konsolidierung aus."""
@@ -474,6 +484,7 @@ class DepartmentMixin:
                         notify("  📜 [dim]interface_contract.json fehlte - deterministisch aus dem geschriebenen Code nachgetragen.[/dim]")
                 except Exception as e:
                     notify(f"  ⚠️ [dim yellow]interface_contract.json konnte nicht nachgetragen werden: {e}[/dim yellow]")
+                await self._run_database_review_preflight(project_dir, all_results, notify)
                 if ENABLE_INTEGRATION_CHECKPOINT and enable_phase_checkpoint:
                     self.last_integration_checkpoint_lines = await self._run_integration_checkpoint(
                         project_dir, all_results, file_owners, notify, run_start_tokens=run_start_tokens,
@@ -690,6 +701,74 @@ class DepartmentMixin:
                 f"  ✅ [green]{agent_id}: Routen-Abgleich behoben[/green]",
                 f"  ❌ [red]{agent_id}: Routen-Abgleich weiterhin offen[/red]",
                 agent_id, dur, res.success, res.error,
+            ))
+
+    async def _run_database_review_preflight(
+        self,
+        project_dir: str,
+        all_results: list[AgentResult],
+        notify: Callable[[str], None],
+    ) -> None:
+        """P2-3 (ROADMAP_TEMP.md): setzt den `database`-Agenten deterministisch ein, wenn das
+        Backend tatsächlich ein ORM (SQLAlchemy) verwendet, statt darauf zu warten, dass der
+        Planer ihn beim Zerlegen zufällig wählt - real gemessen: nur 3 von 20 Läufen, obwohl
+        SQLAlchemy-Fehler zu den häufigsten echten Testfehlern gehören. Rein statisch (Text-
+        Suche in bereits geschriebenen .py-Dateien), kein LLM-Aufruf. Läuft NUR, wenn `database`
+        weder bereits an diesem Lauf beteiligt war noch überhaupt als Rolle verfügbar ist."""
+        if not is_safe_project_dir(project_dir):
+            return
+        if "database" not in self._agents:
+            return
+        if any(r.agent_id == "database" for r in all_results):
+            return  # bereits eingesetzt - keine erzwungene Doppelarbeit
+
+        try:
+            uses_orm = False
+            for py_file in Path(project_dir).rglob("*.py"):
+                if any(part in {".venv", "venv", "node_modules", "__pycache__", ".git"} for part in py_file.parts):
+                    continue
+                try:
+                    text = py_file.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                if any(marker in text for marker in _ORM_MARKERS):
+                    uses_orm = True
+                    break
+        except OSError:
+            return
+        if not uses_orm:
+            return
+
+        notify(
+            "  🗄️ [bold yellow]ORM erkannt (SQLAlchemy):[/bold yellow] `database`-Agent war an "
+            "diesem Lauf noch nicht beteiligt - beauftrage ihn gezielt zur Schema-/Migrations-"
+            "Überprüfung, bevor QA/Governance auf einem ungeprüften Datenmodell weiterarbeiten."
+        )
+        task = AgentTask(
+            task_id="dev_lead_database_review",
+            agent_id="database",
+            description=(
+                "Statischer Pre-Flight-Befund: dieses Projekt verwendet SQLAlchemy, aber der "
+                "database-Agent war an diesem Lauf bisher nicht beteiligt. Prüfe per read_file "
+                "das tatsächlich geschriebene Datenmodell (Base-Definitionen, Beziehungen, "
+                "Migrationen falls vorhanden) auf reale, häufige Fehlerquellen - konkurrierende "
+                "`Base`-Definitionen, fehlende/falsche Fremdschlüssel, fehlende Migrationen, "
+                "Session-/Engine-Fehlkonfiguration. Behebe gefundene Probleme direkt per "
+                "write_file/edit_file; findest du keine, bestätige das kurz im Bericht."
+            ),
+            project_dir=project_dir,
+            allow_tools=True,
+        )
+        start_t = time.monotonic()
+        results = await self._run_agents_parallel([task], notify=notify)
+        dur = time.monotonic() - start_t
+        all_results.extend(results)
+        res = results[0] if results else None
+        if res is not None:
+            notify(self._status_notify_line(
+                "  ✅ [green]database: Schema-Überprüfung abgeschlossen[/green]",
+                "  ❌ [red]database: Schema-Überprüfung fehlgeschlagen[/red]",
+                "database", dur, res.success, res.error,
             ))
 
     async def _run_static_import_preflight(

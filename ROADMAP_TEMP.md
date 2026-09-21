@@ -637,7 +637,7 @@ unterdurchschnittlichem Qualitäts-Score **kein** Downgrade vorgeschlagen bekomm
 ---
 
 ### P2-3 · 13 von 33 Rollen wurden in 20 Läufen kein einziges Mal eingesetzt
-**Status:** 🟡 teilweise 2026-09-21 · **Aufwand:** M · **Wirkung:** mittel-hoch
+**Status:** ✅ **erledigt 2026-09-21** (Optionen 1+2 umgesetzt; Option 3 bewusst nicht - siehe unten) · **Aufwand:** M · **Wirkung:** mittel-hoch
 
 Einsatz in den letzten 20 Läufen: `tester` 48×, `backend` 45×, `dev_lead` 32×, `security` 20×,
 `architect` 19×, `frontend` 15×, `qa_lead` 14× — dann fällt es steil ab: `code_reviewer` 6×,
@@ -702,6 +702,38 @@ genau diesen drei Optionen; nach der Abarbeitung liegen ≤ 3 nie genutzte Rolle
 > Neue Tests: `tests/test_unused_agent_prompt_guidance.py` (alle 7 Rollen behalten ein
 > "Einsetzen bei"-Kriterium + eine explizite Prompt-Regel) und 1 neuer Test in
 > `tests/test_optimization_advisor.py` (Ticket nennt alle drei Optionen wörtlich).
+
+> **Umsetzung 2026-09-21, `code_reviewer` bereits durch P4-1 gelöst (Nachtrag):**
+> Der `code_reviewer`-Anteil von Option 1 ("Pflicht-Rolle machen") ist durch den zeitlich
+> früher in dieser Sitzung umgesetzten P4-1-Fix (`agents/orchestrator/integration.py.
+> _run_review_after_verification()`) bereits erledigt - der forciert bereits IMMER einen
+> `code_reviewer`-Task, sobald irgendein Code geschrieben wurde und kein Review eingeplant war,
+> unabhängig vom Planer. Die zuvor gemessenen "6 von 20 Läufen" datieren vor diesem Fix.
+>
+> **Umsetzung 2026-09-21, `database`-Anteil von Option 1 jetzt ebenfalls umgesetzt:** Analog zu
+> P4-4s `_run_test_route_mismatch_preflight()`/`ensure_interface_contract()` läuft jetzt
+> `_run_database_review_preflight()` (`agents/orchestrator/department.py`) am selben
+> Checkpoint nach der Entwicklungsphase: rein statische Textsuche nach SQLAlchemy-Markern
+> (`sqlalchemy`, `declarative_base(`, `DeclarativeBase`) im tatsächlich geschriebenen Code, kein
+> LLM-Aufruf. Wurde ein ORM erkannt UND der `database`-Agent war an diesem Lauf noch nicht
+> beteiligt, wird gezielt EIN Schema-Überprüfungs-Task dispatcht (konkurrierende
+> `Base`-Definitionen, fehlende Fremdschlüssel/Migrationen, Session-/Engine-Fehlkonfiguration -
+> genau die real beobachteten Fehlerklassen). Bewusst NACH statt VOR der Entwicklungsphase
+> (anders als die ursprünglich vorgeschlagene Planungszeit-Pflicht in Option 1), weil der
+> Tech-Stack bei einem neuen Projekt zur Planungszeit oft noch nicht feststeht - dieselbe
+> Erkenntnis, die schon P4-4s Prompt-Injektions-Ansatz umgehen musste. 5 neue Tests in
+> `tests/test_database_review_preflight.py`; 57 bestehende Tests in
+> `test_department_*`/`test_route_mismatch_preflight.py`/`test_interface_contract.py`/
+> `test_p1_team_workflow.py` weiterhin grün.
+>
+> **Weiterhin bewusst NICHT umgesetzt:** Option 3 (Rollen streichen) - unverändert zu hoher
+> Blast-Radius (`agents/__init__.py`, `agents/department_lead_agent.py`,
+> `agents/orchestrator/__init__.py`, `config.py`, `core/team_board.py`) für eine reine
+> Aufräum-Maßnahme ohne funktionalen Nutzen. Ob ≤ 3 Rollen unused bleiben, lässt sich weiterhin
+> erst über künftige echte Läufe messen (`record_unused_agent_tickets()`/
+> `close_resolved_unused_agent_tickets()`) - `database` und `code_reviewer` sollten ab jetzt
+> aber strukturell NIE mehr als "unused" auffallen, wenn ihre jeweilige Trigger-Bedingung
+> zutrifft, unabhängig vom Planer.
 
 ---
 
@@ -1605,7 +1637,7 @@ ruff check && python -m pytest -q
 | P1-5 | Hard Delivery Gate ohne eigene `failure_class` | P1 | ☑ erledigt |
 | P2-1 | Learnings mit Wirksamkeitsmessung | P2 | ☑ erledigt |
 | P2-2 | Modell-Auto-Tuning optimiert falsche Zielgröße | P2 | ☑ erledigt |
-| P2-3 | 13 ungenutzte Rollen – entscheiden statt melden | P2 | 🟡 teilweise |
+| P2-3 | 13 ungenutzte Rollen – entscheiden statt melden | P2 | ☑ erledigt (Optionen 1+2; Option 3 bewusst nicht) |
 | P2-4 | Retrospektive arbeitet blind | P2 | ☑ erledigt |
 | P3-1 | Post-Mortem-Artefakt pro Lauf | P3 | ☑ erledigt |
 | P3-2 | `--team-trend` Trendbericht | P3 | ☑ erledigt |

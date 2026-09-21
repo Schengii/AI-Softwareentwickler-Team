@@ -142,6 +142,14 @@ class TestRunnerMixin:
 
         passed = True
         exit_code = 0
+        # Realer Fund (P1-3, ROADMAP_TEMP.md; Tickets cli-c1f46a6e/cli-d93dccc6/cli-3972afbe,
+        # alle mit identischem Absturz): ExecutionResult.stdout/.stderr sind als `str` typisiert,
+        # kamen aber mindestens einmal als `None` an (z.B. bei einem Subprozess-Fehlschlag ohne
+        # abgefangene Ausgabe). `exec_result.stderr` wurde bisher ROH angehängt (kein f-String,
+        # anders als `.stdout` unten) - ein einzelnes `None` in `stderr_chunks` liess
+        # `"\n".join(stderr_chunks)` mit "sequence item 0: expected str instance, NoneType
+        # found" crashen und den GESAMTEN Lauf abstürzen, statt nur einen leeren Ausschnitt im
+        # Bericht zu zeigen. Jede Zuweisung unten geht deshalb jetzt über `or ""`/`or ''`.
         stdout_chunks: list[str] = []
         stderr_chunks: list[str] = []
         failures: list[TestFailure] = []
@@ -151,8 +159,8 @@ class TestRunnerMixin:
                 exec_result = self._run_pytest_or_unittest_in_sandbox(timeout_seconds)
             else:
                 exec_result = self._run_pytest_or_unittest(self._resolve_python(), timeout_seconds)
-            stdout_chunks.append(f"--- Python (pytest/unittest) ---\n{exec_result.stdout}")
-            stderr_chunks.append(exec_result.stderr)
+            stdout_chunks.append(f"--- Python (pytest/unittest) ---\n{exec_result.stdout or ''}")
+            stderr_chunks.append(exec_result.stderr or "")
             if exec_result.exit_code != 0:
                 passed = False
                 exit_code = exit_code or exec_result.exit_code
@@ -166,8 +174,8 @@ class TestRunnerMixin:
                     ["npm", "test", "--silent"], cwd=node_dir, timeout_seconds=timeout_seconds,
                 )
             rel = self._relative_label(node_dir)
-            stdout_chunks.append(f"--- npm test ({rel}) ---\n{exec_result.stdout}")
-            stderr_chunks.append(exec_result.stderr)
+            stdout_chunks.append(f"--- npm test ({rel}) ---\n{exec_result.stdout or ''}")
+            stderr_chunks.append(exec_result.stderr or "")
             if exec_result.exit_code != 0:
                 passed = False
                 exit_code = exit_code or exec_result.exit_code
@@ -177,23 +185,23 @@ class TestRunnerMixin:
             exec_result = CodeSandbox.run_command(
                 ["cargo", "test"], cwd=self.project_dir, timeout_seconds=timeout_seconds,
             )
-            stdout_chunks.append(f"--- cargo test ---\n{exec_result.stdout}")
-            stderr_chunks.append(exec_result.stderr)
+            stdout_chunks.append(f"--- cargo test ---\n{exec_result.stdout or ''}")
+            stderr_chunks.append(exec_result.stderr or "")
             if exec_result.exit_code != 0:
                 passed = False
                 exit_code = exit_code or exec_result.exit_code
-                failures.append(TestFailure(test_id="cargo test", message=(exec_result.stderr or exec_result.stdout)[-800:]))
+                failures.append(TestFailure(test_id="cargo test", message=(exec_result.stderr or exec_result.stdout or "")[-800:]))
 
         if has_go and go_available:
             exec_result = CodeSandbox.run_command(
                 ["go", "test", "-v", "./..."], cwd=self.project_dir, timeout_seconds=timeout_seconds,
             )
-            stdout_chunks.append(f"--- go test ---\n{exec_result.stdout}")
-            stderr_chunks.append(exec_result.stderr)
+            stdout_chunks.append(f"--- go test ---\n{exec_result.stdout or ''}")
+            stderr_chunks.append(exec_result.stderr or "")
             if exec_result.exit_code != 0:
                 passed = False
                 exit_code = exit_code or exec_result.exit_code
-                failures.append(TestFailure(test_id="go test", message=(exec_result.stderr or exec_result.stdout)[-800:]))
+                failures.append(TestFailure(test_id="go test", message=(exec_result.stderr or exec_result.stdout or "")[-800:]))
 
         if node_projects and not npm_available:
             stdout_chunks.insert(0, "⚠️ npm nicht verfügbar – gefundene npm-Test-Skripte wurden übersprungen.")

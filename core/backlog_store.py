@@ -75,6 +75,19 @@ class Ticket:
     # kann, nicht endlos Budget in identischen Fehlversuchen verbrennt, sondern nach Erreichen
     # der Grenze sichtbar für eine menschliche Prüfung liegen bleibt.
     retries: int = 0
+    # Team-Optimierung (P1-3, ROADMAP_TEMP.md, realer Fund 2026-09-20): 9 von 17 "blocked"-
+    # Tickets waren nie inhaltlich blockiert - core/backlog_hygiene.py.recover_stale_in_progress()
+    # setzt "cli"-Tickets, die einfach nur nie in einem Poll-Zyklus aufgegriffen wurden, auf
+    # "blocked" statt "todo" (bewusst so, damit der Backlog-Worker kein komplettes Großprojekt
+    # ungefragt neu startet - siehe dort). Ohne diese Unterscheidung sah ein solches Ticket im
+    # Backlog GENAUSO aus wie ein Ticket, das eine Fix-Schleife nachweislich nicht lösen konnte
+    # (core/backlog_worker.py._GOVERNANCE_RETRY_PREFIXES) - beide blieben für immer liegen, weil
+    # der Worker "blocked" ohne bekanntes Präfix grundsätzlich NICHT anfasst (bewusst, ein Mensch
+    # könnte "blocked" gesetzt haben). "stale" macht sichtbar, dass die Blockade rein
+    # operationell ist (nie ein echter Versuch) und der Worker sie deshalb gefahrlos wie ein
+    # "todo" behandeln darf, ohne dass ein generisches "jedes blocked-Ticket erneut versuchen"
+    # auch bewusst blockierte Tickets aufgreift.
+    blocked_reason: str = ""  # "" | "stale" (nur aussagekräftig, solange status == "blocked")
 
 
 def _now() -> str:
@@ -179,7 +192,7 @@ def upsert_ticket(
     ticket_id: str, title: str, source: str, status: str, detail: str = "", project_slug: str | None = None,
     priority: int | None = None, estimate: str | None = None,
     epic: str | None = None, depends_on: list[str] | None = None,
-    retries: int | None = None,
+    retries: int | None = None, blocked_reason: str | None = None,
 ) -> Ticket:
     """
     Legt ein Ticket an ODER aktualisiert ein bestehendes (anhand `ticket_id`) – ein einziger
@@ -197,6 +210,14 @@ def upsert_ticket(
     jedes Mal erneut mitzugeben – ein echter Zahlen-Default hier hätte eine beim Anlegen
     gesetzte Priorität beim nächsten Status-Update stillschweigend wieder auf "mittel"
     zurückgesetzt.
+
+    `blocked_reason` folgt DEMSELBEN None-Sentinel wie priority/estimate/epic/retries, ist aber
+    zusätzlich an `status` gekoppelt: verlässt das Ticket "blocked" (jeder andere `status`-Wert),
+    wird `blocked_reason` IMMER auf "" zurückgesetzt, unabhängig vom übergebenen Wert - ein
+    "stale"-Vermerk an einem inzwischen "todo"/"in_progress"/"done"-Ticket wäre irreführend
+    (core/backlog_worker.py würde ihn zwar ohnehin nicht mehr lesen, da er nur bei
+    status=="blocked" ausgewertet wird, aber ein Board/Dashboard könnte ihn missverständlich
+    anzeigen).
     """
     tickets = _load_raw()
     existing = next((t for t in tickets if t["id"] == ticket_id), None)
@@ -218,6 +239,12 @@ def upsert_ticket(
     resolved_epic = epic if epic is not None else (existing.get("epic", "") if existing else "")
     resolved_depends_on = depends_on if depends_on is not None else (existing.get("depends_on", []) if existing else [])
     resolved_retries = retries if retries is not None else (existing.get("retries", 0) if existing else 0)
+    if status != "blocked":
+        resolved_blocked_reason = ""
+    else:
+        resolved_blocked_reason = (
+            blocked_reason if blocked_reason is not None else (existing.get("blocked_reason", "") if existing else "")
+        )
     # Alte Position entfernen (falls vorhanden) - das aktualisierte Ticket wird unten ans
     # ENDE angehängt, damit die Listenreihenfolge selbst die Aktualisierungsreihenfolge
     # abbildet (siehe list_tickets()/_save_raw()).
@@ -227,6 +254,7 @@ def upsert_ticket(
         created_at=created_at, updated_at=_now(), detail=detail, project_slug=resolved_project_slug,
         priority=resolved_priority, estimate=resolved_estimate,
         epic=resolved_epic, depends_on=list(resolved_depends_on), retries=resolved_retries,
+        blocked_reason=resolved_blocked_reason,
     )
     tickets.append(asdict(result))
     _save_raw(tickets)

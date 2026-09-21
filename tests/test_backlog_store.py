@@ -118,6 +118,27 @@ class TestBacklogStore(unittest.TestCase):
         updated = backlog_store.upsert_ticket("t1", "A", "orchestrator", "blocked", project_slug="")
         self.assertEqual(updated.project_slug, "")
 
+    def test_blocked_reason_set_and_survives_a_detail_only_update(self):
+        # P1-3 (ROADMAP_TEMP.md): derselbe None-Sentinel wie priority/estimate/epic/retries -
+        # ein Folge-Aufruf, der blocked_reason nicht erneut mitgibt, darf ihn nicht löschen.
+        backlog_store.upsert_ticket("t1", "A", "cli", "blocked", blocked_reason="stale")
+        updated = backlog_store.upsert_ticket("t1", "A", "cli", "blocked", detail="weiterhin liegengeblieben")
+        self.assertEqual(updated.blocked_reason, "stale")
+
+    def test_blocked_reason_is_cleared_when_status_leaves_blocked(self):
+        # Kein Sentinel hier: verlässt das Ticket "blocked", ist ein "stale"-Vermerk irreführend
+        # und wird IMMER zurückgesetzt, unabhängig vom übergebenen Wert.
+        backlog_store.upsert_ticket("t1", "A", "cli", "blocked", blocked_reason="stale")
+        updated = backlog_store.upsert_ticket("t1", "A", "cli", "in_progress")
+        self.assertEqual(updated.blocked_reason, "")
+
+    def test_new_blocked_ticket_defaults_to_no_blocked_reason(self):
+        # Ein bewusst vom Governance-/Verifikations-Loop "blocked" eröffnetes Ticket bekommt
+        # KEINEN blocked_reason - core/backlog_worker.py darf es nicht mit einem operationell
+        # liegengebliebenen "cli"-Ticket verwechseln (siehe recover_stale_in_progress()).
+        ticket = backlog_store.upsert_ticket("t1", "A", "orchestrator", "blocked")
+        self.assertEqual(ticket.blocked_reason, "")
+
     def test_count_by_status(self):
         backlog_store.upsert_ticket("t1", "A", "cli", "in_progress")
         backlog_store.upsert_ticket("t2", "B", "cli", "in_progress")

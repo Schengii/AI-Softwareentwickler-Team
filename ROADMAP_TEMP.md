@@ -322,7 +322,7 @@ beauftragt als Versuch 1.
 ---
 
 ### P1-3 · 17 `cli`-Tickets auf `blocked` – davon 9 nur wegen Hygiene-Timeout
-**Status:** ❌ offen · **Aufwand:** S · **Wirkung:** mittel
+**Status:** ✅ **erledigt 2026-09-20** · **Aufwand:** S · **Wirkung:** mittel
 
 Detail bei 9 Tickets: „[Hygiene] Seit über 3 h ohne Fortschritt – Status auf 'blocked' gesetzt."
 Das ist eine Zeitüberschreitung, keine inhaltliche Blockade – die Tickets wurden schlicht nie
@@ -336,10 +336,34 @@ verifiziert ist.
 
 1. Zuerst prüfen, ob der `NoneType`-Crash im heutigen Code noch reproduzierbar ist; falls ja:
    `_run_tests_logged` gegen `None`-Einträge härten plus Regressionstest.
+
+   > **Root Cause gefunden (nicht in `verification.py`, sondern eine Ebene tiefer),
+   > 2026-09-20:** Der eigentliche Absturz liegt in `core/verifier/testrunner.py:203`:
+   > `"\n".join(stderr_chunks)` erhielt mindestens ein `None`-Element, weil
+   > `exec_result.stderr` (als `str` typisiert, aber zur Laufzeit nicht erzwungen) roh
+   > angehängt wurde – anders als `exec_result.stdout`, das über ein f-String lief und ein
+   > `None` unbemerkt in den Text `"None"` verwandelt hätte. Alle vier Aufrufstellen (Python/
+   > npm/cargo/go) jetzt über `or ""`/`or ''` abgesichert. Regressionstest in
+   > `tests/test_verifier.py` reproduziert exakt diesen Fall (gemockter Subprozess mit
+   > `stderr=None`).
 2. Hygiene: `blocked`-Grund maschinenlesbar trennen (`blocked_reason: "stale" | "error"`), damit
    „nur abgelaufen" automatisch wieder aufgegriffen wird und „echter Fehler" liegen bleibt.
+
+   > **Umgesetzt:** neues Feld `Ticket.blocked_reason` (`core/backlog_store.py`, derselbe
+   > None-Sentinel wie `priority`/`estimate`/`epic`, zusätzlich IMMER auf `""` zurückgesetzt,
+   > sobald `status != "blocked"`). `core/backlog_hygiene.py.recover_stale_in_progress()` setzt
+   > `blocked_reason="stale"` nur für reine `cli`-Tickets (NICHT für
+   > `_GOVERNANCE_RETRY_PREFIXES`-Tickets, deren Eskalationslogik über `_governance_retry_pool()`
+   > unverändert bleibt). `core/backlog_worker.py`s `ready_todo`-Filter greift jetzt zusätzlich
+   > `status=="blocked" and blocked_reason=="stale"` auf und behandelt es wie ein frisches
+   > `"todo"` – das bestehende Sicherheitsnetz für bewusst blockierte Tickets
+   > (`test_manually_blocked_non_governance_ticket_is_not_touched`) bleibt unverändert grün, da
+   > ein manuell/inhaltlich blockiertes Ticket nie `blocked_reason` gesetzt bekommt.
 3. `cli-034e08e5` bezieht sich auf einen Merge-Konflikt-Marker (`<<<<<<< Updated upstream`) in
    `core/verifier/runtime.py` – heute nicht mehr vorhanden, Ticket schließen.
+
+   > **Erledigt:** geprüft (kein Marker mehr, Datei parst fehlerfrei), Ticket auf `cancelled`
+   > gesetzt mit Begründung im Detail-Text.
 
 ---
 
@@ -980,7 +1004,7 @@ ruff check && python -m pytest -q
 | P0-6 | `lint` erscheint fälschlich als Fehlschlag | P0 | ☑ erledigt (Teil 2 offen) |
 | P1-1 | `--work-framework-backlog` (autonome Framework-Fixes) | P1 | ☐ |
 | P1-2 | Eskalations-Strategien statt Wiederholung | P1 | ☑ erledigt |
-| P1-3 | Ticket-Hygiene: `stale` vs. `error` trennen | P1 | ☐ |
+| P1-3 | Ticket-Hygiene: `stale` vs. `error` trennen | P1 | ☑ erledigt |
 | P1-4 | `CancelledError` reißt den Lauf mit | P1 | ☑ erledigt |
 | P1-5 | Hard Delivery Gate ohne eigene `failure_class` | P1 | 🟡 failure_class erledigt, Fix-Loop-Kurzschluss offen |
 | P2-1 | Learnings mit Wirksamkeitsmessung | P2 | ☐ |

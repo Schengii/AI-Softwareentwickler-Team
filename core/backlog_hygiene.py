@@ -97,10 +97,11 @@ def _parse_ts(value: str) -> datetime | None:
     return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
 
 
-def _update_status(t: Ticket, status: str, detail: str | None = None) -> None:
+def _update_status(t: Ticket, status: str, detail: str | None = None, *, blocked_reason: str | None = None) -> None:
     upsert_ticket(
         ticket_id=t.id, title=t.title, source=t.source, status=status,
         detail=t.detail if detail is None else detail[:1200],
+        blocked_reason=blocked_reason,
     )
 
 
@@ -115,9 +116,18 @@ def recover_stale_in_progress(tickets: list[Ticket], now: datetime | None = None
             continue
         # Nur Governance-/Audit-Retry-Tickets dürfen automatisch erneut aufgegriffen werden.
         from core.backlog_worker import _GOVERNANCE_RETRY_PREFIXES
-        target = "blocked" if (t.source == "cli" or t.id.startswith(_GOVERNANCE_RETRY_PREFIXES)) else "todo"
+        is_governance_retry = t.id.startswith(_GOVERNANCE_RETRY_PREFIXES)
+        target = "blocked" if (t.source == "cli" or is_governance_retry) else "todo"
         note = f"[Hygiene] Seit über {STALE_IN_PROGRESS_HOURS:g} h ohne Fortschritt – Status auf '{target}' gesetzt."
-        _update_status(t, target, f"{note}\n{t.detail}".strip())
+        # P1-3 (ROADMAP_TEMP.md): ein "cli"-Ticket, das HIER "blocked" wird, ist rein operationell
+        # liegengeblieben (nie ein Poll-Zyklus lief) - inhaltlich unterscheidet es sich in NICHTS
+        # von einem frischen "todo". blocked_reason="stale" markiert genau das maschinenlesbar,
+        # damit core/backlog_worker.py es gefahrlos wie "todo" behandeln kann, OHNE das
+        # bestehende _GOVERNANCE_RETRY_PREFIXES-Sicherheitsnetz für bewusst blockierte
+        # Governance-Tickets aufzuweichen (die bekommen hier weiterhin KEINEN blocked_reason,
+        # ihre Blockade ist inhaltlich, nicht operationell).
+        _update_status(t, target, f"{note}\n{t.detail}".strip(),
+                       blocked_reason="stale" if (target == "blocked" and not is_governance_retry) else None)
         recovered.append(t.id)
     return recovered
 

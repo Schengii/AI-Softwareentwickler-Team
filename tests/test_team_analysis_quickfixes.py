@@ -194,6 +194,25 @@ class TestBacklogHygiene(unittest.TestCase):
         self.assertEqual(report.recovered, ["cli-aaaa1111"])
         self.assertEqual(backlog_store.get_ticket("cli-aaaa1111").status, "blocked")
         self.assertEqual(backlog_store.get_ticket("cli-bbbb2222").status, "in_progress")
+        # P1-3 (ROADMAP_TEMP.md): rein operationell liegengeblieben (nie ein Poll-Zyklus lief) -
+        # core/backlog_worker.py darf das erkennen und wie "todo" behandeln.
+        self.assertEqual(backlog_store.get_ticket("cli-aaaa1111").blocked_reason, "stale")
+
+    def test_stale_governance_retry_ticket_keeps_no_blocked_reason(self):
+        # Governance-/Verifikations-Retry-Tickets (core/backlog_worker.py._GOVERNANCE_RETRY_PREFIXES)
+        # durchlaufen bereits ihr eigenes, escalation-basiertes Retry-Schema
+        # (_governance_retry_pool()) - sie dürfen NICHT zusätzlich über blocked_reason="stale"
+        # wie ein frisches "todo" behandelt werden, sonst würde die Eskalationslogik umgangen.
+        from core.backlog_hygiene import run_backlog_hygiene
+
+        backlog_store.upsert_ticket(
+            "unresolved-governance-critical-foo", "Kritischer Befund", "orchestrator", "in_progress",
+        )
+        self._age("unresolved-governance-critical-foo", 10)
+        run_backlog_hygiene(commit_messages="")
+        ticket = backlog_store.get_ticket("unresolved-governance-critical-foo")
+        self.assertEqual(ticket.status, "blocked")
+        self.assertEqual(ticket.blocked_reason, "")
 
     def test_duplicates_keep_only_newest_open(self):
         from core.backlog_hygiene import run_backlog_hygiene

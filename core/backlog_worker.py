@@ -303,9 +303,18 @@ async def run_backlog_poll_cycle(
         return report
 
     all_tickets = list_tickets()
+    # P1-3 (ROADMAP_TEMP.md, realer Fund 2026-09-20): status=="blocked" mit
+    # blocked_reason=="stale" (core/backlog_hygiene.py.recover_stale_in_progress()) ist KEINE
+    # inhaltliche Blockade - das Ticket wurde schlicht nie in einem Poll-Zyklus aufgegriffen und
+    # unterscheidet sich in nichts von einem frischen "todo". Ohne diese Zeile blieben solche
+    # Tickets für immer liegen: das generische "blocked"-Sicherheitsnetz unten
+    # (_GOVERNANCE_RETRY_PREFIXES) greift bewusst NUR für bekannte Governance-Präfixe, damit ein
+    # Mensch bewusst blockiertes Ticket nicht versehentlich erneut aufgegriffen wird - ein
+    # "cli"-Ticket erreicht diesen Präfix nie.
     ready_todo = [
         t for t in all_tickets
-        if t.status == "todo" and t.source in _AUTONOMOUS_SOURCES and is_ticket_ready(t, all_tickets)[0]
+        if (t.status == "todo" or (t.status == "blocked" and t.blocked_reason == "stale"))
+        and t.source in _AUTONOMOUS_SOURCES and is_ticket_ready(t, all_tickets)[0]
     ]
     # Governance-/Verifikations-Tickets NACH den regulären "todo"-Tickets (niedrigere
     # effektive Priorität als jede echte Priorität 1-3, siehe Sortierung unten) - ein

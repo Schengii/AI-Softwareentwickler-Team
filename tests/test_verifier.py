@@ -98,6 +98,27 @@ class TestProjectVerifier(unittest.TestCase):
         all_implicated = {f for failure in report.failures for f in failure.files}
         self.assertTrue(any("test_app.py" in f for f in all_implicated))
 
+    def test_none_stderr_from_subprocess_does_not_crash_run_tests(self):
+        """Realer Fund (P1-3, ROADMAP_TEMP.md): drei Backlog-Tickets (cli-c1f46a6e,
+        cli-d93dccc6, cli-3972afbe) crashten mit identischem Traceback -
+        `"\\n".join(stderr_chunks)` warf `TypeError: sequence item 0: expected str instance,
+        NoneType found`, weil `ExecutionResult.stderr` (als `str` typisiert, aber zur Laufzeit
+        nicht erzwungen) mindestens einmal `None` statt eines echten Strings ankam. `stderr`
+        wurde bisher ROH angehängt statt wie `stdout` über ein f-String (das `None` unbemerkt
+        in den Text "None" verwandelt hätte) - ein einzelnes `None` in der Liste reichte, um den
+        GESAMTEN Verifikations-Lauf abstürzen zu lassen."""
+        (self.project_dir / "test_app.py").write_text("def test_ok():\n    assert True\n")
+
+        def fake_run_command(*args, **kwargs):
+            return ExecutionResult(exit_code=0, stdout="1 passed", stderr=None, duration_seconds=0.1)
+
+        with patch("core.verifier.testrunner.CodeSandbox.run_command", side_effect=fake_run_command):
+            verifier = ProjectVerifier(self.project_dir)
+            report = verifier.run_tests()  # darf NICHT werfen
+
+        self.assertTrue(report.ran)
+        self.assertTrue(report.passed)
+
     def test_ensure_environment_is_noop_without_requirements(self):
         (self.project_dir / "app.py").write_text("x = 1\n")
         verifier = ProjectVerifier(self.project_dir)

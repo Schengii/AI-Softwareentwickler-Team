@@ -501,6 +501,24 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
         self.assertEqual(report.results, [])
         self.fake_orchestrator.process.assert_not_called()
 
+    def test_stale_blocked_cli_ticket_is_picked_up_like_todo(self):
+        # P1-3 (ROADMAP_TEMP.md, realer Fund 2026-09-20): core/backlog_hygiene.py setzt ein
+        # "cli"-Ticket, das nie in einem Poll-Zyklus aufgegriffen wurde, auf "blocked" mit
+        # blocked_reason="stale" - inhaltlich UNTERSCHEIDET sich das NICHT von "todo" (anders
+        # als das manuell blockierte Ticket oben, das KEINEN blocked_reason trägt).
+        backlog_store.upsert_ticket(
+            "cli-99", "Login-Seite bauen", "cli", "blocked", blocked_reason="stale",
+        )
+        report = asyncio.run(run_backlog_poll_cycle())
+
+        self.assertEqual(len(report.results), 1)
+        self.fake_orchestrator.process.assert_called_once()
+        ticket = backlog_store.list_tickets()[0]
+        # Aufgreifen setzt status="in_progress" -> upsert_ticket() löscht blocked_reason
+        # automatisch (status != "blocked"), damit kein veralteter Vermerk zurückbleibt.
+        self.assertNotEqual(ticket.status, "blocked")
+        self.assertEqual(ticket.blocked_reason, "")
+
     def test_recurring_failure_ticket_is_picked_up_and_retries_incremented(self):
         # Team-Optimierung (Retrospektive, 2026-09-04): "recurring-failure-" (echte Testfehler,
         # die trotz Fixversuchen bestehen blieben, agents/orchestrator/verification.py) fehlte

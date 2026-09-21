@@ -173,6 +173,11 @@ _ASYNC_EVENT_LOOP_DIRECTIVE = """
   NIEMALS ungeschützt auf Modulebene instanziiert. Sie entstehen ausschließlich im FastAPI-Lifespan
   (`@asynccontextmanager async def lifespan(...)`) oder in einer asynchronen Factory-Methode
   (`async def get_instance(cls) -> "X"`), niemals beim Import.
+- Testability-Pflicht für Hintergrund-Worker, Eviction & Zeitfenster: Alle periodischen Loops
+  (`anomaly_worker`, Polling, Cleanup) und zeitbasierten Evictions/TTLs MÜSSEN konfigurierbar
+  oder gezielt triggerbar sein (z.B. Parameter `sleep_interval: float = 5.0` oder `run_once: bool = False`,
+  oder `max_age_seconds: int = 60`). Niemals starre `await asyncio.sleep(5)` ohne Parameter hardcoden,
+  damit Tests nicht minutenlang warten müssen oder asynchron ins Leere laufen.
 """
 
 PYTHON_CODE_CONTRACT_DIRECTIVE = f"""
@@ -261,6 +266,13 @@ TESTER_CONTRACT_DIRECTIVE = f"""
   die Abweichung (Datei + Symbol) in deiner Antwort.
 - Tests setzen benötigte Settings über `monkeypatch.setenv(...)` bzw. `app.dependency_overrides`
   und verlassen sich nie auf eine vorhandene `.env`.
+- Anti-Flaky-Disziplin & Asynchrone Tests:
+  * Nutze NIEMALS pauschale `await asyncio.sleep(0.5)` auf gut Glück in der Hoffnung, dass ein Background-
+    Worker oder asynchroner Task rechtzeitig fertig wurde! Nutze Polling mit Timeout (z.B. Schleife mit
+    `asyncio.sleep(0.05)` bis Bedingung erfüllt oder Timeout) oder rufe die Verarbeitungsfunktion direkt auf.
+  * Achte auf Zeitfenster/Eviction: Wenn ein Service alte Einträge nach z.B. 60 Sekunden verwirft, sende
+    in Tests niemals feste historische Timestamps (z.B. aus 2023), die sofort als veraltet gedroppt werden,
+    sondern nutze aktuelle Zeitstempel (`datetime.now(timezone.utc)`).
 - Direkt nach dem Schreiben führst du `run_tests` aus; Collection-Fehler (ImportError/SyntaxError)
   behebst du vor allem anderen.
 {_PYTEST_ASYNCIO_CONFIG_RULE}

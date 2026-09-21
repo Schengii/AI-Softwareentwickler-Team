@@ -1,0 +1,28 @@
+{
+  "modules": {
+    "app/core/settings.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/core/ring_buffer.py": {
+      "RingBuffer": "class"
+    },
+    "app/core/engine.py": {
+      "MetricEngine": "class",
+      "engine": "instance"
+    },
+    "app/core/anomaly_worker.py": {
+      "AnomalyWorker": "class",
+      "anomaly_worker": "instance"
+    },
+    "app/core/alerting.py": {
+      "AlertManager": "class",
+      "alert_manager": "instance"
+    },
+    "app/schemas/metric.py": {
+      "MetricIngest": "class",
+      "MetricStats": "class",
+      "AnomalyAlert": "class"
+    }
+  }
+}

@@ -16,7 +16,7 @@ import unittest
 from unittest.mock import patch
 
 from agents.orchestrator import Orchestrator
-from core.llm_factory import LLMResponse
+from core.llm_factory import LLMResponse, ToolCall
 from core.message_bus import AgentTask
 from core.verifier import TestFailure, VerificationReport
 from core.workspace import WorkspaceManager
@@ -53,6 +53,32 @@ class _FakeToolCapableLLM:
     async def generate_with_usage(self, prompt, system_prompt=None):
         return LLMResponse(text=self._text, model_name=self.model_name,
                             prompt_tokens=10, completion_tokens=5, total_tokens=15)
+
+
+class _AlwaysWritesLLM(_ScriptedLLM):
+    def __init__(self, text: str = "Fertig.", written_file: str | None = None):
+        super().__init__(text=text, written_file=written_file)
+        self._counter = 0
+
+    async def generate_with_tools(self, messages, system_prompt, tools, _allow_self_fallback=True):
+        has_tool_result = any(
+            getattr(m, "role", "") == "tool" or bool(getattr(m, "tool_results", None))
+            for m in messages
+        )
+        if self._written_file and not has_tool_result:
+            self._counter += 1
+            # Einzigartiger Pfad pro Aufruf, damit _reject_if_stale (Überschreib-Schutz) nicht blockiert
+            path = self._written_file if self._counter == 1 else f"{self._written_file}_{self._counter}.py"
+            tool_calls = [ToolCall(id=f"call_{self._counter}", name="write_file",
+                                   arguments={"path": path, "content": f"# fix {self._counter}\n"})]
+            return LLMResponse(
+                text="", model_name=self.model_name,
+                prompt_tokens=10, completion_tokens=5, total_tokens=15, tool_calls=tool_calls,
+            )
+        return LLMResponse(
+            text=self._text, model_name=self.model_name,
+            prompt_tokens=10, completion_tokens=5, total_tokens=15, tool_calls=[],
+        )
 
 
 
@@ -177,14 +203,21 @@ class TestVerificationNoProgressBreaker(unittest.TestCase):
     def test_different_failures_after_fix_do_not_trigger_breaker(self):
         # MAX_VERIFICATION_ITERATIONS ist standardmäßig 3 (config.py) - drei jeweils
         # UNTERSCHIEDLICHE Fehlschläge, damit keiner der drei regulär erlaubten Versuche vom
-        # Zirkuit-Breaker abgebrochen wird.
+        # Zirkuit-Breaker abgebrochen wird. _ScriptedLLM schreibt nur beim ALLERERSTEN Aufruf
+        # je Instanz eine Datei (siehe tests/helpers.py) - für den echten Fortschritt, den
+        # dieser Test simulieren soll (backend liefert bei JEDEM der drei Versuche einen neuen
+        # Fix), braucht es hier eine Variante, die bei jedem Aufruf schreibt, sonst würde P1-5s
+        # NO_DELIVERY-Kurzschluss (agents/orchestrator/verification.py) ab dem zweiten Versuch
+        # fälschlich greifen, weil das Test-Double selbst nichts mehr liefert.
+        self.orchestrator._agents["backend"]._llm = _AlwaysWritesLLM(written_file="backend/app.py")
         result, logs, mock_verifier, mock_upsert_ticket = self._run(
-            [FAILING_REPORT, DIFFERENT_FAILING_REPORT, YET_ANOTHER_FAILING_REPORT],
+            [FAILING_REPORT, DIFFERENT_FAILING_REPORT, YET_ANOTHER_FAILING_REPORT, YET_ANOTHER_FAILING_REPORT],
         )
 
         # Unterschiedliche Fehlermeldungen nach jedem Fixversuch = echter Fortschritt - alle drei
-        # regulär erlaubten Versuche laufen, KEIN früher Abbruch durch den Zirkuit-Breaker.
-        self.assertEqual(mock_verifier.run_tests.call_count, 3)
+        # regulär erlaubten Versuche laufen plus die Abschlussprüfung nach dem letzten Fixversuch
+        # (4 run_tests-Aufrufe), KEIN früher Abbruch durch den Zirkuit-Breaker.
+        self.assertEqual(mock_verifier.run_tests.call_count, 4)
         self.assertFalse(any("Kein Fortschritt" in line for line in logs))
         self.assertTrue(any("Maximale Verifikations-Iterationen erreicht" in line for line in logs))
 

@@ -78,7 +78,8 @@ _ROUTE_NOT_FOUND_RE = re.compile(
     r"assert 404 == (?!404\b)\d{3}\b"
     r"|\b404 != (?!404\b)\d{3}\b"
     r"|['\"]detail['\"]\s*:\s*['\"]Not Found['\"]"
-    r"|\bRoute Not Found\b",
+    r"|\bRoute Not Found\b"
+    r"|\b404 Client Error: Not Found\b",
     re.IGNORECASE,
 )
 _MODULE_ATTRIBUTE_ERROR_RE = re.compile(
@@ -573,3 +574,53 @@ def _prior_run_context(ticket_id: str) -> str:
         "Prüfe, ob dein Fix diesmal WIRKLICH an der Ursache ansetzt, statt denselben "
         "erfolglosen Ansatz zu wiederholen."
     )
+
+
+def _prune_failure_message(message: str, max_chars: int = 1200) -> str:
+    """Kürzt überlange Fehlermeldungen/Tracebacks token-schonend für Fix-Prompts.
+
+    Verhindert Kontext-Overflows und Provider 413-Fehler (z.B. Groq TPM-Limits).
+    In Python-Tracebacks steht die eigentliche Exception und fehlschlagende Assertion
+    am ENDE, während der Dateiname/Testheader am Anfang steht. Ein simples
+    message[:1000] würde die entscheidende Exception abschneiden. Diese Funktion
+    behält bei Überschreitung von max_chars den Kopf (erste ~350 Zeichen) und das
+    Traceback-Ende (letzte ~750 Zeichen).
+    """
+    if not message or len(message) <= max_chars:
+        return message
+    head_len = max_chars // 3
+    tail_len = max_chars - head_len - 45
+    return f"{message[:head_len]}\n... [Traceback gekürzt für Token-Budget] ...\n{message[-tail_len:]}"
+
+
+def _format_failures_for_agent(
+    failures: list,
+    triages: dict | None = None,
+    max_failures: int = 5,
+    max_msg_chars: int = 1200,
+) -> str:
+    """Formatiert Testfehler token-optimiert für Fix-Prompts (vermeidet Groq 413 / TPM-Overflow)."""
+    selected = failures[:max_failures]
+    parts = []
+    for f in selected:
+        msg = _prune_failure_message(getattr(f, "message", str(f)), max_chars=max_msg_chars)
+        test_id = getattr(f, "test_id", "unbekannt")
+        files = getattr(f, "files", []) or []
+        part = (
+            f"Test: {test_id}\n"
+            f"Fehlermeldung: {msg}\n"
+            f"Betroffene Dateien: {', '.join(str(x) for x in files) or 'unbekannt'}"
+        )
+        if triages:
+            diag = _failure_diagnosis(getattr(f, "message", ""), triages.get(id(f)))
+            if diag:
+                part += f"\n{diag}"
+        parts.append(part)
+
+    text = "\n\n".join(parts)
+    if len(failures) > max_failures:
+        text += (
+            f"\n\n... und {len(failures) - max_failures} weitere Testfehler "
+            "(konzentriere dich zuerst auf die oben genannten Kernfehler)."
+        )
+    return text

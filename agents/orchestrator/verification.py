@@ -22,8 +22,8 @@ from agents.orchestrator.failure_diagnosis import (
     _diagnose_import_failure,  # noqa: F401 - re-exportiert, siehe tests/test_import_name_error_learning.py
     _diagnose_no_tests_ran,  # noqa: F401 - re-exportiert, siehe tests/test_no_tests_ran_diagnosis.py
     _diagnose_runtime_failure,  # noqa: F401 - re-exportiert, siehe tests/test_runtime_failure_diagnosis.py
-    _failure_diagnosis,
     _failure_fingerprint,
+    _format_failures_for_agent,
     _import_name_error_target,
     _issue_signature,
     _no_progress,
@@ -70,6 +70,7 @@ from core.failure_triage import (
 from core.message_bus import AgentResult, AgentTask
 from core.model_capability import model_capability_tier
 from core.pre_flight_check import PreFlightIssue, run_pre_flight_check
+from core.provider_exhaustion import FAILURE_CLASS_NO_DELIVERY
 from core.team_board import unmet_requirements
 from core.test_depth import (
     analyze_domain_logic_depth,
@@ -423,6 +424,18 @@ class VerificationMixin:
         # Zirkuit-Breaker: identische Testfehler nach einem Fixversuch bedeuten, dass der Agent das
         # Problem nicht lösen kann - sofort abbrechen statt einen weiteren Versuch zu verbrauchen.
         previous_failure_signature: frozenset[tuple[str, str]] | None = None
+        # P1-5 (ROADMAP_TEMP.md): "Hard Delivery Gate: Agent hat trotz Korrektur-Hinweis keine
+        # einzige Datei gespeichert" (agents/base_agent.py) trägt failure_class=
+        # FAILURE_CLASS_NO_DELIVERY - der Agent wurde befragt, hat aber NICHTS geändert. Ein
+        # weiterer Versuch mit demselben Prompt hätte strukturell keine neue Grundlage, auf der
+        # er anders ausfallen könnte, aber der reine Signaturvergleich (_no_progress() oben)
+        # erkennt das erst EINE RUNDE SPÄTER, sobald derselbe Testfehler ein zweites Mal auftritt
+        # - eine reale Sitzung fand das zu riskant für eine sofortige Kontrollfluss-Änderung
+        # (2026-09-20) und stellte nur die Erkennung (failure_class) bereit. Dieses Flag lässt
+        # den bereits bestehenden Eskalationspfad EINE Runde früher greifen, wenn ALLE
+        # Fix-Ergebnisse des letzten Versuchs NO_DELIVERY waren - dieselbe Eskalation, die sonst
+        # ohnehin nach dem nächsten identischen Fehlschlag ausgelöst würde, kein neuer Pfad.
+        previous_fix_all_no_delivery = False
         # Bei "kein Fortschritt" EIN Eskalationsversuch an den Fachbereichsleiter (andere Perspektive
         # statt exakter Wiederholung) - nicht mehr, damit die Schleife begrenzt bleibt.
         escalation_attempted = False
@@ -901,7 +914,22 @@ class VerificationMixin:
             notify(f"  ❌ [bold red]{len(report.failures)} Testfehler[/bold red] – ermittle betroffene Agenten aus dem echten Traceback...")
 
             current_signature = _issue_signature(report.failures, lambda f: (f.test_id, _failure_fingerprint(f.message)))
-            if _no_progress(previous_failure_signature, current_signature):
+            # Einmal-Verbrauch: unabhängig vom Ergebnis unten sofort zurückgesetzt, damit ein
+            # gesetztes Flag niemals über diese eine Prüfung hinaus nachwirkt (z.B. fälschlich
+            # eine spätere, unabhängige Eskalationsrunde beeinflusst).
+            skip_retry_no_delivery = previous_fix_all_no_delivery
+            previous_fix_all_no_delivery = False
+            if skip_retry_no_delivery:
+                notify(
+                    "  🚫 [bold yellow]Vorheriger Fixversuch hat keine einzige Datei gespeichert[/bold yellow] "
+                    "(Hard Delivery Gate) - ein weiterer Versuch mit demselben Auftrag hätte keine neue "
+                    "Grundlage, auf der er anders ausfallen könnte. Überspringe die Wiederholung, eskaliere direkt."
+                )
+                summary_lines.append(
+                    f"- 🚫 Versuch {attempt}: vorheriger Fixversuch lieferte keine Datei (NO_DELIVERY) - "
+                    "reguläre Wiederholung übersprungen, direkt eskaliert."
+                )
+            if _no_progress(previous_failure_signature, current_signature) or skip_retry_no_delivery:
                 escalated_and_resolved = False
                 _heavy_escalation_downgrade_note = ""
                 try:
@@ -911,20 +939,22 @@ class VerificationMixin:
                         )
                     ):
                         escalation_attempted = True
-                        stuck_owners = {
-                            file_owners[f]
-                            for failure in (report.failures or [])
-                            for f in (failure.files or [])
-                            if isinstance(f, str) and f in file_owners
-                        } & set(self._agents.keys())
+                        tester_participated = any(r.agent_id == "tester" for r in all_results)
+                        stuck_owners = set()
+                        for failure in (report.failures or []):
+                            routed = _route_failure_owners(
+                                failure.message, failure.files, file_owners, self._agents,
+                                tester_participated, project_dir=project_dir,
+                            )
+                            stuck_owners.update(routed)
+                            for f in (failure.files or []):
+                                if isinstance(f, str) and f in file_owners and file_owners[f] in self._agents:
+                                    stuck_owners.add(file_owners[f])
                         lead_targets = {
                             dept_id for dept_id, defn in DEPARTMENT_DEFINITIONS.items()
                             if stuck_owners & set(defn["members"]) and dept_id in self._dept_leads
                         }
-                        top_failures = "\n\n".join(
-                            f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(str(x) for x in (f.files or [])) or 'unbekannt'}"
-                            for f in report.failures[:5]
-                        )
+                        top_failures = _format_failures_for_agent(report.failures or [], max_failures=5, max_msg_chars=1200)
                         if lead_targets:
                             notify(
                                 f"  🔀 [bold yellow]Strategiewechsel (Eskalation):[/bold yellow] Derselbe Fehler nach "
@@ -1202,11 +1232,7 @@ class VerificationMixin:
 
             fix_tasks = []
             for agent_id, fails in agents_to_fix.items():
-                failure_text = "\n\n".join(
-                    f"Test: {f.test_id}\nFehlermeldung: {f.message}\nBetroffene Dateien: {', '.join(str(x) for x in (f.files or [])) or 'unbekannt'}"
-                    + (f"\n{diag}" if (diag := _failure_diagnosis(f.message, triages.get(id(f)))) else "")
-                    for f in fails
-                )
+                failure_text = _format_failures_for_agent(fails, triages=triages, max_failures=5, max_msg_chars=1200)
                 fix_tasks.append(AgentTask(
                     task_id=f"verify_fix_{agent_id}_{attempt}",
                     agent_id=agent_id,
@@ -1239,6 +1265,13 @@ class VerificationMixin:
             # zu protokollieren (core.test_depth.snapshot_test_files()).
             _test_files_before_fix = snapshot_test_files(project_dir) if _tests_before_fix is not None else None
             fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+            # P1-5: gilt nur für DIESEN regulären, per-Rolle-geroutet Fixversuch - eine Eskalation
+            # (Fachbereichsleiter/HEAVY_MODEL/Zweitmeinung, jeweils eigene fix_results weiter
+            # unten) ist eine ANDERE Strategie, kein Wiederholungsversuch mit demselben Prompt,
+            # und soll deshalb weiterhin regulär per Signaturvergleich geprüft werden.
+            previous_fix_all_no_delivery = bool(fix_results) and all(
+                r.failure_class == FAILURE_CLASS_NO_DELIVERY for r in fix_results
+            )
             restored_manifests = (
                 restore_dependency_manifests(project_dir, manifest_snapshot) if manifest_snapshot is not None else []
             )

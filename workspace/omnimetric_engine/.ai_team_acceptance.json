@@ -1,0 +1,14 @@
+{
+  "requirements": [
+    "Implement the OmniMetric-Engine as a production‑ready system in the designated workspace.",
+    "Provide an ingestion API built with FastAPI (Python 3.11+, Pydantic v2) that returns an immediate acknowledgment for each request.",
+    "Use a deterministic per‑metric ring buffer / bounded deque with O(1) memory per stream, supporting either a fixed number of data points or a 60‑second sliding window and automatically evicting old points.",
+    "Compute on‑the‑fly rolling aggregations (min, max, mean, standard deviation, p50, p95, p99) for each metric’s current window.",
+    "Detect outlier anomalies via Z‑Score > 3 and dynamic thresholding, with thresholds configurable per metric through a REST API.",
+    "Detect trend/drift anomalies using moving‑average analysis, also configurable per metric via the REST API.",
+    "Emit an alert event for each detected anomaly and enforce a configurable cooldown/deduplication window per metric to prevent identical alerts within that period.",
+    "Expose a `GET /api/v1/alerts` endpoint that supports filtering by status (Active, Resolved, Silenced) and severity (Warning, Critical).",
+    "Deliver a complete pytest suite covering percentile/std‑dev correctness, ring‑buffer eviction limits, deterministic spike‑alert triggering, cooldown deduplication, and concurrent ingestion without race conditions.",
+    "Include a README.md with a mathematical description of the anomaly detection, a Mermaid architecture diagram, and example benchmark requests; the system must run entirely offline without external databases or APIs."
+  ]
+}

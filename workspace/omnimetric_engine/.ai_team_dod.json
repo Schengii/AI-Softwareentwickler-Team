@@ -1,0 +1,142 @@
+{
+  "project_slug": "omnimetric_engine",
+  "timestamp": "2026-09-21T16:53:50+00:00",
+  "is_done": false,
+  "blocking": [
+    "tests_pass",
+    "test_depth",
+    "missing_frontend_ui",
+    "verification_ok",
+    "requirements_met"
+  ],
+  "criteria": [
+    {
+      "key": "files_written",
+      "label": "Es wurde tatsächlich Code erzeugt",
+      "passed": true,
+      "required": true,
+      "detail": "19 Datei(en) geschrieben",
+      "applicable": true
+    },
+    {
+      "key": "tests_exist",
+      "label": "Eine echte Testsuite existiert",
+      "passed": true,
+      "required": true,
+      "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "tests_pass",
+      "label": "Die Testsuite läuft grün",
+      "passed": false,
+      "required": true,
+      "detail": "Tests fehlgeschlagen oder nicht gelaufen",
+      "applicable": true
+    },
+    {
+      "key": "deps_installable",
+      "label": "Abhängigkeiten sind installierbar",
+      "passed": true,
+      "required": true,
+      "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "app_starts",
+      "label": "Die Anwendung startet",
+      "passed": true,
+      "required": true,
+      "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "secrets_clean",
+      "label": "Keine Secrets im Code",
+      "passed": true,
+      "required": true,
+      "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "lint_clean",
+      "label": "Linter ohne Befund",
+      "passed": false,
+      "required": false,
+      "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "ui_ok",
+      "label": "Frontend/UI-Check ohne Befund",
+      "passed": false,
+      "required": true,
+      "detail": "",
+      "applicable": false
+    },
+    {
+      "key": "test_depth",
+      "label": "Die API-Routen werden in Tests tatsächlich aufgerufen",
+      "passed": false,
+      "required": true,
+      "detail": "zu viele Backend-Routen ohne Test (core/test_depth.py)",
+      "applicable": true
+    },
+    {
+      "key": "build_passes",
+      "label": "Der Produktions-Build läuft durch",
+      "passed": false,
+      "required": true,
+      "detail": "",
+      "applicable": false
+    },
+    {
+      "key": "missing_frontend_ui",
+      "label": "Beauftragtes Frontend wurde tatsächlich geliefert",
+      "passed": false,
+      "required": true,
+      "detail": "kein index.html/src/main.tsx/... gefunden - Frontend-Agent ist am Hard Delivery Gate gescheitert oder hat keine UI-Dateien geschrieben",
+      "applicable": true
+    },
+    {
+      "key": "dark_mode_delivered",
+      "label": "Explizit beauftragtes Dark-Mode-Design wurde geliefert",
+      "passed": false,
+      "required": true,
+      "detail": "",
+      "applicable": false
+    },
+    {
+      "key": "missing_entrypoint",
+      "label": "Ein echter Anwendungs-Einstiegspunkt existiert",
+      "passed": true,
+      "required": true,
+      "detail": "gefunden: app/main.py",
+      "applicable": true
+    },
+    {
+      "key": "verification_ok",
+      "label": "Die Gesamt-Verifikation ist ohne Veto",
+      "passed": false,
+      "required": true,
+      "detail": "fehlgeschlagene Prüfungen: test_depth, tests",
+      "applicable": true
+    },
+    {
+      "key": "readme",
+      "label": "README vorhanden",
+      "passed": true,
+      "required": false,
+      "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "requirements_met",
+      "label": "Abnahme: alle Anforderungen aus dem Auftragstext erfüllt",
+      "passed": false,
+      "required": true,
+      "detail": "fehlt: Implement the OmniMetric-Engine as a production‑ready system in the designated workspace., Provide an ingestion API built with FastAPI (Python 3.11+, Pydantic v2) that returns an immediate acknowledgment for each request., Use a deterministic per‑metric ring buffer / bounded deque with O(1) memory per stream, supporting either a fixed number of data points or a 60‑second sliding window and automatically evicting old points., Compute on‑the‑fly rolling aggregations (min, max, mean, standard deviation, p50, p95, p99) for each metric’s current window., Detect outlier anomalies via Z‑Score > 3 and dynamic thresholding, with thresholds configurable per metric through a REST API., Detect trend/drift anomalies using moving‑average analysis, also configurable per metric via the REST API., Emit an alert event for each detected anomaly and enforce a configurable cooldown/deduplication window per metric to prevent identical alerts within that period., Expose a `GET /api/v1/alerts` endpoint that supports filtering by status (Active, Resolved, Silenced) and severity (Warning, Critical)., Deliver a complete pytest suite covering percentile/std‑dev correctness, ring‑buffer eviction limits, deterministic spike‑alert triggering, cooldown deduplication, and concurrent ingestion without race conditions., Include a README.md with a mathematical description of the anomaly detection, a Mermaid architecture diagram, and example benchmark requests; the system must run entirely offline without external databases or APIs.",
+      "applicable": true
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+[
+  {
+    "timestamp": "2026-09-21T16:55:28+00:00",
+    "task_summary": "FastAPI Time-Series Anomalie-Engine implementiert",
+    "verification_ok": false,
+    "budget_aborted": false,
+    "cancelled": false,
+    "files_written_count": 19,
+    "lint_signature": [
+      "ruff:app/core/security.py:SIM102"
+    ],
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 🔍 Pre-Flight-Check, Versuch 1: 1 Problem(e) → gezielt zur Korrektur an tester zurückgespielt.\n- 🔍 Pre-Flight-Check: nach 2 Durchlauf/Durchläufen bestanden.\n- 📦 ✅ pip install -r requirements.txt (exit_code=0)\n- 📦 ✅ pip install -r requirements-dev.txt (exit_code=0)\n- 🚦 Smoke-Test-Gate bestanden (`app/main.py` startet).\n… (gekürzt, vollständig in detail_file)",
+    "detail_file": ".ai_team_runs/20260921_162712_verification.md",
+    "failed_checks": [
+      "domain_logic_depth",
+      "lint",
+      "test_depth",
+      "tests"
+    ]
+  }
+]

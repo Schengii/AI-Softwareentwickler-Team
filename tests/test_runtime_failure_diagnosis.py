@@ -72,6 +72,54 @@ class TestDiagnoseRuntimeFailure(unittest.TestCase):
         self.assertIn("include_router", diag)
         self.assertNotIn("doppelter Router-Prefix", diag)
 
+    def test_404_assertion_detected_as_route_not_found(self):
+        # Pytest meldet bei fehlgeschlagenem assert response.status_code == 200:
+        # assert 404 == 200 / where 404 = <Response [404]>.status_code
+        diag1 = _diagnose_runtime_failure("AssertionError: assert 404 == 200\nwhere 404 = <Response [404]>.status_code")
+        self.assertIsNotNone(diag1)
+        self.assertIn("include_router", diag1)
+
+        diag2 = _diagnose_runtime_failure("httpx.HTTPStatusError: 404 Client Error: Not Found for url: http://test/api/v1/metrics")
+        self.assertIsNotNone(diag2)
+        self.assertIn("include_router", diag2)
+
+        # Wenn der Server 200 lieferte, aber der Test 404 erwartete, ist die Route VORHANDEN (kein Route Not Found)
+        diag3 = _diagnose_runtime_failure("AssertionError: assert 200 == 404")
+        self.assertIsNone(diag3)
+
+
+class TestFailurePruning(unittest.TestCase):
+    def test_short_message_not_pruned(self):
+        from agents.orchestrator.failure_diagnosis import _prune_failure_message
+        msg = "AssertionError: short error message"
+        self.assertEqual(_prune_failure_message(msg, max_chars=500), msg)
+
+    def test_long_message_pruned_retaining_head_and_tail(self):
+        from agents.orchestrator.failure_diagnosis import _prune_failure_message
+        head = "HEAD: Error occurred in tests/test_api.py:42"
+        middle = "X" * 3000
+        tail = "TAIL: AssertionError: assert response.status_code == 200 where 404 == 200"
+        long_msg = f"{head}\n{middle}\n{tail}"
+
+        pruned = _prune_failure_message(long_msg, max_chars=500)
+        self.assertLessEqual(len(pruned), 520)
+        self.assertIn("HEAD:", pruned)
+        self.assertIn("TAIL:", pruned)
+        self.assertIn("[Traceback gekürzt für Token-Budget]", pruned)
+
+    def test_format_failures_for_agent_limits_count_and_prunes(self):
+        from agents.orchestrator.failure_diagnosis import _format_failures_for_agent
+        failures = [
+            TestFailure(test_id=f"test_{i}", message="E" * 2000, files=[f"file_{i}.py"])
+            for i in range(10)
+        ]
+        formatted = _format_failures_for_agent(failures, max_failures=3, max_msg_chars=400)
+        self.assertIn("test_0", formatted)
+        self.assertIn("test_2", formatted)
+        self.assertNotIn("test_3", formatted)
+        self.assertIn("und 7 weitere Testfehler", formatted)
+        self.assertIn("[Traceback gekürzt für Token-Budget]", formatted)
+
 
 class TestRuntimeFailureRouting(unittest.TestCase):
     """Realer Fund: IntegrityError/no such table treffen im Traceback oft nur eine
@@ -118,7 +166,7 @@ class TestRuntimeFailureRouting(unittest.TestCase):
                 self.orchestrator._run_verification_loop(
                     project_dir=self.temp_workspace,
                     all_results=[backend_result, tester_result],
-                    file_owners={"app/routers/webhooks.py": "backend"},
+                    file_owners={"app/routers/webhooks.py": "backend", "tests/test_api.py": "tester"},
                     notify=lambda msg: None,
                 )
             )
@@ -144,6 +192,14 @@ class TestRuntimeFailureRouting(unittest.TestCase):
         dispatched = self._run_loop(
             "AttributeError: 'dict' object has no attribute 'email'",
             ["app/services/user_service.py"],
+        )
+        self.assertIn("backend", dispatched)
+
+    def test_route_not_found_routes_to_backend_even_when_only_test_in_traceback(self):
+        # Omnimetric Engine: im Traceback stand nur tests/test_api.py, Ursache war aber der fehlende Endpoint
+        dispatched = self._run_loop(
+            "AssertionError: assert 404 == 200\nwhere 404 = <Response [404]>.status_code",
+            ["tests/test_api.py"],
         )
         self.assertIn("backend", dispatched)
 

@@ -1576,10 +1576,35 @@ Agenten-Aufruf kostet.
 > `test_p1_team_workflow.py`, `test_p0_structured_verification.py`) unverändert grün - reine
 > Verhaltens-Erhaltung bestätigt.
 
-**Zusammenfassung P6-5:** 1 von 3 Dateien vollständig gesplittet (`interface/cli.py`), ein
-sicherer Teilschritt für die dritte (`verification.py`: 2 von ~15 eigenständigen Blöcken
-extrahiert), `core/llm_factory.py` mit konkretem, dokumentiertem Befund bewusst zurückgestellt
-statt unbegründet als "zu riskant" abgehakt.
+> **Umsetzung 2026-09-21, vier weitere Teilschritte mit demselben, jetzt bewährten Muster:**
+> Der Coverage-Schwellen-Check (`_check_coverage_threshold()`) sowie die drei Fix-Schleifen-
+> Checks Browser/UI (`_run_browser_ui_check()`), Runtime-Smoke-Test (`_run_smoke_check()`) und
+> Lastentest (`_run_load_test_check()`) wurden ebenfalls extrahiert - bewusst NICHT über ein
+> globales Zustandsobjekt (das hätte, wie oben beschrieben, eine mechanische Umstellung über die
+> gesamte 1600-Zeilen-Methode gebraucht), sondern über explizite Rückgabewerte je Extraktion:
+> `_check_coverage_threshold()` gibt `bool | None` zurück (`False` = Veto, Aufrufer setzt
+> `verification_ok = False`), die drei Fix-Schleifen-Checks geben ein Drei-Tupel
+> `(budget_aborted, manually_cancelled, verification_ok_veto)` zurück - `all_results` bleibt
+> unverändert in-place erweitert (`_run_runtime_check_with_fix()`s `.extend()`, dieselbe Liste
+> bleibt bestehen, keine Rückgabe nötig). Konservativer als das ursprünglich erwogene
+> Flags-Objekt, weil NUR der tatsächlich extrahierte Block angefasst wird, nicht die gesamte
+> Methode. `_run_verification_loop_impl()` ist damit von ursprünglich ~1633 auf **1438 Zeilen**
+> geschrumpft (6 neue, unabhängig benannte und einzeln testbare Methoden insgesamt). Jede der
+> vier Extraktionen einzeln committet und verifiziert (`ruff check` + die jeweils direkt
+> betroffenen Integrationstests: `test_coverage_integration.py`/`test_verifier_coverage.py`,
+> `test_browser_ui_integration.py`/`test_browser_failure_routing.py`,
+> `test_runtime_smoke_integration.py`, `test_load_test_integration.py`, jeweils plus die
+> Kern-Verifikations-Suite). Abschließend die gesamte verifikationsnahe Testsuite (141 Tests
+> über `test_department_*`, `test_route_mismatch_preflight.py`, `test_interface_contract.py`,
+> `test_database_review_preflight.py`, `test_verifier_completeness.py`,
+> `test_verifier_smoke.py`) grün bestätigt.
+
+**Zusammenfassung P6-5:** 1 von 3 Dateien vollständig gesplittet (`interface/cli.py`);
+`verification.py` (Teil 2/3) um 6 Methoden entlastet, ~195 Zeilen (~12 %) aus der zentralen
+Fix-Loop-Methode extrahiert, jeder Schritt einzeln verifiziert - der verbleibende Rumpf
+(~1438 Zeilen) bleibt aus den genannten Gründen (viele weiterhin eng verflochtene Blöcke) für
+eine künftige Sitzung; `core/llm_factory.py` (Teil 3/3) mit konkretem, dokumentiertem Befund
+bewusst zurückgestellt statt unbegründet als "zu riskant" abgehakt.
 
 | P6-6 | `core/message_bus.py` enthält nur noch zwei Dataclasses – in `core/agent_contracts.py` umbenennen (60+ Importe, daher mit Alias-Übergang) | S |
 
@@ -1722,4 +1747,4 @@ ruff check && python -m pytest -q
 | P5-3 | Verifikations-Reserve im Budget | P5 | ☑ erledigt (Reserve existierte, Gate korrigiert) |
 | P6-1 | Gestagte Fixes committet | P6 | ☑ erledigt |
 | P6-2 | ~~Workspace aus Framework-Commits~~ | P6 | ☑ Fehlannahme, siehe oben |
-| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-6, P6-7, P6-8 erledigt; P6-5 ~1.5/3 (`interface/cli.py` erledigt; `verification.py` sicherer Teilschritt (2 Blöcke extrahiert), Rest bewusst zurückgestellt; `core/llm_factory.py` untersucht, bewusst zurückgestellt - konkrete Befunde s.o.) |
+| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-6, P6-7, P6-8 erledigt; P6-5 ~1.8/3 (`interface/cli.py` erledigt; `verification.py` 6 Blöcke extrahiert (~12% der Kernmethode), Rest bewusst zurückgestellt; `core/llm_factory.py` untersucht, bewusst zurückgestellt - konkrete Befunde s.o.) |

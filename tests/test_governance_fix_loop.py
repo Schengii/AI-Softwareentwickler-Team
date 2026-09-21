@@ -128,9 +128,13 @@ class TestGovernanceFixLoop(unittest.TestCase):
         self.assertIn("Keine kritischen Befunde", result)
         self.assertNotIn("zurückgespielt", result)
 
-    def test_review_only_agent_absent_adds_no_section(self):
-        # Kein code_reviewer/security/compliance im Plan -> die Schleife hat nichts zu prüfen,
-        # keine zusätzliche Sektion im Ergebnis (kein Rauschen für den Alltagsfall).
+    def test_review_only_agent_absent_but_code_written_forces_review_section(self):
+        # P4-1 (ROADMAP_TEMP.md, 2026-09-21): Kein code_reviewer/security/compliance im Plan,
+        # ABER Code wurde geschrieben - code_reviewer wird jetzt zwangsweise nachträglich
+        # eingeplant (agents/orchestrator/integration.py._run_review_after_verification), die
+        # Sektion erscheint deshalb TROTZDEM. Vorher (Fehlannahme "kein Rauschen für den
+        # Alltagsfall") verschwand Code-Review komplett, sobald der Planer sie wegließ - real
+        # gemessen lief code_reviewer dadurch nur in 6 von 20 Läufen.
         @patch("agents.orchestrator.verification.ProjectVerifier")
         @patch("core.task_manager.TaskManager.decompose")
         @patch("core.result_aggregator.ResultAggregator.synthesize")
@@ -151,7 +155,8 @@ class TestGovernanceFixLoop(unittest.TestCase):
             return asyncio.run(self.orchestrator.process("Baue etwas"))
 
         result = _inner()
-        self.assertNotIn("Governance-Fix-Protokoll", result)
+        self.assertIn("Governance-Fix-Protokoll", result)
+        self.assertIn("Keine kritischen Befunde", result)
 
     def test_disabled_flag_reproduces_old_behavior(self):
         with patch("agents.orchestrator.governance.ENABLE_GOVERNANCE_FIX_LOOP", False):

@@ -367,6 +367,32 @@ class IntegrationMixin:
         governance_fix_summary = ""
         results_before = len(results)
 
+        # P4-1 (ROADMAP_TEMP.md): Code-Review war bisher rein optional - ob code_reviewer
+        # überhaupt eingeplant wurde, entschied allein der LLM-Planer (core/task_manager.py).
+        # Real gemessen: code_reviewer lief nur in 6 von 20 Läufen. core/review_gate.py (Fund-
+        # mit-Pflicht-Antwort-Zyklus: Fix-Schleife, Re-Review, Eskalation zu einem
+        # `unresolved-governance-critical-*`-Ticket, siehe agents/orchestrator/governance.py)
+        # greift also in 70% der Läufe mit tatsächlich geschriebenem Code NIE, weil es nichts
+        # zu prüfen bekam. Dieselbe deterministische "Pflicht"-Logik wie beim architect-
+        # Zwangs-Einplanen nach wiederholtem Scheitern (agents/orchestrator/__init__.py) - wurde
+        # tatsächlich Code geschrieben, aber kein Review eingeplant, wird code_reviewer HIER
+        # zusätzlich eingeplant, statt dass ein fehlendes Review unbemerkt bleibt.
+        if not review_tasks and "code_reviewer" in self._agents and any(r.files_written for r in results):
+            notify(
+                "  🔍 [bold yellow]Code-Review wird zusätzlich eingeplant[/bold yellow] – es wurde Code "
+                "geschrieben, aber kein Review war im Plan vorgesehen."
+            )
+            review_tasks = [AgentTask(
+                task_id=f"mandatory_code_review_{getattr(self, 'last_project_slug', 'project')}",
+                agent_id="code_reviewer",
+                description=(
+                    "Pflicht-Code-Review: In diesem Lauf wurde Code geschrieben, der ursprüngliche Plan sah "
+                    "jedoch keinen Review vor. Prüfe den gesamten geänderten Code auf kritische Probleme "
+                    "(Sicherheit, Korrektheit, Wartbarkeit) im üblichen Format ('### 🔴 Kritische Probleme')."
+                ),
+                context=user_request[:1500],
+            )]
+
         if review_tasks:
             status_note = (
                 "## 🧪 Verifikationsstatus (echte Tests/Build VOR diesem Review)\n"

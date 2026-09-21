@@ -320,3 +320,64 @@ class TestReviewAfterVerification:
         assert not ok
         assert orchestrator.last_verification_outcome.status("tests") is False
         assert "❌ Regressionstest" in summary
+
+
+class TestMandatoryCodeReview:
+    """P4-1 (ROADMAP_TEMP.md): Code-Review war rein optional (code_reviewer lief nur in 6 von
+    20 Läufen), weil allein der LLM-Planer entschied, ob code_reviewer überhaupt eingeplant
+    wurde. Wurde Code geschrieben, aber kein Review geplant, wird code_reviewer jetzt
+    zusätzlich eingeplant (agents/orchestrator/integration.py._run_review_after_verification)."""
+
+    def test_code_reviewer_is_forced_when_code_was_written_but_no_review_was_planned(self, orchestrator, tmp_path):
+        outcome = VerificationOutcome()
+        outcome.record("tests", True)
+        orchestrator.last_verification_outcome = outcome
+        hierarchy_calls = []
+
+        async def fake_hierarchy(**kwargs):
+            hierarchy_calls.append(kwargs["agent_tasks"])
+            return [AgentResult(task_id="r", agent_id="code_reviewer", agent_name="cr", success=True, content="ok")], {}, False, False
+
+        async def fake_governance(**kwargs):
+            return kwargs["all_results"], "", False, False
+
+        orchestrator._run_department_hierarchy = fake_hierarchy
+        orchestrator._run_governance_fix_loop = fake_governance
+        prior_results = [AgentResult(task_id="b", agent_id="backend", agent_name="b", success=True, content="ok", files_written=["app/main.py"])]
+
+        with patch("agents.orchestrator.integration.ProjectVerifier", MagicMock()):
+            asyncio.run(orchestrator._run_review_after_verification(
+                user_request="x", task_summary="x", review_tasks=[], project_dir=str(tmp_path), results=prior_results,
+                file_owners={}, verification_ok=True, verification_summary="### Verifikation\n- ✅ grün",
+                run_start_tokens=None, notify=lambda m: None, cancel_requested=None,
+            ))
+
+        assert len(hierarchy_calls) == 1
+        assert [t.agent_id for t in hierarchy_calls[0]] == ["code_reviewer"]
+
+    def test_no_forced_review_without_any_written_files(self, orchestrator, tmp_path):
+        outcome = VerificationOutcome()
+        outcome.record("tests", True)
+        orchestrator.last_verification_outcome = outcome
+        hierarchy_calls = []
+
+        async def fake_hierarchy(**kwargs):
+            hierarchy_calls.append(kwargs["agent_tasks"])
+            return [], {}, False, False
+
+        async def fake_governance(**kwargs):
+            return kwargs["all_results"], "", False, False
+
+        orchestrator._run_department_hierarchy = fake_hierarchy
+        orchestrator._run_governance_fix_loop = fake_governance
+        # Kein Agent hat Dateien geschrieben (z.B. eine reine Rückfrage-/Analyse-Aufgabe).
+        prior_results = [AgentResult(task_id="a", agent_id="architect", agent_name="a", success=True, content="Analyse ohne Codeänderung")]
+
+        with patch("agents.orchestrator.integration.ProjectVerifier", MagicMock()):
+            asyncio.run(orchestrator._run_review_after_verification(
+                user_request="x", task_summary="x", review_tasks=[], project_dir=str(tmp_path), results=prior_results,
+                file_owners={}, verification_ok=True, verification_summary="### Verifikation\n- ✅ grün",
+                run_start_tokens=None, notify=lambda m: None, cancel_requested=None,
+            ))
+
+        assert hierarchy_calls == []

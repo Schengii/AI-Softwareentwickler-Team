@@ -831,7 +831,7 @@ Befundklassen einführen.
 ## 5. 🔵 P4 – „Wie ein echtes Entwicklerteam" arbeiten
 
 ### P4-1 · Code-Review ist optional statt Standard
-**Status:** ❌ offen · **Aufwand:** M · **Wirkung:** hoch
+**Status:** ✅ erledigt 2026-09-21 · **Aufwand:** M · **Wirkung:** hoch
 
 `code_reviewer` lief in 6 von 20 Läufen; in `cachegrid_proxy` mit 2 Tool-Calls, 0 geschriebenen
 Dateien und 20.360 Tokens – also ein Kommentar ins Leere. In einem echten Team geht kein Code
@@ -841,6 +841,29 @@ ohne Review in den Merge.
 Review in einen **Befund-mit-Pflicht-Antwort-Zyklus** überführen: jeder Review-Befund wird
 entweder behoben oder mit Begründung als `wontfix` im Team-Board quittiert. `core/review_gate.py`
 (438 Zeilen) existiert bereits – zuerst prüfen, warum es nicht greift.
+
+> **Umsetzung:** Root Cause geklärt: `core/review_gate.py` selbst funktioniert (Fund-Erkennung,
+> Fix-Schleife, Re-Review, Eskalation zu einem `unresolved-governance-critical-*`-Backlog-Ticket
+> via `agents/orchestrator/governance.py` - das ist bereits der faktische
+> "Befund-mit-Pflicht-Antwort-Zyklus", ein Fund verschwindet nie stillschweigend, sondern landet
+> entweder als behoben oder als offenes Ticket zur menschlichen Entscheidung). Es griff nur nie,
+> weil `agents/orchestrator/__init__.py` `code_reviewer`/`refactoring`/`compliance`/… bei
+> `ENABLE_REVIEW_AFTER_VERIFICATION` komplett aus der Ausführung ausklammert
+> (`deferred_review_tasks`), wenn der LLM-Planer (`core/task_manager.py`) sie nicht von sich aus
+> einplant - `agents/orchestrator/integration.py._run_review_after_verification()` beendete sich
+> dann mit `if review_tasks:` sofort, ohne je zu prüfen, ob überhaupt Code entstanden ist. Neu:
+> direkt vor diesem Check wird `code_reviewer` zusätzlich eingeplant, wenn `review_tasks` leer
+> ist, `code_reviewer` als Rolle verfügbar ist UND mindestens ein Agent in diesem Lauf
+> tatsächlich Dateien geschrieben hat - dieselbe deterministische "Pflicht-Einplanung"-Logik wie
+> der bereits bestehende `architect`-Zwang nach wiederholtem Scheitern
+> (`agents/orchestrator/__init__.py`). Ein bestehender Test
+> (`tests/test_governance_fix_loop.py.test_review_only_agent_absent_adds_no_section`) prüfte
+> exakt das alte, jetzt bewusst geänderte Verhalten ("kein Reviewer geplant → keine Sektion") -
+> umbenannt/umgedreht zu `test_review_only_agent_absent_but_code_written_forces_review_section`.
+> 2 neue Tests in `tests/test_p1_team_workflow.py.TestMandatoryCodeReview` (erzwungen bei
+> geschriebenem Code, NICHT erzwungen ohne jede Dateiänderung). Gegen 48 bestehende
+> End-to-End-Integrationstests verifiziert (u.a. `test_governance_fix_loop.py`,
+> `test_frontend_build_integration.py`, `test_run_cancellation.py`), keine Regression.
 
 ---
 
@@ -1214,7 +1237,7 @@ ruff check && python -m pytest -q
 | P3-2 | `--team-trend` Trendbericht | P3 | ☑ erledigt |
 | P3-3 | Root-Cause nur bei blockierenden Befunden | P3 | ☑ erledigt |
 | P3-4 | `team_lessons.jsonl` Schema vereinheitlichen | P3 | ☑ erledigt |
-| P4-1 | Code-Review verbindlich | P4 | ☐ |
+| P4-1 | Code-Review verbindlich | P4 | ☑ erledigt |
 | P4-2 | Abnahme gegen die Anforderung | P4 | ☐ |
 | P4-3 | Testtiefe fachlich statt nur Routen | P4 | ☐ |
 | P4-4 | Projekt-Steckbrief für jeden Agenten | P4 | 🟡 früher Abfang erledigt, Prompt-Injektion offen |

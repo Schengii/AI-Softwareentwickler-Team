@@ -427,7 +427,6 @@ class VerificationMixin:
                 f"Anforderung(en): {shown}"
             )
 
-        pre_flight_report = None
         completeness_report = None
         # Bleibt None, wenn die Schleife nie durchläuft (MAX_VERIFICATION_ITERATIONS<=0).
         report: VerificationReport | None = None
@@ -475,149 +474,12 @@ class VerificationMixin:
         # Deterministischer Pre-Flight-Check (ast-basiert, ohne LLM): fehlende __init__.py,
         # Syntaxfehler, nicht deklarierte Abhängigkeiten. Funde werden sofort per Fix-und-Retry mit
         # Owner-Routing und Kein-Fortschritt-Breaker behoben, statt bis zum teuren Testlauf zu warten.
-        previous_preflight_signature: frozenset[tuple[str, str]] | None = None
-        for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
-            if run_start_tokens is not None and (
-                self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
-            ):
-                budget_aborted = True
-                notify("  🚫 [bold red]Budget erreicht[/bold red] – Pre-Flight-Check übersprungen.")
-                break
-            if cancel_requested and cancel_requested():
-                manually_cancelled = True
-                notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – Pre-Flight-Check übersprungen.")
-                break
-
-            try:
-                pre_flight_report = await asyncio.to_thread(run_pre_flight_check, project_dir)
-            except Exception as e:
-                notify(f"  ⚠️ [dim]Pre-Flight-Check übersprungen: {e}[/dim]")
-                break
-            if pre_flight_report.error:
-                notify(f"  ⚠️ [dim]Pre-Flight-Check übersprungen: {pre_flight_report.error}[/dim]")
-                break
-            if pre_flight_report.passed:
-                if attempt > 1:
-                    notify(f"  ✨ [bold green]Pre-Flight-Check nach Fix (Versuch {attempt}) bestanden.[/bold green]")
-                    summary_lines.append(f"- 🔍 Pre-Flight-Check: nach {attempt} Durchlauf/Durchläufen bestanden.")
-                else:
-                    notify(f"  ✨ [bold green]Pre-Flight-Check bestanden ({pre_flight_report.files_checked} Dateien geprüft).[/bold green]")
-                break
-
-            notify(f"  🔍 [bold yellow]Pre-Flight-Check:[/bold yellow] {len(pre_flight_report.issues)} Problem(e) in {pre_flight_report.files_checked} Dateien gefunden.")
-            for issue in pre_flight_report.issues[:3]:
-                notify(f"    ⚠️ [{issue.issue_type}] {issue.file}:{issue.line}: {issue.message}")
-
-            current_preflight_signature = _issue_signature(
-                pre_flight_report.issues, lambda i: (i.file, i.message[:300])
-            )
-            if _no_progress(previous_preflight_signature, current_preflight_signature):
-                notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Pre-Flight-Funde wie vor dem letzten Fixversuch – breche ab, weiter mit der regulären Testsuite.")
-                summary_lines.append(
-                    f"- 🔍 🛑 Pre-Flight-Check, Versuch {attempt}: dieselben {len(pre_flight_report.issues)} Fund(e) wie nach "
-                    "dem vorherigen Fixversuch (keine Veränderung) – Schleife abgebrochen statt einen wirkungslosen "
-                    "weiteren Versuch zu verbrauchen."
-                )
-                break
-            previous_preflight_signature = current_preflight_signature
-
-            # Zuständigkeits-Fallback für Funde ohne file_owners-Eintrag, damit sie nicht unbeauftragt
-            # liegen bleiben: Struktur/Imports -> project_cleaner, Manifest-Lücken -> refactoring,
-            # übrige Code-Probleme -> dev_lead.
-            _FALLBACK_OWNER_BY_ISSUE_TYPE = {
-                "missing_init": "project_cleaner",
-                "hidden_runtime_dependency": "project_cleaner",
-                "missing_dependency": "refactoring",
-                "syntax_error": "dev_lead",
-                # Tests/-Verzeichnis ohne echte Testfunktion: fehlende Testabdeckung, kein Code-Problem.
-                "empty_test_suite": "tester",
-            }
-            # Deterministischer Kurzschluss: ein exakt benanntes fehlendes Paket wird ohne LLM-Agent
-            # direkt ins Manifest eingetragen (schneller, keine parallele Überschreibung). Test-/
-            # Werkzeugpakete landen in requirements-dev.txt (manifest_for_package).
-            remaining_issues = list(pre_flight_report.issues)
-            manifest = primary_python_manifest(project_dir) if project_dir else None
-            if manifest is not None:
-                resolved_by_manifest: dict[str, list[str]] = {}
-                still_open: list[PreFlightIssue] = []
-                for issue in remaining_issues:
-                    package = issue.issue_type == "missing_dependency" and package_from_finding(issue.suggestion)
-                    target = manifest_for_package(Path(project_dir), package, issue.file) if package else None
-                    if not package or target is None:
-                        still_open.append(issue)
-                        continue
-                    try:
-                        add_requirement(target, package)
-                        resolved_by_manifest.setdefault(target.name, []).append(package)
-                    except (ValueError, OSError):
-                        still_open.append(issue)
-                for manifest_name, packages in sorted(resolved_by_manifest.items()):
-                    names = ", ".join(sorted(set(packages)))
-                    notify(f"  📦 [green]Deterministisch ergänzt:[/green] {names} in {manifest_name} (kein LLM-Aufruf nötig).")
-                    summary_lines.append(f"- 📦 Versuch {attempt}: {len(packages)} fehlende Paket(e) deterministisch in {manifest_name} ergänzt: {names}.")
-                remaining_issues = still_open
-
-            # Rollen, die in dieser Phase keine Code-Patches schreiben (z.B. architect, der nur in
-            # Phase 4/5 Verträge/ADRs liefert): file_owners kann so eine Rolle für eine Datei
-            # eintragen, die architect initial angelegt hat (z.B. app/main.py-Grundgerüst). Ein
-            # Pre-Flight-Fixauftrag an eine solche Rolle bleibt wirkungslos (0 Dateien geschrieben)
-            # und lässt den Circuit-Breaker mit dauerhaft negativem pre_flight-Outcome abbrechen -
-            # echter Fund `root-cause-cachegrid_proxy-pre-flight-fixversuche-scheitern-durch-
-            # ineffektive-agentenzu`. Für solche Owner greift die pfadbasierte Heuristik statt der
-            # (nicht code-schreibenden) file_owners-Zuweisung.
-            _NON_CODE_WRITING_ROLES = {"architect"}
-            agents_to_fix: dict[str, list[PreFlightIssue]] = {}
-            for issue in remaining_issues:
-                owner = file_owners.get(issue.file)
-                if owner in _NON_CODE_WRITING_ROLES:
-                    owner = self._infer_owner_from_path(issue.file, issue.message) or owner
-                if not owner or owner not in self._agents:
-                    owner = _FALLBACK_OWNER_BY_ISSUE_TYPE.get(issue.issue_type, "dev_lead")
-                if owner in self._agents:
-                    agents_to_fix.setdefault(owner, []).append(issue)
-
-            if not agents_to_fix:
-                if not remaining_issues:
-                    # Alle Funde deterministisch behoben - direkt erneut prüfen.
-                    continue
-                summary_lines.append(f"- 🔍 ❌ Pre-Flight-Check: {len(remaining_issues)} Fund(e) blieben ungelöst (keinem Agenten eindeutig zuordenbar).")
-                break
-
-            fix_tasks = []
-            for agent_id, agent_issues in agents_to_fix.items():
-                issue_text = "\n".join(
-                    f"- [{i.issue_type}] {i.file}:{i.line} – {i.message}"
-                    + (f" Lösung: {i.suggestion}" if i.suggestion else "")
-                    for i in agent_issues
-                )
-                fix_tasks.append(AgentTask(
-                    task_id=f"verify_fix_preflight_{agent_id}_{attempt}",
-                    agent_id=agent_id,
-                    description=(
-                        "Ein statischer Pre-Flight-Check (VOR jeder Dependency-Installation und "
-                        "jedem Testlauf) hat Probleme gefunden, die einen Testlauf mit hoher "
-                        "Wahrscheinlichkeit zum Scheitern bringen. Behebe AUSSCHLIESSLICH diese "
-                        "Befunde, erstelle keine neuen Features.\n\n"
-                        f"{issue_text}"
-                    ),
-                    context="", project_dir=project_dir,
-                ))
-
-            notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix (Pre-Flight-Check):[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())}...")
-            fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
-            self._update_file_owners(file_owners, fix_results)
-            all_results.extend(fix_results)
-            summary_lines.append(f"- 🔍 Pre-Flight-Check, Versuch {attempt}: {len(pre_flight_report.issues)} Problem(e) → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt.")
-
-            if attempt == MAX_VERIFICATION_ITERATIONS:
-                notify("  ⚠️ [yellow]Maximale Pre-Flight-Fixversuche erreicht – weiter mit der regulären Testsuite.[/yellow]")
-                summary_lines.append(f"- 🔍 ⚠️ Pre-Flight-Check nach {MAX_VERIFICATION_ITERATIONS} Versuchen weiterhin mit Funden – weiter mit der regulären Testsuite.")
-
-        if pre_flight_report is not None and not pre_flight_report.error:
-            outcome.record(
-                "pre_flight", pre_flight_report.passed,
-                "" if pre_flight_report.passed else f"{len(pre_flight_report.issues)} Fund(e)",
-            )
+        pf_budget_aborted, pf_manually_cancelled = await self._run_preflight_check_loop(
+            project_dir, run_start_tokens, cancel_requested, notify, file_owners, all_results,
+            summary_lines, outcome,
+        )
+        budget_aborted = budget_aborted or pf_budget_aborted
+        manually_cancelled = manually_cancelled or pf_manually_cancelled
 
         notify("🧪 [bold cyan]Verifikation:[/bold cyan] Installiere Abhängigkeiten in isolierter Umgebung...")
         install_log = await asyncio.to_thread(verifier.ensure_environment)
@@ -1822,6 +1684,174 @@ class VerificationMixin:
             "\n".join(summary_lines) if summary_lines else "- Keine Verifikation durchgeführt."
         )
         return all_results, verification_summary, budget_aborted, manually_cancelled, verification_ok
+
+    async def _run_preflight_check_loop(
+        self,
+        project_dir: str,
+        run_start_tokens: dict | None,
+        cancel_requested: Callable[[], bool] | None,
+        notify: Callable[[str], None],
+        file_owners: dict[str, str],
+        all_results: list[AgentResult],
+        summary_lines: list[str],
+        outcome: VerificationOutcome,
+    ) -> tuple[bool, bool]:
+        """P6-5 (ROADMAP_TEMP.md, Teilschritt): aus `_run_verification_loop_impl()` extrahiert -
+        deterministischer Pre-Flight-Check (ast-basiert, ohne LLM): fehlende __init__.py,
+        Syntaxfehler, nicht deklarierte Abhängigkeiten. Funde werden sofort per Fix-und-Retry mit
+        Owner-Routing und Kein-Fortschritt-Breaker behoben, statt bis zum teuren Testlauf zu
+        warten. Rückgabe (budget_aborted, manually_cancelled) statt eines Zustandsobjekts, exakt
+        wie bei den bereits extrahierten Fix-Schleifen-Checks - `pre_flight_report` selbst wird
+        nach diesem Block nirgends mehr gebraucht (das abschließende `outcome.record(...)` ist
+        hier mit hineingezogen), `file_owners`/`all_results`/`summary_lines`/`outcome` werden
+        alle in-place mutiert und brauchen deshalb keine Rückgabe."""
+        budget_aborted = False
+        manually_cancelled = False
+        pre_flight_report = None
+        previous_preflight_signature: frozenset[tuple[str, str]] | None = None
+        for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
+            if run_start_tokens is not None and (
+                self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+            ):
+                budget_aborted = True
+                notify("  🚫 [bold red]Budget erreicht[/bold red] – Pre-Flight-Check übersprungen.")
+                break
+            if cancel_requested and cancel_requested():
+                manually_cancelled = True
+                notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – Pre-Flight-Check übersprungen.")
+                break
+
+            try:
+                pre_flight_report = await asyncio.to_thread(run_pre_flight_check, project_dir)
+            except Exception as e:
+                notify(f"  ⚠️ [dim]Pre-Flight-Check übersprungen: {e}[/dim]")
+                break
+            if pre_flight_report.error:
+                notify(f"  ⚠️ [dim]Pre-Flight-Check übersprungen: {pre_flight_report.error}[/dim]")
+                break
+            if pre_flight_report.passed:
+                if attempt > 1:
+                    notify(f"  ✨ [bold green]Pre-Flight-Check nach Fix (Versuch {attempt}) bestanden.[/bold green]")
+                    summary_lines.append(f"- 🔍 Pre-Flight-Check: nach {attempt} Durchlauf/Durchläufen bestanden.")
+                else:
+                    notify(f"  ✨ [bold green]Pre-Flight-Check bestanden ({pre_flight_report.files_checked} Dateien geprüft).[/bold green]")
+                break
+
+            notify(f"  🔍 [bold yellow]Pre-Flight-Check:[/bold yellow] {len(pre_flight_report.issues)} Problem(e) in {pre_flight_report.files_checked} Dateien gefunden.")
+            for issue in pre_flight_report.issues[:3]:
+                notify(f"    ⚠️ [{issue.issue_type}] {issue.file}:{issue.line}: {issue.message}")
+
+            current_preflight_signature = _issue_signature(
+                pre_flight_report.issues, lambda i: (i.file, i.message[:300])
+            )
+            if _no_progress(previous_preflight_signature, current_preflight_signature):
+                notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Pre-Flight-Funde wie vor dem letzten Fixversuch – breche ab, weiter mit der regulären Testsuite.")
+                summary_lines.append(
+                    f"- 🔍 🛑 Pre-Flight-Check, Versuch {attempt}: dieselben {len(pre_flight_report.issues)} Fund(e) wie nach "
+                    "dem vorherigen Fixversuch (keine Veränderung) – Schleife abgebrochen statt einen wirkungslosen "
+                    "weiteren Versuch zu verbrauchen."
+                )
+                break
+            previous_preflight_signature = current_preflight_signature
+
+            # Zuständigkeits-Fallback für Funde ohne file_owners-Eintrag, damit sie nicht unbeauftragt
+            # liegen bleiben: Struktur/Imports -> project_cleaner, Manifest-Lücken -> refactoring,
+            # übrige Code-Probleme -> dev_lead.
+            _FALLBACK_OWNER_BY_ISSUE_TYPE = {
+                "missing_init": "project_cleaner",
+                "hidden_runtime_dependency": "project_cleaner",
+                "missing_dependency": "refactoring",
+                "syntax_error": "dev_lead",
+                # Tests/-Verzeichnis ohne echte Testfunktion: fehlende Testabdeckung, kein Code-Problem.
+                "empty_test_suite": "tester",
+            }
+            # Deterministischer Kurzschluss: ein exakt benanntes fehlendes Paket wird ohne LLM-Agent
+            # direkt ins Manifest eingetragen (schneller, keine parallele Überschreibung). Test-/
+            # Werkzeugpakete landen in requirements-dev.txt (manifest_for_package).
+            remaining_issues = list(pre_flight_report.issues)
+            manifest = primary_python_manifest(project_dir) if project_dir else None
+            if manifest is not None:
+                resolved_by_manifest: dict[str, list[str]] = {}
+                still_open: list[PreFlightIssue] = []
+                for issue in remaining_issues:
+                    package = issue.issue_type == "missing_dependency" and package_from_finding(issue.suggestion)
+                    target = manifest_for_package(Path(project_dir), package, issue.file) if package else None
+                    if not package or target is None:
+                        still_open.append(issue)
+                        continue
+                    try:
+                        add_requirement(target, package)
+                        resolved_by_manifest.setdefault(target.name, []).append(package)
+                    except (ValueError, OSError):
+                        still_open.append(issue)
+                for manifest_name, packages in sorted(resolved_by_manifest.items()):
+                    names = ", ".join(sorted(set(packages)))
+                    notify(f"  📦 [green]Deterministisch ergänzt:[/green] {names} in {manifest_name} (kein LLM-Aufruf nötig).")
+                    summary_lines.append(f"- 📦 Versuch {attempt}: {len(packages)} fehlende Paket(e) deterministisch in {manifest_name} ergänzt: {names}.")
+                remaining_issues = still_open
+
+            # Rollen, die in dieser Phase keine Code-Patches schreiben (z.B. architect, der nur in
+            # Phase 4/5 Verträge/ADRs liefert): file_owners kann so eine Rolle für eine Datei
+            # eintragen, die architect initial angelegt hat (z.B. app/main.py-Grundgerüst). Ein
+            # Pre-Flight-Fixauftrag an eine solche Rolle bleibt wirkungslos (0 Dateien geschrieben)
+            # und lässt den Circuit-Breaker mit dauerhaft negativem pre_flight-Outcome abbrechen -
+            # echter Fund `root-cause-cachegrid_proxy-pre-flight-fixversuche-scheitern-durch-
+            # ineffektive-agentenzu`. Für solche Owner greift die pfadbasierte Heuristik statt der
+            # (nicht code-schreibenden) file_owners-Zuweisung.
+            _NON_CODE_WRITING_ROLES = {"architect"}
+            agents_to_fix: dict[str, list[PreFlightIssue]] = {}
+            for issue in remaining_issues:
+                owner = file_owners.get(issue.file)
+                if owner in _NON_CODE_WRITING_ROLES:
+                    owner = self._infer_owner_from_path(issue.file, issue.message) or owner
+                if not owner or owner not in self._agents:
+                    owner = _FALLBACK_OWNER_BY_ISSUE_TYPE.get(issue.issue_type, "dev_lead")
+                if owner in self._agents:
+                    agents_to_fix.setdefault(owner, []).append(issue)
+
+            if not agents_to_fix:
+                if not remaining_issues:
+                    # Alle Funde deterministisch behoben - direkt erneut prüfen.
+                    continue
+                summary_lines.append(f"- 🔍 ❌ Pre-Flight-Check: {len(remaining_issues)} Fund(e) blieben ungelöst (keinem Agenten eindeutig zuordenbar).")
+                break
+
+            fix_tasks = []
+            for agent_id, agent_issues in agents_to_fix.items():
+                issue_text = "\n".join(
+                    f"- [{i.issue_type}] {i.file}:{i.line} – {i.message}"
+                    + (f" Lösung: {i.suggestion}" if i.suggestion else "")
+                    for i in agent_issues
+                )
+                fix_tasks.append(AgentTask(
+                    task_id=f"verify_fix_preflight_{agent_id}_{attempt}",
+                    agent_id=agent_id,
+                    description=(
+                        "Ein statischer Pre-Flight-Check (VOR jeder Dependency-Installation und "
+                        "jedem Testlauf) hat Probleme gefunden, die einen Testlauf mit hoher "
+                        "Wahrscheinlichkeit zum Scheitern bringen. Behebe AUSSCHLIESSLICH diese "
+                        "Befunde, erstelle keine neuen Features.\n\n"
+                        f"{issue_text}"
+                    ),
+                    context="", project_dir=project_dir,
+                ))
+
+            notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix (Pre-Flight-Check):[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())}...")
+            fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+            self._update_file_owners(file_owners, fix_results)
+            all_results.extend(fix_results)
+            summary_lines.append(f"- 🔍 Pre-Flight-Check, Versuch {attempt}: {len(pre_flight_report.issues)} Problem(e) → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt.")
+
+            if attempt == MAX_VERIFICATION_ITERATIONS:
+                notify("  ⚠️ [yellow]Maximale Pre-Flight-Fixversuche erreicht – weiter mit der regulären Testsuite.[/yellow]")
+                summary_lines.append(f"- 🔍 ⚠️ Pre-Flight-Check nach {MAX_VERIFICATION_ITERATIONS} Versuchen weiterhin mit Funden – weiter mit der regulären Testsuite.")
+
+        if pre_flight_report is not None and not pre_flight_report.error:
+            outcome.record(
+                "pre_flight", pre_flight_report.passed,
+                "" if pre_flight_report.passed else f"{len(pre_flight_report.issues)} Fund(e)",
+            )
+        return budget_aborted, manually_cancelled
 
     async def _record_accessibility_check(
         self, verifier: ProjectVerifier, outcome: VerificationOutcome,

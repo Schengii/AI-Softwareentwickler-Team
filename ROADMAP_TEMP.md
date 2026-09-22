@@ -1623,13 +1623,42 @@ Agenten-Aufruf kostet.
 > `test_frontend_build_check.py`, `test_frontend_build_integration.py`,
 > `test_budget_aborted_after_verification_ok.py`) grün.
 
+> **Umsetzung 2026-09-22, der als "eng verwoben" eingestufte Eskalations-Block erwies sich bei
+> genauerer Analyse doch als sicher extrahierbar:** die vorherige Einschätzung ("Block bleedet
+> in umliegenden Code hinein") war zu pauschal - genauere Prüfung zeigte, dass der
+> "kein Fortschritt"-Zweig (Fachbereichsleiter-Eskalation → HEAVY_MODEL-Eskalation →
+> Zweitmeinung → Aufgabe mit Ticket, ~260 Zeilen) auf JEDEM Pfad zu einem `break` der äußeren
+> Schleife führt - er kann also innerhalb eines Methodenaufrufs nie ein zweites Mal betreten
+> werden. Alle Flags/Zwischenwerte, die NUR innerhalb dieses Zweigs gelesen/geschrieben werden
+> (`escalation_attempted`, `model_escalation_attempted`, `second_opinion_attempted`,
+> `stuck_owners`, `top_failures`, `escalated_and_resolved`,
+> `_heavy_escalation_downgrade_note`), müssen die äußere Schleife deshalb nie wieder erreichen
+> und sind jetzt rein lokale Variablen der neuen Methode `_run_no_progress_escalation_ladder()`
+> - nur der ggf. neu gelaufene `report` und `verification_ok` fließen zurück, dieselbe
+> Rückgabewert-Technik wie bei den übrigen Extraktionen. Zusätzlich der komplett
+> seiteneffektfreie Docker-Build-Check in `_record_docker_build_check()` extrahiert (identisches
+> Muster wie die Accessibility-/Fachlogik-Testtiefe-Checks aus Runde 1). Zusammen schrumpft
+> `_run_verification_loop_impl()` damit von 1189 auf **926 Zeilen** (12 Hilfsmethoden insgesamt).
+> Verifiziert: `ruff check` sauber nach jeder Extraktion; 231 Tests aus der breiten
+> verifikationsnahen Testsuite PLUS 35 Tests aus den höchst-riskanten eskalationsspezifischen
+> Dateien (`test_completeness_no_progress_escalation.py`, `test_orchestrator_model_escalation.py`,
+> `test_repeated_failure_reescalation.py`, `test_second_opinion_escalation.py`,
+> `test_clarification_escalation.py`, `test_gemini_context_caching.py`) PLUS 3 dedizierte
+> Docker-Build-Tests - alle grün, keine Regression. Der verbleibende Rumpf (Vollständigkeits-
+> Check, geteilt mit dem eigentlichen Haupt-Testfehler-Dispatch über `stuck_owners`/
+> `completeness_report`) bleibt aus dem bereits dokumentierten Grund (echter Kontrollfluss-Umbau
+> nötig, keine mechanisch isolierbaren Blöcke mehr) für eine künftige Sitzung offen - aber
+> dieser Fund zeigt, dass "eng verwoben aussehend" nicht automatisch "nicht extrahierbar"
+> bedeutet, wenn man den tatsächlichen Kontrollfluss (hier: garantierte Terminierung) genau genug
+> nachvollzieht.
+
 **Zusammenfassung P6-5:** 2 von 3 Dateien vollständig gesplittet (`interface/cli.py`,
-`core/llm_factory.py`); `verification.py` um 9 Methoden entlastet, ~444 Zeilen (~27 %) aus der
-zentralen Fix-Loop-Methode extrahiert (von ursprünglich ~1633 auf 1189 Zeilen), jeder Schritt
+`core/llm_factory.py`); `verification.py` um 12 Methoden entlastet, ~707 Zeilen (~43 %) aus der
+zentralen Fix-Loop-Methode extrahiert (von ursprünglich ~1633 auf 926 Zeilen), jeder Schritt
 einzeln verifiziert - der verbleibende Rumpf ist im Kern EINE große, eng verwobene
-Haupt-Testfehler-Schleife (Zirkuit-Breaker, Modell-Eskalation, Zweitmeinung) plus der damit über
-`stuck_owners`/`completeness_report` verwobene Vollständigkeits-Check; ein Dritter der
-ursprünglichen Datei bleibt aus genau diesem Grund für eine künftige, dedizierte Sitzung offen -
+Haupt-Testfehler-Dispatch-Schleife plus der damit über `stuck_owners`/`completeness_report`
+verwobene Vollständigkeits-Check; ein Dritter der ursprünglichen Datei bleibt aus genau diesem
+Grund für eine künftige, dedizierte Sitzung offen -
 kein weiterer mechanisch isolierbarer Block wurde übersehen, jeder verbleibende Banner-Kommentar-
 Block im Methodenrumpf wurde einzeln geprüft und die Nicht-Extrahierbarkeit konkret belegt. Kein
 Punkt mehr unbegründet als "zu riskant" abgehakt - für jeden verbleibenden Rest liegt eine
@@ -1776,4 +1805,4 @@ ruff check && python -m pytest -q
 | P5-3 | Verifikations-Reserve im Budget | P5 | ☑ erledigt (Reserve existierte, Gate korrigiert) |
 | P6-1 | Gestagte Fixes committet | P6 | ☑ erledigt |
 | P6-2 | ~~Workspace aus Framework-Commits~~ | P6 | ☑ Fehlannahme, siehe oben |
-| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-6, P6-7, P6-8 erledigt; P6-5 ~2.4/3 (`interface/cli.py` + `core/llm_factory.py` erledigt; `verification.py` 9 Blöcke extrahiert (~27% der Kernmethode), verbleibender Rumpf ist EINE verwobene Haupt-Schleife - konkret belegt, kein Block mehr übersehen) |
+| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-6, P6-7, P6-8 erledigt; P6-5 ~2.6/3 (`interface/cli.py` + `core/llm_factory.py` erledigt; `verification.py` 12 Blöcke extrahiert (~43% der Kernmethode, 1633→926 Zeilen), verbleibender Rumpf ist der Haupt-Testfehler-Dispatch + Vollständigkeits-Check - echter Kontrollfluss-Umbau statt Code-Verschiebung nötig) |

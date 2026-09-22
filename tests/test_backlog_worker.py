@@ -361,6 +361,23 @@ class TestGovernanceTicketRetryPool(unittest.TestCase):
         self._telemetry_patcher.start()
         self.addCleanup(self._telemetry_patcher.stop)
 
+        # Workspace-Isolation: cancel_orphaned_project_tickets() löscht Tickets, deren Projekt
+        # nicht im echten Workspace existiert (z.B. "mockforge"). Da diese Tests ausschließlich
+        # die Governance-Retry-Logik und nicht das Aufräum-Verhalten prüfen, lassen wir alle
+        # Projekte als "existent" erscheinen. queue_red_projects() wird außerdem zu einem No-op
+        # gemacht, damit kein Workspace-Zustand die Ergebnisse beeinflusst.
+        from core.red_project_repair import RepairQueueReport
+        self._workspace_exists_patcher = patch(
+            "core.backlog_hygiene.workspace_project_exists", return_value=True,
+        )
+        self._queue_red_patcher = patch(
+            "core.red_project_repair.queue_red_projects", return_value=RepairQueueReport(),
+        )
+        self._workspace_exists_patcher.start()
+        self._queue_red_patcher.start()
+        self.addCleanup(self._workspace_exists_patcher.stop)
+        self.addCleanup(self._queue_red_patcher.stop)
+
     def test_blocked_governance_ticket_is_picked_up_and_retries_incremented(self):
         backlog_store.upsert_ticket(
             "unresolved-governance-critical-mockforge", "Ungelöster kritischer Governance-Befund",

@@ -7,6 +7,57 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Team-Optimierung 2026-09-22 (Sprint 4): Routen-Präfixe, Router-Import-Check, poll_until-Helfer, Root-Cause-Kontext, Response-Schema-Digest
+
+Fuenf Befunde aus realen Laeufen (omnimetric_engine, ecotrack_ai, aegisflow, eventforge_core),
+jeweils deterministisch reproduzierbar und durch neue AST-Extraktoren bzw. Scaffold-Helfer
+abgedeckt. Abgesichert durch 23 neue Tests (12 in `test_contract_digest.py`, 2 in
+`test_quality_gates.py`, 1 in `test_p1_team_workflow.py`) und einen Bugfix in
+`tests/test_backlog_worker.py` (Workspace-Isolation).
+
+* **Route-Prefix-Digest (`core/contract_digest.py`, `build_route_prefix_digest`):**
+  Tester schrieb `GET /stats` statt `GET /api/v1/stats` (omnimetric_engine), weil der
+  `APIRouter(prefix="/api/v1/stats")` in `app/routers/stats.py` im Kontext unsichtbar war.
+  Neuer AST-Extraktor liest `APIRouter(prefix=...)` und `app.include_router(..., prefix=...)`
+  aus dem gesamten Nicht-Test-Code und uebergibt die Ergebnisse dem Tester als
+  "Diese Pfade exakt verwenden"-Kontext im Fix-Dispatch.
+
+* **Response-Schema-Digest (`core/contract_digest.py`, `build_route_prefix_digest`):**
+  Tester nahm `{"id": ...}` an, Backend deklarierte `response_model=ItemResponse` mit
+  `{"data": {"id": ...}}` (eventforge_core). Extraktor liest jetzt zusaetzlich
+  `@router.METHOD(path, response_model=Schema)` aus Dekoratoren und zeigt dem Tester
+  die tatsaechlich deklarierten Response-Typen.
+
+* **Router-Import-Check (`core/contract_digest.py`, `check_router_imports`):**
+  Backend schrieb `from app.routers import xyz` in `app/main.py`, aber `app/routers/xyz.py`
+  fehlte (ecotrack_ai). `check_router_imports()` erkennt das deterministisch per AST und
+  gibt die fehlenden Pfade an den backend-Agenten als Prioritaets-Hinweis "lege ZUERST
+  diese Dateien an" - bevor er andere Fehler bearbeitet.
+
+* **`poll_until`-Helfer in Scaffold-Konfig (`core/project_scaffold.py`):**
+  Generierte Tests nutzten ad-hoc `time.sleep(0.5)` in Assertions gegen asynchrone Endpunkte
+  (aegisflow: "POST /jobs" startet Job, erster GET ist noch "pending"). `_FASTAPI_CONFTEST`
+  enthaelt jetzt einen universellen `poll_until(async_fn, max_attempts, delay)`-Helfer, der
+  Flakiness durch starre Wartezeiten strukturell verhindert.
+
+* **Root-Cause-Kontext in Repair-Tickets (`core/red_project_repair.py`):**
+  Nachbesserungs-Tickets fuer rote Projekte enthielten bisher nur den letzten Fehler-Output.
+  `queue_red_projects()` liest jetzt alle offenen `root-cause-{slug}-*`-Tickets aus dem
+  Backlog und haengt die Diagnosen als Kontext ans Ticket - der nachbessernd beauftragte
+  Agent bekommt die bekannten Ursachen direkt im ersten Versuch statt sie neu zu analysieren.
+
+* **Bugfix: TestGovernanceTicketRetryPool workspace-unabhaengig gemacht
+  (`tests/test_backlog_worker.py`):**
+  Sprint-4-Aenderungen an `red_project_repair.py` legten bloss, dass 19 Tests in
+  `TestGovernanceTicketRetryPool` auf echtem Workspace-Zustand basierten: ein reales
+  Projekt (`mockforge`) fehlte im Workspace, wurde von `cancel_orphaned_project_tickets()`
+  geloescht und stand dann nicht mehr fuer den Governance-Retry zur Verfuegung. Behoben mit
+  zwei Isolation-Patches in `setUp()`: `workspace_project_exists` liefert immer `True`
+  (kein Loeschen), `queue_red_projects` wird zu einem No-op (kein Workspace-abhaengiger
+  Seiteneffekt).
+
+---
+
 ## 🟢 Team-Optimierung 2026-09-22 (Sprint 3): Tester haluziniert keine Schemas mehr, Regressions-Gate schützt vor Fix-Kaskaden
 
 Fuenf Befunde aus dem `pulse_queue`- und `sentinel_shield`-Lauf (2026-09-22), allesamt

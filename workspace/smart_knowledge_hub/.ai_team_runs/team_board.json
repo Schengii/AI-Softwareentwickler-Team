@@ -1,0 +1,205 @@
+{
+  "run_id": "20260922_164702",
+  "handoffs": [
+    {
+      "agent_id": "architect",
+      "task_id": "c0431569",
+      "files": [
+        "docs/adr/0001-layered-architecture-mit-fastapi-und-asy.md",
+        "docs/adr/0002-lokale-rag-engine-mit-bm25-fallback-und.md"
+      ],
+      "provides": [],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-22T16:47:56+00:00"
+    },
+    {
+      "agent_id": "frontend",
+      "task_id": "b3e7ce00",
+      "files": [
+        "static/index.html"
+      ],
+      "provides": [],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-22T16:49:07+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "5dc9001a",
+      "files": [
+        "app/core/adr.py",
+        "app/core/config.py",
+        "app/core/graph.py",
+        "app/core/markdown.py",
+        "app/core/vault.py",
+        "requirements.txt"
+      ],
+      "provides": [
+        "`app.core.vault.VaultManager`, `app.core.markdown.parse_markdown`, `app.core.graph.GraphBuilder`, `app.core.adr.ADRGenerator`",
+        "app/core/adr.py: ADRGenerator",
+        "app/core/config.py: Settings, get_settings",
+        "app/core/graph.py: GraphBuilder",
+        "app/core/markdown.py: ParsedNote, parse_markdown, serialize_markdown, WIKILINK_PATTERN, INLINE_TAG_PATTERN, FRONTMATTER_PATTERN",
+        "app/core/vault.py: VaultManager"
+      ],
+      "requires": [],
+      "open_issues": [
+        "Einbindung der FastAPI-Routen in `app/main.py` mit RAG/Search-Endpunkt und Frontend-Static-Mount"
+      ],
+      "timestamp": "2026-09-22T16:49:24+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "cae33ce6",
+      "files": [
+        "tests/test_markdown.py",
+        "tests/test_vault.py"
+      ],
+      "provides": [
+        "`tests/test_markdown.py` (Unit-Tests für Frontmatter, Wikilinks, Tags, Serialisierung)",
+        "`tests/test_vault.py` (Vault-Dateisystem- und Hierarchie-Tests)",
+        "tests/test_markdown.py: test_parse_markdown_basic_content, test_parse_markdown_with_frontmatter, test_parse_markdown_with_wikilinks_and_aliases, test_parse_markdown_with_inline_tags, test_parse_markdown_corrupt_yaml_fallback, test_serialize",
+        "tests/test_vault.py: temp_vault, test_vault_initialization, test_vault_save_and_get_note_roundtrip, test_vault_tree_structure, test_vault_delete_note, test_vault_path_traversal_prevention"
+      ],
+      "requires": [
+        "backend: Bereitstellung der FastAPI-Routen in `app/main.py` (`/api/v1/vault`, `/api/v1/graph`, `/api/v1/search`, `/api/v1/adr/generate`) und RAG/BM25-Engine"
+      ],
+      "open_issues": [],
+      "timestamp": "2026-09-22T16:50:20+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "dev_lead_missing_import_backend",
+      "files": [
+        "app/main.py"
+      ],
+      "provides": [
+        "app/main.py: NoteCreateUpdateRequest, SearchQueryRequest, ADRGenerateRequest, lifespan, health_check, get_vault_tree, get_note, save_note, delete_note, get_knowledge_graph",
+        "GET /health (app/main.py)"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-22T16:51:01+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "team_board_requirements_fix",
+      "files": [
+        "app/core/rag.py"
+      ],
+      "provides": [
+        "`BM25SearchEngine` (app/core/rag.py)",
+        "`RAGEngine` (app/core/rag.py)",
+        "FastAPI-Routen `/api/v1/vault`, `/api/v1/graph`, `/api/v1/search`, `/api/v1/adr/generate` (app/main.py)",
+        "app/core/rag.py: BM25SearchEngine, RAGEngine"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-22T16:51:44+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "integration_checkpoint_fix_backend",
+      "files": [
+        "app/main.py"
+      ],
+      "provides": [
+        "`app/main.py` mit korrigierten Imports für `VaultManager` und `GraphBuilder`",
+        "app/main.py: NoteCreateUpdateRequest, SearchQueryRequest, ADRGenerateRequest, lifespan, health_check, get_vault_tree, get_note, save_note, delete_note, get_knowledge_graph",
+        "GET /health (app/main.py)"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-22T16:52:01+00:00"
+    },
+    {
+      "agent_id": "accessibility",
+      "task_id": "147dbb10",
+      "files": [
+        "static/index.html"
+      ],
+      "provides": [
+        "Optimierte `static/index.html` mit WCAG-konformen Rollen, Kontrasten und Tastatur-Shortcuts."
+      ],
+      "requires": [
+        "Frontend-Agent muss die `role=\"treeitem\"`-Logik in der dynamischen Baum-Generierung (JS) vervollständigen."
+      ],
+      "open_issues": [
+        "Dynamische ARIA-Zustände (`aria-expanded`) müssen im JS-Code bei Klick auf Ordner im Baum aktualisiert werden."
+      ],
+      "timestamp": "2026-09-22T16:52:29+00:00"
+    },
+    {
+      "agent_id": "readme",
+      "task_id": "37fd2ea2",
+      "files": [
+        "CHANGELOG.md",
+        "README.md"
+      ],
+      "provides": [
+        "`README.md`, `CHANGELOG.md`"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-22T16:52:43+00:00"
+    },
+    {
+      "agent_id": "security",
+      "task_id": "a63eda74",
+      "files": [
+        "docs/SECURITY_AUDIT.md"
+      ],
+      "provides": [
+        "`docs/SECURITY_AUDIT.md` (Security Audit Report mit Schweregraden, Findings SEC-01 bis SEC-05, PoC-Analysen und Härtungs-Checkliste)"
+      ],
+      "requires": [
+        "backend: Bereitstellung von `app/core/security.py` und Einbindung von `is_relative_to` in `VaultManager` (`app/core/vault.py`) sowie Behebung des `VaultService`-Imports in `app/main.py`"
+      ],
+      "open_issues": [],
+      "timestamp": "2026-09-22T16:53:19+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "security_handoff_fix",
+      "files": [
+        "app/core/security.py"
+      ],
+      "provides": [
+        "`app/core/security.py` (`validate_safe_vault_path`, `sanitize_markdown_html`)",
+        "app/core/security.py: validate_safe_vault_path, sanitize_markdown_html"
+      ],
+      "requires": [],
+      "open_issues": [
+        "Einbindung von `validate_safe_vault_path` in `VaultManager` (`app/core/vault.py`) und Abgleich der Service-Imports in `app/main.py` durch Backend/Tester in Folgeschritten."
+      ],
+      "timestamp": "2026-09-22T16:53:35+00:00"
+    }
+  ],
+  "claims": {
+    "requirements.txt": "backend",
+    "static/index.html": "frontend",
+    "app/core/config.py": "backend",
+    "app/core/markdown.py": "backend",
+    "app/core/vault.py": "backend",
+    "app/core/graph.py": "backend",
+    "app/core/adr.py": "backend",
+    "tests/test_markdown.py": "tester",
+    "tests/test_vault.py": "tester",
+    "app/main.py": "backend",
+    "app/core/rag.py": "backend",
+    "README.md": "readme",
+    "CHANGELOG.md": "readme",
+    "docs/SECURITY_AUDIT.md": "security",
+    "app/core/security.py": "backend"
+  },
+  "foreign_changes": [
+    {
+      "path": "static/index.html",
+      "owner": "frontend",
+      "changed_by": "accessibility",
+      "timestamp": "2026-09-22T16:52:25+00:00"
+    }
+  ],
+  "questions": []
+}

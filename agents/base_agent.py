@@ -220,6 +220,7 @@ class BaseAgent(ABC):
                     failure_class=FAILURE_CLASS_NO_DELIVERY,
                     needs_human_input=bool(toolbox and toolbox.clarification_requests),
                     clarification_questions=list(toolbox.clarification_requests) if toolbox else [],
+                    watchdog_events=list(toolbox.watchdog_events) if toolbox else [],
                 )
             if toolbox is not None and not task.tools_read_only and toolbox.files_written:
                 self._record_team_handoff(task, toolbox, response.text)
@@ -536,6 +537,25 @@ class BaseAgent(ABC):
                 hard_limit += 1
 
             if not response.tool_calls or iteration == hard_limit:
+                if watchdog is not None and not response.tool_calls:
+                    # Bugfix (Root-Cause-Ticket root-cause-smart_knowledge_hub-hard-delivery-
+                    # gate-failure-des-ml-agenten-..., 2026-09-22): watchdog.observe() wurde
+                    # bisher AUSSCHLIESSLICH nach dem Dispatch echter Tool-Aufrufe (weiter unten)
+                    # aufgerufen. Eine Iteration ganz ohne Tool-Aufruf (reiner Erklärtext statt
+                    # write_file) sprang direkt in einen der continue/break-Zweige unten, OHNE
+                    # dass der Watchdog sie je zu sehen bekam - für ihn war so ein Agent
+                    # unsichtbar, selbst wenn er mehrfach hintereinander nur Text lieferte.
+                    for intervention in watchdog.observe(
+                        prompt_tokens=response.prompt_tokens,
+                        completion_tokens=response.completion_tokens,
+                        tool_calls=[],
+                        tool_results=[],
+                        files_written_count=len(toolbox.files_written),
+                    ):
+                        if intervention.stop:
+                            hard_limit = min(hard_limit, iteration + 1)
+                        turns.append(AgentMessage(role="user", text=intervention.message))
+                    toolbox.watchdog_events = list(watchdog.events)
                 if not response.text and response.tool_calls:
                     # Modell hat im letzten erlaubten Schritt nur Werkzeuge angefordert,
                     # aber keinen Abschlusstext geliefert -> ehrliche Notiz statt leerer Antwort.

@@ -68,8 +68,20 @@ _KNOWN_PATTERNS: list[tuple[str, re.Pattern]] = [
 # (ohne "_KEY"-Suffix) wurden dadurch NIE erkannt. "key" bleibt bewusst NUR in Verbindung mit
 # "api" gelistet (bloßes "key" allein wäre zu generisch - primary_key, sort_key, cache_key,
 # dict.keys() usw. - und würde die Warnung mit Fehlalarmen entwerten).
+#
+# Fehlalarm-Fund (smart_knowledge_hub, 2026-09-22): das Suffix `[a-z0-9_]*` erlaubte JEDE
+# Kleinbuchstaben-Fortsetzung nach dem Keyword, nicht nur echte Bezeichner-Suffixe wie
+# "_KEY"/"_ACCESS_KEY". Ein reiner Prosa-Docstring `"""Einfache Tokenisierung: Kleinbuchstaben
+# und alphanumerische Wörter."""` wurde dadurch als Secret gemeldet - "token" matchte als
+# Präfix von "Tokenisierung", das restliche "isierung" wurde vom Suffix mitgefressen, der
+# folgende Doppelpunkt im Fließtext dann fälschlich als Zuweisungsoperator gelesen. Reale
+# Bezeichner-Suffixe sind IMMER durch "_" (SECRET_KEY, AWS_SECRET_ACCESS_KEY) oder Camel-Case-
+# Grenzen (apiKey, secretToken - dort matcht "token"/"secret" ohnehin erst an der eigenen
+# Groß-/Kleinschreibungs-Position, siehe re.search()-Rescan pro Zeichen) getrennt, NIE durch
+# eine unmarkierte Kleinbuchstaben-Fortsetzung desselben Wortes. Das Suffix verlangt deshalb
+# jetzt zwingend ein führendes "_", sonst bleibt es leer.
 _GENERIC_ASSIGNMENT = re.compile(
-    r"""(?i)(?:api[_-]?key|secret|token|password|passwd)[a-z0-9_]*
+    r"""(?i)(?:api[_-]?key|secret|token|password|passwd)(?:_[a-z0-9_]*)?
         \s*[:=]\s*
         (?:['"]([A-Za-z0-9_\-/+=]{12,})['"]|([A-Za-z0-9_\-/+=]{12,})(?=\s|\#|$))""",
     re.VERBOSE,

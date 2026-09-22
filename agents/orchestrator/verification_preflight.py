@@ -386,17 +386,21 @@ class VerificationPreflightMixin:
         # Zirkuit-Breaker wie in den übrigen Fix-Schleifen.
         previous_preimport_signature: frozenset[tuple[str, str]] | None = None
         for attempt in range(1, max_iterations + 1):
-            if run_start_tokens is not None and (
-                self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
-            ):
-                budget_aborted = True
-                notify("  🚫 [bold red]Budget erreicht[/bold red] – Vorab-Import-Check übersprungen.")
-                break
             if cancel_requested and cancel_requested():
                 manually_cancelled = True
                 notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – Vorab-Import-Check übersprungen.")
                 break
 
+            # Root-Cause-Ticket root-cause-smart_knowledge_hub-fehlende-statische-import-name-
+            # resolution-pr-fung-im-verific (2026-09-22): der Budget-Check stand bisher VOR
+            # check_completeness() und übersprang damit auch die reine ERKENNUNG - obwohl
+            # check_completeness() rein statisch ist (kein LLM-Aufruf, keine Tokenkosten). Genau
+            # wenn das Budget knapp ist (z.B. weil ein anderer Agent zuvor Tokens verpuffte, siehe
+            # root-cause-smart_knowledge_hub-hard-delivery-gate-failure-des-ml-agenten-...), wäre
+            # diese kostenlose Vorab-Erkennung am wertvollsten - genau dann wurde sie bisher
+            # übersprungen, der garantierte NameError blieb unentdeckt bis zum teuren, danach
+            # mangels Budget nicht mehr behebbaren pytest-Lauf. Die Erkennung läuft deshalb jetzt
+            # IMMER; nur der (tokenkostende) Fix-DISPATCH weiter unten bleibt budgetabhängig.
             pre_report = await asyncio.to_thread(verifier.check_completeness)
             # Erst .attempted/.passed, dann .issues: hält Tests mit komplett gemocktem
             # ProjectVerifier lauffähig (MagicMock().issues wäre nicht iterierbar).
@@ -424,6 +428,21 @@ class VerificationPreflightMixin:
 
             top = "; ".join(f"{i.file_path}:{i.line_number} – {i.message}" for i in import_issues[:5])
             notify(f"  🧩 [bold red]Vorab-Import-Check: {len(import_issues)} fehlende(s)/unaufgelöste(s) lokale(s) Modul/Symbol/Name VOR jedem Testlauf gefunden.[/bold red]")
+
+            # Die kostenlose Erkennung oben lief IMMER; erst der Fix-DISPATCH (echter Agenten-/
+            # LLM-Aufruf) braucht Budget. Ist es bereits erschöpft, bleibt der Fund trotzdem in
+            # summary_lines sichtbar (Postmortem/Root-Cause-Analyse), statt stillschweigend zu
+            # verschwinden - nur der Fix-Versuch entfällt.
+            if run_start_tokens is not None and (
+                self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+            ):
+                budget_aborted = True
+                notify(f"  🚫 [bold red]Budget erreicht[/bold red] – {len(import_issues)} Vorab-Import-Fund(e) erkannt, aber kein (tokenkostender) Fix-Agent mehr beauftragt.")
+                summary_lines.append(
+                    f"- 🧩 🚫 Vorab-Import-Check: {len(import_issues)} Fund(e) erkannt, Budget erschöpft – kein Fix-Agent "
+                    f"beauftragt (bleibt im regulären Testlauf erneut sichtbar): {top}"
+                )
+                break
 
             # Fehlendes lokales Modul/Symbol/unaufgelöster Name ist immer ein Code-Problem - Fallback-Owner dev_lead.
             agents_to_fix: dict[str, list] = {}

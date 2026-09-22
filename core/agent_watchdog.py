@@ -79,7 +79,17 @@ class AgentWatchdog:
         self._total_tokens += (prompt_tokens or 0) + (completion_tokens or 0)
         names = [name for name, _ in tool_calls]
 
-        if self.code_writing and files_written_count == 0 and names and all(n in READ_TOOLS for n in names):
+        # Bugfix (Root-Cause-Ticket root-cause-smart_knowledge_hub-hard-delivery-gate-failure-
+        # des-ml-agenten-..., 2026-09-22): `names and all(...)` verlangte bisher MINDESTENS einen
+        # Tool-Aufruf pro Iteration, um als "nur gelesen" zu zählen. Ein Agent, der eine ganze
+        # Iteration mit reinem Erklärtext OHNE jeden Tool-Aufruf beantwortet (ml-Agent im
+        # smart_knowledge_hub-Lauf: 67k Tokens verpufft, weil Fortschritt komplett ausblieb),
+        # ließ `names` leer - die leere Liste bestand `all(...)` trivial NICHT (Python wertet
+        # `all([])` zwar als True, aber `names` selbst ist falsy und bricht die Bedingung davor
+        # bereits ab), der Streak blieb bei 0 hängen und der Watchdog griff nie ein. Eine leere
+        # `names`-Liste ist genauso ein Iterations-ohne-Fortschritt-Fall wie reines Lesen und
+        # zählt jetzt identisch in den Streak hinein.
+        if self.code_writing and files_written_count == 0 and (not names or all(n in READ_TOOLS for n in names)):
             self._read_only_streak += 1
         elif any(n in WRITE_TOOLS for n in names):
             self._read_only_streak = 0

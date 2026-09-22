@@ -267,6 +267,17 @@ class TestWatchdog:
         for _ in range(3):
             assert reviewer.observe(prompt_tokens=10, completion_tokens=1, tool_calls=read, tool_results=[{}], files_written_count=0) == []
 
+    def test_empty_tool_calls_count_toward_read_only_streak(self):
+        # Root-Cause-Ticket root-cause-smart_knowledge_hub-hard-delivery-gate-failure-des-ml-
+        # agenten-... (2026-09-22): eine Iteration ganz OHNE Tool-Aufruf (reiner Erklärtext statt
+        # write_file) ließ `names` leer und den Streak dadurch bisher bei 0 hängen - der
+        # Watchdog griff nie ein, obwohl der Agent keinerlei Fortschritt machte. Eine leere
+        # `tool_calls`-Liste zählt jetzt identisch wie eine reine Lese-Iteration.
+        dog = AgentWatchdog(agent_id="ml", code_writing=True, read_streak_limit=2)
+        assert dog.observe(prompt_tokens=10, completion_tokens=1, tool_calls=[], tool_results=[], files_written_count=0) == []
+        second = dog.observe(prompt_tokens=10, completion_tokens=1, tool_calls=[], tool_results=[], files_written_count=0)
+        assert [i.kind for i in second] == ["read_without_write"]
+
     def test_prompt_explosion_refires_on_further_growth(self):
         dog = AgentWatchdog(agent_id="tester", code_writing=True, max_prompt_tokens=1_000, task_token_cap=10**9)
         first = dog.observe(prompt_tokens=1_500, completion_tokens=1, tool_calls=[], tool_results=[], files_written_count=1)
@@ -326,6 +337,36 @@ class TestWatchdog:
                                                      project_dir=str(tmp_path), max_tool_iterations=8)))
         assert result.success and "read_without_write" in result.watchdog_events
         assert any("WATCHDOG (read_without_write)" in text for text in seen)
+
+    def test_agent_loop_watchdog_sees_tool_call_free_text_iterations(self, tmp_path):
+        # Root-Cause-Ticket root-cause-smart_knowledge_hub-hard-delivery-gate-failure-des-ml-
+        # agenten-... (2026-09-22): ein Agent, der statt write_file/edit_file NUR Erklärtext
+        # liefert (keinerlei Tool-Aufruf), sprang bisher direkt in die Hard-Delivery-Gate-
+        # Zweige, OHNE dass watchdog.observe() je aufgerufen wurde - für den Watchdog war so ein
+        # Agent unsichtbar. Zwei aufeinanderfolgende Text-only-Iterationen müssen jetzt trotzdem
+        # als Watchdog-Ereignis sichtbar werden.
+        seen: list[str] = []
+
+        class _LLM:
+            model_name = "m"
+
+            async def generate_with_tools(self, messages, system_prompt, tools, _allow_self_fallback=True):
+                seen.extend(m.text or "" for m in messages if m.role == "user")
+                return LLMResponse(
+                    text="Hier ist eine ausführliche Erklärung, was zu tun wäre.",
+                    model_name="m", prompt_tokens=1, completion_tokens=1, total_tokens=2, tool_calls=[],
+                )
+
+        agent = BackendAgent()
+        agent._llm = _LLM()
+        # Das Hard Delivery Gate beendet reine Text-Iterationen bereits nach 2 Versuchen (1
+        # Korrektur-Hinweis, dann Abbruch) - der Standard-Streak-Deckel (3) würde in diesem
+        # Fenster nie greifen. read_streak_limit=2 spiegelt exakt dieses reale Zeitfenster.
+        with patch("agents.base_agent.WATCHDOG_READ_STREAK_LIMIT", 2):
+            result = asyncio.run(agent.execute(AgentTask(task_id="t", agent_id="backend", description="x",
+                                                         project_dir=str(tmp_path), max_tool_iterations=8)))
+        assert not result.success
+        assert "read_without_write" in result.watchdog_events
 
 
 class TestTestDepthInVerificationLoop:

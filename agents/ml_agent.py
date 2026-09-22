@@ -8,6 +8,23 @@ Deckt LLM-APIs, ML-Modelle, Datenanalyse und RAG-Systeme ab.
 from agents.base_agent import BaseAgent
 from agents.team_directives import PYTHON_CODE_CONTRACT_DIRECTIVE
 
+# Root-Cause-Ticket root-cause-smart_knowledge_hub-hard-delivery-gate-failure-des-ml-agenten-...
+# (2026-09-22): der ML-Agent verbrauchte in einem echten Lauf 67.408 Tokens für eine reine
+# Konzepterklärung zu RAG/BM25 im Chat-Text, OHNE ein einziges Mal write_file/edit_file
+# aufzurufen - der gesamte Tokenverbrauch verpuffte, der Backend-Agent musste die eigentliche
+# Implementierung (app/core/rag.py) danach teuer nachliefern. Andere Rollen (Tester, s.
+# TESTER_HARD_DELIVERY_GATE_DIRECTIVE in team_directives.py) haben dieselbe Warnung bereits
+# explizit im Prompt - dem ML-Agenten fehlte sie bisher.
+_ML_HARD_DELIVERY_GATE_DIRECTIVE = """
+## 🚧 Hard-Delivery-Gate (VERBINDLICH)
+Konzeptionelle Erklärungen zu RAG, Embeddings, Prompt-Engineering oder Modellwahl ERSETZEN
+NIEMALS den tatsächlichen Code. Du MUSST für JEDE Aufgabe mindestens einmal `write_file` oder
+`edit_file` aufrufen. Eine Antwort, die nur beschreibt, WAS gebaut werden müsste, ohne es per
+Werkzeug abzuspeichern, gilt als Totalausfall - der gesamte Tokenverbrauch verpufft und ein
+anderer Agent muss deine Arbeit danach teuer nachholen. Implementiere IMMER zuerst den
+echten Code, erkläre Entscheidungen erst DANACH und nur kurz.
+"""
+
 
 class MLAgent(BaseAgent):
     """
@@ -72,4 +89,4 @@ Ausgabe-Format:
 - Kostenabschätzung wo relevant
 - Evaluation-Metriken und wie man die Qualität misst
 - Antworte auf Deutsch
-""" + PYTHON_CODE_CONTRACT_DIRECTIVE
+""" + _ML_HARD_DELIVERY_GATE_DIRECTIVE + PYTHON_CODE_CONTRACT_DIRECTIVE

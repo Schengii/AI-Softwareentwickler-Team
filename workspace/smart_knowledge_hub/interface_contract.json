@@ -1,0 +1,41 @@
+{
+  "modules": {
+    "workspace/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "workspace/core/models.py": {
+      "NoteFrontmatter": "class",
+      "Note": "class",
+      "GraphNode": "class",
+      "GraphEdge": "class",
+      "GraphData": "class",
+      "SearchResult": "class",
+      "ADRRecord": "class"
+    },
+    "workspace/core/vault.py": {
+      "VaultManager": "class",
+      "vault_manager": "instance"
+    },
+    "workspace/core/parser.py": {
+      "MarkdownParser": "class",
+      "markdown_parser": "instance"
+    },
+    "workspace/core/graph.py": {
+      "GraphService": "class",
+      "graph_service": "instance"
+    },
+    "workspace/core/search.py": {
+      "RAGSearchEngine": "class",
+      "search_engine": "instance"
+    },
+    "workspace/core/adr.py": {
+      "ADRService": "class",
+      "adr_service": "instance"
+    },
+    "workspace/core/watcher.py": {
+      "VaultWatcher": "class",
+      "vault_watcher": "instance"
+    }
+  }
+}

@@ -1,0 +1,15 @@
+[
+  {
+    "timestamp": "2026-09-22T16:55:09+00:00",
+    "task_summary": "KI-Zettelkasten-Wissensportal mit Graph und RAG implementiert",
+    "verification_ok": false,
+    "budget_aborted": true,
+    "cancelled": false,
+    "files_written_count": 17,
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 📦 ✅ pip install -r requirements.txt (exit_code=0)\n- 📦 ✅ pip install -r requirements-dev.txt (exit_code=0)\n- 🚫 Budget erreicht – Verifikation nach Versuch 1 mit 1 verbleibendem/n Testfehler(n) abgebrochen, ohne einen weiteren (tokenkostenden) Fix-Agenten zu beauftragen.\n- 🤝 Team-Board: 1 unerfüllte Anforderung(en) zwischen Kollegen → 1 weiterhin offen.\n- 🛠️ Integrations-Checkpoint: 2 Befund(e) an backend → behoben.",
+    "detail_file": ".ai_team_runs/20260922_164702_verification.md",
+    "failed_checks": [
+      "tests"
+    ]
+  }
+]

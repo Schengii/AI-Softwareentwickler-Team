@@ -1,0 +1,13 @@
+{
+  "requirements": [
+    "Das Backend muss mit Python 3.11+ und FastAPI mit asynchronen Endpunkten implementiert sein.",
+    "Das System muss Markdown-Dateien in einer strukturierten Ordnerhierarchie einlesen, erstellen, bearbeiten und deren Frontmatter-Metadaten automatisch synchronisieren.",
+    "Ein lokaler Dateisystem-Watcher muss Änderungen an Markdown-Dateien im Speicherverzeichnis automatisch erfassen.",
+    "Eine semantische Suchmaske auf Basis von Embeddings oder BM25-Fallback muss Inhalte aus Notizen und Code-Snippets abfragen können.",
+    "Ein integriertes Tool muss Architecture Decision Records (ADRs) im Nygard-Format automatisiert generieren und im Vault ablegen.",
+    "Ein interaktiver Graph-Visualisierer oder ein JSON-Endpunkt muss Verknüpfungen und Wikilinks zwischen Notizen darstellen.",
+    "Das Frontend muss als responsives Web-Interface im Dark Mode mit Notizbaum-Ansicht und Markdown-Live-Preview bereitgestellt werden.",
+    "Eine Test-Suite muss Markdown-Syntax, Frontmatter-Integrität und API-Routen automatisiert prüfen.",
+    "Das Projekt muss im Ordner `workspace/` mit den Bestandteilen `main.py`, `requirements.txt` oder `pyproject.toml`, `core/`, `tests/` und `README.md` strukturiert sein."
+  ]
+}

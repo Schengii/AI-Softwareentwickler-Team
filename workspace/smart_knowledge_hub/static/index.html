@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="de" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Knowledge Hub - Zettelkasten & RAG</title>
+  <style>
+    :root { --bg-color: #0f172a; --text-color: #f1f5f9; --label-color: #94a3b8; }
+    body { background-color: var(--bg-color); color: var(--text-color); font-family: sans-serif; }
+    .btn, button { cursor: pointer; }
+    :focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
+    .sidebar-title { color: var(--label-color); }
+  </style>
+</head>
+<body class="flex flex-col h-screen overflow-hidden">
+  <header class="topbar p-4 border-b border-slate-700 flex justify-between items-center" role="banner">
+    <div class="brand flex items-center gap-4">
+      <div class="logo-icon" aria-hidden="true">🧠</div>
+      <div>
+        <h1 class="text-xl font-bold">Smart Knowledge Hub</h1>
+      </div>
+    </div>
+    <nav class="top-actions flex gap-2" role="navigation" aria-label="Hauptnavigation">
+      <button id="btn-new-note" class="btn btn-primary" aria-label="Neue Zettelkasten-Notiz erstellen">+ Neue Notiz</button>
+      <button id="btn-new-adr" class="btn btn-accent" aria-label="Architektur-Entscheidung (ADR) generieren">⚡ ADR Generator</button>
+    </nav>
+  </header>
+
+  <main class="main-layout flex flex-1 overflow-hidden" role="main">
+    <aside class="sidebar-vault w-64 p-4 border-r border-slate-700" role="complementary" aria-label="Vault Explorer">
+      <h2 class="sidebar-title text-sm uppercase tracking-wider mb-4">📁 Vault Explorer</h2>
+      <div id="vault-tree-container" role="tree" aria-label="Notizbaum">
+        <!-- Dynamisch via JS mit role="treeitem" und aria-expanded -->
+      </div>
+    </aside>
+
+    <section class="workspace-area flex-1 p-4" role="region" aria-label="Editor Bereich">
+      <div id="view-editor" class="workspace-view active">
+        <div class="note-meta-bar mb-4 flex gap-4">
+          <input type="text" id="note-title-input" class="bg-slate-800 p-2 rounded w-full" placeholder="Titel der Notiz..." aria-label="Notiztitel" />
+          <button id="btn-save-note" class="btn btn-primary" aria-keyshortcuts="Ctrl+S">Speichern (Strg+S)</button>
+        </div>
+        <textarea id="markdown-editor" class="w-full h-96 bg-slate-800 p-4 rounded" spellcheck="false" placeholder="Markdown Inhalt..." aria-label="Markdown Editor"></textarea>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // Tastatur-Shortcuts
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        document.getElementById('btn-save-note').click();
+      }
+      if (e.key === 'Escape') {
+        document.getElementById('markdown-editor').blur();
+      }
+    });
+  </script>
+</body>
+</html>

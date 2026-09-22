@@ -65,6 +65,15 @@ class TestPythonCodeContractDirectiveCoverage(unittest.TestCase):
         prompt = _prompt(BackendAgent)
         self.assertIn(BACKEND_CONTRACT_DIRECTIVE, prompt)
 
+    def test_ml_agent_forbids_explanation_without_write_file_call(self):
+        # Root-Cause-Ticket root-cause-smart_knowledge_hub-hard-delivery-gate-failure-des-ml-
+        # agenten-... (2026-09-22): der ML-Agent verpuffte 67.408 Tokens für eine reine
+        # Konzepterklärung ohne write_file-Aufruf. Andere Rollen (Tester) haben diese Warnung
+        # bereits explizit im Prompt - der ML-Agent jetzt auch.
+        prompt = _prompt(MLAgent)
+        self.assertIn("Hard-Delivery-Gate", prompt)
+        self.assertIn("write_file", prompt)
+
     def test_resilience_guard_enforces_secure_random_for_jitter(self):
         prompt = _prompt(ResilienceGuardAgent)
         self.assertIn("secrets.SystemRandom().uniform(", prompt)

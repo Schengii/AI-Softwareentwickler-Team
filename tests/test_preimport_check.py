@@ -162,5 +162,61 @@ class TestPreimportCheck(unittest.TestCase):
         self.assertTrue(self.orchestrator.last_verification_ok)
 
 
+class TestPreimportCheckRunsDetectionEvenWithExhaustedBudget(unittest.TestCase):
+    """Root-Cause-Ticket root-cause-smart_knowledge_hub-fehlende-statische-import-name-
+    resolution-pr-fung-im-verific (2026-09-22): der Budget-Check stand bisher VOR dem
+    (kostenlosen) check_completeness()-Aufruf - bei bereits erschöpftem Budget wurde die
+    statische Erkennung dadurch komplett übersprungen, ein garantierter NameError blieb bis zum
+    teuren pytest-Lauf unentdeckt. Diese Tests belegen direkt gegen
+    Orchestrator._run_preimport_check_loop(): die Erkennung läuft IMMER, nur der teure
+    Fix-Dispatch (Agenten-Aufruf) bleibt budgetabhängig."""
+
+    def setUp(self):
+        self.temp_workspace = tempfile.mkdtemp()
+        self.orchestrator = Orchestrator()
+        self.orchestrator._workspace = WorkspaceManager(self.temp_workspace)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_workspace, ignore_errors=True)
+
+    def _run_loop(self):
+        from unittest.mock import MagicMock
+
+        verifier = MagicMock()
+        verifier.check_completeness.return_value = _completeness_report_with_missing_import()
+        notify_logs: list[str] = []
+        summary_lines: list[str] = []
+        with (
+            patch.object(Orchestrator, "_run_budget_exceeded", return_value=True),
+            patch.object(Orchestrator, "_run_agents_parallel") as mock_run_agents,
+        ):
+            budget_aborted, manually_cancelled = asyncio.run(self.orchestrator._run_preimport_check_loop(
+                project_dir=self.temp_workspace,
+                verifier=verifier,
+                run_start_tokens=0,
+                cancel_requested=None,
+                notify=notify_logs.append,
+                file_owners={},
+                all_results=[],
+                summary_lines=summary_lines,
+                budget_aborted=False,
+                manually_cancelled=False,
+            ))
+        return budget_aborted, manually_cancelled, notify_logs, summary_lines, verifier, mock_run_agents
+
+    def test_detection_still_runs_when_budget_already_exhausted(self):
+        budget_aborted, _, _, _, verifier, mock_run_agents = self._run_loop()
+
+        verifier.check_completeness.assert_called_once()
+        self.assertTrue(budget_aborted)
+        mock_run_agents.assert_not_called()
+
+    def test_finding_stays_visible_in_summary_despite_skipped_fix(self):
+        _, _, notify_logs, summary_lines, _, _ = self._run_loop()
+
+        self.assertTrue(any("Vorab-Import-Check" in line and "gefunden" in line for line in notify_logs))
+        self.assertTrue(any("Budget erschöpft" in line and "app/main.py" in line for line in summary_lines))
+
+
 if __name__ == "__main__":
     unittest.main()

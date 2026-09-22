@@ -140,6 +140,47 @@ class TestGenericPatternRecognizesRealWorldSecretNames(unittest.TestCase):
         self.assertEqual(findings, [])
 
 
+class TestGenericPatternIgnoresProseContainingKeywordAsSubstring(unittest.TestCase):
+    """
+    Regression-Test für einen echten Fehlalarm (smart_knowledge_hub-Lauf, 2026-09-22): das
+    Suffix `[a-z0-9_]*` nach dem Keyword erlaubte bisher JEDE Kleinbuchstaben-Fortsetzung, nicht
+    nur echte Bezeichner-Suffixe. Ein Docstring wie "Einfache Tokenisierung: Kleinbuchstaben und
+    alphanumerische Woerter." wurde dadurch als Secret gemeldet - "token" matchte als Präfix von
+    "Tokenisierung", der folgende Doppelpunkt im Fließtext wurde fälschlich als
+    Zuweisungsoperator gelesen und `secrets_clean` blockierte die Definition of Done, obwohl kein
+    einziger echter Secret im Projekt stand.
+    """
+
+    def test_ignores_tokenisierung_docstring(self):
+        diff = _diff("app/core/rag.py", [
+            '    """Einfache Tokenisierung: Kleinbuchstaben und alphanumerische Woerter."""',
+        ])
+        findings = scan_diff(diff)
+        self.assertEqual(findings, [])
+
+    def test_ignores_other_prose_words_containing_secret_as_substring(self):
+        diff = _diff("docs/notes.md", [
+            "Der Secretary-Dienst verwaltet Termine, keine Passwoerter.",
+        ])
+        findings = scan_diff(diff)
+        self.assertEqual(findings, [])
+
+    def test_still_detects_underscore_suffixed_keyword_after_the_fix(self):
+        # Der Fix (Pflicht-`_` vor dem Suffix) darf die bereits abgesicherten Präfix-Muster
+        # (siehe TestGenericPatternRecognizesRealWorldSecretNames oben) nicht wieder brechen.
+        diff = _diff("config.py", ['AWS_SECRET_ACCESS_KEY = "abcdefghijklmno1234567890AB"'])
+        findings = scan_diff(diff)
+        self.assertTrue(any(f.rule == "Generisches Secret-Muster" for f in findings))
+
+    def test_still_detects_camel_case_keyword_without_underscore(self):
+        # Camel-Case-Namen (apiKey, secretToken) haben nie ein eigenes Präfix-Suffix, sondern
+        # matchen das Keyword direkt an seiner eigenen Position im Wort - re.search() prüft
+        # jede Startposition, das bleibt unverändert funktionsfähig.
+        diff = _diff("config.js", ['secretToken = "abcdefghijklmno1234567890AB"'])
+        findings = scan_diff(diff)
+        self.assertTrue(any(f.rule == "Generisches Secret-Muster" for f in findings))
+
+
 class TestOnlyAddedLinesCount(unittest.TestCase):
     def test_removed_secret_is_not_flagged(self):
         diff = _diff("config.py", ["import os"], removed_lines=['AWS_KEY = "AKIAABCDEFGHIJKLMNOP"'])

@@ -1702,6 +1702,45 @@ Block im Methodenrumpf wurde einzeln geprüft und die Nicht-Extrahierbarkeit kon
 Punkt mehr unbegründet als "zu riskant" abgehakt - für jeden verbleibenden Rest liegt eine
 konkrete, verifizierte technische Begründung vor.
 
+> **Umsetzung 2026-09-22, P6-5 vollständig abgeschlossen - `verification.py` physisch
+> aufgeteilt:** Die ~780-Zeilen-Fassung von `_run_verification_loop_impl()` (jeder Schritt
+> bereits einzeln in eigene Methoden extrahiert) wurde jetzt, nach demselben Mixin-Muster wie
+> `interface/cli.py` (Teil 1) und `core/llm_factory.py` (Teil 2), physisch auf fünf Dateien
+> verteilt: `verification_loop.py` (VerificationLoopMixin, zentrale Orchestrierung),
+> `verification_fix_dispatch.py` (VerificationFixDispatchMixin, die vier per continue/break-
+> Signal extrahierten Fixschleifen-Blöcke + Eskalationsleiter + Zweitmeinungsrunde),
+> `verification_completeness.py` (VerificationCompletenessMixin), `verification_preflight.py`
+> (VerificationPreflightMixin, alles vor der Haupt-Testschleife), `verification_post_checks.py`
+> (VerificationPostChecksMixin, alles danach - nicht zu verwechseln mit dem bereits vorher
+> existierenden, unveränderten `verification_checks.py`). `verification.py` selbst schrumpft
+> auf 81 Zeilen und bleibt die stabile Importoberfläche (`VerificationMixin` komponiert alle
+> fünf Mixins, plus Re-Export jedes Namens, den bestehender Code bisher direkt von dort
+> importiert hat).
+>
+> Dieselbe, bei Teil 2 bewährte Technik löste dasselbe Risiko: sieben Namen, die ~90
+> Testdateien über `@patch("agents.orchestrator.verification.<name>", ...)` patchen
+> (`ProjectVerifier`, `upsert_ticket`, `MAX_VERIFICATION_ITERATIONS`, `MIN_TEST_COVERAGE`,
+> `run_pre_flight_check`, `unmet_requirements`, `analyze_test_depth`), werden in den neuen
+> Mixin-Dateien nie direkt importiert, sondern über `import agents.orchestrator.verification
+> as _v; _v.NAME` gelesen. Dabei ein echter, eigenständiger Fund: `logging.getLogger(__name__)`
+> in den verschobenen Methoden hätte den Logger-Namen von `"agents.orchestrator.verification"`
+> auf `"agents.orchestrator.verification_loop"`/`"...verification_post_checks"` geändert - ein
+> reales Verhaltensdetail, das `tests/test_telemetry_failures_are_logged.py` explizit prüft
+> (`assertLogs("agents.orchestrator.verification", ...)`) und das beim ersten Testlauf auch
+> tatsächlich fehlschlug. Behoben durch einen expliziten, stabilen Logger-Namen statt
+> `__name__` an den vier betroffenen Stellen, statt den Test nachträglich anzupassen - die
+> Übung war "reine Code-Verschiebung ohne Verhaltensänderung", nicht "Test an neues Verhalten
+> anpassen".
+>
+> Verifiziert: `ruff check agents/` sauber, `Orchestrator()` importiert und instanziiert
+> fehlerfrei, 401 Tests über die komplette verifikationsnahe Suite (Governance-Fix-Loop,
+> Completeness, Eskalation, Preflight, Department-Phasen, Diagnose-/Routing-Re-Exports,
+> Telemetrie-Logger-Name) - alle grün, keine Regression.
+
+**P6-5 damit vollständig abgeschlossen: alle drei Dateien (`interface/cli.py`,
+`core/llm_factory.py`, `agents/orchestrator/verification.py`) physisch nach Verantwortlichkeiten
+aufgeteilt und einzeln verifiziert.**
+
 | P6-6 | `core/message_bus.py` enthält nur noch zwei Dataclasses – in `core/agent_contracts.py` umbenennen (60+ Importe, daher mit Alias-Übergang) | S |
 
 > **Umsetzung 2026-09-21:** `core/agent_contracts.py` ist jetzt die kanonische Definition von
@@ -1843,4 +1882,4 @@ ruff check && python -m pytest -q
 | P5-3 | Verifikations-Reserve im Budget | P5 | ☑ erledigt (Reserve existierte, Gate korrigiert) |
 | P6-1 | Gestagte Fixes committet | P6 | ☑ erledigt |
 | P6-2 | ~~Workspace aus Framework-Commits~~ | P6 | ☑ Fehlannahme, siehe oben |
-| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-6, P6-7, P6-8 erledigt; P6-5 ~2.7/3 (`interface/cli.py` + `core/llm_factory.py` erledigt; `verification.py` 14 Blöcke extrahiert (~52% der Kernmethode, 1633→~780 Zeilen, inkl. 2 Blöcke der Haupt-Fixschleife selbst per continue/break-Rückgabesignal), verbleibender Rumpf (~650 Zeilen) ist der No-Progress-Kreisunterbrecher + Fix-Dispatch + Vollständigkeits-Check - deren Zustand MUSS über Iterationen bestehen bleiben, echter Kontrollfluss-Umbau statt Code-Verschiebung nötig, 4 unabhängige Untersuchungen konvergieren auf diesen Schluss) |
+| P6-3…8 | Hygiene & Aufräumen | P6 | ☑ erledigt (P6-3, P6-4, P6-5, P6-6, P6-7, P6-8 alle abgeschlossen - P6-5 zuletzt: `verification.py` physisch in 5 Mixin-Dateien aufgeteilt, `verification.py` selbst auf 81 Zeilen geschrumpft, 401 Tests grün) |

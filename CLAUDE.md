@@ -27,6 +27,12 @@ Bevor du mit neuen Aufgaben, Optimierungen oder Analysen startest, orientiere di
 
 **Wichtig beim Committen eines Fixes für ein Root-Cause-/Audit-Ticket:** Nenne die Ticket-ID in der Commit-Nachricht als eigene Zeile `Closes: <ticket-id>` (auch `Fixes:`/`Resolves:` funktionieren, mehrere IDs kommagetrennt). `core/backlog_hygiene.py.run_backlog_hygiene()` (`python main.py --backlog-hygiene`) markiert danach automatisch das referenzierte Ticket als `done` – ohne diese Zeile bleibt ein längst behobenes Ticket unbegrenzt als offen im Backlog stehen, obwohl der Fix bereits committet ist (realer Fund, 2026-09-17: mehrere `root-cause-*`-Tickets standen trotz längst gemergter Fixes noch auf `todo`/`blocked`, weil frühere Fix-Commits keine `Closes:`-Zeile enthielten).
 
+**🧹 Automatische Git-Worktree-Bereinigung nach Merges:**
+Sobald Änderungen von einem Feature- oder Framework-Branch (`ai-team/*`, `feat/*`) nach `main` gemergt und gepusht wurden, MÜSSEN eventuell noch existierende Git-Worktrees (in `../.ai-team-worktrees/`) sofort bereinigt werden, damit die Source-Control-Seitenleiste sauber bleibt:
+1. `git worktree list` prüfen.
+2. Nicht mehr benötigte Worktrees entfernen: `git worktree remove --force "<pfad>"`.
+3. Verwaiste Metadaten aufräumen: `git worktree prune`.
+
 ---
 
 ## ⚡ Wichtige Entwicklungs- & Testbefehle

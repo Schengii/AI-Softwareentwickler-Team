@@ -17,7 +17,11 @@ Ein autonomes Multi-Agenten-System (33 Fachrollen, 6 Fachbereichs-Leiter) für d
 Bevor du mit neuen Aufgaben, Optimierungen oder Analysen startest, orientiere dich immer anhand dieser Quellen:
 1. **Aktueller Code-Stand:** `git log -n 5 --oneline` (zeigt die letzten Commits und den aktuellen Branch).
 2. **Neueste Optimierungen & Historie:** Die obersten Zeilen von `CHANGELOG.md` lesen (nur die ersten ~60 Zeilen via Head/View, nicht die ganze Datei einlesen!).
-3. **Letzte Fehleranalysen & Traces:** Prüfe die neuesten Berichte in `logs/FEHLERANALYSE_*.md` sowie die letzten Ausführungs-Traces in `logs/runs/` bzw. `logs/verification/`.
+3. **Letzte Fehleranalysen & Traces (Direkt ansteuern, nicht suchen):**
+   - **Systemweite Deep-Dive-Analysen:** Die neuesten Berichte in `logs/FEHLERANALYSE_*.md` (z. B. `logs/FEHLERANALYSE_PULSE_QUEUE_20260922_TEMP.md`).
+   - **Projektlokale Fehler & Postmortems:** `workspace/<projekt>/.ai_team_runs/*_postmortem.md` (Ursachenanalyse des Laufs) und `workspace/<projekt>/.ai_team_dod.json` (welche Kriterien blockieren).
+   - **Rohe Fehlerausgaben & Tracebacks:** `logs/verification/*_<projekt>.log` (echte Pytest-, Linter- und Compiler-Meldungen).
+   - **Vollständiger Agenten-Trace:** `logs/runs/*_<projekt>.jsonl` (jeder Agentenaufruf, Token-Verbrauch, Watchdogs, Fehler).
 4. **Bereits diagnostizierte, aber noch nicht behobene Befunde:** `memory/team_lessons.jsonl` (Einträge mit `"category": "root_cause_analysis"`) enthält Root-Cause-Analysen aus echten Läufen, die noch keinem Fix zugeordnet wurden – oft die ergiebigste Quelle für echte, bereits belegte Framework-Bugs statt Spekulation. Der verbindliche Status-Speicher ist aber das Backlog (`core/backlog_store.py`, `source="root_cause_analysis"`), nicht die JSONL-Datei: `python -c "from core.backlog_store import list_tickets; [print(t.id, t.status) for t in list_tickets() if t.source=='root_cause_analysis']"` zeigt, was davon noch offen ist.
 5. **Projektgedächtnis & Obsidian-Notizen:** Bei architektonischen Entscheidungen oder Detailfragen die synchronisierten Notizen in `C:\Users\sche-\Desktop\Obsidian\02 Areas\Lernprojekte\AI-Softwareentwickler-Team\` konsultieren (besonders `00_PROJEKT_GEDAECHTNIS.md` und `01_TEAM_LEARNINGS.md`).
 

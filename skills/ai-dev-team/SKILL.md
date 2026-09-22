@@ -34,6 +34,14 @@ python "c:\Users\sche-\Desktop\Programmieren Projekte\AI-Softwareentwickler-Team
 python "c:\Users\sche-\Desktop\Programmieren Projekte\AI-Softwareentwickler-Team\main.py" --goal "<DEIN_ZIEL>" --project "neues_projekt_slug"
 ```
 
+### 4. Nach dem Lauf: Wo liegen Fehler, Berichte und Postmortems? (Direkt-Links für Claude)
+Falls das KI-Team einen Lauf abbricht oder Verifikationsfehler meldet, suche **nicht** durch alle Ordner, sondern öffne direkt:
+1. **Postmortem & Fehlerdiagnose:** `<PROJEKT_ORDNER>/.ai_team_runs/*_postmortem.md` (automatisch generierte Root-Cause-Analyse)
+2. **Verifikations-Status (DoD):** `<PROJEKT_ORDNER>/.ai_team_dod.json` (zeigt sofort, welches Kriterium wie `tests_pass` blockiert)
+3. **Projekt-Status & nächste Schritte:** `<PROJEKT_ORDNER>/PROJECT_STATE.md`
+4. **Rohe Test- & Traceback-Logs:** im Framework unter `logs/verification/*_<projekt_slug>.log`
+5. **Vollständiger Agenten-Trace:** im Framework unter `logs/runs/*_<projekt_slug>.jsonl`
+
 ---
 
 ## ⚙️ Wie das KI-Team arbeitet

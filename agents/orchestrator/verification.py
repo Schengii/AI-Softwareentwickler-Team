@@ -1272,37 +1272,11 @@ class VerificationMixin:
         # Echter `npm run build` VOR dem Browser-UI-Check: ohne Build würde der Browser-Check rohe
         # Quelldateien (z.B. main.tsx) servieren und einen Build-Fehler als Frontend-Bug melden.
         if not (budget_aborted or manually_cancelled):
-            frontend_build_reports = await asyncio.to_thread(verifier.check_frontend_build)
-            for fb_report in frontend_build_reports:
-                if not fb_report.attempted:
-                    if fb_report.reason_skipped:
-                        notify(f"  📦 [dim yellow]Frontend-Build ({fb_report.directory}): {fb_report.reason_skipped}[/dim yellow]")
-                    continue
-                if outcome.status("frontend_build") is not False:
-                    outcome.record("frontend_build", fb_report.passed, "" if fb_report.passed else f"{fb_report.directory}: {fb_report.output[:300]}")
-                if fb_report.passed:
-                    notify(f"  📦 [bold green]Frontend-Build ({fb_report.directory}) erfolgreich:[/bold green] `npm run build`.")
-                    summary_lines.append(f"- 📦 Frontend-Build (`{fb_report.directory}`) erfolgreich (echter `npm run build`).")
-                else:
-                    notify(f"  📦 [bold red]Frontend-Build ({fb_report.directory}) fehlgeschlagen.[/bold red]")
-                    summary_lines.append(f"- 📦 ❌ Frontend-Build (`{fb_report.directory}`) fehlgeschlagen: {fb_report.output[:500]}")
-                    verification_ok = False
-                    fb_owner = file_owners.get(f"{fb_report.directory}/package.json") if fb_report.directory != "." else file_owners.get("package.json")
-                    fb_owner = fb_owner or next((a for a in ("frontend", "devops") if a in self._agents), None)
-                    if fb_owner and fb_owner in self._agents:
-                        notify(f"  🛠️ [bold yellow]Frontend-Build-Fix:[/bold yellow] Beauftrage {fb_owner}...")
-                        fix_result = (await self._run_agents_parallel([AgentTask(
-                            task_id=f"verify_fix_frontend_build_{fb_owner}",
-                            agent_id=fb_owner,
-                            description=(
-                                f"Der ECHTE Produktions-Build (`npm run build` unter `{fb_report.directory}`) ist "
-                                f"fehlgeschlagen. Nutze read_file, um die betroffene(n) Datei(en) zu prüfen, und "
-                                f"edit_file/write_file, um den Fehler zu beheben.\n\n{fb_report.output[:2000]}"
-                            ),
-                            context="", project_dir=project_dir,
-                        )], notify=notify))
-                        self._update_file_owners(file_owners, fix_result)
-                        all_results.extend(fix_result)
+            veto = await self._run_frontend_build_check(
+                verifier, outcome, summary_lines, notify, file_owners, all_results, project_dir,
+            )
+            if veto is False:
+                verification_ok = False
 
         # Informative Prüfschritte (Dependency-Audit, SAST, Lizenzen, Lint) aus verification_checks.py;
         # beeinflussen verification_ok nicht. last_lint_*: siehe has_repeated_lint_finding().
@@ -1879,6 +1853,56 @@ class VerificationMixin:
                 summary_lines.append(f"- 🧩 ⚠️ Vorab-Import-Check nach {MAX_VERIFICATION_ITERATIONS} Versuchen weiterhin mit Funden – weiter mit der regulären Testsuite (dort erneut sichtbar).")
 
         return budget_aborted, manually_cancelled
+
+    async def _run_frontend_build_check(
+        self,
+        verifier: ProjectVerifier,
+        outcome: VerificationOutcome,
+        summary_lines: list[str],
+        notify: Callable[[str], None],
+        file_owners: dict[str, str],
+        all_results: list[AgentResult],
+        project_dir: str,
+    ) -> bool | None:
+        """P6-5 (ROADMAP_TEMP.md, Teilschritt): aus `_run_verification_loop_impl()` extrahiert -
+        echter `npm run build` VOR dem Browser-UI-Check: ohne Build würde der Browser-Check rohe
+        Quelldateien (z.B. main.tsx) servieren und einen Build-Fehler als Frontend-Bug melden.
+        Gibt `False` zurück, wenn ein fehlgeschlagener Build `verification_ok` veto'en soll
+        (Aufrufer setzt es), sonst `None` - `outcome`/`summary_lines`/`file_owners`/
+        `all_results` werden in-place mutiert."""
+        veto = None
+        frontend_build_reports = await asyncio.to_thread(verifier.check_frontend_build)
+        for fb_report in frontend_build_reports:
+            if not fb_report.attempted:
+                if fb_report.reason_skipped:
+                    notify(f"  📦 [dim yellow]Frontend-Build ({fb_report.directory}): {fb_report.reason_skipped}[/dim yellow]")
+                continue
+            if outcome.status("frontend_build") is not False:
+                outcome.record("frontend_build", fb_report.passed, "" if fb_report.passed else f"{fb_report.directory}: {fb_report.output[:300]}")
+            if fb_report.passed:
+                notify(f"  📦 [bold green]Frontend-Build ({fb_report.directory}) erfolgreich:[/bold green] `npm run build`.")
+                summary_lines.append(f"- 📦 Frontend-Build (`{fb_report.directory}`) erfolgreich (echter `npm run build`).")
+            else:
+                notify(f"  📦 [bold red]Frontend-Build ({fb_report.directory}) fehlgeschlagen.[/bold red]")
+                summary_lines.append(f"- 📦 ❌ Frontend-Build (`{fb_report.directory}`) fehlgeschlagen: {fb_report.output[:500]}")
+                veto = False
+                fb_owner = file_owners.get(f"{fb_report.directory}/package.json") if fb_report.directory != "." else file_owners.get("package.json")
+                fb_owner = fb_owner or next((a for a in ("frontend", "devops") if a in self._agents), None)
+                if fb_owner and fb_owner in self._agents:
+                    notify(f"  🛠️ [bold yellow]Frontend-Build-Fix:[/bold yellow] Beauftrage {fb_owner}...")
+                    fix_result = (await self._run_agents_parallel([AgentTask(
+                        task_id=f"verify_fix_frontend_build_{fb_owner}",
+                        agent_id=fb_owner,
+                        description=(
+                            f"Der ECHTE Produktions-Build (`npm run build` unter `{fb_report.directory}`) ist "
+                            f"fehlgeschlagen. Nutze read_file, um die betroffene(n) Datei(en) zu prüfen, und "
+                            f"edit_file/write_file, um den Fehler zu beheben.\n\n{fb_report.output[:2000]}"
+                        ),
+                        context="", project_dir=project_dir,
+                    )], notify=notify))
+                    self._update_file_owners(file_owners, fix_result)
+                    all_results.extend(fix_result)
+        return veto
 
     async def _record_accessibility_check(
         self, verifier: ProjectVerifier, outcome: VerificationOutcome,

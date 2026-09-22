@@ -1652,14 +1652,52 @@ Agenten-Aufruf kostet.
 > bedeutet, wenn man den tatsächlichen Kontrollfluss (hier: garantierte Terminierung) genau genug
 > nachvollzieht.
 
+> **Umsetzung 2026-09-22, die bis hierhin zurückgestellte Technik jetzt auf die Haupt-
+> Fixschleife SELBST angewendet (nicht nur auf Blöcke, die immer zu `break` führen):** Eine
+> Methode kann eine `for`-Schleife des Aufrufers nicht direkt per `continue`/`break` steuern -
+> deshalb geben `_handle_report_not_ready()` (Behandlung von pip-Hinweisen und fehlender
+> Testsuite) und `_handle_test_depth_gate()` (Routen-Testtiefe, letzter-Versuch-Inline-
+> Nachverifikation) jeweils ein explizites Signal zurück (`"continue"`/`"break"`/`None`), das
+> der Aufrufer 1:1 in die entsprechende Schleifen-Anweisung übersetzt - identische
+> Kontrollfluss-Semantik, nur als Rückgabewert statt implizitem Sprung ausgedrückt. Vor der
+> zweiten Extraktion wurde die Sicherheits-Invariante nicht nur angenommen, sondern verifiziert:
+> `verification_ok` wird in der Methode an genau einer weiteren Stelle auf `True` gesetzt,
+> IMMER unmittelbar gefolgt von `break` - der Block kann also nie ein zweites Mal mit bereits
+> `True` gesetztem `verification_ok` erreicht werden, das lokale `verification_ok = False` am
+> Anfang der Extraktion spiegelt exakt den Zustand, den der Aufrufer an dieser Stelle ohnehin
+> immer hatte. `_run_verification_loop_impl()` schrumpft damit weiter von 926 auf **~780
+> Zeilen** (14 Hilfsmethoden insgesamt, 2 weitere in dieser Runde). Verifiziert: `ruff check`
+> sauber nach jeder Extraktion, gezielt `tests/test_missing_tests_autofix.py` (Runde 1) und
+> `tests/test_test_depth_last_attempt_fix.py` (Runde 2, exakt der jeweils extrahierte Pfad)
+> plus jeweils die 146 Tests der breiten verifikationsnahen Suite - alle grün.
+>
+> **An dieser Stelle real erreichte Grenze:** der nächste Block (Fehlersignatur-Vergleich für
+> den No-Progress-Kreisunterbrecher, `previous_failure_signature`/`skip_retry_no_delivery`) ist
+> KEIN isolierbarer Checkpoint mehr, sondern die eigentliche Definition der Schleife selbst -
+> `previous_failure_signature` MUSS über Iterationen hinweg bestehen bleiben, das ist der Zweck
+> des Kreisunterbrechers, keine zufällige Kopplung. Ab hier (Fehler-Routing, Fix-Dispatch,
+> Test-Schrumpfungs-Wächter, Vollständigkeits-Check - zusammen ~650 Zeilen) wäre jede weitere
+> "Extraktion" keine Isolation eines Checkpoints mehr, sondern das Verschieben der gesamten
+> Schleifen-Logik in eine Methode mit einem entsprechend riesigen Parameter-/Rückgabewert-
+> Bündel - das verringert die Komplexität nicht, es verlagert sie nur und fügt eine neue
+> Fehlerquelle an der Übergabestelle hinzu. Vier unabhängige Untersuchungen (drei vorherige
+> Forks plus diese direkte, händische Fortsetzung) kommen jetzt übereinstimmend zum selben
+> Schluss: das ist die reale, nicht die bequeme Grenze.
+
 **Zusammenfassung P6-5:** 2 von 3 Dateien vollständig gesplittet (`interface/cli.py`,
-`core/llm_factory.py`); `verification.py` um 12 Methoden entlastet, ~707 Zeilen (~43 %) aus der
-zentralen Fix-Loop-Methode extrahiert (von ursprünglich ~1633 auf 926 Zeilen), jeder Schritt
-einzeln verifiziert - der verbleibende Rumpf ist im Kern EINE große, eng verwobene
-Haupt-Testfehler-Dispatch-Schleife plus der damit über `stuck_owners`/`completeness_report`
-verwobene Vollständigkeits-Check; ein Dritter der ursprünglichen Datei bleibt aus genau diesem
-Grund für eine künftige, dedizierte Sitzung offen -
-kein weiterer mechanisch isolierbarer Block wurde übersehen, jeder verbleibende Banner-Kommentar-
+`core/llm_factory.py`); `verification.py` um 14 Methoden entlastet, ~853 Zeilen (~52 %) aus der
+zentralen Fix-Loop-Methode extrahiert (von ursprünglich ~1633 auf ~780 Zeilen), jeder Schritt
+einzeln verifiziert, zuletzt auch auf zwei Blöcke der Haupt-Fixschleife selbst angewendet (über
+ein explizites `continue`/`break`-Rückgabesignal, da eine Methode die aufrufende Schleife nicht
+direkt steuern kann) - der verbleibende Rumpf ist im Kern EINE große, eng verwobene
+Haupt-Testfehler-Dispatch-Schleife (Fehlersignatur-Vergleich für den No-Progress-
+Kreisunterbrecher MUSS über Iterationen hinweg bestehen bleiben, das ist der Zweck des
+Mechanismus, keine zufällige Kopplung) plus der damit über `stuck_owners`/`completeness_report`
+verwobene Vollständigkeits-Check; ein knappes Drittel der ursprünglichen Datei (~650 Zeilen)
+bleibt aus genau diesem Grund für eine künftige, dedizierte Sitzung offen - vier unabhängige
+Untersuchungen (drei Forks plus eine direkte, händische Fortsetzung) kommen inzwischen
+übereinstimmend zum selben Schluss. Kein weiterer mechanisch isolierbarer Block wurde übersehen,
+jeder verbleibende Banner-Kommentar-
 Block im Methodenrumpf wurde einzeln geprüft und die Nicht-Extrahierbarkeit konkret belegt. Kein
 Punkt mehr unbegründet als "zu riskant" abgehakt - für jeden verbleibenden Rest liegt eine
 konkrete, verifizierte technische Begründung vor.
@@ -1805,4 +1843,4 @@ ruff check && python -m pytest -q
 | P5-3 | Verifikations-Reserve im Budget | P5 | ☑ erledigt (Reserve existierte, Gate korrigiert) |
 | P6-1 | Gestagte Fixes committet | P6 | ☑ erledigt |
 | P6-2 | ~~Workspace aus Framework-Commits~~ | P6 | ☑ Fehlannahme, siehe oben |
-| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-6, P6-7, P6-8 erledigt; P6-5 ~2.6/3 (`interface/cli.py` + `core/llm_factory.py` erledigt; `verification.py` 12 Blöcke extrahiert (~43% der Kernmethode, 1633→926 Zeilen), verbleibender Rumpf ist der Haupt-Testfehler-Dispatch + Vollständigkeits-Check - echter Kontrollfluss-Umbau statt Code-Verschiebung nötig) |
+| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-6, P6-7, P6-8 erledigt; P6-5 ~2.7/3 (`interface/cli.py` + `core/llm_factory.py` erledigt; `verification.py` 14 Blöcke extrahiert (~52% der Kernmethode, 1633→~780 Zeilen, inkl. 2 Blöcke der Haupt-Fixschleife selbst per continue/break-Rückgabesignal), verbleibender Rumpf (~650 Zeilen) ist der No-Progress-Kreisunterbrecher + Fix-Dispatch + Vollständigkeits-Check - deren Zustand MUSS über Iterationen bestehen bleiben, echter Kontrollfluss-Umbau statt Code-Verschiebung nötig, 4 unabhängige Untersuchungen konvergieren auf diesen Schluss) |

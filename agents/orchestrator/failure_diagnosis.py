@@ -74,9 +74,16 @@ _DUPLICATE_URL_PREFIX_RE = re.compile(r"(/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)?)\1"
 # Paket-Kollision in requirements.txt beheben - die Fix-Schleife lief dreimal wirkungslos.
 # Erkennt "Endpunkt nicht registriert": der Test erwartete einen ANDEREN Status als 404
 # (pytest: `assert <ist> == <soll>`, unittest: `<ist> != <soll>`) oder FastAPIs Default-Body.
+# Team-Optimierung (nexus_flow-Lauf, Backlog root-cause-nexus_flow-fehlgeleiteter-fix-dispatch):
+# `assert 404 in (200, 201)` (pytest-Idiom fuer "Status gehoert zu einer erlaubten Menge", z.B.
+# `assert response.status_code in (200, 201)`) matchte KEINE der bisherigen Alternativen (nur
+# `==`/`!=` gegen einen einzelnen Soll-Wert), wodurch der Fund am generischen Datei-Owner
+# (haeufig `api_integration`/`tester`) statt am eigentlich zustaendigen `backend` landete, der
+# fehlende Router in main.py aber nur `backend` mounten kann.
 _ROUTE_NOT_FOUND_RE = re.compile(
     r"assert 404 == (?!404\b)\d{3}\b"
     r"|\b404 != (?!404\b)\d{3}\b"
+    r"|assert 404 (?:not )?in \("
     r"|['\"]detail['\"]\s*:\s*['\"]Not Found['\"]"
     r"|\bRoute Not Found\b"
     r"|\b404 Client Error: Not Found\b",

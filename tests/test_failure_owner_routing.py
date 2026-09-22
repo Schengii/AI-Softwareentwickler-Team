@@ -66,6 +66,17 @@ class TestRouteNotFoundRouting(unittest.TestCase):
         message = "E   assert 200 == 404\nE    +  where 200 = <Response [200 OK]>.status_code"
         self.assertEqual(_route(message, ["tests/test_events.py"]), {"tester"})
 
+    def test_membership_style_404_goes_to_backend(self):
+        # Realer Fund (nexus_flow-Lauf, Backlog root-cause-nexus_flow-fehlgeleiteter-fix-dispatch):
+        # `assert response.status_code in (200, 201)` erzeugt bei pytest "assert 404 in (200, 201)"
+        # statt eines `==`-Vergleichs. Landete vorher am generischen Datei-Owner (tester/
+        # api_integration) statt am fuer Router-Mounts zustaendigen backend.
+        message = (
+            "FAILED tests/test_events.py::test_events_api_flow - assert 404 in (200, 201)\n"
+            "where 404 = <Response [404 Not Found]>.status_code"
+        )
+        self.assertEqual(_route(message, ["tests/test_events.py"]), {"backend"})
+
 
 class TestDependencyErrorRouting(unittest.TestCase):
     def test_jwt_namespace_collision_goes_to_manifest_owner(self):

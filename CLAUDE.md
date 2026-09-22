@@ -18,7 +18,7 @@ Bevor du mit neuen Aufgaben, Optimierungen oder Analysen startest, orientiere di
 1. **Aktueller Code-Stand:** `git log -n 5 --oneline` (zeigt die letzten Commits und den aktuellen Branch).
 2. **Neueste Optimierungen & Historie:** Die obersten Zeilen von `CHANGELOG.md` lesen (nur die ersten ~60 Zeilen via Head/View, nicht die ganze Datei einlesen!).
 3. **Letzte Fehleranalysen & Traces (Direkt ansteuern, nicht suchen):**
-   - **Systemweite Deep-Dive-Analysen:** Die neuesten Berichte in `logs/FEHLERANALYSE_*.md` (z. B. `logs/FEHLERANALYSE_PULSE_QUEUE_20260922_TEMP.md`).
+   - **Systemweite Deep-Dive-Analysen:** Die neuesten Berichte in `logs/FEHLERANALYSE_*.md` (z. B. `logs/FEHLERANALYSE_SMART_KNOWLEDGE_HUB_20260922_TEMP.md` und `FEHLERANALYSE_PULSE_QUEUE_20260922_TEMP.md`).
    - **Projektlokale Fehler & Postmortems:** `workspace/<projekt>/.ai_team_runs/*_postmortem.md` (Ursachenanalyse des Laufs) und `workspace/<projekt>/.ai_team_dod.json` (welche Kriterien blockieren).
    - **Rohe Fehlerausgaben & Tracebacks:** `logs/verification/*_<projekt>.log` (echte Pytest-, Linter- und Compiler-Meldungen).
    - **Vollständiger Agenten-Trace:** `logs/runs/*_<projekt>.jsonl` (jeder Agentenaufruf, Token-Verbrauch, Watchdogs, Fehler).

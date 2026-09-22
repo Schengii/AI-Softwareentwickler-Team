@@ -492,6 +492,89 @@ class VerificationMixin:
             return "break", pip_hint_fix_attempted, no_tests_fix_attempted
         return None, pip_hint_fix_attempted, no_tests_fix_attempted
 
+    async def _handle_test_depth_gate(
+        self,
+        *,
+        verifier: ProjectVerifier,
+        project_dir: str,
+        report: VerificationReport,
+        attempt: int,
+        file_owners: dict[str, str],
+        all_results: list[AgentResult],
+        summary_lines: list[str],
+        notify: Callable[[str], None],
+        outcome: VerificationOutcome,
+        run_start_tokens: int | None,
+        budget_aborted: bool,
+        test_depth_fix_attempted: bool,
+    ) -> tuple[str | None, VerificationReport, bool, bool]:
+        """P6-5 (ROADMAP_TEMP.md): aus der Haupt-Fixschleife extrahiert - der Aufrufer betritt
+        diesen Block nur, wenn `report.passed and ENABLE_TEST_DEPTH_GATE`. Gibt wie
+        `_handle_report_not_ready()` ein Kontrollfluss-Signal zurück, PLUS den ggf. neu
+        gelaufenen `report` und `verification_ok` (dieser Block ist der einzige neben dem
+        finalen Testlauf, der bei erfolgreicher Nachbesserung direkt `verification_ok = True`
+        setzt UND per `break` verlässt), PLUS das Einmal-Verbrauch-Flag
+        `test_depth_fix_attempted`.
+        """
+        verification_ok = False
+        depth = await asyncio.to_thread(analyze_test_depth, project_dir, MIN_ROUTE_TEST_RATIO)
+        if depth.applicable:
+            outcome.record("test_depth", depth.passed, "" if depth.passed else depth.format_summary())
+        can_fix_depth = (
+            not depth.passed and not test_depth_fix_attempted and not budget_aborted
+            and "tester" in self._agents
+            and not (run_start_tokens is not None and self._run_budget_exceeded(run_start_tokens))
+        )
+        if can_fix_depth:
+            test_depth_fix_attempted = True
+            notify(f"  🧪 [yellow]Tests grün, aber zu flach:[/yellow] {depth.format_summary()[:300]}")
+            summary_lines.append(f"- 🧪 ⚠️ {depth.format_summary()} → tester ergänzt Tests.")
+            log_decision(project_dir, "test_depth_fix_dispatched", depth.format_summary()[:500])
+            fix_task = AgentTask(
+                task_id=f"test_depth_fix_{attempt}",
+                agent_id="tester",
+                description=(
+                    "Die Testsuite ist grün, prüft aber zu wenig: folgende API-Routen werden in keinem Test "
+                    "aufgerufen. Ergänze für JEDE dieser Routen mindestens einen echten Test (Erfolgsfall und "
+                    "einen Fehler-/Validierungsfall) mit dem Test-Client des Frameworks. Ändere keinen "
+                    "Produktionscode; fehlt dir eine Information, frage per ask_teammate.\n\n"
+                    + "\n".join(f"- {r.label()}" for r in depth.untested_routes[:20])
+                ),
+                context="", project_dir=project_dir,
+            )
+            fix_results = await self._run_agents_parallel([fix_task], notify=notify)
+            self._update_file_owners(file_owners, fix_results)
+            all_results.extend(fix_results)
+            await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
+            if attempt < MAX_VERIFICATION_ITERATIONS:
+                return "continue", report, verification_ok, test_depth_fix_attempted
+            # Realer Fund (pipeline_pilot, 2026-09-16): Tests wurden erst im letzten
+            # erlaubten Versuch grün, wodurch für die Testtiefen-Nachbesserung kein
+            # weiterer Schleifendurchlauf mehr übrig war - ein `continue` hätte die
+            # Schleife verlassen, OHNE den gerade beauftragten Fix je gegen die
+            # Testsuite zu prüfen. Deshalb hier einmalig inline nachverifizieren statt
+            # auf einen nicht mehr vorhandenen nächsten Durchlauf zu setzen.
+            notify("  🔍 [yellow]Letzter Versuch bereits verbraucht:[/yellow] verifiziere die ergänzten Tests direkt inline...")
+            depth_fix_report = await self._run_tests_logged(verifier, "test_depth_fix")
+            report = depth_fix_report
+            if depth_fix_report.passed:
+                redepth = await asyncio.to_thread(analyze_test_depth, project_dir, MIN_ROUTE_TEST_RATIO)
+                if redepth.applicable:
+                    outcome.record("test_depth", redepth.passed, "" if redepth.passed else redepth.format_summary())
+                    icon = "✅" if redepth.passed else "⚠️"
+                    summary_lines.append(f"- 🧪 {icon} {redepth.format_summary()}")
+                verification_ok = True
+                notify(f"  ✅ [bold green]Nachgelieferte Tests bestehen weiterhin.[/bold green] ({depth_fix_report.duration_seconds:.1f}s).")
+                summary_lines.append("- ✅ Testtiefen-Nachbesserung inline verifiziert: Testsuite bleibt grün.")
+            else:
+                notify("  ❌ [bold red]Testtiefen-Nachbesserung hat die Suite gebrochen[/bold red] – letzter Stand wird übernommen.")
+                summary_lines.append(f"- ❌ Testtiefen-Nachbesserung hat {len(depth_fix_report.failures)} Testfehler eingeführt – letzter Stand wird übernommen.")
+            return "break", report, verification_ok, test_depth_fix_attempted
+        if depth.applicable:
+            icon = "✅" if depth.passed else "⚠️"
+            summary_lines.append(f"- 🧪 {icon} {depth.format_summary()}")
+        return None, report, verification_ok, test_depth_fix_attempted
+
     async def _run_verification_loop_impl(
         self,
         project_dir: str,
@@ -655,62 +738,16 @@ class VerificationMixin:
                 break
 
             if report.passed and ENABLE_TEST_DEPTH_GATE:
-                depth = await asyncio.to_thread(analyze_test_depth, project_dir, MIN_ROUTE_TEST_RATIO)
-                if depth.applicable:
-                    outcome.record("test_depth", depth.passed, "" if depth.passed else depth.format_summary())
-                can_fix_depth = (
-                    not depth.passed and not test_depth_fix_attempted and not budget_aborted
-                    and "tester" in self._agents
-                    and not (run_start_tokens is not None and self._run_budget_exceeded(run_start_tokens))
+                loop_signal, report, verification_ok, test_depth_fix_attempted = await self._handle_test_depth_gate(
+                    verifier=verifier, project_dir=project_dir, report=report, attempt=attempt,
+                    file_owners=file_owners, all_results=all_results, summary_lines=summary_lines,
+                    notify=notify, outcome=outcome, run_start_tokens=run_start_tokens,
+                    budget_aborted=budget_aborted, test_depth_fix_attempted=test_depth_fix_attempted,
                 )
-                if can_fix_depth:
-                    test_depth_fix_attempted = True
-                    notify(f"  🧪 [yellow]Tests grün, aber zu flach:[/yellow] {depth.format_summary()[:300]}")
-                    summary_lines.append(f"- 🧪 ⚠️ {depth.format_summary()} → tester ergänzt Tests.")
-                    log_decision(project_dir, "test_depth_fix_dispatched", depth.format_summary()[:500])
-                    fix_task = AgentTask(
-                        task_id=f"test_depth_fix_{attempt}",
-                        agent_id="tester",
-                        description=(
-                            "Die Testsuite ist grün, prüft aber zu wenig: folgende API-Routen werden in keinem Test "
-                            "aufgerufen. Ergänze für JEDE dieser Routen mindestens einen echten Test (Erfolgsfall und "
-                            "einen Fehler-/Validierungsfall) mit dem Test-Client des Frameworks. Ändere keinen "
-                            "Produktionscode; fehlt dir eine Information, frage per ask_teammate.\n\n"
-                            + "\n".join(f"- {r.label()}" for r in depth.untested_routes[:20])
-                        ),
-                        context="", project_dir=project_dir,
-                    )
-                    fix_results = await self._run_agents_parallel([fix_task], notify=notify)
-                    self._update_file_owners(file_owners, fix_results)
-                    all_results.extend(fix_results)
-                    await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
-                    if attempt < MAX_VERIFICATION_ITERATIONS:
-                        continue
-                    # Realer Fund (pipeline_pilot, 2026-09-16): Tests wurden erst im letzten
-                    # erlaubten Versuch grün, wodurch für die Testtiefen-Nachbesserung kein
-                    # weiterer Schleifendurchlauf mehr übrig war - ein `continue` hätte die
-                    # Schleife verlassen, OHNE den gerade beauftragten Fix je gegen die
-                    # Testsuite zu prüfen. Deshalb hier einmalig inline nachverifizieren statt
-                    # auf einen nicht mehr vorhandenen nächsten Durchlauf zu setzen.
-                    notify("  🔍 [yellow]Letzter Versuch bereits verbraucht:[/yellow] verifiziere die ergänzten Tests direkt inline...")
-                    depth_fix_report = await self._run_tests_logged(verifier, "test_depth_fix")
-                    report = depth_fix_report
-                    if depth_fix_report.passed:
-                        redepth = await asyncio.to_thread(analyze_test_depth, project_dir, MIN_ROUTE_TEST_RATIO)
-                        if redepth.applicable:
-                            outcome.record("test_depth", redepth.passed, "" if redepth.passed else redepth.format_summary())
-                            icon = "✅" if redepth.passed else "⚠️"
-                            summary_lines.append(f"- 🧪 {icon} {redepth.format_summary()}")
-                        verification_ok = True
-                        notify(f"  ✅ [bold green]Nachgelieferte Tests bestehen weiterhin.[/bold green] ({depth_fix_report.duration_seconds:.1f}s).")
-                        summary_lines.append("- ✅ Testtiefen-Nachbesserung inline verifiziert: Testsuite bleibt grün.")
-                    else:
-                        notify("  ❌ [bold red]Testtiefen-Nachbesserung hat die Suite gebrochen[/bold red] – letzter Stand wird übernommen.")
-                        summary_lines.append(f"- ❌ Testtiefen-Nachbesserung hat {len(depth_fix_report.failures)} Testfehler eingeführt – letzter Stand wird übernommen.")
+                if loop_signal == "continue":
+                    continue
+                if loop_signal == "break":
                     break
-                if depth.applicable:
-                    icon = "✅" if depth.passed else "⚠️"
-                    summary_lines.append(f"- 🧪 {icon} {depth.format_summary()}")
 
             if report.passed:
                 notify(f"  ✅ [bold green]Alle Tests bestanden[/bold green] (Versuch {attempt}, {report.duration_seconds:.1f}s).")

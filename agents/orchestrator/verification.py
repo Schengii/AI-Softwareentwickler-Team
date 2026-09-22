@@ -658,6 +658,295 @@ class VerificationMixin:
         previous_failure_signature = current_signature
         return None, report, False, previous_fix_all_no_delivery, previous_failure_signature
 
+    async def _dispatch_fix_and_check_regression(
+        self,
+        *,
+        verifier: ProjectVerifier,
+        project_dir: str,
+        report: VerificationReport,
+        attempt: int,
+        file_owners: dict[str, str],
+        all_results: list[AgentResult],
+        summary_lines: list[str],
+        notify: Callable[[str], None],
+        outcome: VerificationOutcome,
+        test_ticket_id: str | None,
+        had_prior_test_ticket: bool,
+        budget_aborted: bool,
+    ) -> tuple[str | None, VerificationReport, bool, bool]:
+        """P6-5 (ROADMAP_TEMP.md): vierte und größte Anwendung der continue/break-Signal-Technik
+        auf die Haupt-Fixschleife - deckt den eigentlichen Fix-Dispatch-Schritt einer Iteration
+        ab: Budget-Gate, Fehler-Routing an die zuständigen Agenten, den Test-Schrumpfungs-
+        Wächter (erkennt, ob "tester" den fehlschlagenden Test statt einer echten Korrektur
+        gelöscht hat) und - nur im letzten erlaubten Versuch - die Abschlussprüfung samt
+        Ticket-Pflege. `verification_ok` wird bewusst NICHT als Parameter angenommen: an dieser
+        Stelle in der Schleife ist es (siehe `_handle_test_result_or_escalate()`s Rückgabe von
+        `False` auf dem hierher führenden Pfad) immer bereits `False` - die Methode gibt einfach
+        ihren eigenen, lokal berechneten Wert zurück, der den Aufrufer exakt genauso überschreibt
+        wie das inline vorher tat.
+        """
+        verification_ok = False
+        if budget_aborted:
+            notify("  🚫 [bold red]Budget erreicht[/bold red] – kein neuer Fix-Auftrag mehr, letzter Teststand wird übernommen.")
+            summary_lines.append(
+                f"- 🚫 Budget erreicht – Verifikation nach Versuch {attempt} mit "
+                f"{len(report.failures)} verbleibendem/n Testfehler(n) abgebrochen, ohne einen weiteren "
+                "(tokenkostenden) Fix-Agenten zu beauftragen."
+            )
+            return "break", report, verification_ok, False
+
+        agents_to_fix: dict[str, list] = {}
+        tester_participated = any(r.agent_id == "tester" for r in all_results)
+        # Collection-/Syntaxfehler blockieren die gesamte Suite - alle übrigen Fehlschläge sind
+        # bis dahin Folgefehler bzw. nicht aussagekräftig und werden erst danach bearbeitet.
+        dispatch_failures = blocking_failures_first(report.failures)
+        if len(dispatch_failures) < len(report.failures):
+            notify(
+                f"  🧱 [yellow]{len(dispatch_failures)} Collection-/Syntaxfehler blockieren die Testsuite[/yellow] – "
+                f"{len(report.failures) - len(dispatch_failures)} weitere Fehlschläge folgen erst danach."
+            )
+        triages = {
+            id(f): triage_structural_failure(f.message, f.files, file_owners, project_dir) for f in dispatch_failures
+        }
+        for failure in dispatch_failures:
+            triage = triages[id(failure)]
+            # Persistentes Lernen für künftige Läufe - außerhalb der seiteneffektfreien Routing-
+            # Funktion. Bei Schnittstellen-Drift liegt der Fehler beim Konsumenten, die Backend-
+            # Regel wäre dann eine falsche Lektion.
+            if _import_name_error_target(failure.message) is not None and (
+                triage is None or triage.kind == KIND_MISSING_SYMBOL
+            ):
+                _record_verification_learning(failure.message)
+            _record_instance_attribute_learning(failure.message)
+            owners = _route_failure_owners(
+                failure.message, failure.files, file_owners, self._agents, tester_participated,
+                project_dir=project_dir,
+            )
+            for owner in owners:
+                if owner in self._agents:
+                    agents_to_fix.setdefault(owner, []).append(failure)
+
+        if not agents_to_fix:
+            notify("  ⚠️ [yellow]Testfehler konnten keinem Agenten eindeutig zugeordnet werden – Auto-Fix abgebrochen.[/yellow]")
+            summary_lines.append(f"- ⚠️ Versuch {attempt}: {len(report.failures)} Testfehler blieben ungelöst (keine eindeutige Dateizuordnung im Traceback).")
+            return "break", report, verification_ok, False
+
+        fix_brief_ctx = _build_project_brief_context(project_dir)
+        fix_tasks = []
+        for agent_id, fails in agents_to_fix.items():
+            failure_text = _format_failures_for_agent(fails, triages=triages, max_failures=5, max_msg_chars=1200)
+            prior_no_delivery = any(
+                r.agent_id == agent_id and r.failure_class == FAILURE_CLASS_NO_DELIVERY
+                for r in (all_results or [])
+            )
+            delivery_prompt_hint = (
+                "\n\n🚨 ACHTUNG (Hard Delivery Gate): Dein vorheriger Fixversuch hat KEINE Datei gespeichert! "
+                "Reine Textantworten ohne Werkzeugaufruf gelten als Totalausfall. Du MUSST jetzt sofort "
+                "edit_file oder write_file aufrufen, um die Korrekturen anzuwenden!\n"
+                if prior_no_delivery else ""
+            )
+            fix_tasks.append(AgentTask(
+                task_id=f"verify_fix_{agent_id}_{attempt}",
+                agent_id=agent_id,
+                description=(
+                    f"Die ECHTE automatische Testsuite ist fehlgeschlagen (kein Schätzwert, sondern realer "
+                    f"pytest/unittest-Output). Nutze read_file, um die betroffene(n) Datei(en) zu prüfen, und "
+                    f"edit_file/write_file, um den Fehler zu beheben. Verifiziere deinen Fix danach mit run_tests.\n\n"
+                    f"{failure_text}"
+                    + delivery_prompt_hint
+                    + (_prior_run_context(test_ticket_id) if attempt == 1 and test_ticket_id else "")
+                ),
+                context=fix_brief_ctx,
+                project_dir=project_dir,
+                max_tool_iterations=8,
+            ))
+
+        notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix:[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())} (nicht blind alle Dev-Agenten)...")
+        # Reine Strukturfehler sind nie durch Manifest-Änderungen zu beheben - Manifeste werden
+        # gesichert und nach dem Fix-Schritt zurückgesetzt.
+        structural_only = all(triages.get(id(f)) is not None for fails in agents_to_fix.values() for f in fails)
+        manifest_snapshot = snapshot_dependency_manifests(project_dir) if project_dir and structural_only else None
+        # Test-Schrumpfungs-Wächter (EventForge-Analyse 2026-09-16): erfasst die Testnamen VOR
+        # dem Fix-Versuch, damit unten erkennbar ist, ob "tester" den Fehler wirklich behoben
+        # oder den fehlschlagenden Test ersatzlos entfernt hat - siehe
+        # `core.test_depth.collect_test_function_names()`-Docstring für den realen Fund.
+        _tests_before_fix = (
+            collect_test_function_names(project_dir) if "tester" in agents_to_fix else None
+        )
+        # Voller Dateiinhalt (nicht nur Testnamen) VOR dem Fix-Versuch, damit eine erkannte
+        # Test-Schrumpfung unten tatsächlich rückgängig gemacht werden kann, statt sie nur
+        # zu protokollieren (core.test_depth.snapshot_test_files()).
+        _test_files_before_fix = snapshot_test_files(project_dir) if _tests_before_fix is not None else None
+        fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+        # P1-5: gilt nur für DIESEN regulären, per-Rolle-geroutet Fixversuch - eine Eskalation
+        # (Fachbereichsleiter/HEAVY_MODEL/Zweitmeinung, jeweils eigene fix_results weiter
+        # unten) ist eine ANDERE Strategie, kein Wiederholungsversuch mit demselben Prompt,
+        # und soll deshalb weiterhin regulär per Signaturvergleich geprüft werden.
+        previous_fix_all_no_delivery = bool(fix_results) and all(
+            r.failure_class == FAILURE_CLASS_NO_DELIVERY for r in fix_results
+        )
+        restored_manifests = (
+            restore_dependency_manifests(project_dir, manifest_snapshot) if manifest_snapshot is not None else []
+        )
+        if restored_manifests:
+            notify(f"  ⛔ [yellow]Manifest-Änderungen bei reinem Strukturfehler zurückgesetzt:[/yellow] {', '.join(restored_manifests)}")
+            summary_lines.append(
+                f"- ⛔ Versuch {attempt}: unnötige Änderungen an {', '.join(restored_manifests)} zurückgesetzt "
+                "(Ursache war die Code-Struktur, keine Abhängigkeit)."
+            )
+        self._update_file_owners(file_owners, fix_results)
+        all_results.extend(fix_results)
+        # Nur re-syncen, wenn die Manifest-Änderung bestehen blieb.
+        if not restored_manifests:
+            await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
+        summary_lines.append(f"- 🛠️ Versuch {attempt}: {len(report.failures)} echte Testfehler → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt.")
+
+        # Test-Schrumpfungs-Wächter: fehlten nach dem Fix Testfunktionen, die vorher da waren
+        # (und keine gleich große Ersatzmenge dazukam), wurde der Fehler wahrscheinlich durch
+        # LÖSCHEN des fehlschlagenden Tests "behoben" statt durch eine echte Korrektur. Das
+        # gilt als echter Verifikations-Fund - anders als Lint/SAST blockiert er den Lauf.
+        if _tests_before_fix is not None:
+            _tests_after_fix = collect_test_function_names(project_dir)
+            _tests_lost = _tests_before_fix - _tests_after_fix
+            if _tests_lost and len(_tests_after_fix) < len(_tests_before_fix):
+                _lost_list = ", ".join(sorted(_tests_lost)[:10])
+                notify(
+                    f"  🧪 [bold red]Test-Schrumpfung erkannt:[/bold red] {len(_tests_lost)} Testfunktion(en) "
+                    f"nach dem Fixversuch verschwunden statt der Fehler behoben: {_lost_list}."
+                )
+                # Realer Fund (Team-Optimierung 2026-09-17): dieser Zweig protokollierte die
+                # Schrumpfung bisher nur (Veto + Ticket), ließ die gelöschten Tests aber
+                # gelöscht - der Lauf endete als `blocked`-Ticket ohne echten Fix-Versuch, der
+                # das eigentliche Problem (fehlerhafter Anwendungscode) noch angehen konnte.
+                # Jetzt: gelöschte Tests werden aus _test_files_before_fix zurückgeholt und
+                # EIN weiterer, expliziter Fix-Versuch mit klarem Verbot ("Tests NICHT
+                # löschen") wird SOFORT nachgeschoben, inline geprüft (kein verbrauchter
+                # `attempt` wie bei der Eskalation oben) - erst wenn auch der scheitert, gilt
+                # es als echter, unbehobener Befund.
+                _restored_test_files = (
+                    restore_test_files(project_dir, _test_files_before_fix)
+                    if _test_files_before_fix is not None else []
+                )
+                _regression_fixed = False
+                if _restored_test_files:
+                    notify(
+                        f"  ↩️ [yellow]{len(_restored_test_files)} Testdatei(en) auf den Stand vor dem "
+                        f"Fixversuch zurückgesetzt:[/yellow] {', '.join(sorted(_restored_test_files))}. "
+                        "Fordere einen erneuten, echten Fix an..."
+                    )
+                    _anti_regression_tasks = [
+                        AgentTask(
+                            task_id=f"{ft.task_id}_no_regression",
+                            agent_id=ft.agent_id,
+                            description=(
+                                "Dein vorheriger Fixversuch hat den fehlschlagenden Test ERSATZLOS GELÖSCHT "
+                                "statt den zugrunde liegenden Fehler zu beheben - die Testdatei(en) wurden "
+                                "deshalb auf den Stand davor zurückgesetzt. Behebe den echten Fehler im "
+                                "Anwendungscode (oder korrigiere eine nachweislich falsche Testerwartung, "
+                                "OHNE die Testfunktion zu entfernen). Test NICHT löschen oder überspringen "
+                                f"(kein `skip`/`xfail`).\n\n{ft.description}"
+                            ),
+                            context=fix_brief_ctx, project_dir=project_dir, max_tool_iterations=8,
+                        )
+                        for ft in fix_tasks
+                    ]
+                    _anti_regression_results = await self._run_agents_parallel(_anti_regression_tasks, notify=notify)
+                    self._update_file_owners(file_owners, _anti_regression_results)
+                    all_results.extend(_anti_regression_results)
+                    summary_lines.append(
+                        f"- ↩️ Versuch {attempt}: Test-Schrumpfung erkannt, {len(_restored_test_files)} "
+                        "Testdatei(en) zurückgesetzt und ein erneuter Fix mit explizitem Lösch-Verbot angefordert."
+                    )
+                    await self._resync_environment_if_dependencies_changed(verifier, _anti_regression_results, notify, summary_lines)
+                    _tests_after_retry = collect_test_function_names(project_dir)
+                    if not (_tests_before_fix - _tests_after_retry):
+                        _retry_report = await self._run_tests_logged(verifier, "nach-test-schrumpfung")
+                        if _retry_report.passed:
+                            notify("  ✅ [bold green]Erneuter Fix ohne Test-Löschung erfolgreich:[/bold green] Testsuite ist grün.")
+                            summary_lines.append("- ✅ Erneuter Fix ohne Test-Löschung behob den Fehler – Testsuite bestanden.")
+                            report = _retry_report
+                            _regression_fixed = True
+                        else:
+                            report = _retry_report
+                if not _regression_fixed:
+                    outcome.record(
+                        "test_regression", False,
+                        f"{len(_tests_lost)} Test(s) entfernt statt behoben: {_lost_list}",
+                    )
+                    summary_lines.append(
+                        f"- 🧪 ❌ **Verifikations-Veto durch Test-Schrumpfung:** {len(_tests_lost)} Testfunktion(en) "
+                        f"entfernt statt den Fehler zu beheben ({_lost_list})"
+                        + (" – auch nach zurückgesetzten Tests und erneutem Fix-Versuch weiterhin nicht behoben." if _restored_test_files else ".")
+                    )
+                    if self.last_project_slug:
+                        try:
+                            upsert_ticket(
+                                ticket_id=f"test-regression-{self.last_project_slug}",
+                                title=f"Tests statt Fehler entfernt: {self.last_project_slug}",
+                                source="orchestrator", status="blocked", project_slug=self.last_project_slug,
+                                detail=f"Versuch {attempt}: {len(_tests_lost)} Testfunktion(en) verschwunden: {_lost_list}"
+                                       + (" (Tests zurückgesetzt, erneuter Fix-Versuch ebenfalls erfolglos)" if _restored_test_files else ""),
+                            )
+                        except Exception as e:
+                            notify(f"  ⚠️ [dim yellow]Ticket für Test-Schrumpfung konnte nicht angelegt werden: {e}[/dim yellow]")
+
+        if attempt == MAX_VERIFICATION_ITERATIONS:
+            # Die Schleife testet nur am Anfang jedes Versuchs - ohne diese Abschlussprüfung würde
+            # der Fix des letzten Versuchs nie gegen die Testsuite geprüft.
+            if any(r.files_written for r in fix_results):
+                notify("  🔍 [yellow]Abschlussprüfung nach letztem Fixversuch:[/yellow] prüft, ob der Fix tatsächlich griff...")
+                post_fix_report = await self._run_tests_logged(verifier, "abschluss")
+                if post_fix_report.passed:
+                    report = post_fix_report
+                    self.last_verification_ok = True
+                    verification_ok = True
+                    notify(f"  🎉 [bold green]Abschlussprüfung nach Fix erfolgreich: Testsuite ist vollständig grün![/bold green] ({report.duration_seconds:.1f}s).")
+                    summary_lines.append("- 🎉 Abschlussprüfung nach letztem Fix erfolgreich: Testsuite ist grün.")
+                    if had_prior_test_ticket and test_ticket_id:
+                        try:
+                            upsert_ticket(
+                                ticket_id=test_ticket_id,
+                                title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                                source="orchestrator", status="done", project_slug=self.last_project_slug,
+                                detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
+                            )
+                            notify("  🎫 [dim]Ticket für vorherigen Testfehlschlag als gelöst geschlossen.[/dim]")
+                        except Exception as e:
+                            notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
+                    # Bug-Fix (EventForge-Analyse 2026-09-16): dieser Abschluss-Erfolgspfad (letzter
+                    # Versuch, z.B. HEAVY_MODEL-Eskalation) sprang direkt zum `break` und übersprang
+                    # dabei die Testtiefen-Prüfung weiter oben (die nur am SCHLEIFENANFANG steht,
+                    # hierher gelangt der Code erst NACH einem `continue`). Ein Projekt mit echten,
+                    # aber ungetesteten API-Routen zeigte dadurch in der Definition of Done
+                    # fälschlich "applicable: false" (nie gemessen) statt eines echten Befunds -
+                    # real beobachtet bei entwickle_eventforge_ein_webhook trotz 6 erkennbarer Routen.
+                    if ENABLE_TEST_DEPTH_GATE:
+                        depth = await asyncio.to_thread(analyze_test_depth, project_dir, MIN_ROUTE_TEST_RATIO)
+                        if depth.applicable:
+                            outcome.record("test_depth", depth.passed, "" if depth.passed else depth.format_summary())
+                            icon = "✅" if depth.passed else "⚠️"
+                            summary_lines.append(f"- 🧪 {icon} {depth.format_summary()}")
+                    return "break", report, verification_ok, previous_fix_all_no_delivery
+                report = post_fix_report
+
+            notify("  ⚠️ [yellow]Maximale Verifikations-Iterationen erreicht – letzter Stand wird übernommen.[/yellow]")
+            summary_lines.append(f"- ⚠️ Nach {MAX_VERIFICATION_ITERATIONS} Versuchen nicht vollständig grün – letzter Stand wurde übernommen.")
+            # Ticket schon beim ersten Scheitern in diesem Lauf, nicht erst nach zwei gescheiterten
+            # Läufen (has_repeated_failure). Dieselbe Ticket-ID, damit beide Pfade dasselbe Ticket
+            # aktualisieren statt Duplikate anzulegen.
+            if self.last_project_slug:
+                try:
+                    upsert_ticket(
+                        ticket_id=f"recurring-failure-{self.last_project_slug}",
+                        title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                        source="orchestrator", status="blocked", project_slug=self.last_project_slug,
+                        detail="\n".join(summary_lines).strip()[:300] + self._provider_exhaustion_ticket_note(),
+                    )
+                except Exception as e:
+                    notify(f"  ⚠️ [dim yellow]Ticket für ungelösten Testfehler konnte nicht angelegt werden: {e}[/dim yellow]")
+
+        return None, report, verification_ok, previous_fix_all_no_delivery
+
     async def _run_completeness_check_loop(
         self,
         *,
@@ -1052,264 +1341,16 @@ class VerificationMixin:
             if loop_signal == "break":
                 break
 
-            if budget_aborted:
-                notify("  🚫 [bold red]Budget erreicht[/bold red] – kein neuer Fix-Auftrag mehr, letzter Teststand wird übernommen.")
-                summary_lines.append(
-                    f"- 🚫 Budget erreicht – Verifikation nach Versuch {attempt} mit "
-                    f"{len(report.failures)} verbleibendem/n Testfehler(n) abgebrochen, ohne einen weiteren "
-                    "(tokenkostenden) Fix-Agenten zu beauftragen."
-                )
+            (
+                loop_signal, report, verification_ok, previous_fix_all_no_delivery,
+            ) = await self._dispatch_fix_and_check_regression(
+                verifier=verifier, project_dir=project_dir, report=report, attempt=attempt,
+                file_owners=file_owners, all_results=all_results, summary_lines=summary_lines,
+                notify=notify, outcome=outcome, test_ticket_id=test_ticket_id,
+                had_prior_test_ticket=had_prior_test_ticket, budget_aborted=budget_aborted,
+            )
+            if loop_signal == "break":
                 break
-
-            agents_to_fix: dict[str, list] = {}
-            tester_participated = any(r.agent_id == "tester" for r in all_results)
-            # Collection-/Syntaxfehler blockieren die gesamte Suite - alle übrigen Fehlschläge sind
-            # bis dahin Folgefehler bzw. nicht aussagekräftig und werden erst danach bearbeitet.
-            dispatch_failures = blocking_failures_first(report.failures)
-            if len(dispatch_failures) < len(report.failures):
-                notify(
-                    f"  🧱 [yellow]{len(dispatch_failures)} Collection-/Syntaxfehler blockieren die Testsuite[/yellow] – "
-                    f"{len(report.failures) - len(dispatch_failures)} weitere Fehlschläge folgen erst danach."
-                )
-            triages = {
-                id(f): triage_structural_failure(f.message, f.files, file_owners, project_dir) for f in dispatch_failures
-            }
-            for failure in dispatch_failures:
-                triage = triages[id(failure)]
-                # Persistentes Lernen für künftige Läufe - außerhalb der seiteneffektfreien Routing-
-                # Funktion. Bei Schnittstellen-Drift liegt der Fehler beim Konsumenten, die Backend-
-                # Regel wäre dann eine falsche Lektion.
-                if _import_name_error_target(failure.message) is not None and (
-                    triage is None or triage.kind == KIND_MISSING_SYMBOL
-                ):
-                    _record_verification_learning(failure.message)
-                _record_instance_attribute_learning(failure.message)
-                owners = _route_failure_owners(
-                    failure.message, failure.files, file_owners, self._agents, tester_participated,
-                    project_dir=project_dir,
-                )
-                for owner in owners:
-                    if owner in self._agents:
-                        agents_to_fix.setdefault(owner, []).append(failure)
-
-            if not agents_to_fix:
-                notify("  ⚠️ [yellow]Testfehler konnten keinem Agenten eindeutig zugeordnet werden – Auto-Fix abgebrochen.[/yellow]")
-                summary_lines.append(f"- ⚠️ Versuch {attempt}: {len(report.failures)} Testfehler blieben ungelöst (keine eindeutige Dateizuordnung im Traceback).")
-                break
-
-            fix_brief_ctx = _build_project_brief_context(project_dir)
-            fix_tasks = []
-            for agent_id, fails in agents_to_fix.items():
-                failure_text = _format_failures_for_agent(fails, triages=triages, max_failures=5, max_msg_chars=1200)
-                prior_no_delivery = any(
-                    r.agent_id == agent_id and r.failure_class == FAILURE_CLASS_NO_DELIVERY
-                    for r in (all_results or [])
-                )
-                delivery_prompt_hint = (
-                    "\n\n🚨 ACHTUNG (Hard Delivery Gate): Dein vorheriger Fixversuch hat KEINE Datei gespeichert! "
-                    "Reine Textantworten ohne Werkzeugaufruf gelten als Totalausfall. Du MUSST jetzt sofort "
-                    "edit_file oder write_file aufrufen, um die Korrekturen anzuwenden!\n"
-                    if prior_no_delivery else ""
-                )
-                fix_tasks.append(AgentTask(
-                    task_id=f"verify_fix_{agent_id}_{attempt}",
-                    agent_id=agent_id,
-                    description=(
-                        f"Die ECHTE automatische Testsuite ist fehlgeschlagen (kein Schätzwert, sondern realer "
-                        f"pytest/unittest-Output). Nutze read_file, um die betroffene(n) Datei(en) zu prüfen, und "
-                        f"edit_file/write_file, um den Fehler zu beheben. Verifiziere deinen Fix danach mit run_tests.\n\n"
-                        f"{failure_text}"
-                        + delivery_prompt_hint
-                        + (_prior_run_context(test_ticket_id) if attempt == 1 and test_ticket_id else "")
-                    ),
-                    context=fix_brief_ctx,
-                    project_dir=project_dir,
-                    max_tool_iterations=8,
-                ))
-
-            notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix:[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())} (nicht blind alle Dev-Agenten)...")
-            # Reine Strukturfehler sind nie durch Manifest-Änderungen zu beheben - Manifeste werden
-            # gesichert und nach dem Fix-Schritt zurückgesetzt.
-            structural_only = all(triages.get(id(f)) is not None for fails in agents_to_fix.values() for f in fails)
-            manifest_snapshot = snapshot_dependency_manifests(project_dir) if project_dir and structural_only else None
-            # Test-Schrumpfungs-Wächter (EventForge-Analyse 2026-09-16): erfasst die Testnamen VOR
-            # dem Fix-Versuch, damit unten erkennbar ist, ob "tester" den Fehler wirklich behoben
-            # oder den fehlschlagenden Test ersatzlos entfernt hat - siehe
-            # `core.test_depth.collect_test_function_names()`-Docstring für den realen Fund.
-            _tests_before_fix = (
-                collect_test_function_names(project_dir) if "tester" in agents_to_fix else None
-            )
-            # Voller Dateiinhalt (nicht nur Testnamen) VOR dem Fix-Versuch, damit eine erkannte
-            # Test-Schrumpfung unten tatsächlich rückgängig gemacht werden kann, statt sie nur
-            # zu protokollieren (core.test_depth.snapshot_test_files()).
-            _test_files_before_fix = snapshot_test_files(project_dir) if _tests_before_fix is not None else None
-            fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
-            # P1-5: gilt nur für DIESEN regulären, per-Rolle-geroutet Fixversuch - eine Eskalation
-            # (Fachbereichsleiter/HEAVY_MODEL/Zweitmeinung, jeweils eigene fix_results weiter
-            # unten) ist eine ANDERE Strategie, kein Wiederholungsversuch mit demselben Prompt,
-            # und soll deshalb weiterhin regulär per Signaturvergleich geprüft werden.
-            previous_fix_all_no_delivery = bool(fix_results) and all(
-                r.failure_class == FAILURE_CLASS_NO_DELIVERY for r in fix_results
-            )
-            restored_manifests = (
-                restore_dependency_manifests(project_dir, manifest_snapshot) if manifest_snapshot is not None else []
-            )
-            if restored_manifests:
-                notify(f"  ⛔ [yellow]Manifest-Änderungen bei reinem Strukturfehler zurückgesetzt:[/yellow] {', '.join(restored_manifests)}")
-                summary_lines.append(
-                    f"- ⛔ Versuch {attempt}: unnötige Änderungen an {', '.join(restored_manifests)} zurückgesetzt "
-                    "(Ursache war die Code-Struktur, keine Abhängigkeit)."
-                )
-            self._update_file_owners(file_owners, fix_results)
-            all_results.extend(fix_results)
-            # Nur re-syncen, wenn die Manifest-Änderung bestehen blieb.
-            if not restored_manifests:
-                await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
-            summary_lines.append(f"- 🛠️ Versuch {attempt}: {len(report.failures)} echte Testfehler → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt.")
-
-            # Test-Schrumpfungs-Wächter: fehlten nach dem Fix Testfunktionen, die vorher da waren
-            # (und keine gleich große Ersatzmenge dazukam), wurde der Fehler wahrscheinlich durch
-            # LÖSCHEN des fehlschlagenden Tests "behoben" statt durch eine echte Korrektur. Das
-            # gilt als echter Verifikations-Fund - anders als Lint/SAST blockiert er den Lauf.
-            if _tests_before_fix is not None:
-                _tests_after_fix = collect_test_function_names(project_dir)
-                _tests_lost = _tests_before_fix - _tests_after_fix
-                if _tests_lost and len(_tests_after_fix) < len(_tests_before_fix):
-                    _lost_list = ", ".join(sorted(_tests_lost)[:10])
-                    notify(
-                        f"  🧪 [bold red]Test-Schrumpfung erkannt:[/bold red] {len(_tests_lost)} Testfunktion(en) "
-                        f"nach dem Fixversuch verschwunden statt der Fehler behoben: {_lost_list}."
-                    )
-                    # Realer Fund (Team-Optimierung 2026-09-17): dieser Zweig protokollierte die
-                    # Schrumpfung bisher nur (Veto + Ticket), ließ die gelöschten Tests aber
-                    # gelöscht - der Lauf endete als `blocked`-Ticket ohne echten Fix-Versuch, der
-                    # das eigentliche Problem (fehlerhafter Anwendungscode) noch angehen konnte.
-                    # Jetzt: gelöschte Tests werden aus _test_files_before_fix zurückgeholt und
-                    # EIN weiterer, expliziter Fix-Versuch mit klarem Verbot ("Tests NICHT
-                    # löschen") wird SOFORT nachgeschoben, inline geprüft (kein verbrauchter
-                    # `attempt` wie bei der Eskalation oben) - erst wenn auch der scheitert, gilt
-                    # es als echter, unbehobener Befund.
-                    _restored_test_files = (
-                        restore_test_files(project_dir, _test_files_before_fix)
-                        if _test_files_before_fix is not None else []
-                    )
-                    _regression_fixed = False
-                    if _restored_test_files:
-                        notify(
-                            f"  ↩️ [yellow]{len(_restored_test_files)} Testdatei(en) auf den Stand vor dem "
-                            f"Fixversuch zurückgesetzt:[/yellow] {', '.join(sorted(_restored_test_files))}. "
-                            "Fordere einen erneuten, echten Fix an..."
-                        )
-                        _anti_regression_tasks = [
-                            AgentTask(
-                                task_id=f"{ft.task_id}_no_regression",
-                                agent_id=ft.agent_id,
-                                description=(
-                                    "Dein vorheriger Fixversuch hat den fehlschlagenden Test ERSATZLOS GELÖSCHT "
-                                    "statt den zugrunde liegenden Fehler zu beheben - die Testdatei(en) wurden "
-                                    "deshalb auf den Stand davor zurückgesetzt. Behebe den echten Fehler im "
-                                    "Anwendungscode (oder korrigiere eine nachweislich falsche Testerwartung, "
-                                    "OHNE die Testfunktion zu entfernen). Test NICHT löschen oder überspringen "
-                                    f"(kein `skip`/`xfail`).\n\n{ft.description}"
-                                ),
-                                context=fix_brief_ctx, project_dir=project_dir, max_tool_iterations=8,
-                            )
-                            for ft in fix_tasks
-                        ]
-                        _anti_regression_results = await self._run_agents_parallel(_anti_regression_tasks, notify=notify)
-                        self._update_file_owners(file_owners, _anti_regression_results)
-                        all_results.extend(_anti_regression_results)
-                        summary_lines.append(
-                            f"- ↩️ Versuch {attempt}: Test-Schrumpfung erkannt, {len(_restored_test_files)} "
-                            "Testdatei(en) zurückgesetzt und ein erneuter Fix mit explizitem Lösch-Verbot angefordert."
-                        )
-                        await self._resync_environment_if_dependencies_changed(verifier, _anti_regression_results, notify, summary_lines)
-                        _tests_after_retry = collect_test_function_names(project_dir)
-                        if not (_tests_before_fix - _tests_after_retry):
-                            _retry_report = await self._run_tests_logged(verifier, "nach-test-schrumpfung")
-                            if _retry_report.passed:
-                                notify("  ✅ [bold green]Erneuter Fix ohne Test-Löschung erfolgreich:[/bold green] Testsuite ist grün.")
-                                summary_lines.append("- ✅ Erneuter Fix ohne Test-Löschung behob den Fehler – Testsuite bestanden.")
-                                report = _retry_report
-                                _regression_fixed = True
-                            else:
-                                report = _retry_report
-                    if not _regression_fixed:
-                        outcome.record(
-                            "test_regression", False,
-                            f"{len(_tests_lost)} Test(s) entfernt statt behoben: {_lost_list}",
-                        )
-                        summary_lines.append(
-                            f"- 🧪 ❌ **Verifikations-Veto durch Test-Schrumpfung:** {len(_tests_lost)} Testfunktion(en) "
-                            f"entfernt statt den Fehler zu beheben ({_lost_list})"
-                            + (" – auch nach zurückgesetzten Tests und erneutem Fix-Versuch weiterhin nicht behoben." if _restored_test_files else ".")
-                        )
-                        if self.last_project_slug:
-                            try:
-                                upsert_ticket(
-                                    ticket_id=f"test-regression-{self.last_project_slug}",
-                                    title=f"Tests statt Fehler entfernt: {self.last_project_slug}",
-                                    source="orchestrator", status="blocked", project_slug=self.last_project_slug,
-                                    detail=f"Versuch {attempt}: {len(_tests_lost)} Testfunktion(en) verschwunden: {_lost_list}"
-                                           + (" (Tests zurückgesetzt, erneuter Fix-Versuch ebenfalls erfolglos)" if _restored_test_files else ""),
-                                )
-                            except Exception as e:
-                                notify(f"  ⚠️ [dim yellow]Ticket für Test-Schrumpfung konnte nicht angelegt werden: {e}[/dim yellow]")
-
-            if attempt == MAX_VERIFICATION_ITERATIONS:
-                # Die Schleife testet nur am Anfang jedes Versuchs - ohne diese Abschlussprüfung würde
-                # der Fix des letzten Versuchs nie gegen die Testsuite geprüft.
-                if any(r.files_written for r in fix_results):
-                    notify("  🔍 [yellow]Abschlussprüfung nach letztem Fixversuch:[/yellow] prüft, ob der Fix tatsächlich griff...")
-                    post_fix_report = await self._run_tests_logged(verifier, "abschluss")
-                    if post_fix_report.passed:
-                        report = post_fix_report
-                        self.last_verification_ok = True
-                        verification_ok = True
-                        notify(f"  🎉 [bold green]Abschlussprüfung nach Fix erfolgreich: Testsuite ist vollständig grün![/bold green] ({report.duration_seconds:.1f}s).")
-                        summary_lines.append("- 🎉 Abschlussprüfung nach letztem Fix erfolgreich: Testsuite ist grün.")
-                        if had_prior_test_ticket and test_ticket_id:
-                            try:
-                                upsert_ticket(
-                                    ticket_id=test_ticket_id,
-                                    title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
-                                    source="orchestrator", status="done", project_slug=self.last_project_slug,
-                                    detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
-                                )
-                                notify("  🎫 [dim]Ticket für vorherigen Testfehlschlag als gelöst geschlossen.[/dim]")
-                            except Exception as e:
-                                notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
-                        # Bug-Fix (EventForge-Analyse 2026-09-16): dieser Abschluss-Erfolgspfad (letzter
-                        # Versuch, z.B. HEAVY_MODEL-Eskalation) sprang direkt zum `break` und übersprang
-                        # dabei die Testtiefen-Prüfung weiter oben (die nur am SCHLEIFENANFANG steht,
-                        # hierher gelangt der Code erst NACH einem `continue`). Ein Projekt mit echten,
-                        # aber ungetesteten API-Routen zeigte dadurch in der Definition of Done
-                        # fälschlich "applicable: false" (nie gemessen) statt eines echten Befunds -
-                        # real beobachtet bei entwickle_eventforge_ein_webhook trotz 6 erkennbarer Routen.
-                        if ENABLE_TEST_DEPTH_GATE:
-                            depth = await asyncio.to_thread(analyze_test_depth, project_dir, MIN_ROUTE_TEST_RATIO)
-                            if depth.applicable:
-                                outcome.record("test_depth", depth.passed, "" if depth.passed else depth.format_summary())
-                                icon = "✅" if depth.passed else "⚠️"
-                                summary_lines.append(f"- 🧪 {icon} {depth.format_summary()}")
-                        break
-                    report = post_fix_report
-
-                notify("  ⚠️ [yellow]Maximale Verifikations-Iterationen erreicht – letzter Stand wird übernommen.[/yellow]")
-                summary_lines.append(f"- ⚠️ Nach {MAX_VERIFICATION_ITERATIONS} Versuchen nicht vollständig grün – letzter Stand wurde übernommen.")
-                # Ticket schon beim ersten Scheitern in diesem Lauf, nicht erst nach zwei gescheiterten
-                # Läufen (has_repeated_failure). Dieselbe Ticket-ID, damit beide Pfade dasselbe Ticket
-                # aktualisieren statt Duplikate anzulegen.
-                if self.last_project_slug:
-                    try:
-                        upsert_ticket(
-                            ticket_id=f"recurring-failure-{self.last_project_slug}",
-                            title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
-                            source="orchestrator", status="blocked", project_slug=self.last_project_slug,
-                            detail="\n".join(summary_lines).strip()[:300] + self._provider_exhaustion_ticket_note(),
-                        )
-                    except Exception as e:
-                        notify(f"  ⚠️ [dim yellow]Ticket für ungelösten Testfehler konnte nicht angelegt werden: {e}[/dim yellow]")
 
         # verification_ok spiegelt hier nur die Kern-Testsuite wider - nachgelagerte Prüfungen setzen
         # es ggf. zurück, ohne das Testergebnis selbst zu verfälschen.

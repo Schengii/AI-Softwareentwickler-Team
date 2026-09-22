@@ -498,96 +498,11 @@ class VerificationMixin:
         )
 
         # Vorab-Import-Check: fehlende lokale Module/Symbole sind statisch in Millisekunden erkennbar
-        # und würden sonst erst nach der teuren Test-/Governance-Kaskade auffallen. Prüft Import-
-        # Funde UND (seit ecotrack_ai-Fund 2026-09-17) unaufgelöste Namen in Einstiegsdateien
-        # (`undefined_entrypoint_name`, z.B. ein registrierter, aber nie importierter Router) -
-        # beides garantierte NameError/ImportError-Abstürze beim Start, dieselbe Kategorie. Stub-
-        # Marker u.ä. bleiben beim späteren vollständigen Durchlauf.
-        _PREIMPORT_ISSUE_KINDS = {"missing_local_import", "undefined_entrypoint_name"}
-        if ENABLE_COMPLETENESS_CHECK and not (budget_aborted or manually_cancelled):
-            # Zirkuit-Breaker wie in den übrigen Fix-Schleifen.
-            previous_preimport_signature: frozenset[tuple[str, str]] | None = None
-            for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
-                if run_start_tokens is not None and (
-                    self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
-                ):
-                    budget_aborted = True
-                    notify("  🚫 [bold red]Budget erreicht[/bold red] – Vorab-Import-Check übersprungen.")
-                    break
-                if cancel_requested and cancel_requested():
-                    manually_cancelled = True
-                    notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – Vorab-Import-Check übersprungen.")
-                    break
-
-                pre_report = await asyncio.to_thread(verifier.check_completeness)
-                # Erst .attempted/.passed, dann .issues: hält Tests mit komplett gemocktem
-                # ProjectVerifier lauffähig (MagicMock().issues wäre nicht iterierbar).
-                if not pre_report.attempted or pre_report.passed:
-                    break
-                # CompletenessIssue.kind ist ein stabiles Tag und erfasst auch fehlende Symbol-Importe,
-                # die eine Substring-Suche auf die Meldung verpassen würde.
-                import_issues = [i for i in pre_report.issues if i.kind in _PREIMPORT_ISSUE_KINDS]
-                if not import_issues:
-                    if attempt > 1:
-                        notify(f"  🧩 [bold green]Vorab-Import-Check nach Fix (Versuch {attempt}) bestanden.[/bold green]")
-                        summary_lines.append(f"- 🧩 Vorab-Import-Check (statisch, vor der Testsuite): nach {attempt} Durchlauf/Durchläufen bestanden.")
-                    break
-
-                current_preimport_signature = _issue_signature(import_issues, lambda i: (i.file_path, i.message[:300]))
-                if _no_progress(previous_preimport_signature, current_preimport_signature):
-                    notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Import-Funde wie vor dem letzten Fixversuch – breche Vorab-Import-Check ab, weiter mit der regulären Testsuite.")
-                    summary_lines.append(
-                        f"- 🧩 🛑 Vorab-Import-Check, Versuch {attempt}: dieselben {len(import_issues)} Fund(e) wie nach dem "
-                        "vorherigen Fixversuch (keine Veränderung) – Schleife abgebrochen statt einen wirkungslosen weiteren "
-                        "Versuch zu verbrauchen (bleibt im regulären Testlauf danach erneut sichtbar)."
-                    )
-                    break
-                previous_preimport_signature = current_preimport_signature
-
-                top = "; ".join(f"{i.file_path}:{i.line_number} – {i.message}" for i in import_issues[:5])
-                notify(f"  🧩 [bold red]Vorab-Import-Check: {len(import_issues)} fehlende(s)/unaufgelöste(s) lokale(s) Modul/Symbol/Name VOR jedem Testlauf gefunden.[/bold red]")
-
-                # Fehlendes lokales Modul/Symbol/unaufgelöster Name ist immer ein Code-Problem - Fallback-Owner dev_lead.
-                agents_to_fix: dict[str, list] = {}
-                for issue in import_issues:
-                    owner = file_owners.get(issue.file_path)
-                    if not owner or owner not in self._agents:
-                        owner = "dev_lead"
-                    if owner in self._agents:
-                        agents_to_fix.setdefault(owner, []).append(issue)
-
-                if not agents_to_fix:
-                    summary_lines.append(f"- 🧩 ❌ Vorab-Import-Check: {len(import_issues)} Fund(e) blieben ungelöst (keinem Agenten eindeutig zuordenbar): {top}")
-                    break
-
-                fix_tasks = []
-                for agent_id, agent_issues in agents_to_fix.items():
-                    issue_text = "\n".join(f"- {i.file_path}:{i.line_number} – {i.message}" for i in agent_issues)
-                    fix_tasks.append(AgentTask(
-                        task_id=f"verify_fix_preimport_{agent_id}_{attempt}",
-                        agent_id=agent_id,
-                        description=(
-                            "Ein statischer Vorab-Check (VOR jedem Testlauf) hat lokale Python-Importe "
-                            "gefunden, die auf nicht existierende Dateien/Symbole verweisen, oder Namen "
-                            "(z.B. ein registrierter Router), die in einer Einstiegsdatei verwendet werden, "
-                            "ohne dort importiert/definiert zu sein - der Code kann dadurch nicht einmal "
-                            "gestartet werden. Lege die fehlende(n) Datei(en)/Symbol(e) mit echtem Inhalt an "
-                            "und importiere sie in der genannten Einstiegsdatei, statt sie nur zu registrieren.\n\n"
-                            f"{issue_text}"
-                        ),
-                        context="",
-                        project_dir=project_dir,
-                    ))
-
-                notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix (Vorab-Import-Check):[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())}...")
-                fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
-                self._update_file_owners(file_owners, fix_results)
-                all_results.extend(fix_results)
-                summary_lines.append(f"- 🧩 Vorab-Import-Check, Versuch {attempt}: {len(import_issues)} Fund(e) → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt: {top}")
-
-                if attempt == MAX_VERIFICATION_ITERATIONS:
-                    notify("  ⚠️ [yellow]Maximale Vorab-Import-Fixversuche erreicht – weiter mit der regulären Testsuite.[/yellow]")
-                    summary_lines.append(f"- 🧩 ⚠️ Vorab-Import-Check nach {MAX_VERIFICATION_ITERATIONS} Versuchen weiterhin mit Funden – weiter mit der regulären Testsuite (dort erneut sichtbar).")
+        # und würden sonst erst nach der teuren Test-/Governance-Kaskade auffallen.
+        budget_aborted, manually_cancelled = await self._run_preimport_check_loop(
+            project_dir, verifier, run_start_tokens, cancel_requested, notify, file_owners,
+            all_results, summary_lines, budget_aborted, manually_cancelled,
+        )
 
         # ── Smoke-Test-Gate: Startet die App überhaupt? ───────────────────────────────────
         #
@@ -1851,6 +1766,118 @@ class VerificationMixin:
                 "pre_flight", pre_flight_report.passed,
                 "" if pre_flight_report.passed else f"{len(pre_flight_report.issues)} Fund(e)",
             )
+        return budget_aborted, manually_cancelled
+
+    async def _run_preimport_check_loop(
+        self,
+        project_dir: str,
+        verifier: ProjectVerifier,
+        run_start_tokens: dict | None,
+        cancel_requested: Callable[[], bool] | None,
+        notify: Callable[[str], None],
+        file_owners: dict[str, str],
+        all_results: list[AgentResult],
+        summary_lines: list[str],
+        budget_aborted: bool,
+        manually_cancelled: bool,
+    ) -> tuple[bool, bool]:
+        """P6-5 (ROADMAP_TEMP.md, Teilschritt): aus `_run_verification_loop_impl()` extrahiert -
+        prüft Import-Funde UND (seit ecotrack_ai-Fund 2026-09-17) unaufgelöste Namen in
+        Einstiegsdateien (`undefined_entrypoint_name`, z.B. ein registrierter, aber nie
+        importierter Router) - beides garantierte NameError/ImportError-Abstürze beim Start,
+        dieselbe Kategorie. Stub-Marker u.ä. bleiben beim späteren vollständigen Durchlauf.
+        `budget_aborted`/`manually_cancelled` kommen als Parameter herein (anders als beim
+        Pre-Flight-Check ist hier NICHT garantiert, dass sie noch `False` sind) und werden am
+        Ende zurückgegeben - `file_owners`/`all_results`/`summary_lines` bleiben in-place
+        mutiert."""
+        if not ENABLE_COMPLETENESS_CHECK or budget_aborted or manually_cancelled:
+            return budget_aborted, manually_cancelled
+
+        _PREIMPORT_ISSUE_KINDS = {"missing_local_import", "undefined_entrypoint_name"}
+        # Zirkuit-Breaker wie in den übrigen Fix-Schleifen.
+        previous_preimport_signature: frozenset[tuple[str, str]] | None = None
+        for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
+            if run_start_tokens is not None and (
+                self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+            ):
+                budget_aborted = True
+                notify("  🚫 [bold red]Budget erreicht[/bold red] – Vorab-Import-Check übersprungen.")
+                break
+            if cancel_requested and cancel_requested():
+                manually_cancelled = True
+                notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – Vorab-Import-Check übersprungen.")
+                break
+
+            pre_report = await asyncio.to_thread(verifier.check_completeness)
+            # Erst .attempted/.passed, dann .issues: hält Tests mit komplett gemocktem
+            # ProjectVerifier lauffähig (MagicMock().issues wäre nicht iterierbar).
+            if not pre_report.attempted or pre_report.passed:
+                break
+            # CompletenessIssue.kind ist ein stabiles Tag und erfasst auch fehlende Symbol-Importe,
+            # die eine Substring-Suche auf die Meldung verpassen würde.
+            import_issues = [i for i in pre_report.issues if i.kind in _PREIMPORT_ISSUE_KINDS]
+            if not import_issues:
+                if attempt > 1:
+                    notify(f"  🧩 [bold green]Vorab-Import-Check nach Fix (Versuch {attempt}) bestanden.[/bold green]")
+                    summary_lines.append(f"- 🧩 Vorab-Import-Check (statisch, vor der Testsuite): nach {attempt} Durchlauf/Durchläufen bestanden.")
+                break
+
+            current_preimport_signature = _issue_signature(import_issues, lambda i: (i.file_path, i.message[:300]))
+            if _no_progress(previous_preimport_signature, current_preimport_signature):
+                notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Import-Funde wie vor dem letzten Fixversuch – breche Vorab-Import-Check ab, weiter mit der regulären Testsuite.")
+                summary_lines.append(
+                    f"- 🧩 🛑 Vorab-Import-Check, Versuch {attempt}: dieselben {len(import_issues)} Fund(e) wie nach dem "
+                    "vorherigen Fixversuch (keine Veränderung) – Schleife abgebrochen statt einen wirkungslosen weiteren "
+                    "Versuch zu verbrauchen (bleibt im regulären Testlauf danach erneut sichtbar)."
+                )
+                break
+            previous_preimport_signature = current_preimport_signature
+
+            top = "; ".join(f"{i.file_path}:{i.line_number} – {i.message}" for i in import_issues[:5])
+            notify(f"  🧩 [bold red]Vorab-Import-Check: {len(import_issues)} fehlende(s)/unaufgelöste(s) lokale(s) Modul/Symbol/Name VOR jedem Testlauf gefunden.[/bold red]")
+
+            # Fehlendes lokales Modul/Symbol/unaufgelöster Name ist immer ein Code-Problem - Fallback-Owner dev_lead.
+            agents_to_fix: dict[str, list] = {}
+            for issue in import_issues:
+                owner = file_owners.get(issue.file_path)
+                if not owner or owner not in self._agents:
+                    owner = "dev_lead"
+                if owner in self._agents:
+                    agents_to_fix.setdefault(owner, []).append(issue)
+
+            if not agents_to_fix:
+                summary_lines.append(f"- 🧩 ❌ Vorab-Import-Check: {len(import_issues)} Fund(e) blieben ungelöst (keinem Agenten eindeutig zuordenbar): {top}")
+                break
+
+            fix_tasks = []
+            for agent_id, agent_issues in agents_to_fix.items():
+                issue_text = "\n".join(f"- {i.file_path}:{i.line_number} – {i.message}" for i in agent_issues)
+                fix_tasks.append(AgentTask(
+                    task_id=f"verify_fix_preimport_{agent_id}_{attempt}",
+                    agent_id=agent_id,
+                    description=(
+                        "Ein statischer Vorab-Check (VOR jedem Testlauf) hat lokale Python-Importe "
+                        "gefunden, die auf nicht existierende Dateien/Symbole verweisen, oder Namen "
+                        "(z.B. ein registrierter Router), die in einer Einstiegsdatei verwendet werden, "
+                        "ohne dort importiert/definiert zu sein - der Code kann dadurch nicht einmal "
+                        "gestartet werden. Lege die fehlende(n) Datei(en)/Symbol(e) mit echtem Inhalt an "
+                        "und importiere sie in der genannten Einstiegsdatei, statt sie nur zu registrieren.\n\n"
+                        f"{issue_text}"
+                    ),
+                    context="",
+                    project_dir=project_dir,
+                ))
+
+            notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix (Vorab-Import-Check):[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())}...")
+            fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+            self._update_file_owners(file_owners, fix_results)
+            all_results.extend(fix_results)
+            summary_lines.append(f"- 🧩 Vorab-Import-Check, Versuch {attempt}: {len(import_issues)} Fund(e) → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt: {top}")
+
+            if attempt == MAX_VERIFICATION_ITERATIONS:
+                notify("  ⚠️ [yellow]Maximale Vorab-Import-Fixversuche erreicht – weiter mit der regulären Testsuite.[/yellow]")
+                summary_lines.append(f"- 🧩 ⚠️ Vorab-Import-Check nach {MAX_VERIFICATION_ITERATIONS} Versuchen weiterhin mit Funden – weiter mit der regulären Testsuite (dort erneut sichtbar).")
+
         return budget_aborted, manually_cancelled
 
     async def _record_accessibility_check(

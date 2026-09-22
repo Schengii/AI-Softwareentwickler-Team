@@ -383,6 +383,115 @@ class VerificationMixin:
             summary = f"### 🧪 Verifikations-Protokoll\n- ⚠️ Verifikation konnte wegen eines internen Fehlers nicht vollständig abgeschlossen werden: {e}"
             return all_results, summary, False, False, False
 
+    async def _handle_report_not_ready(
+        self,
+        *,
+        verifier: ProjectVerifier,
+        project_dir: str,
+        report: VerificationReport,
+        attempt: int,
+        file_owners: dict[str, str],
+        all_results: list[AgentResult],
+        summary_lines: list[str],
+        notify: Callable[[str], None],
+        budget_aborted: bool,
+        pip_hint_fix_attempted: bool,
+        no_tests_fix_attempted: bool,
+    ) -> tuple[str | None, bool, bool]:
+        """P6-5 (ROADMAP_TEMP.md): aus der Haupt-Fixschleife (`_run_verification_loop_impl()`)
+        extrahiert - behandelt VOR dem eigentlichen Testfehler-Routing zwei Fälle: (1)
+        deterministische `pip install`-Hinweise aus der Testausgabe, (2) eine nicht gelaufene
+        Testsuite (fehlende Testdatei/fehlender Einstiegspunkt). Eine Methode kann die
+        aufrufende `for`-Schleife nicht direkt per `continue`/`break` steuern - deshalb gibt sie
+        stattdessen ein Signal zurück (`"continue"`/`"break"`/`None` = normal weiterlaufen, weil
+        die Testsuite lief), das der Aufrufer 1:1 in die entsprechende Schleifen-Anweisung
+        übersetzt. Ebenso zurückgegeben: die beiden Einmal-Verbrauch-Flags
+        (`pip_hint_fix_attempted`/`no_tests_fix_attempted`), da sie über einen einzelnen Aufruf
+        dieser Methode hinaus für den Rest des Laufs bestehen bleiben müssen.
+        """
+        # Deterministisch: explizite "pip install <paket>"-Hinweise aus der Testausgabe (z. B.
+        # Starlettes TestClient-Hinweis auf httpx2) einmalig ins passende Manifest eintragen.
+        if not report.passed and not pip_hint_fix_attempted and project_dir:
+            added = self._apply_pip_install_hints(project_dir, f"{report.stdout}\n{report.stderr}")
+            if added:
+                pip_hint_fix_attempted = True
+                names = ", ".join(f"{pkg} ({manifest})" for pkg, manifest in added)
+                notify(f"  📦 [green]Deterministisch ergänzt:[/green] {names} (Hinweis aus der Testausgabe).")
+                summary_lines.append(f"- 📦 Versuch {attempt}: {len(added)} Paket(e) aus expliziten pip-Hinweisen ergänzt: {names}.")
+                await self._resync_environment_if_dependencies_changed(
+                    verifier,
+                    [AgentResult(task_id="pip_hint", agent_id="refactoring", agent_name="deterministisch",
+                                 success=True, content="", files_written=[m for _, m in added])],
+                    notify, summary_lines,
+                )
+                return "continue", pip_hint_fix_attempted, no_tests_fix_attempted
+
+        if not report.ran:
+            if not report.passed:
+                # Kein Einstiegspunkt bzw. conftest.py ohne echte Testdatei ist ein eigenständiger
+                # Fehlschlag, nicht bloß "nicht geprüft".
+                notify(f"  ❌ [bold red]{report.reason_skipped}[/bold red]")
+                summary_lines.append(f"- ❌ {report.reason_skipped}")
+
+                # Fehlt nur die Testdatei, bekommt tester denselben EINEN Nachbeauftragungs-Versuch wie
+                # bei "keine Tests gefunden". Ein fehlender Einstiegspunkt ist kein Testsuite-Problem
+                # und bleibt bewusst unangetastet (Aufgabe für architect/backend).
+                if (
+                    not no_tests_fix_attempted and not budget_aborted and "tester" in self._agents
+                    and ("Testdatei" in report.reason_skipped or "Testsuite" in report.reason_skipped)
+                ):
+                    no_tests_fix_attempted = True
+                    notify(f"  🧪 [yellow]{report.reason_skipped}[/yellow] – beauftrage tester, die fehlende Testsuite nachzuliefern...")
+                    summary_lines.append(f"- 🧪 {report.reason_skipped} → tester beauftragt, eine echte Testsuite nachzuliefern.")
+                    log_decision(project_dir, "missing_tests_fix_dispatched", report.reason_skipped)
+                    fix_task = AgentTask(
+                        task_id=f"incomplete_tests_fix_{attempt}",
+                        agent_id="tester",
+                        description=(
+                            "Für dieses Projekt existiert ein tests/-Verzeichnis (z.B. eine "
+                            "conftest.py), aber KEINE einzige echte Testdatei (test_*.py/"
+                            "*_test.py) - die Testsuite bricht dadurch ab, bevor auch nur ein "
+                            "Test läuft, der vorhandene Code bleibt komplett ungeprüft. Schreibe "
+                            "jetzt vollständige, lauffähige Testdateien (pytest) für den "
+                            f"vorhandenen Code.\n\n{report.reason_skipped}"
+                        ),
+                        context="", project_dir=project_dir,
+                    )
+                    fix_results = await self._run_agents_parallel([fix_task], notify=notify)
+                    self._update_file_owners(file_owners, fix_results)
+                    all_results.extend(fix_results)
+                    await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
+                    return "continue", pip_hint_fix_attempted, no_tests_fix_attempted
+                return "break", pip_hint_fix_attempted, no_tests_fix_attempted
+            # Bewusst ⚠️ statt ℹ️: "keine Tests gefunden" heißt, Code wird UNGEPRÜFT ausgeliefert.
+            # Vor dem Aufgeben wird tester EINMAL gezielt mit einer Testsuite beauftragt.
+            if not no_tests_fix_attempted and not budget_aborted and "tester" in self._agents:
+                no_tests_fix_attempted = True
+                notify(f"  🧪 [yellow]{report.reason_skipped}[/yellow] – beauftrage tester mit einer echten Testsuite...")
+                summary_lines.append(f"- 🧪 {report.reason_skipped} → tester beauftragt, eine echte Testsuite nachzuliefern.")
+                log_decision(project_dir, "missing_tests_fix_dispatched", report.reason_skipped)
+                fix_task = AgentTask(
+                    task_id=f"missing_tests_fix_{attempt}",
+                    agent_id="tester",
+                    description=(
+                        "Für dieses Projekt existiert noch KEINE echte, automatisch ausführbare "
+                        "Testsuite (kein test_*.py, kein npm-Testskript gefunden) - der bereits "
+                        "geschriebene Code wird dadurch komplett ungeprüft ausgeliefert. Schreibe "
+                        "jetzt eine vollständige, lauffähige Testsuite (pytest bzw. das für dieses "
+                        "Projekt passende Framework) für den vorhandenen Code."
+                    ),
+                    context="", project_dir=project_dir,
+                )
+                fix_results = await self._run_agents_parallel([fix_task], notify=notify)
+                self._update_file_owners(file_owners, fix_results)
+                all_results.extend(fix_results)
+                await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
+                return "continue", pip_hint_fix_attempted, no_tests_fix_attempted
+            notify(f"  ⚠️ [yellow]{report.reason_skipped}[/yellow]")
+            summary_lines.append(f"- ⚠️ {report.reason_skipped} Generierter Code wurde NICHT automatisch verifiziert.")
+            return "break", pip_hint_fix_attempted, no_tests_fix_attempted
+        return None, pip_hint_fix_attempted, no_tests_fix_attempted
+
     async def _run_verification_loop_impl(
         self,
         project_dir: str,
@@ -534,86 +643,15 @@ class VerificationMixin:
             notify(f"  🧪 [yellow]Testlauf {attempt}/{MAX_VERIFICATION_ITERATIONS}:[/yellow] Führe echte Tests aus...")
             report = await self._run_tests_logged(verifier, "erstlauf")
 
-            # Deterministisch: explizite "pip install <paket>"-Hinweise aus der Testausgabe (z. B.
-            # Starlettes TestClient-Hinweis auf httpx2) einmalig ins passende Manifest eintragen.
-            if not report.passed and not pip_hint_fix_attempted and project_dir:
-                added = self._apply_pip_install_hints(project_dir, f"{report.stdout}\n{report.stderr}")
-                if added:
-                    pip_hint_fix_attempted = True
-                    names = ", ".join(f"{pkg} ({manifest})" for pkg, manifest in added)
-                    notify(f"  📦 [green]Deterministisch ergänzt:[/green] {names} (Hinweis aus der Testausgabe).")
-                    summary_lines.append(f"- 📦 Versuch {attempt}: {len(added)} Paket(e) aus expliziten pip-Hinweisen ergänzt: {names}.")
-                    await self._resync_environment_if_dependencies_changed(
-                        verifier,
-                        [AgentResult(task_id="pip_hint", agent_id="refactoring", agent_name="deterministisch",
-                                     success=True, content="", files_written=[m for _, m in added])],
-                        notify, summary_lines,
-                    )
-                    continue
-
-            if not report.ran:
-                if not report.passed:
-                    # Kein Einstiegspunkt bzw. conftest.py ohne echte Testdatei ist ein eigenständiger
-                    # Fehlschlag, nicht bloß "nicht geprüft".
-                    notify(f"  ❌ [bold red]{report.reason_skipped}[/bold red]")
-                    summary_lines.append(f"- ❌ {report.reason_skipped}")
-
-                    # Fehlt nur die Testdatei, bekommt tester denselben EINEN Nachbeauftragungs-Versuch wie
-                    # bei "keine Tests gefunden". Ein fehlender Einstiegspunkt ist kein Testsuite-Problem
-                    # und bleibt bewusst unangetastet (Aufgabe für architect/backend).
-                    if (
-                        not no_tests_fix_attempted and not budget_aborted and "tester" in self._agents
-                        and ("Testdatei" in report.reason_skipped or "Testsuite" in report.reason_skipped)
-                    ):
-                        no_tests_fix_attempted = True
-                        notify(f"  🧪 [yellow]{report.reason_skipped}[/yellow] – beauftrage tester, die fehlende Testsuite nachzuliefern...")
-                        summary_lines.append(f"- 🧪 {report.reason_skipped} → tester beauftragt, eine echte Testsuite nachzuliefern.")
-                        log_decision(project_dir, "missing_tests_fix_dispatched", report.reason_skipped)
-                        fix_task = AgentTask(
-                            task_id=f"incomplete_tests_fix_{attempt}",
-                            agent_id="tester",
-                            description=(
-                                "Für dieses Projekt existiert ein tests/-Verzeichnis (z.B. eine "
-                                "conftest.py), aber KEINE einzige echte Testdatei (test_*.py/"
-                                "*_test.py) - die Testsuite bricht dadurch ab, bevor auch nur ein "
-                                "Test läuft, der vorhandene Code bleibt komplett ungeprüft. Schreibe "
-                                "jetzt vollständige, lauffähige Testdateien (pytest) für den "
-                                f"vorhandenen Code.\n\n{report.reason_skipped}"
-                            ),
-                            context="", project_dir=project_dir,
-                        )
-                        fix_results = await self._run_agents_parallel([fix_task], notify=notify)
-                        self._update_file_owners(file_owners, fix_results)
-                        all_results.extend(fix_results)
-                        await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
-                        continue
-                    break
-                # Bewusst ⚠️ statt ℹ️: "keine Tests gefunden" heißt, Code wird UNGEPRÜFT ausgeliefert.
-                # Vor dem Aufgeben wird tester EINMAL gezielt mit einer Testsuite beauftragt.
-                if not no_tests_fix_attempted and not budget_aborted and "tester" in self._agents:
-                    no_tests_fix_attempted = True
-                    notify(f"  🧪 [yellow]{report.reason_skipped}[/yellow] – beauftrage tester mit einer echten Testsuite...")
-                    summary_lines.append(f"- 🧪 {report.reason_skipped} → tester beauftragt, eine echte Testsuite nachzuliefern.")
-                    log_decision(project_dir, "missing_tests_fix_dispatched", report.reason_skipped)
-                    fix_task = AgentTask(
-                        task_id=f"missing_tests_fix_{attempt}",
-                        agent_id="tester",
-                        description=(
-                            "Für dieses Projekt existiert noch KEINE echte, automatisch ausführbare "
-                            "Testsuite (kein test_*.py, kein npm-Testskript gefunden) - der bereits "
-                            "geschriebene Code wird dadurch komplett ungeprüft ausgeliefert. Schreibe "
-                            "jetzt eine vollständige, lauffähige Testsuite (pytest bzw. das für dieses "
-                            "Projekt passende Framework) für den vorhandenen Code."
-                        ),
-                        context="", project_dir=project_dir,
-                    )
-                    fix_results = await self._run_agents_parallel([fix_task], notify=notify)
-                    self._update_file_owners(file_owners, fix_results)
-                    all_results.extend(fix_results)
-                    await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
-                    continue
-                notify(f"  ⚠️ [yellow]{report.reason_skipped}[/yellow]")
-                summary_lines.append(f"- ⚠️ {report.reason_skipped} Generierter Code wurde NICHT automatisch verifiziert.")
+            loop_signal, pip_hint_fix_attempted, no_tests_fix_attempted = await self._handle_report_not_ready(
+                verifier=verifier, project_dir=project_dir, report=report, attempt=attempt,
+                file_owners=file_owners, all_results=all_results, summary_lines=summary_lines,
+                notify=notify, budget_aborted=budget_aborted,
+                pip_hint_fix_attempted=pip_hint_fix_attempted, no_tests_fix_attempted=no_tests_fix_attempted,
+            )
+            if loop_signal == "continue":
+                continue
+            if loop_signal == "break":
                 break
 
             if report.passed and ENABLE_TEST_DEPTH_GATE:

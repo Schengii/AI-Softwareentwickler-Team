@@ -1003,19 +1003,7 @@ class VerificationMixin:
         # Prüft nur die Build-Fähigkeit des Dockerfiles (kein run/push/deploy - die Ziel-Infrastruktur
         # ist unbekannt). Kein Fehler ohne Dockerfile oder ohne lokales Docker.
         if not (budget_aborted or manually_cancelled):
-            docker_report = await asyncio.to_thread(verifier.check_docker_build)
-            if docker_report.attempted:
-                outcome.record("docker_build", docker_report.success)
-                if docker_report.success:
-                    notify("  🐳 [bold green]Docker-Image baut erfolgreich.[/bold green]")
-                    summary_lines.append("- 🐳 Docker-Image baut erfolgreich (echter `docker build`).")
-                else:
-                    notify("  🐳 [bold red]Docker-Build fehlgeschlagen.[/bold red]")
-                    summary_lines.append(f"- 🐳 ❌ Docker-Build fehlgeschlagen: {docker_report.output[:500]}")
-            elif docker_report.reason_skipped and "Daemon" in docker_report.reason_skipped:
-                # Sichtbar, weil ein fehlender Daemon sonst mit einem Dockerfile-Fehler verwechselt wird.
-                notify(f"  🐳 [dim yellow]{docker_report.reason_skipped}[/dim yellow]")
-                summary_lines.append(f"- 🐳 ⏭️ {docker_report.reason_skipped}")
+            await self._record_docker_build_check(verifier, outcome, summary_lines, notify)
 
         # Echter `npm run build` VOR dem Browser-UI-Check: ohne Build würde der Browser-Check rohe
         # Quelldateien (z.B. main.tsx) servieren und einen Build-Fehler als Frontend-Bug melden.
@@ -1651,6 +1639,27 @@ class VerificationMixin:
                     self._update_file_owners(file_owners, fix_result)
                     all_results.extend(fix_result)
         return veto
+
+    async def _record_docker_build_check(
+        self, verifier: ProjectVerifier, outcome: VerificationOutcome,
+        summary_lines: list[str], notify: Callable[[str], None],
+    ) -> None:
+        """P6-5 (ROADMAP_TEMP.md, Teilschritt): aus `_run_verification_loop_impl()` extrahiert -
+        prüft nur die Build-Fähigkeit des Dockerfiles (kein run/push/deploy), rein informativ,
+        beeinflusst `verification_ok` nicht, deshalb ohne Rückgabewert sicher isolierbar."""
+        docker_report = await asyncio.to_thread(verifier.check_docker_build)
+        if docker_report.attempted:
+            outcome.record("docker_build", docker_report.success)
+            if docker_report.success:
+                notify("  🐳 [bold green]Docker-Image baut erfolgreich.[/bold green]")
+                summary_lines.append("- 🐳 Docker-Image baut erfolgreich (echter `docker build`).")
+            else:
+                notify("  🐳 [bold red]Docker-Build fehlgeschlagen.[/bold red]")
+                summary_lines.append(f"- 🐳 ❌ Docker-Build fehlgeschlagen: {docker_report.output[:500]}")
+        elif docker_report.reason_skipped and "Daemon" in docker_report.reason_skipped:
+            # Sichtbar, weil ein fehlender Daemon sonst mit einem Dockerfile-Fehler verwechselt wird.
+            notify(f"  🐳 [dim yellow]{docker_report.reason_skipped}[/dim yellow]")
+            summary_lines.append(f"- 🐳 ⏭️ {docker_report.reason_skipped}")
 
     async def _record_accessibility_check(
         self, verifier: ProjectVerifier, outcome: VerificationOutcome,

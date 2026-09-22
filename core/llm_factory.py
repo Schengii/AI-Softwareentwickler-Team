@@ -531,7 +531,10 @@ def _resolve_gemini_candidates(start_model: str, allow_fallback: bool) -> list[s
     return floored
 
 # Erkennt Rate-Limits eines gepinnten Providers, um statt rohem Provider-JSON eine verständliche
-# Meldung zu liefern. Ein Hop nach dem Pinning bleibt bewusst aus (Provider-Historie-Korruption).
+# Meldung zu liefern. Ein Hop zu einem SCHEMA-FREMDEN Provider (Gemini) bleibt nach dem Pinning
+# bewusst aus (Provider-Historie-Korruption, siehe agents/base_agent.py._run_agentic_loop());
+# ein Hop zu einem schema-GLEICHEN Provider ist dagegen sicher und in
+# _same_schema_failover_with_tools()/_with_usage() unten eigens erlaubt (P7-1, ROADMAP_TEMP.md).
 _RATE_LIMIT_ERROR_MARKERS = ("429", "rate_limit", "resource_exhausted", "quota")
 
 
@@ -681,6 +684,68 @@ async def _cross_provider_failover_with_tools(
         except Exception:
             continue
     return await GeminiClient(model_name=GEMINI_STANDARD_MODEL).generate_with_tools(messages, system_prompt, tools)
+
+
+# ── Schema-gleicher Failover innerhalb eines GEPINNTEN Aufrufs (P7-1, ROADMAP_TEMP.md) ─────
+#
+# Realer Fund (webhook_sentinel 2026-09-22, omnimetric_engine 2026-09-21): der `tester` scheiterte
+# in beiden Läufen an genau derselben Meldung - Groq (openai/gpt-oss-120b) TPM-/Größen-erschöpft,
+# UND bereits gepinnt (_allow_self_fallback=False, weil ein früherer Fallback-Hop innerhalb
+# desselben Werkzeug-Loops bereits auf Groq gewechselt hatte). Der bestehende Code probiert dann
+# nur noch andere GROQ-Modelle (_next_groq_fallback_model); sind auch die erschöpft, endet der
+# Aufruf sofort in _pinned_provider_failure() - ohne je zu prüfen, ob ein anderer Provider
+# tatsächlich in Frage käme.
+#
+# Das Pinning selbst existiert, weil ein Wechsel MITTEN in der Tool-Call-Historie bei Gemini
+# bricht (thought_signature-Pflicht, siehe agents/base_agent.py). Groq, DeepSeek und OpenRouter
+# teilen sich dagegen exakt dasselbe OpenAI-kompatible Tool-Call-Schema
+# (core/llm_providers/_shared.py._openai_build_messages/_openai_build_tools - von allen drei
+# Client-Klassen unverändert wiederverwendet). Ein Hop zwischen GENAU DIESEN drei Providern
+# korrumpiert die Historie also nicht - dieselbe Begründung, mit der _is_tool_call_json_error()
+# oben bereits einen Hop trotz Pinning erlaubt. _independent_failover_candidates() liefert ohnehin
+# nur Kandidaten aus _INDEPENDENT_FAILOVER_MODELS (Groq/DeepSeek/OpenRouter, niemals Gemini/Claude)
+# - hier direkt wiederverwendet, keine neue Kandidatenliste nötig.
+#
+# Jeder Versuch bleibt selbst _allow_self_fallback=False (kein Ping-Pong über mehr als einen Hop);
+# scheitern alle, wirft die Funktion die letzte Exception weiter - der Aufrufer (GroqClient etc.)
+# fängt sie und meldet _pinned_provider_failure() wie bisher, jetzt aber erst NACHDEM ein echter
+# Ausweich-Versuch stattgefunden hat.
+
+
+async def _same_schema_failover_with_usage(
+    failed_provider: str, prompt: str, system_prompt: str | None,
+) -> "LLMResponse":
+    """Schema-gleicher Ausweich-Versuch für einen GEPINNTEN Aufruf, siehe Moduldocstring oberhalb."""
+    last_exc: Exception | None = None
+    for model in _independent_failover_candidates(failed_provider):
+        try:
+            return await LLMFactory.create_for_model(model).generate_with_usage(
+                prompt, system_prompt, _allow_self_fallback=False,
+            )
+        except Exception as exc:
+            last_exc = exc
+            continue
+    raise last_exc or RuntimeError(
+        f"Kein schema-gleicher Ausweich-Provider für '{failed_provider}' verfügbar.",
+    )
+
+
+async def _same_schema_failover_with_tools(
+    failed_provider: str, messages: list["AgentMessage"], system_prompt: str | None, tools: list[dict],
+) -> "LLMResponse":
+    """Wie _same_schema_failover_with_usage(), für Function-Calling-Aufrufe."""
+    last_exc: Exception | None = None
+    for model in _independent_failover_candidates(failed_provider):
+        try:
+            return await LLMFactory.create_for_model(model).generate_with_tools(
+                messages, system_prompt, tools, _allow_self_fallback=False,
+            )
+        except Exception as exc:
+            last_exc = exc
+            continue
+    raise last_exc or RuntimeError(
+        f"Kein schema-gleicher Ausweich-Provider für '{failed_provider}' verfügbar.",
+    )
 
 
 # ── Prompt-Kompression für Groq-Fallbacks ──────────────────────────────────────────────────

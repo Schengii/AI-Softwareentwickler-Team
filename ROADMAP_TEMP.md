@@ -1883,3 +1883,200 @@ ruff check && python -m pytest -q
 | P6-1 | Gestagte Fixes committet | P6 | ☑ erledigt |
 | P6-2 | ~~Workspace aus Framework-Commits~~ | P6 | ☑ Fehlannahme, siehe oben |
 | P6-3…8 | Hygiene & Aufräumen | P6 | ☑ erledigt (P6-3, P6-4, P6-5, P6-6, P6-7, P6-8 alle abgeschlossen - P6-5 zuletzt: `verification.py` physisch in 5 Mixin-Dateien aufgeteilt, `verification.py` selbst auf 81 Zeilen geschrumpft, 401 Tests grün) |
+| P7-1 | Groq-Fallback für `tester` bei TPM-Erschöpfung | P7 | ☑ erledigt |
+| P7-2 | Deterministischer `include_router()`-Check nach `api_integration` | P7 | ☑ erledigt (via Fix-Dispatch für alle Team-Board-Anforderungen, nicht nur `security`) |
+| P7-3 | Offene root-cause-Tickets aus omnimetric_engine abarbeiten | P7 | ☐ offen |
+| P7-4 | Fix-Reihenfolge `test_depth` vs. echte Testfehler bei knappem Budget prüfen | P7 | ☑ untersucht – ursprüngliche Hypothese widerlegt, kein eigenständiger Bug (siehe Notiz) |
+
+---
+
+## 11. 🆕 Analyse der letzten 3 Live-Läufe (Stand 2026-09-22)
+
+**Analysebasis:** `webhook_sentinel` (Lauf `20260922_074043`/`080533`, rot), `omnimetric_engine`
+(Lauf `20260921_162712`/`165527`, rot), `notecatcher` (Lauf `20260920_181543`, grün) – jeweils
+`.ai_team_runs/*_verification.md`, `*_postmortem.md`, `.ai_team_status.json`, `.ai_team_dod.json`
+sowie die zugehörigen offenen Tickets in `memory/backlog.json`.
+
+### Befund-Tabelle
+
+| Projekt | Ergebnis | Blockierende Checks | Kernursache |
+| :--- | :--- | :--- | :--- |
+| `notecatcher` | ✅ grün | — | Referenz: alle 11 Checks grün, 100 % Routen-Testtiefe, Regressionstest nach Review bestanden |
+| `omnimetric_engine` | ❌ `budget_aborted` | `test_depth`, `tests` | Completeness-Veto über 2 Runden (nicht existierendes Modul importiert, Stub-Handler ohne echte Persistenz) + 2 hartnäckige Testfehler, die auch nach voller Eskalationskette unverändert blieben |
+| `webhook_sentinel` | ❌ `budget_aborted` | `test_depth`, `tests` | Router-Registrierungslücke (`api_integration` lieferte Endpunkte, `app/main.py` bindet sie nicht ein) + Budget nach Versuch 2 erschöpft, 7 Testfehler blieben unbehoben |
+
+### P7-1 · Groq `openai/gpt-oss-120b` blockiert den `tester` in 2 von 3 Läufen mit TPM-Limit
+**Status:** ✅ **erledigt 2026-09-22** · **Wirkung:** hoch
+
+In beiden roten Läufen meldet der Postmortem denselben Fehlschlag: „Groq … ist für diese Aufgabe
+bereits fest eingeplant und gerade nicht verfügbar (Kontingent erschöpft oder Rate-Limit
+erreicht) – kein weiterer automatischer Wechsel innerhalb dieser Aufgabe". Bei
+`omnimetric_engine` sogar zweimal derselbe Provider mit unterschiedlichem Fehlercode (429, dann
+413 „Request too large"). Der `tester` ist in beiden Läufen die Rolle mit den meisten
+Fixrunden-Aufrufen (7 bzw. 4) – genau die Rolle, die am wenigsten Provider-Ausfall verträgt, weil
+jeder fehlgeschlagene Aufruf eine ganze Fixrunde kostet, ohne dass sie zu Ende geführt wird.
+
+**Vorschlag:** Für die `tester`-Rolle einen Fallback-Provider/-Modell hinterlegen, der bei
+TPM-/Größen-Erschöpfung automatisch übernimmt. Prüfen, warum das bestehende
+Provider-Cooldown-System (`memory/provider_cooldowns.json`) hier nicht bereits gegriffen hat –
+andere Rollen scheinen laut Postmortem-Formulierung einen Wechsel grundsätzlich zu kennen
+(„kein **weiterer automatischer** Wechsel"), er wird für diese Aufgabe aber bewusst
+unterdrückt.
+
+> **Umsetzung 2026-09-22:** Root Cause gefunden statt spekuliert: `core/llm_providers/groq.py`
+> hatte bereits eine Modell-interne Ausweichkette (`_next_groq_fallback_model()` über
+> `config.GROQ_FALLBACK_MODELS`), aber sobald ein Aufruf innerhalb desselben Werkzeug-Loops
+> bereits einmal den Provider gewechselt hatte (`agents/base_agent.py._run_agentic_loop()` pinnt
+> dann via `_allow_self_fallback=False`, um die Tool-Call-Historie nicht zu korrumpieren), endete
+> JEDE weitere Erschöpfung sofort in `_pinned_provider_failure()` – kein Versuch bei einem anderen
+> Provider, obwohl DeepSeek und OpenRouter konfiguriert waren. Das Pinning selbst ist berechtigt,
+> aber zu grob: es blockierte auch Provider, die GAR NICHT von der Gemini-spezifischen Ursache
+> (`thought_signature`-Pflicht) betroffen sind. Geprüft: `core/llm_providers/groq.py`,
+> `deepseek.py` und `openrouter.py` rufen alle drei ausschließlich
+> `core/llm_providers/_shared.py._openai_build_messages()`/`_openai_build_tools()` auf – exakt
+> dasselbe OpenAI-kompatible Tool-Call-Schema, ein Hop zwischen genau diesen dreien korrumpiert
+> die Historie also nicht (dieselbe Begründung, mit der `_is_tool_call_json_error()` schon vorher
+> eine Ausnahme vom Pinning hatte).
+>
+> Neue Funktionen `core/llm_factory._same_schema_failover_with_usage()`/
+> `_same_schema_failover_with_tools()`: probieren bei einem gepinnten Rate-Limit-/TPM-/
+> Modell-nicht-gefunden-Fehler die in `_INDEPENDENT_FAILOVER_MODELS` bereits vorhandenen,
+> schema-gleichen Kandidaten (DeepSeek, OpenRouter – nie Gemini/Claude), jeder Versuch selbst
+> weiterhin `_allow_self_fallback=False` (kein Ping-Pong über mehr als einen Hop). Scheitern auch
+> die, wird unverändert `_pinned_provider_failure()` geworfen – die freundliche Meldung aus dem
+> vorherigen Fund bleibt also die letzte Instanz, kommt jetzt aber erst NACH einem echten
+> Ausweich-Versuch. `core/llm_providers/groq.py` ruft die neue Funktion in beiden
+> Fehlerpfaden (`generate_with_usage`/`generate_with_tools`) auf, nachdem Groqs eigene
+> Modellkette erschöpft ist. DeepSeek/OpenRouter selbst bewusst NICHT geändert (kein beobachteter
+> Fall, in dem SIE gepinnt scheiterten – Scope auf den echten Fund begrenzt).
+>
+> 3 neue Tests in `tests/test_pinned_provider_failure_message.py`
+> (`test_pinned_groq_rate_limit_fails_over_to_deepseek`,
+> `_non_tools_path`, `test_pinned_groq_rate_limit_still_raises_if_deepseek_also_fails`); die 2
+> bestehenden „bleibt bei der freundlichen Meldung"-Tests deaktivieren DeepSeek/OpenRouter jetzt
+> bewusst (kein Kandidat), um weiterhin exakt den ursprünglichen Fall zu prüfen. Alle 7 Tests der
+> Datei sowie 159 verwandte Tests (`-k "llm_factory or groq or provider or pinned or fallback"`)
+> grün, `ruff check` sauber.
+
+---
+
+### P7-2 · `api_integration` liefert Endpunkte, aber die Registrierung in `app/main.py` fehlt – wiederkehrendes Muster
+**Status:** ✅ **erledigt 2026-09-22** · **Wirkung:** hoch
+
+`webhook_sentinel`s Team-Board meldet „1 unerfüllte Anforderung(en) … Router-Registrierung für
+`/api/v1/events/publish` und `/api/v1/deliveries` in `app/main.py`" – unmittelbar der Grund für
+die niedrige Testtiefe (2/4 Routen erreichbar, darunter genau die beiden unregistrierten). Das ist
+derselbe Fehlermodus wie die bereits offenen Tickets
+`root-cause-ecotrack_ai-backend-deklariert-undefinierte-router-in-app-main-py` (`todo`) und
+`root-cause-ecotrack_ai-backend-erf-llt-handoff-anforderung-im-nachbesserungslauf-nu` (`todo`) –
+Endpunkte existieren als Code, aber `include_router()` fehlt oder die Handoff-Anforderung wird im
+Nachbesserungslauf nicht vollständig erfüllt. Über zwei Projekte und drei Läufe hinweg ist das
+kein Einzelfall mehr, sondern ein wiederkehrender Integrationsfehler der `api_integration`-Rolle,
+den das heutige Team-Board-Handoff-Verfahren nicht zuverlässig auffängt.
+
+**Vorschlag:** Deterministischer Post-Write-Check (kein LLM-Aufruf) direkt nach dem
+`api_integration`-Aufruf: AST-Scan von `app/main.py` auf `include_router(...)`-Aufrufe, gegen alle
+in `app/api/**` deklarierten `APIRouter`-Instanzen abgeglichen. Fehlt eine Registrierung, geht der
+Fund als gezielte, mechanisch belegte Korrektur sofort zurück an `api_integration` – statt erst
+über den Umweg `test_depth` (Symptom, nicht Ursache) Runden später aufzufallen, wenn das
+Token-Budget schon knapp ist.
+
+> **Umsetzung 2026-09-22 (anderer Hebel als ursprünglich vorgeschlagen, gleiche Wirkung):** Statt
+> eines neuen, router-spezifischen AST-Checks wurde der bereits VORHANDENE, allgemeinere
+> Mechanismus scharfgeschaltet: `core/team_board.unmet_requirements()` erkennt die fehlende
+> Router-Registrierung bereits heute korrekt (`webhook_sentinel`s Bericht bewies das) - das
+> Problem war nicht die Erkennung, sondern dass `IntegrationMixin._check_team_board_requirements()`
+> (`agents/orchestrator/integration.py`) jeden Fund nur als FYI-Zeile in den Abschlussbericht
+> schrieb, OHNE einen Fix zu beauftragen. Nur die `security`-Variante dieses Mechanismus
+> (`_run_security_requirements_checkpoint()`, P0-2) dispatchte bereits einen Fix und prüfte neu.
+>
+> `_check_team_board_requirements()` bekommt jetzt optionale `all_results`/`file_owners`/
+> `run_start_tokens`-Parameter und wendet, wenn sie übergeben werden (der einzige Aufrufer
+> `_run_integration_checkpoint()` übergibt sie immer), dasselbe Muster auf JEDE offene
+> `requires`-Angabe an - nicht nur auf die des `security`-Agenten: EIN gezielter Fix-Auftrag an den
+> ersten in `_FALLBACK_OWNERS` (`backend`, `database`, `frontend`, `api_integration`) vorhandenen
+> Agenten, danach ein echter Nachprüf-Aufruf von `unmet_requirements()`. Das läuft direkt nach der
+> Entwicklungsphase (`_ENTRYPOINT_PREFLIGHT_PHASE_ID`) - deutlich früher als der spätere
+> `test_depth`/`tests`-Check, der bei `webhook_sentinel` das eigentliche Symptom erst Fixrunden
+> später und mit knapperem Budget zu fassen bekam. Bewusst NICHT blockierend wie
+> `security_handoff`: ein einzelner Fix-Versuch, der scheitert, soll den Lauf nicht allein deshalb
+> rot färben - `test_depth`/`tests` bleiben die härtere, spätere Prüfung.
+>
+> 2 Tests in `tests/test_team_communication.py` angepasst/ergänzt
+> (`test_integration_checkpoint_reports_unmet_requirements` mockt jetzt `backend.execute` wie die
+> bereits bestehenden `security`-Checkpoint-Tests und prüft "weiterhin offen"; neuer Test
+> `test_integration_checkpoint_fix_clears_unmet_requirement_when_resolved` beweist den Erfolgsfall
+> - "behoben", wenn der beauftragte Owner die fehlende Route tatsächlich ergänzt). 30 Tests in
+> `tests/test_team_communication.py` sowie 34 in `test_route_mismatch_preflight.py`/
+> `test_p1_team_workflow.py` grün, `ruff check` sauber.
+
+---
+
+### P7-3 · Eskalationskette in `omnimetric_engine` lief bis zum Ende durch, ohne die Sackgasse zu lösen – 48 % der Tokens für ein Nullergebnis
+Der Fixloop für die 2 verbleibenden Testfehler durchlief in Versuch 3 alle vier aus P1-2
+vorgesehenen Eskalationsstufen (gleicher Agent → `qa_lead`-Eskalation → `HEAVY_MODEL` →
+Zweitmeinung durch `code_reviewer`) – und endete trotzdem mit „dieselben 2 Testfehler wie nach dem
+vorherigen Fixversuch (keine Veränderung)". Die Mechanik selbst funktioniert wie vorgesehen (sie
+bricht korrekt ab statt endlos weiterzulaufen und legt Root-Cause-Tickets an), aber **525.582 von
+1.086.531 Tokens (48 %)** gingen in diese Reparaturschleife, ohne den Fehler zu beheben. Die drei
+dabei entstandenen Tickets sind bis heute unbearbeitet:
+
+- `root-cause-omnimetric_engine-tester-agent-bersieht-api-prefixes-und-background-timings`
+  (`blocked`, `[framework]`)
+- `root-cause-omnimetric_engine-falscher-api-pfad-oder-fehlende-daten-im-stats-test` (`todo`)
+- `root-cause-omnimetric_engine-asynchrone-race-condition-im-alert-test` (`todo`)
+
+**Vorschlag:** Kein neuer Mechanismus nötig – `P1-1` (`--work-framework-backlog`) auf das
+`[framework]`-Ticket ansetzen, und für die beiden projektbezogenen Tickets denselben
+Worktree-Beweis-Mechanismus (Regressionstest muss ohne Fix rot sein) auf ein Pendant für
+`root_cause_analysis`-Tickets **ohne** `[framework]`-Präfix erweitern, statt sie unbegrenzt liegen
+zu lassen. Diese drei Tickets sind ein aktuelles, konkretes Beispiel für genau die Zielgruppe, für
+die `P1-1` gebaut wurde.
+
+---
+
+### P7-4 · Testtiefen-Schwelle (60 %) wird in beiden roten Läufen exakt bei 50 % verfehlt
+Sowohl `webhook_sentinel` (2/4 Routen) als auch `omnimetric_engine` (2/4 Routen) scheitern an
+derselben `test_depth`-Schwelle mit demselben Verhältnis. In beiden Fällen sind die fehlenden
+Routen genau die, die am Ende des Laufs durch Budget- bzw. Eskalationserschöpfung nicht mehr
+bearbeitet wurden – die Metrik selbst ist also korrekt, zeigt aber ein Symptom des
+Budget-Problems (vgl. `P5-2`/`P5-3`), keinen eigenständigen Fehler der Testtiefen-Logik. Kein
+neuer struktureller Punkt, aber ein weiterer Datenpunkt dafür, dass echte Testfehler und
+Testtiefen-Lücken bei knappem Budget um dieselbe schwindende Token-Reserve konkurrieren, statt
+koordiniert zu werden.
+
+**Vorschlag (Aufwand S, kein akuter Blocker):** Prüfen, ob `test_depth`-Lücken vor echten
+Testfehlern behoben werden sollten, wenn beide auf denselben ungetesteten Routen beruhen (z. B.
+wenn eine der fehlschlagenden Testfunktionen exakt die noch unregistrierte Route aus `P7-2`
+betrifft) – vermeidet doppelte Fixrunden für dieselbe Ursache.
+
+> **Untersucht 2026-09-22, Hypothese gegen den echten Code geprüft – KEINE Umsetzung, siehe
+> Begründung:** `agents/orchestrator/verification_fix_dispatch.py._handle_test_depth_gate()`
+> läuft NUR, wenn `report.passed` (Tests waren zum Zeitpunkt der Messung grün) - bei
+> `webhook_sentinel` traf das auf Versuch 1 zu (Tests grün, aber nur 2/4 Routen getestet). Der
+> daraufhin beauftragte `tester`-Fix ("ergänze Tests für die fehlenden Routen") hat aber selbst
+> 2 echte Testfehler eingeführt - genau diese wurden in Versuch 2 als `tests: failed` erkannt.
+> Der ursprünglich vermutete Mechanismus ("`test_depth` und echte Testfehler konkurrieren um
+> dasselbe Budget, weil beide dieselben Routen betreffen") trifft NICHT zu: es ist keine
+> Konkurrenz um Reihenfolge, sondern der `test_depth`-Fix-Versuch selbst war die Fehlerquelle,
+> und deren Behebung lief dann regulär durch den bestehenden Testfehler-Fixloop weiter - bis das
+> Token-Budget (nicht die Testtiefen-Logik) ausging. Das ist bereits der bekannte, an anderer
+> Stelle behandelte Befund (`P5-2`/`P5-3`, Token-Effizienz/Verifikations-Reserve), kein
+> eigenständiger struktureller Bug in der Fix-Reihenfolge. Ein Codewechsel auf Basis der
+> ursprünglichen (falschen) Hypothese hätte das falsche Problem adressiert - deshalb hier bewusst
+> nur die Korrektur der Analyse dokumentiert statt einer spekulativen Änderung. Ein echter Hebel
+> wäre, den `test_depth`-Fix-Versuch NICHT auf dieselbe Weise zu zählen wie einen regulären
+> Testfehler-Fixversuch (er verbraucht sonst einen von wenigen `MAX_VERIFICATION_ITERATIONS`-
+> Durchläufen für einen Fix, der selbst noch verifiziert werden muss) - das ist aber ein Eingriff
+> in dieselbe, bereits mehrfach als riskant markierte 2000+-Zeilen-Fixschleife wie in `P1-5`
+> zurückgestellt, und verdient einen eigenen, isolierten Anlauf statt einer Änderung im Vorbeigehen.
+
+---
+
+### Gegenprobe: `notecatcher` als Positivbeispiel
+Zum Vergleich lief `notecatcher` (2026-09-20) fehlerfrei durch: 100 % Routen-Testtiefe, 11
+Testfunktionen, alle 11 strukturierten Checks grün, sogar ein Regressionslauf nach
+Review-Änderungen bestanden – in 1,9 s. Das bestätigt, dass die Kernmechanik funktioniert, sobald
+`api_integration`/`backend` von Anfang an vollständig liefern. Die Fehler in den beiden roten
+Läufen sind damit lokalisierbar (Router-Registrierung, Provider-Fallback, offene Root-Cause-
+Tickets) und keine grundsätzliche Regression des Frameworks.

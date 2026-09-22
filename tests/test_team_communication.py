@@ -287,12 +287,37 @@ class TestOrchestratorCommunication:
         assert team_board.get_teammate_responder(tmp_path) is None
 
     def test_integration_checkpoint_reports_unmet_requirements(self, orchestrator, tmp_path):
+        """P7-1 (ROADMAP_TEMP.md, realer Fund webhook_sentinel 20260922): unerfüllte Team-Board-
+        Anforderungen wurden bisher nur als FYI-Zeile gemeldet, nie gezielt gefixt. Der
+        Integrations-Checkpoint dispatcht jetzt EINE Fix-Runde an den Fallback-Owner (hier
+        `backend`) - bleibt sie wirkungslos, zeigt der Bericht "weiterhin offen"."""
         _write(tmp_path / "app" / "__init__.py")
         _write(tmp_path / "app" / "main.py", "x = 1\n")
         team_board.record_handoff(tmp_path, team_board.Handoff(agent_id="frontend", requires=["Route /api/alerts"]))
+
+        async def fake_noop_fix(task):
+            return AgentResult(task_id=task.task_id, agent_id="backend", agent_name="Backend", success=True, content="Nichts geändert.")
+
+        orchestrator._agents["backend"].execute = fake_noop_fix
         messages: list[str] = []
         lines = asyncio.run(orchestrator._run_integration_checkpoint(str(tmp_path), [], {}, messages.append))
-        assert any("Team-Board" in line and "/api/alerts" in line for line in lines)
+        assert any("Team-Board" in line and "weiterhin offen" in line for line in lines)
+
+    def test_integration_checkpoint_fix_clears_unmet_requirement_when_resolved(self, orchestrator, tmp_path):
+        """Gegenprobe zum Test oben: implementiert der beauftragte Owner die fehlende Route
+        wirklich, meldet der Checkpoint "behoben" statt der bisherigen reinen FYI-Zeile."""
+        _write(tmp_path / "app" / "__init__.py")
+        _write(tmp_path / "app" / "main.py", "x = 1\n")
+        team_board.record_handoff(tmp_path, team_board.Handoff(agent_id="frontend", requires=["Route /api/alerts"]))
+
+        async def fake_fix(task):
+            _write(tmp_path / "app" / "main.py", "# @app.get('/api/alerts')\nx = 1\n")
+            return AgentResult(task_id=task.task_id, agent_id="backend", agent_name="Backend", success=True, content="Route ergänzt.")
+
+        orchestrator._agents["backend"].execute = fake_fix
+        messages: list[str] = []
+        lines = asyncio.run(orchestrator._run_integration_checkpoint(str(tmp_path), [], {}, messages.append))
+        assert any("Team-Board" in line and "behoben" in line for line in lines)
 
     def test_security_handoff_checkpoint_dispatches_fix_and_clears_when_resolved(self, orchestrator, tmp_path):
         """Regressionsschutz für den EventForge-Fund (KI-Team-Analyse 20260916_154524): der

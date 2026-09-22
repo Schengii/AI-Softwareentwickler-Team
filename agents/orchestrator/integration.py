@@ -100,7 +100,9 @@ class IntegrationMixin:
         lines: list[str] = []
         if not is_safe_project_dir(project_dir):
             return lines
-        lines.extend(await self._check_team_board_requirements(project_dir, notify))
+        lines.extend(await self._check_team_board_requirements(
+            project_dir, notify, all_results=all_results, file_owners=file_owners, run_start_tokens=run_start_tokens,
+        ))
         lines.extend(await self._run_frontend_backend_contract_review(project_dir, all_results, file_owners, notify, run_start_tokens))
         try:
             report = await asyncio.to_thread(run_pre_flight_check, project_dir)
@@ -243,11 +245,37 @@ class IntegrationMixin:
         log_decision(project_dir, "contract_review", f"{len(mismatches)} Abweichung(en) → {status}")
         return [f"- 🤝 Frontend↔Backend-Review: {len(mismatches)} API-Abweichung(en) an backend → {status}."]
 
-    async def _check_team_board_requirements(self, project_dir: str, notify: Callable[[str], None]) -> list[str]:
-        """Gleicht die `requires`-Angaben der Übergaben mit dem echten Projektstand ab (core/team_board.py).
+    async def _check_team_board_requirements(
+        self,
+        project_dir: str,
+        notify: Callable[[str], None],
+        all_results: list[AgentResult] | None = None,
+        file_owners: dict[str, str] | None = None,
+        run_start_tokens: int | None = None,
+    ) -> list[str]:
+        """Gleicht die `requires`-Angaben der Übergaben mit dem echten Projektstand ab (core/team_board.py)
+        und dispatcht bei Bedarf EINE gezielte Fix-Runde, bevor die teuren QA-/Governance-Phasen laufen.
 
         Ein unerfüllter Bedarf ("frontend braucht `GET /api/metrics`") ist genau das Missverständnis
         zwischen Kollegen, das sonst erst im Browser-Check oder gar nicht auffällt.
+
+        Realer Fund (webhook_sentinel, 20260922_074043): `api_integration` hatte in seiner Übergabe
+        "requires: Router-Registrierung für `/api/v1/events/publish` und `/api/v1/deliveries` in
+        `app/main.py`" hinterlassen - das blieb bis zum Laufende genau diese eine FYI-Zeile im
+        Abschlussbericht, nie ein Fix-Auftrag. Erst `test_depth`/`tests` scheiterten Phasen später
+        daran, dass die beiden Endpunkte über die fehlende `include_router()`-Einbindung nicht
+        erreichbar waren - der `tester` verbrannte mehrere Fixrunden gegen ein Symptom, dessen
+        Ursache hier schon sichtbar war. `_run_security_requirements_checkpoint()` (unten) hat
+        genau diesen Fix-und-Nachprüf-Mechanismus bereits, aber NUR für `agent_id == "security"`.
+        Diese Methode wendet dasselbe Muster jetzt auf ALLE offenen `requires`-Angaben an - deutlich
+        früher im Lauf (direkt nach der Entwicklungsphase, bevor QA/Governance auf dem Symptom
+        aufbauen), mit derselben Owner-Heuristik (`_FALLBACK_OWNERS`) und bewusst genau EINEM
+        Fix-Versuch. Bewusst NICHT blockierend wie `security_handoff` (P0-2): ein einzelner
+        Fix-Versuch kann scheitern, ohne dass der Lauf deshalb sofort rot werden muss - die spätere
+        Testtiefe/Testsuite bleibt die eigentliche, härtere Prüfung.
+
+        `all_results`/`file_owners`/`run_start_tokens` sind optional, damit ein Aufruf ohne
+        Fix-Dispatch (nur der reine Abgleich) weiterhin möglich bleibt.
         """
         if not ENABLE_TEAM_BOARD:
             return []
@@ -261,7 +289,43 @@ class IntegrationMixin:
             return []
         shown = "; ".join(f"{agent}: {req}" for agent, req in unmet[:6])
         notify(f"  🤝 [bold yellow]Team-Board – unerfüllter Bedarf:[/bold yellow] {shown}")
-        return [f"- 🤝 Team-Board: {len(unmet)} unerfüllte Anforderung(en) zwischen Kollegen – {shown}"]
+
+        if all_results is None or file_owners is None:
+            return [f"- 🤝 Team-Board: {len(unmet)} unerfüllte Anforderung(en) zwischen Kollegen – {shown}"]
+
+        owner = next((a for a in _FALLBACK_OWNERS if a in self._agents), None)
+        budget_exceeded = run_start_tokens is not None and (
+            self._generation_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+        )
+        if owner is None or budget_exceeded:
+            return [f"- 🤝 Team-Board: {len(unmet)} unerfüllte Anforderung(en) zwischen Kollegen – {shown} (Fix-Runde übersprungen)"]
+
+        req_text = "\n".join(f"- ({agent}): {req}" for agent, req in unmet[:10])
+        notify(f"  🤝 [bold yellow]Team-Board-Bedarf offen:[/bold yellow] beauftrage {owner}...")
+        fix_task = AgentTask(
+            task_id="team_board_requirements_fix",
+            agent_id=owner,
+            description=(
+                "Team-Kolleg:innen haben in ihrer Übergabe (Team-Board) Anforderungen benannt, die im "
+                "Projekt bisher NICHT umgesetzt sind (z.B. fehlende Router-Registrierung, fehlende "
+                "Konfigurationswerte, fehlende Symbole). Erfülle sie WIRKLICH im Code, nicht nur im "
+                "Bericht erwähnen:\n\n" + req_text
+            ),
+            project_dir=project_dir,
+        )
+        fix_results = await self._run_agents_parallel([fix_task], notify=notify)
+        self._update_file_owners(file_owners, fix_results)
+        all_results.extend(fix_results)
+
+        try:
+            recheck = await asyncio.to_thread(unmet_requirements, project_dir)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Team-Board-Nachprüfung fehlgeschlagen: %r", e)
+            recheck = unmet
+        status = "behoben" if not recheck else f"{len(recheck)} weiterhin offen"
+        log_decision(project_dir, "team_board_requirements_checkpoint", f"{len(unmet)} Anforderung(en) → {status}")
+        self._trace_event("team_board_requirements_checkpoint", unmet_before=len(unmet), unmet_after=len(recheck))
+        return [f"- 🤝 Team-Board: {len(unmet)} unerfüllte Anforderung(en) zwischen Kollegen → {status}."]
 
     async def _run_security_requirements_checkpoint(
         self,

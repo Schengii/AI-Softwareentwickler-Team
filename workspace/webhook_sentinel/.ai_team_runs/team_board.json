@@ -1,0 +1,254 @@
+{
+  "run_id": "20260922_074043",
+  "handoffs": [
+    {
+      "agent_id": "architect",
+      "task_id": "91e5b769",
+      "files": [
+        "docs/adr/0001-in-memory-async-queue-f-r-webhook-zustel.md",
+        "docs/adr/0002-ssrf-schutz-durch-strikte-url-validierun.md",
+        "docs/adr/0003-sqlalchemy-2-0-f-r-persistenz.md"
+      ],
+      "provides": [],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-22T07:41:38+00:00"
+    },
+    {
+      "agent_id": "database",
+      "task_id": "f6c4673e",
+      "files": [
+        "app/core/config.py",
+        "app/db/base.py",
+        "app/db/session.py",
+        "app/main.py",
+        "app/models/webhook.py"
+      ],
+      "provides": [
+        "`get_db` (app/db/session.py)",
+        "`Subscription`, `Delivery` Modelle (app/models/webhook.py)",
+        "`Base` (app/db/base.py)",
+        "app/core/config.py: Settings, get_settings",
+        "app/db/base.py: Base",
+        "app/db/session.py: get_db, settings, connect_args, poolclass, engine_kwargs, engine, async_session_maker",
+        "app/main.py: root, app",
+        "GET / (app/main.py)",
+        "app/models/webhook.py: utc_now, Subscription, Delivery"
+      ],
+      "requires": [],
+      "open_issues": [
+        "Alembic-Migrationen müssen noch initialisiert werden, sobald alle Modelle final feststehen (kann durch den Backend-Agenten oder via `Base.metadata.create_all` im Lifespan erfolgen)."
+      ],
+      "timestamp": "2026-09-22T07:43:11+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "2120d24d",
+      "files": [
+        "app/api/v1/events.py",
+        "app/api/v1/subscriptions.py",
+        "app/core/queue.py",
+        "app/schemas/webhook.py"
+      ],
+      "provides": [
+        "`POST /api/v1/subscriptions`, `GET /api/v1/subscriptions`, `POST /api/v1/events/publish`, Pydantic Schemas, Async Queue",
+        "app/api/v1/events.py: publish_event, router",
+        "POST /publish (app/api/v1/events.py)",
+        "app/api/v1/subscriptions.py: create_subscription, list_subscriptions, router",
+        "app/core/queue.py: WebhookTask",
+        "app/schemas/webhook.py: SubscriptionCreate, SubscriptionResponse, EventPublish, DeliveryResponse"
+      ],
+      "requires": [],
+      "open_issues": [
+        "`app/main.py` (Einstiegspunkt & Lifespan), Background Worker (HMAC, Retries), Deliveries API (`GET`, `POST retry`)"
+      ],
+      "timestamp": "2026-09-22T07:43:25+00:00"
+    },
+    {
+      "agent_id": "api_integration",
+      "task_id": "39d875db",
+      "files": [
+        "app/services/dispatcher.py"
+      ],
+      "provides": [
+        "`app/services/dispatcher.py` (`WebhookDispatcher`, `generate_hmac_signature`, `is_ssrf_safe_url`)",
+        "OpenAPI Spec für `POST /api/v1/events/publish`",
+        "app/services/dispatcher.py: is_ssrf_safe_url, generate_hmac_signature, WebhookDispatcher, logger, dispatcher"
+      ],
+      "requires": [
+        "Router-Registrierung für `/api/v1/events/publish` und `/api/v1/deliveries` in `app/main.py`"
+      ],
+      "open_issues": [],
+      "timestamp": "2026-09-22T07:44:05+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "588506ec",
+      "files": [
+        "tests/test_smoke.py"
+      ],
+      "provides": [
+        "`tests/test_smoke.py` (Smoke‑Test für App‑Start und Health‑Route)",
+        "tests/test_smoke.py: test_app_starts_and_health_ok"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-22T07:50:54+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "dev_lead_route_mismatch_backend",
+      "files": [
+        "app/main.py"
+      ],
+      "provides": [
+        "Registrierte Router für `events` und `subscriptions` in `app/main.py`, Lifespan-Handler, `/health`-Route.",
+        "app/main.py: lifespan, root, health, app",
+        "GET / (app/main.py)",
+        "GET /health (app/main.py)"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-22T07:51:16+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "dev_lead_route_mismatch_tester",
+      "files": [
+        "tests/test_smoke.py"
+      ],
+      "provides": [
+        "`tests/test_smoke.py` – Smoke-Tests für `GET /health` und `GET /` (JSON-Assertions, AsyncClient via ASGITransport)",
+        "tests/test_smoke.py: client, test_app_starts_and_health_ok, test_root_route_ok"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-22T07:55:12+00:00"
+    },
+    {
+      "agent_id": "devops",
+      "task_id": "3b20b49a",
+      "files": [
+        "Dockerfile",
+        "requirements.txt"
+      ],
+      "provides": [
+        "`Dockerfile` (Multi-Stage Python 3.11-slim mit Non-Root-User `appuser`, Healthcheck & Uvicorn-Runner)",
+        "`requirements.txt` (gepinnte Produktiv-Dependencies inkl. `httpx`, `aiosqlite`, `greenlet`)"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-22T07:55:42+00:00"
+    },
+    {
+      "agent_id": "resilience_guard",
+      "task_id": "f6a88875",
+      "files": [
+        "app/api/v1/deliveries.py"
+      ],
+      "provides": [
+        "GET /api/v1/deliveries, POST /api/v1/deliveries/{delivery_id}/retry (app/api/v1/deliveries.py)",
+        "app/api/v1/deliveries.py: list_deliveries, retry_delivery, router",
+        "POST /{delivery_id}/retry (app/api/v1/deliveries.py)"
+      ],
+      "requires": [
+        "app/services/dispatcher.py (enqueue_delivery, dispatcher), app/main.py (Include Deliveries Router)"
+      ],
+      "open_issues": [],
+      "timestamp": "2026-09-22T07:56:33+00:00"
+    },
+    {
+      "agent_id": "security",
+      "task_id": "b5dc04e5",
+      "files": [
+        "app/core/security.py",
+        "docs/SECURITY_AUDIT.md"
+      ],
+      "provides": [
+        "`docs/SECURITY_AUDIT.md` (Security Audit Report)",
+        "`setup_cors` (app/core/security.py)",
+        "app/core/security.py: setup_cors"
+      ],
+      "requires": [
+        "Einbindung von `setup_cors(app)` in `app/main.py` durch den Backend-Agenten."
+      ],
+      "open_issues": [
+        "DNS-Rebinding-Schutz auf Netzwerkebene (Empfehlung für DevOps). Die CORS-Origins in `app/core/security.py` sollten idealerweise über die Pydantic-Settings (`app/core/config.py`) konfigurierbar gemacht werden."
+      ],
+      "timestamp": "2026-09-22T07:56:58+00:00"
+    },
+    {
+      "agent_id": "tester",
+      "task_id": "test_depth_fix_1",
+      "files": [
+        "tests/test_deliveries_retry.py",
+        "tests/test_events_publish.py"
+      ],
+      "provides": [
+        "`tests/test_deliveries_retry.py`",
+        "`tests/test_events_publish.py`",
+        "tests/test_deliveries_retry.py: override_db, test_app_starts_and_health_ok, test_retry_success, test_retry_not_found, test_retry_invalid_uuid",
+        "tests/test_events_publish.py: override_db, test_publish_event_success, test_publish_event_no_match, test_publish_event_invalid"
+      ],
+      "requires": [],
+      "open_issues": [],
+      "timestamp": "2026-09-22T08:01:33+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "verify_fix_backend_2",
+      "files": [
+        "app/db/database.py",
+        "app/services/delivery.py"
+      ],
+      "provides": [
+        "`DeliveryService`, `delivery_service` (app/services/delivery.py)",
+        "`Base`, `get_db` (app/db/database.py)",
+        "app/services/delivery.py: DeliveryService, delivery_service"
+      ],
+      "requires": [],
+      "open_issues": [
+        "`SecurityService` und `security_service` fehlen noch in `app/core/security.py`",
+        "`DispatcherService` und `dispatcher_service` fehlen noch in `app/services/dispatcher.py`."
+      ],
+      "timestamp": "2026-09-22T08:02:17+00:00"
+    }
+  ],
+  "claims": {
+    "app/core/config.py": "database",
+    "app/db/base.py": "database",
+    "app/db/session.py": "database",
+    "app/models/webhook.py": "database",
+    "app/main.py": "database",
+    "app/schemas/webhook.py": "backend",
+    "app/api/v1/subscriptions.py": "backend",
+    "app/core/queue.py": "backend",
+    "app/api/v1/events.py": "backend",
+    "app/services/dispatcher.py": "api_integration",
+    "tests/test_smoke.py": "tester",
+    "requirements.txt": "devops",
+    "Dockerfile": "devops",
+    "app/api/v1/deliveries.py": "resilience_guard",
+    "docs/SECURITY_AUDIT.md": "security",
+    "app/core/security.py": "security",
+    "tests/test_deliveries_retry.py": "tester",
+    "tests/test_events_publish.py": "tester",
+    "app/services/delivery.py": "backend",
+    "app/db/database.py": "backend"
+  },
+  "foreign_changes": [
+    {
+      "path": "app/main.py",
+      "owner": "database",
+      "changed_by": "backend",
+      "timestamp": "2026-09-22T07:51:09+00:00"
+    },
+    {
+      "path": "app/db/session.py",
+      "owner": "database",
+      "changed_by": "tester",
+      "timestamp": "2026-09-22T08:03:22+00:00"
+    }
+  ],
+  "questions": []
+}

@@ -1,0 +1,55 @@
+openapi: 3.1.0
+info:
+  title: Webhook Sentinel API
+  version: 1.0.0
+  description: Hochverfügbarer Webhook- & Event-Dispatcher-Dienst mit HMAC-SHA256 Signierung und SSRF-Schutz.
+paths:
+  /api/v1/events/publish:
+    post:
+      summary: Event veröffentlichen und an abonnierte Webhooks dispatchen
+      operationId: publishEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventPublish'
+      responses:
+        '202':
+          description: Event erfolgreich akzeptiert und Zustellung eingereiht
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  event_id:
+                    type: string
+                  matched_subscriptions:
+                    type: integer
+                  delivery_ids:
+                    type: array
+                    items:
+                      type: string
+                      format: uuid
+        '400':
+          description: Ungültige Event-Payload
+        '500':
+          description: Interner Serverfehler
+components:
+  schemas:
+    EventPublish:
+      type: object
+      required:
+        - event_id
+        - event_type
+        - payload
+      properties:
+        event_id:
+          type: string
+          example: "evt_123456"
+        event_type:
+          type: string
+          example: "order.created"
+        payload:
+          type: object
+          additionalProperties: true

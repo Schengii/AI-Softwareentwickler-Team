@@ -1,0 +1,14 @@
+{
+  "requirements": [
+    "Das System muss als Python-FastAPI-Anwendung namens 'webhook_sentinel' mit modularer Ordnerstruktur (app/api, app/core, app/models, app/services, tests), Pydantic-v2-Validierung und SQLite-Persistenz via SQLAlchemy/SQLModel aufgebaut sein.",
+    "Der Endpunkt POST /api/v1/subscriptions muss Webhook-Ziele mit URL, Event-Filter und Secret registrieren und GET /api/v1/subscriptions muss alle aktiven Webhooks auflisten.",
+    "Der Endpunkt POST /api/v1/events/publish muss Events entgegennehmen, zutreffende Webhooks filtern und Zustell-Tasks in eine asynchrone Queue übergeben.",
+    "Der Endpunkt GET /api/v1/deliveries muss den Auslieferungsverlauf inklusive Erfolgsstatus, HTTP-Code, Dauer und Retry-Count ausgeben.",
+    "Der Endpunkt POST /api/v1/deliveries/{id}/retry muss das manuelle Neuversenden fehlgeschlagener Webhook-Auslieferungen ermöglichen.",
+    "Ausgehende Webhooks müssen im Header 'X-Webhook-Signature' eine mit dem hinterlegten Secret generierte HMAC-SHA256-Signatur mitführen.",
+    "Bei Timeouts oder 5xx-Fehlern muss eine Exponential-Backoff-Logik mit bis zu drei automatischen Wiederholungsversuchen greifen.",
+    "Eine URL-Validierung muss SSRF-Angriffe verhindern, indem Ziel-URLs mit privaten oder internen IP-Adressen (wie 127.0.0.1) abgewiesen werden.",
+    "Das Projekt muss eine pytest-Testsuite mit mindestens 90 % Testabdeckung für Unit- und Integrationstests umfassen.",
+    "Das Projekt muss eine requirements.txt mit allen spezifizierten Abhängigkeiten sowie eine README.md mit Architekturübersicht, Schnellstart-Anleitung und curl-Beispielen enthalten."
+  ]
+}

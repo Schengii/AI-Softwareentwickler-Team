@@ -176,7 +176,13 @@ class GroqClient:
                 if _lf._is_tool_call_json_error(e):
                     return await _lf._cross_provider_failover_with_usage("groq", prompt, system_prompt)
                 if is_rate_limit or is_auth_error or is_too_large or is_not_found:
-                    raise _lf._pinned_provider_failure("Groq", self.model_name, e) from e
+                    # Groqs eigene Modellkette (oben) ist erschöpft - schema-gleicher Ausweich-
+                    # Versuch (DeepSeek/OpenRouter, siehe core/llm_factory.py P7-1), bevor endgültig
+                    # aufgegeben wird.
+                    try:
+                        return await _lf._same_schema_failover_with_usage("groq", prompt, system_prompt)
+                    except Exception:
+                        raise _lf._pinned_provider_failure("Groq", self.model_name, e) from e
                 raise
             return await _lf._cross_provider_failover_with_usage("groq", prompt, system_prompt)
 
@@ -270,7 +276,13 @@ class GroqClient:
                 if _lf._is_tool_call_json_error(e):
                     return await _lf._cross_provider_failover_with_tools("groq", messages, system_prompt, tools)
                 if is_rate_limit or is_auth_error or is_too_large or is_not_found:
-                    raise _lf._pinned_provider_failure("Groq", self.model_name, e) from e
+                    # Groqs eigene Modellkette (oben) ist erschöpft - schema-gleicher Ausweich-
+                    # Versuch (DeepSeek/OpenRouter, siehe core/llm_factory.py P7-1), bevor endgültig
+                    # aufgegeben wird.
+                    try:
+                        return await _lf._same_schema_failover_with_tools("groq", messages, system_prompt, tools)
+                    except Exception:
+                        raise _lf._pinned_provider_failure("Groq", self.model_name, e) from e
                 raise
             return await _lf._cross_provider_failover_with_tools("groq", messages, system_prompt, tools)
 

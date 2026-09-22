@@ -1,0 +1,16 @@
+[
+  {
+    "timestamp": "2026-09-22T08:05:33+00:00",
+    "task_summary": "FastAPI Webhook-Dispatcher implementiert",
+    "verification_ok": false,
+    "budget_aborted": true,
+    "cancelled": false,
+    "files_written_count": 23,
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 📦 ✅ pip install -r requirements.txt (exit_code=0)\n- 📦 ✅ pip install -r requirements-dev.txt (exit_code=0)\n- 🚦 Smoke-Test-Gate bestanden (`app/main.py` startet).\n… (gekürzt, vollständig in detail_file)",
+    "detail_file": ".ai_team_runs/20260922_074043_verification.md",
+    "failed_checks": [
+      "test_depth",
+      "tests"
+    ]
+  }
+]

@@ -1,40 +1,58 @@
 from contextlib import asynccontextmanager
-
+from pathlib import Path
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.core.security import setup_security
-from app.database import Base, engine
-from app.routers import events
+from app.routers.events import router as events_router
+from app.storage.database import Base, engine
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Create tables
+    # Startup: Create database tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
-    # Shutdown
+    # Shutdown: Dispose engine
     await engine.dispose()
+
 
 app = FastAPI(
     title="AegisFlow",
-    description="Event-Broker & Resilienz-Hub",
-    version="1.0.0",
-    lifespan=lifespan
+    description="High-Throughput Event Ingestion Broker with Idempotency and DLQ",
+    version="0.1.0",
+    lifespan=lifespan,
 )
 
+# Setup Security & Resilience Middlewares
 setup_security(app)
 
-@app.get("/health", tags=["Health"])
+# Include Routers
+app.include_router(events_router)
+
+
+# Static files and frontend UI
+static_dir = Path(__file__).resolve().parent.parent / "static"
+if static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+
+@app.get("/")
+async def root():
+    index_file = static_dir / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
+    return {"message": "AegisFlow is running"}
+
+
+@app.get("/health")
 async def health_check():
     return {"status": "ok"}
 
-@app.get("/api/v1/metrics", tags=["Metrics"])
-async def get_metrics():
-    return {"success_rate": 1.0, "forwarded_success": 0, "forwarded_failed": 0, "dlq_count": 0}
-
-app.include_router(events.router)
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True)

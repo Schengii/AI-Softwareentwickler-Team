@@ -1,9 +1,9 @@
 {
   "project_slug": "aegisflow",
-  "timestamp": "2026-09-22T13:43:59+00:00",
+  "timestamp": "2026-09-22T15:41:09+00:00",
   "is_done": false,
   "blocking": [
-    "missing_frontend_ui"
+    "tests_pass"
   ],
   "criteria": [
     {
@@ -11,7 +11,7 @@
       "label": "Es wurde tatsächlich Code erzeugt",
       "passed": true,
       "required": true,
-      "detail": "5 Datei(en) geschrieben",
+      "detail": "7 Datei(en) geschrieben",
       "applicable": true
     },
     {
@@ -25,9 +25,9 @@
     {
       "key": "tests_pass",
       "label": "Die Testsuite läuft grün",
-      "passed": true,
+      "passed": false,
       "required": true,
-      "detail": "",
+      "detail": "Tests fehlgeschlagen oder nicht gelaufen",
       "applicable": true
     },
     {
@@ -41,10 +41,10 @@
     {
       "key": "app_starts",
       "label": "Die Anwendung startet",
-      "passed": true,
+      "passed": false,
       "required": true,
       "detail": "",
-      "applicable": true
+      "applicable": false
     },
     {
       "key": "secrets_clean",
@@ -57,10 +57,10 @@
     {
       "key": "lint_clean",
       "label": "Linter ohne Befund",
-      "passed": true,
+      "passed": false,
       "required": false,
       "detail": "",
-      "applicable": true
+      "applicable": false
     },
     {
       "key": "ui_ok",
@@ -73,10 +73,10 @@
     {
       "key": "test_depth",
       "label": "Die API-Routen werden in Tests tatsächlich aufgerufen",
-      "passed": true,
+      "passed": false,
       "required": true,
       "detail": "",
-      "applicable": true
+      "applicable": false
     },
     {
       "key": "build_passes",
@@ -89,9 +89,9 @@
     {
       "key": "missing_frontend_ui",
       "label": "Beauftragtes Frontend wurde tatsächlich geliefert",
-      "passed": false,
+      "passed": true,
       "required": true,
-      "detail": "kein index.html/src/main.tsx/... gefunden - Frontend-Agent ist am Hard Delivery Gate gescheitert oder hat keine UI-Dateien geschrieben",
+      "detail": "",
       "applicable": true
     },
     {
@@ -108,14 +108,6 @@
       "passed": true,
       "required": true,
       "detail": "gefunden: app/main.py",
-      "applicable": true
-    },
-    {
-      "key": "verification_ok",
-      "label": "Die Gesamt-Verifikation ist ohne Veto",
-      "passed": true,
-      "required": true,
-      "detail": "",
       "applicable": true
     },
     {

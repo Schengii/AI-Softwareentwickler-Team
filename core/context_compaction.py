@@ -23,11 +23,35 @@ PREVIEW_CHARS = 300
 _READ_TOOL_NAMES = frozenset({"read_file", "search_code", "search_component_library", "list_files", "run_tests"})
 _READ_TOOL_MIN_CHARS = 400
 
+# Terminal-/Pytest-Ausgaben (run_tests, run_command) können mehrere zehntausend Zeichen groß
+# werden (volle Abhängigkeits-Installationslogs, ausführliche Traceback-Dumps) - eine ältere
+# Iteration braucht davon nur noch die Zeilen, die den eigentlichen Fehler zeigen, nicht die
+# komplette Ausgabe. _TERMINAL_TOOL_NAMES markiert die Werkzeuge, deren `stdout`/`stderr`-Felder
+# dafür auf die relevanten Zeilen (Traceback/FAILED/ERROR) statt eines reinen Zeichen-Previews
+# reduziert werden.
+_TERMINAL_TOOL_NAMES = frozenset({"run_tests", "run_command"})
+_ERROR_LINE_MARKERS = ("Traceback", "FAILED", "ERROR", "Error:", "assert", "  File \"")
+_MAX_ERROR_LINES = 25
+
 
 @dataclass
 class CompactionStats:
     messages_compacted: int = 0
     chars_saved: int = 0
+
+
+def _extract_error_lines(text: str) -> str:
+    """Reduziert eine Terminal-/Pytest-Ausgabe auf die Zeilen mit tatsächlichem Fehlersignal
+    (Traceback-Kopf, Dateizeilen, Assertions, FAILED/ERROR-Zusammenfassungen) statt der
+    kompletten Ausgabe - ein Testlauf mit hunderten Zeilen Installations-/Sammel-Output enthält
+    oft nur eine Handvoll Zeilen, die für eine spätere Iteration noch relevant sind."""
+    lines = text.splitlines()
+    hits = [ln for ln in lines if any(marker in ln for marker in _ERROR_LINE_MARKERS)]
+    if not hits:
+        return ""
+    if len(hits) > _MAX_ERROR_LINES:
+        hits = hits[:_MAX_ERROR_LINES] + [f"... ({len(hits) - _MAX_ERROR_LINES} weitere Fehlerzeilen gekürzt)"]
+    return "\n".join(hits)
 
 
 def _summary_for(tool_name: str, original: str) -> str:
@@ -46,6 +70,12 @@ def _summary_for(tool_name: str, original: str) -> str:
                 line_count = len(content.splitlines()) if content else 0
                 detail["lines_count"] = line_count
                 preview_text = f"[{tool_name}: {data.get('path')} ({line_count} Zeilen, {len(content)} Zeichen)]"
+            if tool_name in _TERMINAL_TOOL_NAMES:
+                combined = f"{data.get('stdout', '')}\n{data.get('stderr', '')}"
+                error_lines = _extract_error_lines(combined)
+                if error_lines:
+                    detail["error_lines"] = error_lines
+                    preview_text = f"[{tool_name}: {len(combined)} Zeichen Ausgabe gekürzt auf Fehlerzeilen]"
     except ValueError:
         pass
     payload = {

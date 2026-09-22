@@ -1,0 +1,22 @@
+{
+  "modules": {
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/models/enums.py": {
+      "EventType": "class",
+      "DeliveryStatus": "class"
+    },
+    "app/db/session.py": {
+      "get_db": "function",
+      "init_db": "function"
+    },
+    "app/services/event_service.py": {
+      "EventService": "class"
+    },
+    "app/services/webhook_service.py": {
+      "WebhookService": "class"
+    }
+  }
+}

@@ -48,6 +48,10 @@ def main():
     Projekt auf echte Erreichbarkeit prüft und bei einem Ausfall automatisch ein Backlog-Ticket
     eröffnet (siehe core/production_monitor.py) – dasselbe On-Call-Prinzip wie oben, nur für
     bereits live laufende Deployments statt für offene Aufgaben.
+    Mit `--goal "..." [--max-iterations N] [--max-tokens N]` (auch als `/goal`-Befehl in der
+    interaktiven CLI, siehe interface/cli/learnings_backlog.py) kann `--max-tokens` das
+    komplexitäts-basierte Lauf-Budget (config.TASK_COMPLEXITY_TOKEN_BUDGETS) für JEDE Iteration
+    fest überschreiben, z.B. `--max-tokens 2000000` für ein besonders umfangreiches Projekt.
     Mit `--eval [--tasks t1,t2]` startet die kanonische Benchmark-Evaluierungs-Suite
     (siehe evals/), misst Token-Verbrauch, Dauer und Verifikationsergebnis und speichert
     die Ergebnisse in der Benchmark-Historie. Mit `--list-evals` werden alle verfügbaren
@@ -408,6 +412,17 @@ def main():
             except (IndexError, ValueError):
                 pass
 
+        # Expliziter Token-Budget-Override (Team-Aufgabe "Budget-Flexibilisierung", 2026-09-22):
+        # überschreibt sowohl config.MAX_RUN_TOKENS als auch die automatische Komplexitäts-Stufe
+        # (config.TASK_COMPLEXITY_TOKEN_BUDGETS, siehe agents/orchestrator/department.py) für
+        # JEDE Iteration dieses Ziel-Loop-Laufs.
+        max_tokens_override = None
+        if "--max-tokens" in sys.argv:
+            try:
+                max_tokens_override = int(sys.argv[sys.argv.index("--max-tokens") + 1])
+            except (IndexError, ValueError):
+                pass
+
         project_dir = None
         # Team-Goal (20260913, Aufgabe 2): Nutzer geben den Projektpfad manchmal versehentlich
         # ohne führende Dashes ein (`project "workspace/ecochef"` statt `--project ...`) oder mit
@@ -435,6 +450,7 @@ def main():
                 project_dir=project_dir,
                 max_iterations=max_iterations,
                 status_callback=print,
+                max_tokens_override=max_tokens_override,
             )
         )
         print("\n" + res.format_summary())

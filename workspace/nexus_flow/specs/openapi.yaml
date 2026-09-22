@@ -1,0 +1,37 @@
+openapi: 3.1.0
+info:
+  title: nexus_flow Webhook & Event Ingestion API
+  version: 1.0.0
+paths:
+  /api/v1/subscriptions:
+    post:
+      summary: Neue Webhook-Subscription registrieren
+      operationId: createSubscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, secret, event_types]
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  example: "https://consumer.example.com/webhooks"
+                secret:
+                  type: string
+                  minLength: 16
+                  example: "whsec_live_9f83ac127e4b2a89"
+                event_types:
+                  type: array
+                  items:
+                    type: string
+                  example: ["USER_SIGNUP", "ORDER_CREATED"]
+      responses:
+        "201":
+          description: Subscription erfolgreich erstellt
+        "400":
+          description: Ungültige Payloads oder URL
+        "422":
+          description: Validierungsfehler

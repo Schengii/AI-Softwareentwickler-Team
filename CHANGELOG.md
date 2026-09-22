@@ -7,6 +7,42 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Token-Effizienz & Budget-Flexibilisierung 2026-09-22: Komplexitäts-basiertes Lauf-Budget, `--max-tokens`, Terminal-Output-Kürzung
+
+Ziel: vorzeitige `budget_aborted: true`-Abbrüche bei komplexen Projekten verhindern, ohne die
+bestehende, umfangreich getestete Budget-Mechanik (`agents/orchestrator/budget.py`) zu brechen.
+
+* **Komplexitäts-basiertes Lauf-Budget (`config.TASK_COMPLEXITY_TOKEN_BUDGETS`):**
+  `agents/orchestrator/department.py` wählt jetzt automatisch die zur erkannten Aufgaben-
+  Komplexität passende Budget-Stufe (micro: 800k / standard: 1,5 Mio / complex: 2,5 Mio Tokens,
+  via `core.task_manager.is_micro_task()`/`is_complex_task()`) statt eines starren
+  `MAX_RUN_TOKENS` (Fallback-Default von 300k auf 1,5 Mio angehoben). Umgesetzt über eine neue
+  `ContextVar`-basierte `max_run_tokens_scope()` (`agents/orchestrator/budget.py`) statt eines
+  Instanz-Attributs, damit bestehende Tests, die `MAX_RUN_TOKENS` direkt auf dem Budget-Modul
+  patchen (`tests/test_run_budget_cap.py` u.a.), unverändert funktionieren - die automatische
+  Stufenwahl ist über ein `enable_budget_scaling`-Flag bewusst NUR im echten `process()`-Lauf-
+  pfad aktiv, nicht wenn Tests `_run_department_hierarchy()` direkt aufrufen.
+* **`--max-tokens`-Override (`main.py --goal`, `/goal`-Befehl):** überschreibt sowohl
+  `MAX_RUN_TOKENS` als auch die automatische Komplexitäts-Stufe für jede Iteration des
+  Ziel-Loops (`core/goal_loop.py`, `orchestrator.process(max_tokens_override=...)`).
+* **Mindest-Verifikationsreserve (`config.MIN_VERIFICATION_TOKEN_RESERVE`, 200k Tokens):**
+  `_generation_budget_exceeded()` reserviert jetzt das Maximum aus dem anteiligen
+  `VERIFICATION_TOKEN_RESERVE_RATIO` UND dieser absoluten Mindestreserve, gedeckelt auf 90% des
+  Lauf-Budgets - bei einem kleinen Budget (z.B. der micro-Stufe) reichte der reine
+  Prozent-Anteil sonst nicht für eine echte Fix-Iteration.
+* **Terminal-/Pytest-Output-Kürzung (`core/context_compaction.py`):** ältere `run_tests`/
+  `run_command`-Ergebnisse werden jetzt auf die tatsächlich relevanten Fehlerzeilen
+  (Traceback/FAILED/ERROR) statt eines reinen Zeichen-Previews reduziert - die bestehende
+  Alters-/Dedup-basierte Verdichtung für `read_file` & Co. (`ENABLE_CONTEXT_COMPACTION`,
+  bereits vorhanden) blieb unverändert.
+* Abgesichert durch `tests/test_token_budget_config.py` (neu) und `tests/test_context_compaction.py`
+  (neu, ergänzt `tests/test_token_efficiency.py`); 116 betroffene Tests
+  (`test_run_budget_cap.py`, `test_budget_aborted_after_verification_ok.py`,
+  `test_project_token_budget.py`, `test_task_complexity_scaling.py`,
+  `test_department_phase_order.py`, `test_department_lead_activation.py` u.a.) grün.
+
+---
+
 ## 🟢 Team-Optimierung 2026-09-22 (Sprint 4): Routen-Präfixe, Router-Import-Check, poll_until-Helfer, Root-Cause-Kontext, Response-Schema-Digest
 
 Fuenf Befunde aus realen Laeufen (omnimetric_engine, ecotrack_ai, aegisflow, eventforge_core),

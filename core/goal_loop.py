@@ -125,16 +125,20 @@ class GoalLoopRunner:
         max_iterations: int = GOAL_LOOP_DEFAULT_MAX_ITERATIONS,
         status_callback: StatusCallback | None = None,
         cancel_requested: CancelCallback | None = None,
+        max_tokens_override: int | None = None,
     ) -> GoalLoopResult:
         """
         Führt den autonomen Ziel-Loop aus.
-        
+
         Args:
             goal: Das übergeordnete Ziel oder die Projektanforderung.
             project_dir: Optionales bestehendes Projektverzeichnis.
             max_iterations: Maximale Anzahl von Entwicklungsrunden.
             status_callback: Live-Statusmeldungen für CLI/UI.
             cancel_requested: Prüffunktion für kooperativen Abbruch (z.B. Strg+C).
+            max_tokens_override: expliziter `--max-tokens`-Wert (main.py `--goal`,
+                `/goal`-Befehl) - an JEDEN orchestrator.process()-Aufruf dieser Iterationen
+                durchgereicht, statt der automatischen Komplexitäts-Stufe.
         """
         def emit(msg: str):
             if status_callback:
@@ -217,6 +221,7 @@ class GoalLoopRunner:
                     status_callback=status_callback,
                     forced_project_dir=project_dir,
                     cancel_requested=cancel_requested or (lambda: False),
+                    max_tokens_override=max_tokens_override,
                 )
             except Exception as e:
                 logger.exception("Fehler während der Goal-Loop Iteration: %s", e)
@@ -468,6 +473,7 @@ async def run_goal_loop(
     max_iterations: int = GOAL_LOOP_DEFAULT_MAX_ITERATIONS,
     status_callback: StatusCallback | None = None,
     cancel_requested: CancelCallback | None = None,
+    max_tokens_override: int | None = None,
 ) -> GoalLoopResult:
     """Hilfsfunktion zum direkten Starten eines GoalLoop-Laufs."""
     runner = GoalLoopRunner()
@@ -477,4 +483,5 @@ async def run_goal_loop(
         max_iterations=max_iterations,
         status_callback=status_callback,
         cancel_requested=cancel_requested,
+        max_tokens_override=max_tokens_override,
     )

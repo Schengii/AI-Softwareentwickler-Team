@@ -1,10 +1,11 @@
 {
   "requirements": [
-    "In `app/main.py` muss der Aufruf von `setup_security(app)` integriert werden.",
-    "Im `EventService` muss die URL vor dem Dispatching mittels `is_safe_url` geprüft werden.",
-    "In `app/models/event.py` muss ein Validator ergänzt werden, der die Payload-Größe auf maximal 64 KB beschränkt.",
-    "Der Ruff-Lint-Fehler SIM103 in `app/core/security.py` (Zeile 52) muss behoben werden.",
-    "Der Ruff-Lint-Fehler RUF059 in `tests/test_resilience.py` (Zeile 48) muss behoben werden.",
-    "Die Anwendung muss erfolgreich und fehlerfrei starten (`app_starts`)."
+    "Das Modul `app/database.py` muss die Symbole `Base` und `engine` definieren und exportieren, sodass alle darauf verweisenden Importe fehlerfrei auflösen.",
+    "Der Import `from app.database import Base, engine` in `app/main.py` (Zeile 6) muss ohne `ImportError` ausführbar sein.",
+    "Der Import `from app.database import Base` in `app/models/event.py` (Zeile 9) muss ohne `ImportError` auflösbar sein.",
+    "Die Importe von `Base` und `engine` aus `app.database` in `tests/test_aegisflow.py` (Zeile 5) müssen fehlerfrei und ohne `ImportError` geladen werden können.",
+    "Eine Frontend-Benutzeroberfläche muss implementiert sein, um den Blocker `missing_frontend_ui` der Definition of Done zu beheben.",
+    "Der Completeness-Check muss ohne verbleibende Veto-Funde bezüglich fehlender Symbole oder Platzhalter-Code erfolgreich durchlaufen.",
+    "Alle bestehenden Tests in `tests/test_aegisflow.py` müssen nach den Import-Korrekturen erfolgreich und ohne Fehler durchlaufen."
   ]
 }

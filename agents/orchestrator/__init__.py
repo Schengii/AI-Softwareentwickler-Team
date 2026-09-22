@@ -19,6 +19,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable
+from contextlib import nullcontext
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -45,7 +46,7 @@ from agents.i18n_agent import I18nAgent
 from agents.image_generator_agent import ImageGeneratorAgent
 from agents.ml_agent import MLAgent
 from agents.mobile_agent import MobileAgent
-from agents.orchestrator.budget import BudgetMixin
+from agents.orchestrator.budget import BudgetMixin, max_run_tokens_scope
 from agents.orchestrator.constants import PHASE_ORDER, REVIEW_ONLY_AGENT_IDS, PlanConfirmationCallback, StatusCallback
 from agents.orchestrator.department import DepartmentMixin
 from agents.orchestrator.dispatch import DispatchMixin
@@ -274,6 +275,11 @@ class Orchestrator(
         # _project_tokens_before_run ist die bereits in früheren Läufen verbrauchte Summe.
         self._project_token_budget: int = 0
         self._project_tokens_before_run: int = 0
+        # True, wenn process() einen expliziten `--max-tokens`-Wert erhalten hat (main.py
+        # `--goal`, `/goal`-Befehl - siehe agents/orchestrator/budget.py.max_run_tokens_scope()).
+        # Verhindert, dass agents/orchestrator/department.py die automatische Komplexitäts-Stufe
+        # (config.TASK_COMPLEXITY_TOKEN_BUDGETS) über den expliziten Wert legt.
+        self._max_run_tokens_overridden: bool = False
 
     def _escalate_agent_models(self, agent_ids: set[str] | None = None) -> set[str]:
         """
@@ -326,17 +332,31 @@ class Orchestrator(
         forced_project_dir: str | None = None,
         plan_confirmation_callback: PlanConfirmationCallback | None = None,
         cancel_requested: Callable[[], bool] | None = None,
+        max_tokens_override: int | None = None,
     ) -> str:
         """Führt einen Lauf aus (siehe _process_impl) und garantiert, dass sein Lauf-Log IMMER mit
         `run_closed` endet - sonst fehlen früh abgebrochene oder abgestürzte Läufe in jeder
         Auswertung. Der Logger wird vorab zurückgesetzt, damit frühe Agenten-Aufrufe nicht in das
-        Log des VORHERIGEN Laufs derselben Orchestrator-Instanz geschrieben werden."""
+        Log des VORHERIGEN Laufs derselben Orchestrator-Instanz geschrieben werden.
+
+        max_tokens_override: expliziter `--max-tokens`-Wert (main.py `--goal`, `/goal`-Befehl -
+        siehe interface/cli/learnings_backlog.py). Überschreibt sowohl config.MAX_RUN_TOKENS als
+        auch die automatische Komplexitäts-Stufe (agents/orchestrator/department.py) für DIESEN
+        Lauf. None/<=0 lässt die automatische Auswahl unangetastet.
+        """
         self._run_logger = None
         self._begin_efficiency_tracking()
+        self._max_run_tokens_overridden = bool(max_tokens_override and max_tokens_override > 0)
+        budget_scope = (
+            max_run_tokens_scope(max_tokens_override)
+            if self._max_run_tokens_overridden
+            else nullcontext()
+        )
         try:
-            return await self._process_impl(
-                user_request, status_callback, forced_project_dir, plan_confirmation_callback, cancel_requested,
-            )
+            with budget_scope:
+                return await self._process_impl(
+                    user_request, status_callback, forced_project_dir, plan_confirmation_callback, cancel_requested,
+                )
         except BaseException as exc:
             # Der reine Exception-Klassenname ("exception:TypeError") ist ohne Zeile, Modul und
             # Nachricht nicht diagnostizierbar. Deshalb der volle Traceback - auf die letzten
@@ -810,6 +830,7 @@ class Orchestrator(
             cancel_requested=cancel_requested,
             collision_sink=file_collisions,
             enable_phase_checkpoint=True,
+            enable_budget_scaling=True,
         )
 
         # Fallback-Dateispeicherung: Falls ein Agent trotz Werkzeug-Zugriff Code nur im

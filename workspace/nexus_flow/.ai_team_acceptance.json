@@ -1,0 +1,12 @@
+{
+  "requirements": [
+    "Der Service muss unter dem Namen 'nexus_flow' als Webanwendung mit FastAPI implementiert sein.",
+    "Die Datenpersistenz des Systems muss unter Verwendung von SQLite realisiert werden.",
+    "Es muss eine Schnittstelle zur Ingestion (Empfang und Validierung) von Events vorhanden sein.",
+    "Das System muss eine Streaming-Funktion zur Bereitstellung bzw. Übertragung von Events bieten.",
+    "Zulässige Event-Typen müssen über ein fest definiertes EventType-Enum validiert werden.",
+    "Es muss eine Schnittstelle zur Registrierung und Verwaltung von Webhook-Subscriptions implementiert sein.",
+    "Eingehende Events müssen automatisiert per Webhook an die entsprechenden Subscriptions zugestellt werden.",
+    "Das Projekt muss eine vollständige, fehlerfrei durchlaufende Testsuite auf Basis von Pytest enthalten."
+  ]
+}

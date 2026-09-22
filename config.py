@@ -771,12 +771,41 @@ OPTIONAL_PHASE_IDS: frozenset[str] = frozenset({"design_lead", "content_lead"})
 # ──────────────────────────────────────────
 # core/quota_estimator.py zeigt den Tokenverbrauch nur an – ohne Obergrenze kann ein
 # einzelner Lauf (z.B. durch mehrere Verifikations-Fixversuche mit dem kostenpflichtigen
-# ORCHESTRATOR_MODEL/Heavy-Agenten) unbegrenzt weiterlaufen. MAX_RUN_TOKENS=0 (Standard)
-# lässt bestehende Läufe unangetastet; setze z.B. MAX_RUN_TOKENS=300000 in der .env, um
+# ORCHESTRATOR_MODEL/Heavy-Agenten) unbegrenzt weiterlaufen. MAX_RUN_TOKENS=0 deaktiviert
+# das Budget vollständig; setze z.B. MAX_RUN_TOKENS=300000 in der .env, um
 # agents/orchestrator.py nach Erreichen dieses Werts die verbleibenden Fachbereichs-Phasen,
 # Verifikations-Fixversuche sowie Retrospektive/Selbstoptimierung übersprungen ausliefern
 # zu lassen (die bis dahin erarbeiteten Ergebnisse werden trotzdem synthetisiert).
-MAX_RUN_TOKENS: int = int(os.getenv("MAX_RUN_TOKENS", "300000"))
+#
+# Nutzeranfrage (Token-Effizienz-/Budget-Flexibilisierung, 2026-09-22): der bisherige
+# Standardwert (300.000) brach komplexe Projekte real vorzeitig mit `budget_aborted: true`
+# ab, bevor Verifikation/Fix-Schleifen überhaupt liefen. Der Fallback-Wert hier entspricht
+# jetzt der "standard"-Stufe aus TASK_COMPLEXITY_TOKEN_BUDGETS unten - agents/orchestrator/
+# department.py._run_department_hierarchy() ersetzt ihn zur Laufzeit ohnehin durch die zur
+# jeweiligen Aufgabe passende Stufe (micro/standard/complex), solange kein expliziter
+# `--max-tokens`-Aufruf (main.py `--goal`, `/goal`-Befehl) das Budget fest vorgibt.
+MAX_RUN_TOKENS: int = int(os.getenv("MAX_RUN_TOKENS", "1500000"))
+
+# Komplexitäts-basierte Lauf-Budgets: core/task_manager.is_micro_task()/is_complex_task()
+# klassifizieren einen Aufgabenplan bereits deterministisch (ohne Zusatz-LLM-Aufruf) in
+# micro/standard/complex - agents/orchestrator/department.py nutzt dieselbe Klassifikation,
+# um das Lauf-Budget passend zu wählen, statt EIN starres Limit für triviale Einzeiler UND
+# breite Mehr-Fachbereichs-Projekte gleichermaßen anzuwenden. Greift nur, wenn
+# ENABLE_TASK_COMPLEXITY_SCALING aktiv ist UND kein expliziter `--max-tokens`-Override
+# vorliegt (agents/orchestrator/__init__.py._max_run_tokens_overridden).
+TASK_COMPLEXITY_TOKEN_BUDGETS: dict[str, int] = {
+    "micro": int(os.getenv("MICRO_TASK_TOKEN_BUDGET", "800000")),
+    "standard": int(os.getenv("STANDARD_TASK_TOKEN_BUDGET", "1500000")),
+    "complex": int(os.getenv("COMPLEX_TASK_TOKEN_BUDGET", "2500000")),
+}
+
+# Mindestreserve für die Verifikations-/Fix-Phasen in ABSOLUTEN Tokens, zusätzlich zum
+# anteiligen VERIFICATION_TOKEN_RESERVE_RATIO unten - bei einem kleinen MAX_RUN_TOKENS
+# (z.B. der micro-Stufe, 800.000) ergäbe der Standard-Anteil von 15% nur 120.000 Tokens
+# Reserve, was für eine echte Fix-Iteration (Testlauf + LLM-Korrektur + erneuter Testlauf)
+# oft nicht reicht. agents/orchestrator/budget.py._generation_budget_exceeded() nimmt
+# deshalb das Maximum aus Anteils- und Mindestreserve.
+MIN_VERIFICATION_TOKEN_RESERVE: int = int(os.getenv("MIN_VERIFICATION_TOKEN_RESERVE", "200000"))
 
 # Team-Retrospektive (Verbesserungsvorschlag "Budget-Reserve für Verifikation"): mehrere reale
 # Läufe (u.a. incidentpilot) erschöpften MAX_RUN_TOKENS bereits in der Code-Generierungsphase

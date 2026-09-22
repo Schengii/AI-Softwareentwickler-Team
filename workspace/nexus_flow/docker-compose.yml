@@ -1,0 +1,30 @@
+services:
+  nexus_flow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nexus_flow:latest
+    container_name: nexus_flow
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:////data/nexus_flow.db
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DEBUG=False
+      - PROJECT_NAME=nexus_flow
+      - VERSION=0.1.0
+      - API_V1_PREFIX=/api/v1
+    volumes:
+      - nexus_flow_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  nexus_flow_data:
+    driver: local

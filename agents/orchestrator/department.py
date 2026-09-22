@@ -10,9 +10,11 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from pathlib import Path
 
 from agents.department_lead_agent import DEPARTMENT_DEFINITIONS, DepartmentLeadAgent
+from agents.orchestrator.budget import max_run_tokens_scope
 from agents.orchestrator.constants import PHASE_ORDER
 from config import (
     CRITICAL_AGENT_IDS,
@@ -25,6 +27,7 @@ from config import (
     ENABLE_TEAM_BOARD,
     ENABLE_TEST_FIRST,
     PROVIDER_EXHAUSTION_CONSECUTIVE_LIMIT,
+    TASK_COMPLEXITY_TOKEN_BUDGETS,
 )
 from core.checkpoint import clear_checkpoint, load_checkpoint, save_phase_checkpoint
 from core.definition_of_done import check_entrypoint_exists
@@ -89,20 +92,46 @@ class DepartmentMixin:
         cancel_requested: Callable[[], bool] | None = None,
         collision_sink: list[dict] | None = None,
         enable_phase_checkpoint: bool = False,
+        enable_budget_scaling: bool = False,
     ) -> tuple[list[AgentResult], dict[str, str], bool, bool]:
         """Dünner Wrapper um _run_department_hierarchy_impl(): markiert den Lauf für seine
         gesamte Dauer (inkl. aller daraus gestarteten asyncio-Tasks) als anspruchsvoll oder
         nicht, siehe core/model_capability.complex_run() und config.get_model_for_agent(). Als
         eigene Methode, damit die Markierung per try/finally auch bei einer Exception irgendwo
         in der Hierarchie zuverlässig zurückgesetzt wird, ohne den kompletten (sehr langen)
-        Hierarchie-Code dafür einrücken zu müssen."""
+        Hierarchie-Code dafür einrücken zu müssen.
+
+        enable_budget_scaling: nur True im echten Lauf-Pfad (agents/orchestrator/__init__.py.
+        _process_impl()) - schaltet die komplexitäts-basierte Lauf-Budget-Auswahl
+        (config.TASK_COMPLEXITY_TOKEN_BUDGETS) frei. Default False, damit direkte Aufrufer
+        dieser Methode (z.B. tests/test_run_budget_cap.py, die MAX_RUN_TOKENS selbst gezielt
+        patchen, um das Budget-Verhalten isoliert zu prüfen) unverändert exakt das von ihnen
+        gesetzte Budget sehen, statt von der automatischen Stufenwahl überschrieben zu werden.
+        """
         task_is_complex = ENABLE_TASK_COMPLEXITY_SCALING and is_complex_task(agent_tasks)
         if task_is_complex:
             notify(
                 "🧠 [dim]Anspruchsvolle Aufgabe erkannt – Selbstoptimierer darf Rollen für "
                 "diesen Lauf nicht auf ein schwächeres Modell abstufen.[/dim]"
             )
-        with complex_run(task_is_complex):
+        # Komplexitäts-basiertes Lauf-Budget (config.TASK_COMPLEXITY_TOKEN_BUDGETS): nur wenn
+        # kein expliziter `--max-tokens`-Aufruf (main.py `--goal`, `/goal`-Befehl) bereits ein
+        # festes Budget vorgegeben hat (self._max_run_tokens_overridden, siehe
+        # agents/orchestrator/__init__.py.process()). Verhindert, dass ein starres Limit
+        # triviale Einzeiler genauso begrenzt wie ein breites Mehr-Fachbereichs-Projekt.
+        budget_scope = nullcontext()
+        if enable_budget_scaling and ENABLE_TASK_COMPLEXITY_SCALING and not getattr(self, "_max_run_tokens_overridden", False):
+            if task_is_complex:
+                tier = "complex"
+            elif is_micro_task(agent_tasks):
+                tier = "micro"
+            else:
+                tier = "standard"
+            tier_budget = TASK_COMPLEXITY_TOKEN_BUDGETS.get(tier)
+            if tier_budget:
+                budget_scope = max_run_tokens_scope(tier_budget)
+                notify(f"💰 [dim]Lauf-Budget für Komplexitätsstufe '{tier}': {tier_budget:,} Tokens.[/dim]")
+        with budget_scope, complex_run(task_is_complex):
             return await self._run_department_hierarchy_impl(
                 user_request=user_request,
                 task_summary=task_summary,

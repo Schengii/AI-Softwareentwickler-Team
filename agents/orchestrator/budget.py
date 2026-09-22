@@ -1,11 +1,49 @@
 """
 agents/orchestrator/budget.py – BudgetMixin: Budget-/Kosten-Tracking über zwei unabhängige
-Budgets hinweg – das harte, globale Lauf-Budget (config.MAX_RUN_TOKENS) und das optionale,
-projektspezifische Kostenbudget aus `/constitution` (self._project_token_budget).
+Budgets hinweg – das harte, globale Lauf-Budget (config.MAX_RUN_TOKENS, ggf. per
+`--max-tokens`/Komplexitäts-Stufe überschrieben) und das optionale, projektspezifische
+Kostenbudget aus `/constitution` (self._project_token_budget).
 """
 
-from config import MAX_RUN_TOKENS, OPTIONAL_PHASE_IDS, PHASE_TOKEN_SHARES, VERIFICATION_TOKEN_RESERVE_RATIO
+from contextlib import contextmanager
+from contextvars import ContextVar
+
+from config import (
+    MAX_RUN_TOKENS,
+    MIN_VERIFICATION_TOKEN_RESERVE,
+    OPTIONAL_PHASE_IDS,
+    PHASE_TOKEN_SHARES,
+    VERIFICATION_TOKEN_RESERVE_RATIO,
+)
 from core.token_guard import token_guard
+
+# Lauf-Budget-Override (Team-Aufgabe "Budget-Flexibilisierung", 2026-09-22): entweder ein
+# expliziter `--max-tokens`-Wert (main.py `--goal`, `/goal`-Befehl) oder die zur Aufgaben-
+# Komplexität passende Stufe aus config.TASK_COMPLEXITY_TOKEN_BUDGETS (siehe
+# agents/orchestrator/department.py). Als ContextVar statt Instanz-Attribut, aus demselben
+# Grund wie core/model_capability.py.complex_run(): jede Methode unten liest weiterhin
+# `MAX_RUN_TOKENS` als MODUL-globalen Namen (nicht als eingefrorenen Wert), damit bestehende
+# Tests, die `patch.object(agents.orchestrator.budget, "MAX_RUN_TOKENS", ...)` direkt auf
+# diesem Modul patchen, unverändert funktionieren - der Override greift NUR, wenn diese
+# ContextVar explizit gesetzt wurde (process()/department.py), sonst bleibt exakt das alte
+# Verhalten (klassenmethoden-basiert, kein Instanz-Zustand nötig).
+_max_run_tokens_override: ContextVar[int | None] = ContextVar("_max_run_tokens_override", default=None)
+
+
+@contextmanager
+def max_run_tokens_scope(value: int):
+    """Setzt das harte Lauf-Budget für die Dauer des Kontexts (siehe `_max_run_tokens_override`
+    oben) - asyncio-Tasks/`asyncio.to_thread()` übernehmen den Kontext automatisch."""
+    token = _max_run_tokens_override.set(value)
+    try:
+        yield
+    finally:
+        _max_run_tokens_override.reset(token)
+
+
+def _effective_max_run_tokens() -> int:
+    override = _max_run_tokens_override.get()
+    return MAX_RUN_TOKENS if override is None else override
 
 
 class BudgetMixin:
@@ -46,10 +84,11 @@ class BudgetMixin:
 
     @classmethod
     def _run_budget_exceeded(cls, start_tokens: int) -> bool:
-        """MAX_RUN_TOKENS<=0 deaktiviert das harte Budget (Standard) – siehe config.py."""
-        if MAX_RUN_TOKENS <= 0:
+        """<=0 deaktiviert das harte Budget (Standard) – siehe config.py."""
+        max_run_tokens = _effective_max_run_tokens()
+        if max_run_tokens <= 0:
             return False
-        return cls._tokens_used_since(start_tokens) >= MAX_RUN_TOKENS
+        return cls._tokens_used_since(start_tokens) >= max_run_tokens
 
     @classmethod
     def _run_budget_within_confirmation_buffer(cls, start_tokens: int, buffer_ratio: float = 0.10) -> bool:
@@ -65,31 +104,45 @@ class BudgetMixin:
         EINMAL pro Lauf greift, damit daraus kein schleichendes, wiederholt genutztes Extra-Budget
         wird.
         """
-        if MAX_RUN_TOKENS <= 0:
+        max_run_tokens = _effective_max_run_tokens()
+        if max_run_tokens <= 0:
             return False
         used = cls._tokens_used_since(start_tokens)
-        if used < MAX_RUN_TOKENS:
+        if used < max_run_tokens:
             return False
-        return used <= MAX_RUN_TOKENS * (1.0 + buffer_ratio)
+        return used <= max_run_tokens * (1.0 + buffer_ratio)
+
+    @staticmethod
+    def _generation_ceiling(max_run_tokens: int) -> float:
+        """
+        Obergrenze der Code-GENERIERUNGSPHASE: `max_run_tokens` abzüglich der Verifikations-
+        Reserve - das Maximum aus dem anteiligen VERIFICATION_TOKEN_RESERVE_RATIO UND der
+        absoluten MIN_VERIFICATION_TOKEN_RESERVE (siehe config.py-Docstring dort), gedeckelt auf
+        90% von `max_run_tokens`, damit selbst bei einem sehr kleinen Budget noch ein sinnvoller
+        Generierungsanteil übrig bleibt.
+        """
+        reserve_ratio = min(max(VERIFICATION_TOKEN_RESERVE_RATIO, 0.0), 0.9)
+        reserve_tokens = max(max_run_tokens * reserve_ratio, MIN_VERIFICATION_TOKEN_RESERVE)
+        reserve_tokens = min(reserve_tokens, max_run_tokens * 0.9)
+        return max_run_tokens - reserve_tokens
 
     @classmethod
     def _generation_budget_exceeded(cls, start_tokens: int) -> bool:
         """
         Wie `_run_budget_exceeded`, aber für die Code-GENERIERUNGSPHASE
-        (agents/orchestrator/department.py._run_department_hierarchy): prüft gegen ein um
-        VERIFICATION_TOKEN_RESERVE_RATIO reduziertes Kontingent, damit die anschließende
-        Verifikations-/Fix-Phase (die Autonomie erst beweist, siehe
+        (agents/orchestrator/department.py._run_department_hierarchy): prüft gegen ein um die
+        Verifikations-Reserve (siehe `_generation_ceiling`) reduziertes Kontingent, damit die
+        anschließende Verifikations-/Fix-Phase (die Autonomie erst beweist, siehe
         agents/orchestrator/verification.py) garantiert noch Budget übrig hat, statt dass ein
-        einzelner Lauf sein komplettes MAX_RUN_TOKENS bereits beim Codeschreiben verbraucht
-        (realer Fund: incidentpilot-Projekt, "Verifikation nach Versuch 0 abgebrochen"). Die
+        einzelner Lauf sein komplettes Budget bereits beim Codeschreiben verbraucht (realer
+        Fund: incidentpilot-Projekt, "Verifikation nach Versuch 0 abgebrochen"). Die
         Verifikations-/Fix-Schleifen selbst rufen weiterhin `_run_budget_exceeded` (volles
         Budget) auf, nicht diese Methode.
         """
-        if MAX_RUN_TOKENS <= 0:
+        max_run_tokens = _effective_max_run_tokens()
+        if max_run_tokens <= 0:
             return False
-        reserve_ratio = min(max(VERIFICATION_TOKEN_RESERVE_RATIO, 0.0), 0.9)
-        generation_ceiling = MAX_RUN_TOKENS * (1.0 - reserve_ratio)
-        return cls._tokens_used_since(start_tokens) >= generation_ceiling
+        return cls._tokens_used_since(start_tokens) >= cls._generation_ceiling(max_run_tokens)
 
     # Ein optionaler Fachbereich darf starten, solange danach noch mindestens dieser Anteil der
     # Budget-Anteile aller noch folgenden Kern-Fachbereiche übrig bleibt. Nicht 1.0, weil Phasen
@@ -107,10 +160,10 @@ class BudgetMixin:
         vorher konnte Content-/Doku-Arbeit das Budget verbrauchen, das danach für QA und die
         Verifikation fehlte (chronospulse: Tests liefen gar nicht).
         """
-        if MAX_RUN_TOKENS <= 0 or dept_id not in OPTIONAL_PHASE_IDS:
+        max_run_tokens = _effective_max_run_tokens()
+        if max_run_tokens <= 0 or dept_id not in OPTIONAL_PHASE_IDS:
             return True
-        reserve_ratio = min(max(VERIFICATION_TOKEN_RESERVE_RATIO, 0.0), 0.9)
-        generation_ceiling = MAX_RUN_TOKENS * (1.0 - reserve_ratio)
+        generation_ceiling = cls._generation_ceiling(max_run_tokens)
         remaining = generation_ceiling - cls._tokens_used_since(start_tokens)
         core_shares = sum(
             PHASE_TOKEN_SHARES.get(p, 0.0) for p in remaining_phase_ids if p not in OPTIONAL_PHASE_IDS
@@ -166,7 +219,7 @@ class BudgetMixin:
         """
         if self._project_budget_exceeded(start_tokens):
             return f"Projekt-Budget (`/constitution`, `{self._project_token_budget:,}` Tokens für `{self.last_project_slug}`)"
-        return f"Lauf-Budget (`MAX_RUN_TOKENS={MAX_RUN_TOKENS:,}`)"
+        return f"Lauf-Budget (`MAX_RUN_TOKENS={_effective_max_run_tokens():,}`)"
 
     def _budget_or_cancel_reason(
         self, budget_aborted: bool, manually_cancelled: bool, stage: str, start_tokens: int | None = None,
@@ -178,7 +231,7 @@ class BudgetMixin:
         manually_cancelled bereits True ist (siehe process()).
         """
         if budget_aborted:
-            label = self._budget_exceeded_label(start_tokens) if start_tokens is not None else f"Lauf-Budget (`MAX_RUN_TOKENS={MAX_RUN_TOKENS:,}`)"
+            label = self._budget_exceeded_label(start_tokens) if start_tokens is not None else f"Lauf-Budget (`MAX_RUN_TOKENS={_effective_max_run_tokens():,}`)"
             return f"{label} wurde bereits {stage} erreicht"
         assert manually_cancelled, "aufrufbar nur wenn budget_aborted ODER manually_cancelled True ist"
         return f"Lauf wurde bereits {stage} manuell abgebrochen"

@@ -174,6 +174,18 @@ class CLILearningsBacklogMixin:
         else:
             goal_parts = args
 
+        # Expliziter Token-Budget-Override (Team-Aufgabe "Budget-Flexibilisierung", 2026-09-22),
+        # analog zu main.py `--goal ... --max-tokens N` - überschreibt die automatische
+        # Komplexitäts-Stufe (config.TASK_COMPLEXITY_TOKEN_BUDGETS) für JEDE Iteration.
+        max_tokens_override = None
+        if "--max-tokens" in goal_parts:
+            idx = goal_parts.index("--max-tokens")
+            try:
+                max_tokens_override = int(goal_parts[idx + 1])
+                goal_parts = goal_parts[:idx] + goal_parts[idx + 2:]
+            except (IndexError, ValueError):
+                goal_parts = goal_parts[:idx] + goal_parts[idx + 1:]
+
         goal_text = " ".join(goal_parts).strip()
         if not goal_text:
             if self._loaded_project_dir:
@@ -183,7 +195,8 @@ class CLILearningsBacklogMixin:
             else:
                 console.print(
                     "⚠️ Bitte gib ein Ziel für den autonomen Loop an:\n"
-                    "👉 `/goal [max_runden] <Zielbeschreibung>` (z. B. `/goal Baue ein vollständiges Dashboard mit Tests`)",
+                    "👉 `/goal [max_runden] [--max-tokens N] <Zielbeschreibung>` "
+                    "(z. B. `/goal Baue ein vollständiges Dashboard mit Tests`)",
                     style="yellow"
                 )
                 return
@@ -197,6 +210,7 @@ class CLILearningsBacklogMixin:
                 max_iterations=max_iterations,
                 status_callback=lambda msg: console.print(msg),
                 cancel_requested=self._cancel_event.is_set,
+                max_tokens_override=max_tokens_override,
             )
         finally:
             signal.signal(signal.SIGINT, original_sigint)

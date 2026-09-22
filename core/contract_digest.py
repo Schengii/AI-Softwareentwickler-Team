@@ -43,7 +43,7 @@ def _describe_enum(node: ast.ClassDef) -> str | None:
     members = []
     for item in node.body:
         if isinstance(item, ast.Assign) and len(item.targets) == 1 and isinstance(item.targets[0], ast.Name):
-            name = item.targets[0].name if hasattr(item.targets[0], "name") else item.targets[0].id
+            name = item.targets[0].id
             value = _literal_value(item.value)
             members.append(f"{name}={value}" if value is not None else name)
     if not members:

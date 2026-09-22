@@ -1,0 +1,10 @@
+{
+  "requirements": [
+    "In `app/main.py` muss der Aufruf von `setup_security(app)` integriert werden.",
+    "Im `EventService` muss die URL vor dem Dispatching mittels `is_safe_url` geprüft werden.",
+    "In `app/models/event.py` muss ein Validator ergänzt werden, der die Payload-Größe auf maximal 64 KB beschränkt.",
+    "Der Ruff-Lint-Fehler SIM103 in `app/core/security.py` (Zeile 52) muss behoben werden.",
+    "Der Ruff-Lint-Fehler RUF059 in `tests/test_resilience.py` (Zeile 48) muss behoben werden.",
+    "Die Anwendung muss erfolgreich und fehlerfrei starten (`app_starts`)."
+  ]
+}

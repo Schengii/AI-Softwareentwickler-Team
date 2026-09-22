@@ -49,9 +49,6 @@ def is_safe_url(url: str) -> bool:
         ip = socket.gethostbyname(hostname)
         ip_obj = ipaddress.ip_address(ip)
         
-        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_multicast:
-            return False
-            
-        return True
+        return not (ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_multicast)
     except Exception: # noqa: BLE001 - Broad exception to catch all resolution errors and fail closed
         return False

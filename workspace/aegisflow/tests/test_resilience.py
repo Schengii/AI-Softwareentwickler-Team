@@ -45,7 +45,7 @@ async def test_execute_with_resilience_exhaustion():
         raise ConnectionResetError("Connection dropped by peer")
 
     cb = CircuitBreaker(failure_threshold=3, cooldown_seconds=1.0)
-    success, result, err = await execute_with_resilience(
+    success, _, err = await execute_with_resilience(
         failing_target,
         circuit_breaker=cb,
         max_retries=3,

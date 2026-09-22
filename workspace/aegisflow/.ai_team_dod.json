@@ -1,10 +1,9 @@
 {
   "project_slug": "aegisflow",
-  "timestamp": "2026-09-18T21:12:19+00:00",
+  "timestamp": "2026-09-22T13:43:59+00:00",
   "is_done": false,
   "blocking": [
-    "app_starts",
-    "verification_ok"
+    "missing_frontend_ui"
   ],
   "criteria": [
     {
@@ -12,7 +11,7 @@
       "label": "Es wurde tatsächlich Code erzeugt",
       "passed": true,
       "required": true,
-      "detail": "17 Datei(en) geschrieben",
+      "detail": "5 Datei(en) geschrieben",
       "applicable": true
     },
     {
@@ -42,9 +41,9 @@
     {
       "key": "app_starts",
       "label": "Die Anwendung startet",
-      "passed": false,
+      "passed": true,
       "required": true,
-      "detail": "nicht gemessen - die Prüfung lief nicht zu Ende",
+      "detail": "",
       "applicable": true
     },
     {
@@ -58,7 +57,7 @@
     {
       "key": "lint_clean",
       "label": "Linter ohne Befund",
-      "passed": false,
+      "passed": true,
       "required": false,
       "detail": "",
       "applicable": true
@@ -67,7 +66,7 @@
       "key": "ui_ok",
       "label": "Frontend/UI-Check ohne Befund",
       "passed": false,
-      "required": false,
+      "required": true,
       "detail": "",
       "applicable": false
     },
@@ -92,8 +91,8 @@
       "label": "Beauftragtes Frontend wurde tatsächlich geliefert",
       "passed": false,
       "required": true,
-      "detail": "",
-      "applicable": false
+      "detail": "kein index.html/src/main.tsx/... gefunden - Frontend-Agent ist am Hard Delivery Gate gescheitert oder hat keine UI-Dateien geschrieben",
+      "applicable": true
     },
     {
       "key": "dark_mode_delivered",
@@ -114,9 +113,9 @@
     {
       "key": "verification_ok",
       "label": "Die Gesamt-Verifikation ist ohne Veto",
-      "passed": false,
+      "passed": true,
       "required": true,
-      "detail": "fehlgeschlagene Prüfungen: lint, security_handoff",
+      "detail": "",
       "applicable": true
     },
     {

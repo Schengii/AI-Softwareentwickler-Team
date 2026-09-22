@@ -26,6 +26,19 @@
     "snippet_file": "C:\\Users\\sche-\\Desktop\\Programmieren Projekte\\AI-Softwareentwickler-Team\\memory\\component_library\\circuit_breaker\\circuit_breaker-circuitbreaker-94314de4.py"
   },
   {
+    "id": "circuit_breaker-circuitbreaker-31c4cbcb",
+    "category": "circuit_breaker",
+    "class_name": "CircuitBreaker",
+    "source_project": "aegisflow",
+    "source_path": "app/core/resilience.py",
+    "language": "py",
+    "added_at": "2026-09-22T13:44:08.918319+00:00",
+    "char_count": 2158,
+    "content_hash": "31c4cbcb85dae5ef",
+    "preview": "class CircuitBreaker:\n    \"\"\"\n    Asynchroner In-Memory Circuit Breaker für Webhook-Ziele und I/O-Aufrufe.\n    Zustände: CLOSED (normal), OPEN (blockiert Aufrufe), HALF_OPEN (Probe-Request).\n    Verwendet strikt time.monotonic() für Zustands- und Cooldown-Berechnungen.\n    \"\"\"\n    def __init__(\n    ",
+    "snippet_file": "C:\\Users\\sche-\\Desktop\\Programmieren Projekte\\AI-Softwareentwickler-Team\\memory\\component_library\\circuit_breaker\\circuit_breaker-circuitbreaker-31c4cbcb.py"
+  },
+  {
     "id": "rate_limiter-tokenbucket-660f0687",
     "category": "rate_limiter",
     "class_name": "TokenBucket",
@@ -50,5 +63,18 @@
     "content_hash": "54de76531779be7f",
     "preview": "class RateLimiter:\n    def __init__(self, capacity: int = 100, refill_rate: float = 10.0):\n        self.capacity = capacity\n        self.refill_rate = refill_rate\n        self.buckets: dict[str, TokenBucket] = {}\n\n    def consume(self, key: str, tokens: int = 1) -> bool:\n        now = time.monotonic",
     "snippet_file": "C:\\Users\\sche-\\Desktop\\Programmieren Projekte\\AI-Softwareentwickler-Team\\memory\\component_library\\rate_limiter\\rate_limiter-ratelimiter-54de7653.py"
+  },
+  {
+    "id": "repository_base-eventrepository-7e8920d9",
+    "category": "repository_base",
+    "class_name": "EventRepository",
+    "source_project": "aegisflow",
+    "source_path": "app/storage/event_repository.py",
+    "language": "py",
+    "added_at": "2026-09-22T13:44:08.923484+00:00",
+    "char_count": 1285,
+    "content_hash": "7e8920d9d71725e0",
+    "preview": "class EventRepository:\n    def __init__(self, session: AsyncSession):\n        self.session = session\n\n    async def get_recent_event_by_idempotency_key(self, idempotency_key: str, minutes: int = 15) -> EventRecord | None:\n        time_threshold = datetime.now(timezone.utc) - timedelta(minutes=minute",
+    "snippet_file": "C:\\Users\\sche-\\Desktop\\Programmieren Projekte\\AI-Softwareentwickler-Team\\memory\\component_library\\repository_base\\repository_base-eventrepository-7e8920d9.py"
   }
 ]

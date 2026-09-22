@@ -575,6 +575,89 @@ class VerificationMixin:
             summary_lines.append(f"- 🧪 {icon} {depth.format_summary()}")
         return None, report, verification_ok, test_depth_fix_attempted
 
+    async def _handle_test_result_or_escalate(
+        self,
+        *,
+        verifier: ProjectVerifier,
+        project_dir: str,
+        report: VerificationReport,
+        attempt: int,
+        file_owners: dict[str, str],
+        all_results: list[AgentResult],
+        summary_lines: list[str],
+        notify: Callable[[str], None],
+        run_start_tokens: int | None,
+        had_prior_test_ticket: bool,
+        test_ticket_id: str | None,
+        previous_fix_all_no_delivery: bool,
+        previous_failure_signature: frozenset[tuple[str, str]] | None,
+    ) -> tuple[str | None, VerificationReport, bool, bool, frozenset[tuple[str, str]] | None]:
+        """P6-5 (ROADMAP_TEMP.md): dritte Anwendung der continue/break-Signal-Technik auf die
+        Haupt-Fixschleife. Deckt den Übergang von einem gelaufenen Testergebnis zum nächsten
+        Schritt ab: Erfolg (Ticket schließen, `break`) ODER Fehlschlag mit Kein-Fortschritt-
+        Prüfung (Signaturvergleich, Hard-Delivery-Gate-Kurzschluss, ggf. Eskalationsleiter -
+        IMMER `break`) ODER echter Fortschritt (Signatur aktualisieren, `None` = normal
+        weiterlaufen zum Budget-Check). `previous_failure_signature` ist der einzige Wert hier,
+        der über den `None`-Rückgabepfad hinaus für die NÄCHSTE Iteration wichtig ist - er wird
+        deshalb wie `previous_fix_all_no_delivery` immer zurückgegeben, unabhängig vom Signal.
+        """
+        if report.passed:
+            notify(f"  ✅ [bold green]Alle Tests bestanden[/bold green] (Versuch {attempt}, {report.duration_seconds:.1f}s).")
+            summary_lines.append(f"- ✅ Echte Testsuite bestanden nach {attempt} Durchlauf/Durchläufen ({report.duration_seconds:.1f}s).")
+            if had_prior_test_ticket and test_ticket_id:
+                try:
+                    upsert_ticket(
+                        ticket_id=test_ticket_id,
+                        title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                        source="orchestrator", status="done", project_slug=self.last_project_slug,
+                        detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
+                    )
+                    notify("  🎫 [dim]Ticket für vorherigen Testfehlschlag als gelöst geschlossen.[/dim]")
+                except Exception as e:
+                    notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
+            return "break", report, True, previous_fix_all_no_delivery, previous_failure_signature
+
+        notify(f"  ❌ [bold red]{len(report.failures)} Testfehler[/bold red] – ermittle betroffene Agenten aus dem echten Traceback...")
+
+        current_signature = _issue_signature(report.failures, lambda f: (f.test_id, _failure_fingerprint(f.message)))
+        # Einmal-Verbrauch: unabhängig vom Ergebnis unten sofort zurückgesetzt, damit ein
+        # gesetztes Flag niemals über diese eine Prüfung hinaus nachwirkt (z.B. fälschlich
+        # eine spätere, unabhängige Eskalationsrunde beeinflusst).
+        skip_retry_no_delivery = previous_fix_all_no_delivery
+        previous_fix_all_no_delivery = False
+        if skip_retry_no_delivery:
+            notify(
+                "  🚫 [bold yellow]Vorheriger Fixversuch hat keine einzige Datei gespeichert[/bold yellow] "
+                "(Hard Delivery Gate) - ein weiterer Versuch mit demselben Auftrag hätte keine neue "
+                "Grundlage, auf der er anders ausfallen könnte. Überspringe die Wiederholung, eskaliere direkt."
+            )
+            summary_lines.append(
+                f"- 🚫 Versuch {attempt}: vorheriger Fixversuch lieferte keine Datei (NO_DELIVERY) - "
+                "reguläre Wiederholung übersprungen, direkt eskaliert."
+            )
+        if _no_progress(previous_failure_signature, current_signature) or skip_retry_no_delivery:
+            # P6-5 (ROADMAP_TEMP.md): dieser Block führt IMMER zu einem `break` der Schleife
+            # (jeder Pfad darin endet entweder in einem frühen `break` bei Erfolg oder im
+            # abschließenden `return` unten) - er kann also nie ein zweites Mal in diesem
+            # Lauf betreten werden. Deshalb sicher als eigene Methode extrahierbar: alle
+            # Flags/Zwischenwerte, die nur INNERHALB dieses Blocks gelesen/geschrieben
+            # werden (escalation_attempted, model_escalation_attempted,
+            # second_opinion_attempted, stuck_owners, top_failures,
+            # escalated_and_resolved, _heavy_escalation_downgrade_note), müssen die
+            # Schleife nie wieder erreichen und leben als lokale Variablen in
+            # `_run_no_progress_escalation_ladder()`. Einzige Werte, die zurück in die
+            # Schleife müssen: der ggf. neu gelaufene `report` und `verification_ok`.
+            report, verification_ok = await self._run_no_progress_escalation_ladder(
+                verifier=verifier, project_dir=project_dir, report=report,
+                file_owners=file_owners, all_results=all_results, summary_lines=summary_lines,
+                notify=notify, attempt=attempt, run_start_tokens=run_start_tokens,
+                skip_retry_no_delivery=skip_retry_no_delivery,
+                had_prior_test_ticket=had_prior_test_ticket, test_ticket_id=test_ticket_id,
+            )
+            return "break", report, verification_ok, previous_fix_all_no_delivery, previous_failure_signature
+        previous_failure_signature = current_signature
+        return None, report, False, previous_fix_all_no_delivery, previous_failure_signature
+
     async def _run_completeness_check_loop(
         self,
         *,
@@ -956,62 +1039,18 @@ class VerificationMixin:
                 if loop_signal == "break":
                     break
 
-            if report.passed:
-                notify(f"  ✅ [bold green]Alle Tests bestanden[/bold green] (Versuch {attempt}, {report.duration_seconds:.1f}s).")
-                summary_lines.append(f"- ✅ Echte Testsuite bestanden nach {attempt} Durchlauf/Durchläufen ({report.duration_seconds:.1f}s).")
-                verification_ok = True
-                if had_prior_test_ticket and test_ticket_id:
-                    try:
-                        upsert_ticket(
-                            ticket_id=test_ticket_id,
-                            title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
-                            source="orchestrator", status="done", project_slug=self.last_project_slug,
-                            detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
-                        )
-                        notify("  🎫 [dim]Ticket für vorherigen Testfehlschlag als gelöst geschlossen.[/dim]")
-                    except Exception as e:
-                        notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
+            (
+                loop_signal, report, verification_ok, previous_fix_all_no_delivery, previous_failure_signature,
+            ) = await self._handle_test_result_or_escalate(
+                verifier=verifier, project_dir=project_dir, report=report, attempt=attempt,
+                file_owners=file_owners, all_results=all_results, summary_lines=summary_lines,
+                notify=notify, run_start_tokens=run_start_tokens,
+                had_prior_test_ticket=had_prior_test_ticket, test_ticket_id=test_ticket_id,
+                previous_fix_all_no_delivery=previous_fix_all_no_delivery,
+                previous_failure_signature=previous_failure_signature,
+            )
+            if loop_signal == "break":
                 break
-
-            notify(f"  ❌ [bold red]{len(report.failures)} Testfehler[/bold red] – ermittle betroffene Agenten aus dem echten Traceback...")
-
-            current_signature = _issue_signature(report.failures, lambda f: (f.test_id, _failure_fingerprint(f.message)))
-            # Einmal-Verbrauch: unabhängig vom Ergebnis unten sofort zurückgesetzt, damit ein
-            # gesetztes Flag niemals über diese eine Prüfung hinaus nachwirkt (z.B. fälschlich
-            # eine spätere, unabhängige Eskalationsrunde beeinflusst).
-            skip_retry_no_delivery = previous_fix_all_no_delivery
-            previous_fix_all_no_delivery = False
-            if skip_retry_no_delivery:
-                notify(
-                    "  🚫 [bold yellow]Vorheriger Fixversuch hat keine einzige Datei gespeichert[/bold yellow] "
-                    "(Hard Delivery Gate) - ein weiterer Versuch mit demselben Auftrag hätte keine neue "
-                    "Grundlage, auf der er anders ausfallen könnte. Überspringe die Wiederholung, eskaliere direkt."
-                )
-                summary_lines.append(
-                    f"- 🚫 Versuch {attempt}: vorheriger Fixversuch lieferte keine Datei (NO_DELIVERY) - "
-                    "reguläre Wiederholung übersprungen, direkt eskaliert."
-                )
-            if _no_progress(previous_failure_signature, current_signature) or skip_retry_no_delivery:
-                # P6-5 (ROADMAP_TEMP.md): dieser Block führt IMMER zu einem `break` der Schleife
-                # (jeder Pfad darin endet entweder in einem frühen `break` bei Erfolg oder im
-                # abschließenden `return` unten) - er kann also nie ein zweites Mal in diesem
-                # Lauf betreten werden. Deshalb sicher als eigene Methode extrahierbar: alle
-                # Flags/Zwischenwerte, die nur INNERHALB dieses Blocks gelesen/geschrieben
-                # werden (escalation_attempted, model_escalation_attempted,
-                # second_opinion_attempted, stuck_owners, top_failures,
-                # escalated_and_resolved, _heavy_escalation_downgrade_note), müssen die
-                # Schleife nie wieder erreichen und leben jetzt als lokale Variablen in
-                # `_run_no_progress_escalation_ladder()`. Einzige Werte, die zurück in die
-                # Schleife müssen: der ggf. neu gelaufene `report` und `verification_ok`.
-                report, verification_ok = await self._run_no_progress_escalation_ladder(
-                    verifier=verifier, project_dir=project_dir, report=report,
-                    file_owners=file_owners, all_results=all_results, summary_lines=summary_lines,
-                    notify=notify, attempt=attempt, run_start_tokens=run_start_tokens,
-                    skip_retry_no_delivery=skip_retry_no_delivery,
-                    had_prior_test_ticket=had_prior_test_ticket, test_ticket_id=test_ticket_id,
-                )
-                break
-            previous_failure_signature = current_signature
 
             if budget_aborted:
                 notify("  🚫 [bold red]Budget erreicht[/bold red] – kein neuer Fix-Auftrag mehr, letzter Teststand wird übernommen.")

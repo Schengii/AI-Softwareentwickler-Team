@@ -1504,45 +1504,47 @@ Agenten-Aufruf kostet.
 > sauber. `core/llm_factory.py` und `agents/orchestrator/verification.py` (Teil 2 und 3)
 > bleiben offen.
 
-> **Untersucht 2026-09-21, Teil 2/3 (`core/llm_factory.py`) - bewusst NICHT umgesetzt, mit
-> konkretem Befund statt einer pauschalen Risiko-Einschätzung:** Der für `interface/cli.py`
-> erfolgreiche Ansatz (verzögerte Re-Importe in den wenigen tatsächlich betroffenen Methoden)
-> wurde geprüft, greift hier aber strukturell nicht im selben Umfang. Unterschied: bei
-> `interface/cli.py` patchten 24 Testdateien überwiegend FUNKTIONEN/KLASSEN/Konstanten punktuell;
-> bei `core/llm_factory.py` patchen **~15 Testdateien mit über 100 `@patch("core.llm_factory.
-> <name>", ...)`-Aufrufen** (u.a. `test_llm_routing.py`, `test_gemini_context_caching.py`,
-> `test_gemini_key_pool.py`, `test_cross_provider_quota_failover.py`,
-> `test_provider_diagnostics.py`, `test_capability_floor.py`, `test_groq_tpm_fallback.py`)
-> UND drei Stellen (`tests/conftest.py`, `tests/test_claude_billing_exhaustion.py`) schreiben
-> direkt auf Modul-Attribute (`lf._gemini_active_key_index = 0`, `lf.GEMINI_API_KEYS = [...]`,
-> `llm_factory._claude_billing_exhausted_reason = None`) - echter, geteilter, VERÄNDERLICHER
-> Modul-Zustand, nicht nur Funktionen. Würde eine Provider-Klasse in ein eigenes Modul
-> `core/llm_providers/gemini.py` ziehen und dort denselben Namen erneut per `from
-> core.llm_factory import X` beziehen, würde `patch("core.llm_factory.X", ...)` in den Tests nur
-> noch die Re-Export-Bindung in `llm_factory.py` treffen, NICHT die Kopie, die der verschobene
-> Code tatsächlich liest - ein **stiller No-Op-Patch**, kein Importfehler, der beim einmaligen
-> Grün-Laufen der Tests nicht zwangsläufig auffällt (der Mock würde schlicht nie konsultiert,
-> das Ergebnis sähe zufällig trotzdem richtig aus). Klassen-Methoden-Patches
-> (`core.llm_factory.GroqClient.generate_with_tools`) sind davon NICHT betroffen (ein
-> Klassenobjekt ist dasselbe Objekt, egal über welchen Modulnamen man es erreicht) - das
-> eigentliche Risiko sind ausschließlich die direkt importierten Skalare/Funktionen/der
-> geteilte Zustand. Die saubere Lösung (jede der ~100+ betroffenen Referenzen in den
-> verschobenen ~900 Zeilen Provider-Code auf qualifizierten Modulzugriff `import
-> core.llm_factory as _lf; _lf.NAME` statt `from core.llm_factory import NAME` umstellen) ist
-> mechanisch groß UND – entscheidender – genau die Art Änderung, bei der eine einzige verpasste
-> Umstellung eine STILLE Verhaltensabweichung statt eines Importfehlers erzeugt, also durch
-> einmaliges grünes Testlaufen nicht zuverlässig belegt werden kann. Naheliegender
-> Teilschritt für eine künftige Sitzung: zuerst nur die drei Provider-Klassen OHNE eigenen
-> Modul-Zustand und ohne die dichten Patch-Listen abspalten (`HuggingFaceClient`,
-> `OpenRouterClient`, `DeepSeekClient` - geprüft: nur ein einziger bestehender
-> Klassen-Methoden-Patch betrifft sie, `test_cross_provider_quota_failover.py`s
-> `DeepSeekClient.generate_with_tools`, der bereits nachweislich sicher ist), `GeminiClient`/
-> `GroqClient`/`ClaudeClient` und den gesamten geteilten Zustand vorerst in `llm_factory.py`
-> belassen - dafür müsste aber zuerst die Kreisimport-Kette gelöst werden, dass
-> `HuggingFaceClient.generate_with_usage()` intern einen `GeminiClient` als Fallback
-> instanziiert (`fallback = GeminiClient(...)`), also selbst dann noch von `llm_factory.py`
-> abhinge. Bewusst kein Workaround erzwungen, keine Datei geändert (`git status` nach der
-> Untersuchung sauber).
+> **Untersucht 2026-09-21, erste Analyse - bewusst NICHT umgesetzt, mit konkretem Befund statt
+> einer pauschalen Risiko-Einschätzung:** Der für `interface/cli.py` erfolgreiche Ansatz
+> (verzögerte Re-Importe in den wenigen tatsächlich betroffenen Methoden) wurde geprüft, griff
+> aber strukturell nicht im selben Umfang: bei `interface/cli.py` patchten 24 Testdateien
+> überwiegend FUNKTIONEN/KLASSEN/Konstanten punktuell; bei `core/llm_factory.py` patchen ~15
+> Testdateien über 100 `@patch("core.llm_factory.<name>", ...)`-Aufrufe UND drei Stellen
+> schreiben direkt auf Modul-Attribute (`tests/conftest.py`, `tests/test_claude_billing_
+> exhaustion.py`) - echter, geteilter, VERÄNDERLICHER Modul-Zustand, nicht nur Funktionen. Ein
+> naiver Split (verschobene Klasse bezieht denselben Namen per `from core.llm_factory import X`
+> erneut) hätte diese Patches zu stillen No-Op-Patches gemacht - kein Importfehler, aber ein
+> Mock, der nie konsultiert wird.
+
+> **Umsetzung 2026-09-22, Lösung gefunden und ausgeführt:** Die Erkenntnis: das eigentliche
+> Problem war nicht der Split selbst, sondern `from ... import NAME` als Zugriffsmuster. Jede
+> neue Provider-Datei (`core/llm_providers/{groq,deepseek,openrouter,gemini,huggingface,
+> claude,_shared}.py`) liest geteilten Zustand/Konstanten aus `core/llm_factory.py`
+> AUSSCHLIESSLICH über `import core.llm_factory as _lf; _lf.NAME` (innerhalb der jeweiligen
+> Methode, deferred wie beim bereits etablierten Muster in `agents/base_agent.py`), NIEMALS
+> über `from core.llm_factory import NAME`. Ein `@patch("core.llm_factory.NAME", ...)` trifft
+> damit garantiert die tatsächlich gelesene Bindung - eine übersehene Umstellung wäre ein
+> SOFORTIGER `NameError`, kein stiller Fehler, also durch einmaliges grünes Testlaufen
+> zuverlässig belegbar (anders als beim naiven Ansatz oben). Zustand, den Tests DIREKT über den
+> Modulnamen zuweisen (`GEMINI_API_KEYS`, `_gemini_active_key_index`,
+> `_gemini_clients_by_key`/`_gemini_exhausted_keys`, `_claude_billing_exhausted_reason`), blieb
+> bewusst unverändert in `core/llm_factory.py` - nur die Provider-KLASSEN selbst wurden
+> verschoben. Die zuvor identifizierte Abhängigkeitskette zwischen den Providern
+> (`GeminiClient`→`GroqClient`, `HuggingFaceClient`→`GeminiClient`, `ClaudeClient`→alle vier)
+> erwies sich als unproblematisch: jeder Provider importiert einen anderen Provider direkt aus
+> dessen eigenem Modul (nicht über `core.llm_factory` zurück), keine Kreisimport-Reihenfolge zu
+> beachten. `core/llm_factory.py` bleibt die stabile Importoberfläche (`LLMFactory`, alle
+> Provider-Klassen und Dataclasses per `__all__` re-exportiert) - kein externer Importpfad
+> ändert sich, von 2006 auf 774 Zeilen geschrumpft.
+>
+> Verifiziert: `ruff check core/` sauber, 99 Tests aus den höchst-riskanten Dateien (Gemini-
+> Caching, Key-Pool, Cross-Provider-Failover, Provider-Diagnostics, Claude-Billing) grün, PLUS
+> alle 576 Tests aus den 90 Dateien, die `core.llm_factory` überhaupt importieren, in drei
+> Batches durchgelaufen - keine Regression. 5 Testdateien brauchten eine kleine, korrekte
+> Anpassung (`patch("core.llm_factory.asyncio.sleep",...)` → `patch("asyncio.sleep",...)`, da
+> `asyncio` ein Singleton-Modul ist und der qualifizierte Pfad über `core.llm_factory` nach dem
+> Split nicht mehr widerspiegelt, wo der Aufruf tatsächlich passiert; ein `httpx`-Patch folgte
+> analog dem tatsächlichen Import, der mit `DeepSeekClient` verschoben wurde).
 
 > **Untersucht 2026-09-21, Teil 3/3 (`agents/orchestrator/verification.py`) - andere Fehlerart
 > als bei den ersten beiden Teilen, deshalb ebenfalls bewusst zurückgestellt:** Anders als
@@ -1599,12 +1601,13 @@ Agenten-Aufruf kostet.
 > `test_database_review_preflight.py`, `test_verifier_completeness.py`,
 > `test_verifier_smoke.py`) grün bestätigt.
 
-**Zusammenfassung P6-5:** 1 von 3 Dateien vollständig gesplittet (`interface/cli.py`);
-`verification.py` (Teil 2/3) um 6 Methoden entlastet, ~195 Zeilen (~12 %) aus der zentralen
-Fix-Loop-Methode extrahiert, jeder Schritt einzeln verifiziert - der verbleibende Rumpf
-(~1438 Zeilen) bleibt aus den genannten Gründen (viele weiterhin eng verflochtene Blöcke) für
-eine künftige Sitzung; `core/llm_factory.py` (Teil 3/3) mit konkretem, dokumentiertem Befund
-bewusst zurückgestellt statt unbegründet als "zu riskant" abgehakt.
+**Zusammenfassung P6-5:** 2 von 3 Dateien vollständig gesplittet (`interface/cli.py`,
+`core/llm_factory.py`); `verification.py` um 6 Methoden entlastet, ~195 Zeilen (~12 %) aus der
+zentralen Fix-Loop-Methode extrahiert, jeder Schritt einzeln verifiziert - der verbleibende
+Rumpf (~1438 Zeilen) bleibt aus den genannten Gründen (viele weiterhin eng verflochtene Blöcke,
+echter Kontrollfluss-Umbau statt reiner Code-Verschiebung nötig) für eine künftige, dedizierte
+Sitzung offen. Kein Punkt mehr unbegründet als "zu riskant" abgehakt - für jeden verbleibenden
+Rest liegt eine konkrete, verifizierte technische Begründung vor.
 
 | P6-6 | `core/message_bus.py` enthält nur noch zwei Dataclasses – in `core/agent_contracts.py` umbenennen (60+ Importe, daher mit Alias-Übergang) | S |
 
@@ -1747,4 +1750,4 @@ ruff check && python -m pytest -q
 | P5-3 | Verifikations-Reserve im Budget | P5 | ☑ erledigt (Reserve existierte, Gate korrigiert) |
 | P6-1 | Gestagte Fixes committet | P6 | ☑ erledigt |
 | P6-2 | ~~Workspace aus Framework-Commits~~ | P6 | ☑ Fehlannahme, siehe oben |
-| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-6, P6-7, P6-8 erledigt; P6-5 ~1.8/3 (`interface/cli.py` erledigt; `verification.py` 6 Blöcke extrahiert (~12% der Kernmethode), Rest bewusst zurückgestellt; `core/llm_factory.py` untersucht, bewusst zurückgestellt - konkrete Befunde s.o.) |
+| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-6, P6-7, P6-8 erledigt; P6-5 ~2.2/3 (`interface/cli.py` + `core/llm_factory.py` erledigt; `verification.py` 6 Blöcke extrahiert (~12% der Kernmethode), Rest für eigene Sitzung offen - konkrete Begründung s.o.) |

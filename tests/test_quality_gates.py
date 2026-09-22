@@ -214,6 +214,42 @@ class TestRedProjectRepair:
         ticket = backlog_store.get_ticket("recurring-failure-half_done")
         assert "app_starts" in ticket.detail
 
+    def test_root_cause_context_is_embedded_in_repair_ticket(self, tmp_path):
+        """Sprint-4 (2026-09-22): Repair-Ticket soll bereits analysierte Root-Cause-Befunde
+        enthalten, damit der nachbessernd beauftragte Agent WARUM er fehlschlug direkt kennt.
+        Reale Funde: omnimetric_engine/ecotrack_ai wiederholten dieselben Fehler in Folgeläufen."""
+        from core.red_project_repair import queue_red_projects
+
+        ws = tmp_path / "ws"
+        self._project(ws, "my_project", False)
+        # Root-Cause-Ticket für denselben Slug anlegen
+        backlog_store.upsert_ticket(
+            ticket_id="root-cause-my_project-api-prefix-fehler",
+            title="Root-Cause-Befund: Tester schrieb GET /stats statt GET /api/v1/stats",
+            source="root_cause_analysis",
+            status="todo",
+            project_slug="my_project",
+            detail="APIRouter in app/routers/stats.py hat prefix='/api/v1' – Tests müssen diesen Präfix verwenden.",
+        )
+        report = queue_red_projects(ws)
+        assert report.queued == ["my_project"]
+        ticket = backlog_store.get_ticket("recurring-failure-my_project")
+        assert ticket is not None
+        # Root-Cause-Befund muss im Repair-Ticket-Detail enthalten sein
+        assert "api-prefix-fehler" in ticket.detail or "GET /stats" in ticket.detail or "Root-Cause" in ticket.detail
+
+    def test_no_root_cause_tickets_does_not_crash(self, tmp_path):
+        """Ohne offene Root-Cause-Tickets wird kein Kontext angehängt, aber kein Absturz."""
+        from core.red_project_repair import queue_red_projects
+
+        ws = tmp_path / "ws"
+        self._project(ws, "clean_project", False)
+        report = queue_red_projects(ws)
+        assert report.queued == ["clean_project"]
+        ticket = backlog_store.get_ticket("recurring-failure-clean_project")
+        assert ticket is not None
+        assert "Nachbesserung" in ticket.detail
+
 
 class TestWatchdog:
     def test_read_without_write_escalates_for_code_roles(self):

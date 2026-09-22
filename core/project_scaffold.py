@@ -46,7 +46,8 @@ testpaths = tests
 asyncio_mode = auto
 """
 
-_FASTAPI_CONFTEST = '''import pytest
+_FASTAPI_CONFTEST = '''import asyncio
+import pytest
 from httpx import ASGITransport, AsyncClient
 
 try:
@@ -56,6 +57,29 @@ except ImportError:
         from main import app
     except ImportError:
         app = None
+
+
+async def poll_until(async_fn, *, max_attempts: int = 20, delay: float = 0.05):
+    """Wartet bis async_fn() einen truthy Wert zurückgibt (oder max_attempts erschöpft sind).
+
+    Realer Fund (omnimetric_engine, 2026-09-22, root-cause-omnimetric_engine-asynchrone-race-
+    condition-im-alert-test): Background-Tasks laufen nach dem auslösenden POST noch kurz
+    weiter. Tests, die direkt danach den Zustand abfragen (GET /alerts), sehen noch den alten
+    Zustand und schlagen scheinbar zufällig fehl. `poll_until` verhindert diese Race-Condition:
+
+        result = await poll_until(lambda: client.get("/api/v1/alerts"))
+        # oder mit Bedingung:
+        async def check():
+            r = await client.get("/api/v1/jobs/1")
+            return r if r.json().get("status") == "done" else None
+        result = await poll_until(check)
+    """
+    for _ in range(max_attempts):
+        result = await async_fn() if asyncio.iscoroutinefunction(async_fn) else async_fn()
+        if result:
+            return result
+        await asyncio.sleep(delay)
+    return None
 
 
 @pytest.fixture

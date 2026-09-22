@@ -453,10 +453,31 @@ class VerificationFixDispatchMixin:
         tester_contract_ctx = ""
         if project_dir and "tester" in agents_to_fix:
             try:
-                from core.contract_digest import build_backend_contract_digest
+                from core.contract_digest import build_backend_contract_digest, build_route_prefix_digest
                 tester_contract_ctx = build_backend_contract_digest(project_dir)
+                route_ctx = build_route_prefix_digest(project_dir)
+                if route_ctx:
+                    tester_contract_ctx = (tester_contract_ctx + "\n\n" + route_ctx).strip()
             except Exception:
                 tester_contract_ctx = ""
+        # Router-Deklarations-Check (Punkt 2, root-cause-ecotrack_ai-backend-deklariert-*):
+        # Backend hat Router in app/main.py importiert, die physisch nicht existieren. Das
+        # tritt als ImportError beim Testlauf auf, lässt sich aber deterministisch VOR dem
+        # Test erkennen. Wenn der Backend-Agent am Zug ist, wird der Befund als höchste
+        # Priorität an dessen Kontext angehängt.
+        backend_router_ctx = ""
+        if project_dir and "backend" in agents_to_fix:
+            try:
+                from core.contract_digest import check_router_imports
+                missing_routers = check_router_imports(project_dir)
+                if missing_routers:
+                    backend_router_ctx = (
+                        "\n\n⚠️ FEHLENDE ROUTER-DATEIEN (in app/main.py importiert, aber nicht vorhanden – "
+                        "lege diese Dateien ZUERST an, bevor du andere Fehler bearbeitest):\n"
+                        + "\n".join(f"- `{p}`" for p in missing_routers)
+                    )
+            except Exception:
+                backend_router_ctx = ""
         fix_tasks = []
         for agent_id, fails in agents_to_fix.items():
             failure_text = _format_failures_for_agent(fails, triages=triages, max_failures=5, max_msg_chars=1200)
@@ -470,6 +491,11 @@ class VerificationFixDispatchMixin:
                 "edit_file oder write_file aufrufen, um die Korrekturen anzuwenden!\n"
                 if prior_no_delivery else ""
             )
+            extra_ctx = ""
+            if agent_id == "tester" and tester_contract_ctx:
+                extra_ctx = f"\n\n{tester_contract_ctx}"
+            if agent_id == "backend" and backend_router_ctx:
+                extra_ctx += backend_router_ctx
             fix_tasks.append(AgentTask(
                 task_id=f"verify_fix_{agent_id}_{attempt}",
                 agent_id=agent_id,
@@ -481,7 +507,7 @@ class VerificationFixDispatchMixin:
                     + delivery_prompt_hint
                     + (_prior_run_context(test_ticket_id) if attempt == 1 and test_ticket_id else "")
                 ),
-                context=fix_brief_ctx + (f"\n\n{tester_contract_ctx}" if agent_id == "tester" and tester_contract_ctx else ""),
+                context=fix_brief_ctx + extra_ctx,
                 project_dir=project_dir,
                 max_tool_iterations=8,
             ))

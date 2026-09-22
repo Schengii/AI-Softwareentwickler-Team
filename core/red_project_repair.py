@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from config import MAX_GOVERNANCE_TICKET_RETRIES
-from core.backlog_store import get_ticket, upsert_ticket
+from core.backlog_store import get_ticket, list_tickets, upsert_ticket
 from core.definition_of_done import read_definition_of_done
 from core.project_status import read_full_detail, read_status
 
@@ -44,6 +44,30 @@ class RepairQueueReport:
         lines += [f"  • {slug}" for slug in self.queued]
         lines += [f"  - {slug}: {reason}" for slug, reason in sorted(self.skipped.items())]
         return "\n".join(lines)
+
+
+def _collect_root_cause_context(slug: str) -> str:
+    """Liest offene root-cause-Tickets für `slug` und gibt deren Befunde als Kontext zurück.
+
+    Reale Funde (omnimetric_engine/ecotrack_ai, Backlog root-cause-*): die Repair-Tickets
+    wurden ohne die bereits analysierten Root-Cause-Befunde erstellt - der nachbessernd
+    beauftragte Agent wusste nicht, WARUM das Projekt fehlschlug, und wiederholte dieselben
+    Fehler. Mit diesem Kontext hat er die Diagnose direkt im ersten Nachbesserungsversuch."""
+    try:
+        rc_tickets = [
+            t for t in list_tickets()
+            if t.id.startswith(f"root-cause-{slug}-") and t.status in ("todo", "blocked")
+        ]
+        if not rc_tickets:
+            return ""
+        lines = ["## 🔍 Bereits analysierte Root-Cause-Befunde (direkt adressieren):"]
+        for t in rc_tickets[:5]:
+            lines.append(f"- **{t.title}**")
+            if getattr(t, "detail", None):
+                lines.append(f"  {t.detail[:300]}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
 
 
 def _existing_repair_state(slug: str) -> str | None:
@@ -96,6 +120,15 @@ def queue_red_projects(workspace_dir: str | Path | None = None, max_new: int = 3
         if dod_blocking:
             detail = f"Definition of Done blockiert an: {', '.join(dod_blocking)}\n\n{detail}"
         budget_note = " Der letzte Lauf endete am Token-Budget - führe zuerst die Verifikation aus." if last.get("budget_aborted") else ""
+        # Root-Cause-Kontext (Punkt 4): bereits analysierte Ursachen für dieses Projekt direkt
+        # mitgeben, damit der nachbessernd beauftragte Agent nicht dieselben Fehler wiederholt.
+        root_cause_ctx = _collect_root_cause_context(slug)
+        full_detail = (
+            "Automatisch eingeplante Nachbesserung (core/red_project_repair.py): Behebe die verbleibenden "
+            f"Befunde dieses bestehenden Projekts, keine Neuentwicklung.{budget_note}\n\n"
+            + (f"{root_cause_ctx}\n\n" if root_cause_ctx else "")
+            + detail
+        )
         try:
             upsert_ticket(
                 ticket_id=f"{REPAIR_TICKET_PREFIX}{slug}",
@@ -103,10 +136,7 @@ def queue_red_projects(workspace_dir: str | Path | None = None, max_new: int = 3
                 source="orchestrator",
                 status="blocked",
                 project_slug=slug,
-                detail=(
-                    "Automatisch eingeplante Nachbesserung (core/red_project_repair.py): Behebe die verbleibenden "
-                    f"Befunde dieses bestehenden Projekts, keine Neuentwicklung.{budget_note}\n\n{detail}"
-                ),
+                detail=full_detail,
             )
         except Exception as e:  # noqa: BLE001 - ein defektes Backlog darf die übrigen Projekte nicht blockieren
             logger.warning("Nachbesserungs-Ticket für %s nicht anlegbar: %r", slug, e)

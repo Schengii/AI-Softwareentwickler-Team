@@ -78,6 +78,8 @@ class TestProjectScaffold:
         # UND client als Alias), damit eine Umbenennung in eine Richtung die andere nicht bricht.
         assert "def client" in conftest, "client-Alias fehlt in conftest.py"
         assert "auth_headers" in conftest, "auth_headers-Fixture fehlt in conftest.py"
+        # Sprint-4 (2026-09-22): poll_until-Helfer gegen async-Race-Conditions im Conftest
+        assert "poll_until" in conftest, "poll_until-Helfer fehlt in conftest.py"
         runtime = (tmp_path / "requirements.txt").read_text(encoding="utf-8")
         dev = (tmp_path / "requirements-dev.txt").read_text(encoding="utf-8")
         assert "greenlet" in runtime and "PyJWT" in runtime and "python-multipart" in runtime

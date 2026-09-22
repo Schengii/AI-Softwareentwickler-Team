@@ -42,7 +42,9 @@ from core.failure_triage import (
     KIND_MISSING_SYMBOL,
     blocking_failures_first,
     restore_dependency_manifests,
+    restore_project_py_files,
     snapshot_dependency_manifests,
+    snapshot_project_py_files,
     triage_structural_failure,
 )
 from core.message_bus import AgentResult, AgentTask
@@ -305,6 +307,31 @@ class VerificationFixDispatchMixin:
 
         notify(f"  ❌ [bold red]{len(report.failures)} Testfehler[/bold red] – ermittle betroffene Agenten aus dem echten Traceback...")
 
+        # Regression-Gate (FEHLERANALYSE_PULSE_QUEUE_20260922, P2): der Snapshot aus dem
+        # vorherigen Fix-Dispatch (_dispatch_fix_and_check_regression()) wird hier genau EINMAL
+        # konsumiert. Hat sich die Fehlerzahl gegenüber dem Stand VOR diesem Fix verschlechtert
+        # (mehr Fehlschläge als vorher, nicht nur andere), war der Fix strukturell schädlich -
+        # der komplette Python-Quellbaum wird auf den Vorzustand zurückgesetzt, statt auf dem
+        # kaputteren Stand weitere (tokenkostende) Fixversuche aufzubauen.
+        pending_snapshot = getattr(self, "_pending_regression_snapshot", None)
+        self._pending_regression_snapshot = None
+        if pending_snapshot is not None and pending_snapshot[0] == project_dir:
+            _pre_fix_failure_count, _pre_fix_snapshot = pending_snapshot[1], pending_snapshot[2]
+            if len(report.failures) > _pre_fix_failure_count:
+                restored = restore_project_py_files(project_dir, _pre_fix_snapshot)
+                if restored:
+                    notify(
+                        f"  ↩️ [bold red]Regression erkannt:[/bold red] Fixversuch erhöhte die Testfehler "
+                        f"von {_pre_fix_failure_count} auf {len(report.failures)} – {len(restored)} Datei(en) "
+                        "auf den Stand vor dem Fix zurückgesetzt."
+                    )
+                    summary_lines.append(
+                        f"- ↩️ Versuch {attempt}: Regression erkannt ({_pre_fix_failure_count} → "
+                        f"{len(report.failures)} Testfehler) – {len(restored)} Datei(en) zurückgerollt."
+                    )
+                    report = await self._run_tests_logged(verifier, "nach-regressions-rollback")
+                    notify(f"  🧪 [dim]Nach Rollback: {len(report.failures)} Testfehler.[/dim]")
+
         current_signature = _issue_signature(report.failures, lambda f: (f.test_id, _failure_fingerprint(f.message)))
         # Einmal-Verbrauch: unabhängig vom Ergebnis unten sofort zurückgesetzt, damit ein
         # gesetztes Flag niemals über diese eine Prüfung hinaus nachwirkt (z.B. fälschlich
@@ -419,6 +446,17 @@ class VerificationFixDispatchMixin:
             return "break", report, verification_ok, False
 
         fix_brief_ctx = _build_project_brief_context(project_dir)
+        # Backend-Vertrag (siehe core/contract_digest.py) auch im Fix-Dispatch für den tester -
+        # genau hier trat der reale pulse_queue-Fund auf (Problem 2: erfundene Enum-Werte/
+        # Feldnamen beim Reparieren fehlschlagender Tests). Best-effort: leer bei frischem/
+        # extraktionslosem Projekt, dann bleibt fix_brief_ctx wie bisher die einzige Quelle.
+        tester_contract_ctx = ""
+        if project_dir and "tester" in agents_to_fix:
+            try:
+                from core.contract_digest import build_backend_contract_digest
+                tester_contract_ctx = build_backend_contract_digest(project_dir)
+            except Exception:
+                tester_contract_ctx = ""
         fix_tasks = []
         for agent_id, fails in agents_to_fix.items():
             failure_text = _format_failures_for_agent(fails, triages=triages, max_failures=5, max_msg_chars=1200)
@@ -443,7 +481,7 @@ class VerificationFixDispatchMixin:
                     + delivery_prompt_hint
                     + (_prior_run_context(test_ticket_id) if attempt == 1 and test_ticket_id else "")
                 ),
-                context=fix_brief_ctx,
+                context=fix_brief_ctx + (f"\n\n{tester_contract_ctx}" if agent_id == "tester" and tester_contract_ctx else ""),
                 project_dir=project_dir,
                 max_tool_iterations=8,
             ))
@@ -464,6 +502,16 @@ class VerificationFixDispatchMixin:
         # Test-Schrumpfung unten tatsächlich rückgängig gemacht werden kann, statt sie nur
         # zu protokollieren (core.test_depth.snapshot_test_files()).
         _test_files_before_fix = snapshot_test_files(project_dir) if _tests_before_fix is not None else None
+        # Regression-Gate (FEHLERANALYSE_PULSE_QUEUE_20260922, P2): Snapshot ALLER Python-Dateien
+        # vor dem Fix-Versuch, nicht nur der Testdateien - eine in tests/conftest.py umbenannte
+        # Fixture lässt bestehende Testfunktionen unverändert, bricht aber ihr Setup (siehe
+        # snapshot_project_py_files()-Docstring). `_handle_test_result_or_escalate()` vergleicht
+        # in der NÄCHSTEN Iteration die frische Fehlerzahl gegen `_pre_fix_failure_count` und
+        # rollt bei einer Verschlechterung diesen Snapshot zurück, bevor weitere (tokenkostende)
+        # Fixversuche auf dem kaputten Stand aufbauen.
+        self._pending_regression_snapshot = (
+            project_dir, len(report.failures), snapshot_project_py_files(project_dir)
+        ) if project_dir else None
         fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
         # P1-5: gilt nur für DIESEN regulären, per-Rolle-geroutet Fixversuch - eine Eskalation
         # (Fachbereichsleiter/HEAVY_MODEL/Zweitmeinung, jeweils eigene fix_results weiter

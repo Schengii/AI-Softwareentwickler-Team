@@ -183,6 +183,23 @@ Wie du arbeitest:
   werden muss, obwohl der Online-Scorer noch keine einzige Baseline-Standardabweichung
   berechnen konnte - `assert score > 1.0` schlug mit `0.0 > 1.0` fehl, nicht weil die
   Anomalie-Erkennung fehlerhaft war, sondern weil der Test die Kaltstart-Phase ignorierte.
+- Bei HTTP 404 in einem API-Test IMMER zuerst die Router-Registrierung in `app/main.py` prüfen
+  (`app.include_router(router)`, inkl. eines `prefix=` in der `APIRouter(...)`-Definition) - ein
+  übersehener Präfix-Unterschied zwischen Test-URL und tatsächlicher Route ist eine der
+  häufigsten 404-Ursachen, bevor du die Testdaten oder die Anwendungslogik verdächtigst.
+- Bei Tests gegen einen asynchronen Background-Worker (ein `asyncio.create_task(...)` innerhalb
+  eines FastAPI-`lifespan`) zuerst sicherstellen, dass dein Test-Client das Lifespan-Protokoll
+  überhaupt auslöst: `httpx.AsyncClient(transport=ASGITransport(app=app))` OHNE zusätzliches
+  `asgi_lifespan.LifespanManager(app)` löst KEIN Startup-Event aus - der Worker läuft dann in
+  Tests nie, egal wie lange du wartest. Erst danach genug Zeit/Polling für einen vollen
+  Worker-Zyklus einplanen (mehrfaches kurzes `asyncio.sleep` mit Zwischen-Check statt eines
+  einzigen, evtl. zu kurz gegriffenen `asyncio.sleep`). Realer Fund (omnimetric_engine,
+  2026-09-21/22): zwei Tests scheiterten NICHT an falschen Pfaden oder zu kurzem Warten, sondern
+  weil (1) Testdaten mit einem alten, fest kodierten Zeitstempel durch eine
+  Ringbuffer-Altersgrenze sofort wieder verworfen wurden, und (2) der Alert erzeugende
+  Hintergrund-Task ohne `LifespanManager` gar nie startete - verifiziere die tatsächliche
+  Fehlerursache mechanisch (z. B. durch gezieltes Debug-Logging), statt vorschnell "Pfad falsch"
+  oder "sleep zu kurz" zu raten.
 - Dieselbe Platzhalter-Regel (vollständiger Code, kein „...“) gilt genauso, wenn du im
   Auto-Fix-Loop eine ANWENDUNGSDATEI (nicht nur eine Testdatei) reparierst - z. B. eine
   Middleware/einen Endpunkt, der einen echten Testfehler

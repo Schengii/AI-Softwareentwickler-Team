@@ -1,0 +1,14 @@
+{
+  "requirements": [
+    "Das Projekt muss als modulare FastAPI-Anwendung mit Lifespan-Manager in `app/main.py`, separaten Router-Dateien für Jobs, Workers und Stats in `app/api/`, Modellen in `app/models/` (SQLAlchemy und Pydantic v2) und einer Queue-Engine in `app/services/queue_engine.py` strukturiert sein.",
+    "Die Queue-Engine muss Jobs in den Zuständen 'pending', 'running', 'completed' und 'failed' verwalten.",
+    "Der Endpunkt `POST /api/v1/jobs` muss neue Jobs anlegen und dabei ausschließlich die Job-Typen 'email_dispatch', 'data_export' und 'webhook_ping' sowie Prioritäten von 1 bis 5 und validierte Payload-Dictionaries akzeptieren.",
+    "Der Endpunkt `GET /api/v1/jobs` muss Pagination (`limit`, `offset`) und Statusfilterung unterstützen, und `GET /api/v1/jobs/{job_id}` muss den Detailstatus inklusive Result-JSON oder Fehlermeldung zurückgeben.",
+    "Der Endpunkt `POST /api/v1/jobs/{job_id}/cancel` muss das Abbrechen von Jobs erlauben, sofern sich diese im Status 'pending' befinden.",
+    "Die Endpunkte `GET /api/v1/stats` (Metriken zur Anzahl der Jobs pro Status und durchschnittlicher Laufzeit) und `GET /api/v1/health` (System-Healthcheck) müssen implementiert sein.",
+    "Der Hintergrund-Worker muss Jobs strikt nach Priorität (1-5) und innerhalb derselben Priorität nach dem FIFO-Prinzip abarbeiten.",
+    "Die Queue-Engine muss konfigurierbare Job-Timeouts und eine maximale Anzahl an Wiederholungsversuchen (`max_retries`) bei Fehlern erzwingen.",
+    "Alle schreibenden API-Endpunkte müssen über den HTTP-Header `X-API-Key` geschützt sein.",
+    "Das Projekt muss eine `requirements.txt` mit den spezifizierten Bibliotheken (FastAPI, Uvicorn, SQLAlchemy, Pydantic, httpx, pytest, pytest-asyncio, asgi-lifespan) sowie automatisierte Pytest-Tests für Lifespan, Job-Durchlauf, Priorisierung und 401/422-Fehlerpfade umfassen."
+  ]
+}

@@ -290,6 +290,25 @@ class DepartmentMixin:
                 except Exception:
                     pass
 
+            # Backend-Vertrag (Enum-Werte, Pydantic-Feldnamen) speziell für den tester - siehe
+            # core/contract_digest.py-Moduldocstring für den realen Fund (pulse_queue,
+            # 2026-09-22): der obige Steckbrief listet nur Dateien/Symbole, keine exakten
+            # Enum-Mitglieder/Feldnamen, die der Tester bisher erraten statt gelesen hat. Nur für
+            # tester-Tasks (nicht jede Rolle braucht diesen Detailgrad) und nur, wenn bereits
+            # etwas Extrahierbares existiert (leerer String bei frischem/leerem Projekt, z. B. im
+            # Test-First-Modus VOR dem ersten Backend-Schreibvorgang - dann bleibt der Steckbrief
+            # oben die einzige Kontextquelle, kein Verhalten verschlechtert sich).
+            if project_dir:
+                try:
+                    from core.contract_digest import build_backend_contract_digest
+                    contract_digest = build_backend_contract_digest(project_dir)
+                    if contract_digest:
+                        for task in member_tasks:
+                            if task.agent_id == "tester" and contract_digest not in task.context:
+                                task.context += f"\n\n{contract_digest}"
+                except Exception:
+                    pass
+
             phase_start_tokens = token_guard.get_summary()["grand_total_tokens"]
             phase_start_time = time.monotonic()
             self._trace_event("phase_started", phase_id=dept_id, agents=[t.agent_id for t in member_tasks])

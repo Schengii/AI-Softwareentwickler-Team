@@ -292,11 +292,21 @@ class _DynamicGeminiClientProxy:
 _gemini_client = _DynamicGeminiClientProxy()
 
 # Globaler Groq-Client
+#
+# Realer Fund (pulse_queue, 2026-09-22, FEHLERANALYSE_PULSE_QUEUE_20260922_TEMP.md, Problem 1):
+# Ein 429-Rate-Limit ("Please try again in 13m52s") ließ den Tester-Aufruf 316 Sekunden hängen,
+# obwohl P7-1 bereits einen anwendungsseitigen Failover zu OpenRouter/DeepSeek/Gemini bereitstellt
+# (core.llm_providers.groq._same_schema_failover_with_usage()). Ursache: der Groq-SDK-Client
+# (max_retries=2 per Default, kein explizites Timeout) respektiert den Retry-After-Header selbst
+# und schläft SDK-intern, bevor unser eigener Fallback überhaupt zum Zug kommt. max_retries=0
+# gibt jeden Fehler SOFORT an core/llm_providers/groq.py zurück, das dort bereits robust
+# klassifiziert (Rate-Limit/Auth/zu groß/404) und selbst entscheidet, ob und wohin gewechselt
+# wird; timeout=20 verhindert zusätzlich ein Hängenbleiben bei einem antwortlosen Request.
 _groq_client = None
 if GROQ_API_KEY:
     try:
         from groq import Groq
-        _groq_client = Groq(api_key=GROQ_API_KEY)
+        _groq_client = Groq(api_key=GROQ_API_KEY, max_retries=0, timeout=20.0)
     except ImportError:
         _groq_client = None
 

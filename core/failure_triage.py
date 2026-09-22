@@ -48,6 +48,7 @@ KIND_TEST_IMPORT_PATH = "test_import_path"
 KIND_SETTINGS_DEFAULTS = "settings_defaults"
 KIND_ASYNC_SYNC_MISMATCH = "async_sync_mismatch"
 KIND_EVENT_LOOP_IMPORT_ERROR = "event_loop_import_error"
+KIND_FIXTURE_NOT_FOUND = "fixture_not_found"
 
 MANIFEST_GUARD_NOTE = (
     "⛔ Strukturfehler im Code: Ändere KEINE Dependency-Manifeste (requirements*.txt, Pipfile) – "
@@ -650,6 +651,40 @@ def _triage_event_loop_import_error(message: str, root: Path | None, known: Coll
     )
 
 
+# Realer Fund (pulse_queue, 2026-09-22): Der Tester benannte beim Nachrüsten einer
+# `auth_headers`-Fixture in `tests/conftest.py` versehentlich die bestehende `async_client`-
+# Fixture in `client` um, obwohl `tests/test_jobs.py` weiterhin `async_client` erwartete. Pytest
+# meldet das pro Testfunktion als `fixture '...' not found` beim Setup - kein Stacktrace, kein
+# Datei-Bezug im Traceback. Die generische Owner-Ermittlung ordnete einen der GLEICHZEITIG
+# gemeldeten Fehler (einen unabhängigen Assertion-Fehler im selben Testlauf) stattdessen dem
+# `backend`-Agenten zu, der 113k Tokens für eine triviale Status-String-Änderung verbrauchte,
+# während die eigentliche Fixture-Regression unbearbeitet blieb. `fixture '...' not found` ist
+# IMMER ein Test-Setup-Fehler (Fixture-Name-Drift zwischen conftest.py und der Testdatei) -
+# responsible_file bewusst None, damit ausschließlich der tester-Fallback greift, unabhängig
+# davon, wer conftest.py zuletzt angefasst hat.
+_FIXTURE_NOT_FOUND_RE = re.compile(r"fixture ['\"](\w+)['\"] not found")
+
+
+def _triage_fixture_not_found(message: str) -> StructuralTriage | None:
+    m = _FIXTURE_NOT_FOUND_RE.search(message)
+    if not m:
+        return None
+    name = m.group(1)
+    return StructuralTriage(
+        kind=KIND_FIXTURE_NOT_FOUND,
+        responsible_file=None,
+        fallback_agent="tester",
+        diagnosis=(
+            f"⚠️ KONKRETE URSACHE: pytest findet die Fixture `{name}` nicht - vermutlich wurde sie "
+            "in `tests/conftest.py` umbenannt oder entfernt, während eine Testdatei noch den alten "
+            f"Namen erwartet. Prüfe `tests/conftest.py` UND alle Testfunktionen, die `{name}` als "
+            "Parameter nutzen: entweder die Fixture unter genau diesem Namen wiederherstellen oder "
+            "ALLE Verwendungsstellen konsistent auf den neuen Namen umstellen - niemals nur eine "
+            f"Seite ändern. {MANIFEST_GUARD_NOTE}"
+        ),
+    )
+
+
 def triage_structural_failure(
     message: str,
     files: Iterable[str],
@@ -665,6 +700,7 @@ def triage_structural_failure(
     rel_files = [rel for f in files if isinstance(f, str) and (rel := _to_project_rel(f, root, known))]
     return (
         _triage_syntax(message, root, known, rel_files)
+        or _triage_fixture_not_found(message)
         or _triage_event_loop_import_error(message, root, known)
         or _triage_async_sync_mismatch(message, root, known)
         or _triage_settings(message, root, known)
@@ -711,6 +747,49 @@ def snapshot_dependency_manifests(project_dir: Path | str) -> dict[str, bytes]:
         except OSError as e:
             logger.warning("Manifest %s konnte nicht gesichert werden: %s", path, e)
     return snapshot
+
+
+def snapshot_project_py_files(project_dir: Path | str) -> dict[str, str]:
+    """Inhalt ALLER Python-Dateien im Projekt vor einem Fix-Dispatch - Grundlage für das
+    Regression-Gate (siehe restore_project_py_files()). Anders als
+    core.test_depth.snapshot_test_files() (nur Testdateien, Schrumpfung per Namensabgleich)
+    deckt dies auch Produktivcode/Fixtures (z.B. tests/conftest.py) ab, deren Bruch sich nicht
+    als verschwundene test_*-Funktion zeigt, sondern als zusätzliche Fehlschläge in
+    UNVERÄNDERTEN Testfunktionen (realer Fund pulse_queue, 2026-09-22: eine in conftest.py
+    umbenannte Fixture ließ 7 statt vorher 4 Tests mit `fixture '...' not found` scheitern,
+    ohne dass eine einzige Testfunktion entfernt wurde)."""
+    root = Path(project_dir)
+    snapshot: dict[str, str] = {}
+    for path in _iter_project_py_files(root):
+        try:
+            snapshot[_norm(str(path.relative_to(root)))] = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            logger.warning("Datei %s konnte für das Regression-Gate nicht gesichert werden: %s", path, e)
+    return snapshot
+
+
+def restore_project_py_files(project_dir: Path | str, snapshot: dict[str, str]) -> list[str]:
+    """Stellt den Stand aus snapshot_project_py_files() vollständig wieder her (auch neu
+    angelegte Dateien seit dem Snapshot werden entfernt) - Gegenstück zu
+    restore_dependency_manifests(), aber für den gesamten Python-Quellbaum. Rückgabe:
+    tatsächlich geänderte relative Pfade."""
+    root = Path(project_dir)
+    restored: list[str] = []
+    current = {_norm(str(p.relative_to(root))) for p in _iter_project_py_files(root)}
+    for rel in sorted(set(snapshot) | current):
+        path = root / rel
+        before = snapshot.get(rel)
+        try:
+            if before is None:
+                path.unlink()
+            elif not path.is_file() or path.read_text(encoding="utf-8", errors="replace") != before:
+                path.write_text(before, encoding="utf-8")
+            else:
+                continue
+            restored.append(rel)
+        except OSError as e:
+            logger.warning("Datei %s konnte für das Regression-Gate nicht zurückgesetzt werden: %s", path, e)
+    return restored
 
 
 def restore_dependency_manifests(project_dir: Path | str, snapshot: dict[str, bytes]) -> list[str]:

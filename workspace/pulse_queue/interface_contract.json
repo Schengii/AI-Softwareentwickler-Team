@@ -1,0 +1,41 @@
+{
+  "modules": {
+    "app/main.py": {
+      "lifespan": "function",
+      "health_check": "function"
+    },
+    "app/api/routes_jobs.py": {
+      "create_job": "function",
+      "list_jobs": "function",
+      "get_job": "function",
+      "cancel_job": "function"
+    },
+    "app/api/routes_stats.py": {
+      "get_stats": "function"
+    },
+    "app/api/routes_workers.py": {
+      "get_worker_status": "function"
+    },
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/core/database.py": {
+      "Base": "class",
+      "get_async_session": "function"
+    },
+    "app/core/security.py": {
+      "get_api_key": "function"
+    },
+    "app/models/job.py": {
+      "JobStatus": "class",
+      "JobType": "class",
+      "JobModel": "class",
+      "JobCreate": "class",
+      "JobResponse": "class"
+    },
+    "app/services/queue_engine.py": {
+      "QueueEngine": "class"
+    }
+  }
+}

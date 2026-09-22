@@ -39,6 +39,15 @@ class AgentWatchdog:
     max_prompt_tokens: int = 80_000
     task_token_cap: int = 250_000
     read_streak_limit: int = 2
+    # Realer Fund (pulse_queue, 2026-09-22, FEHLERANALYSE_PULSE_QUEUE_20260922_TEMP.md,
+    # Problem 5): der Tester geriet zweimal in eine reine Lese-Schleife und erreichte
+    # Eskalationsstufe #6 (6 aufeinanderfolgende reine Lese-Iterationen), ohne dass der Watchdog
+    # je hart eingriff - die Warnungen ("wird als Fehlschlag gewertet") blieben reine Prompt-
+    # Hinweise ohne erzwungenen Abbruch, bis schließlich das GESAMTE Lauf-Token-Budget (nicht
+    # dieser einzelne Task) erschöpft war. `read_streak_hard_stop_extra` zieht die Notbremse
+    # SELBST, sobald der Agent trotz wiederholter, zunehmend eindringlicher Hinweise weiterhin
+    # nichts schreibt - unabhängig vom (viel größeren) task_token_cap weiter unten.
+    read_streak_hard_stop_extra: int = 4
     rewrite_limit: int = 3
     tool_call_soft_limit: int = 15
     events: list[str] = field(default_factory=list)
@@ -81,12 +90,20 @@ class AgentWatchdog:
             # Iteration nach dem ersten Hinweis meldet sich deshalb erneut, jetzt mit
             # erzwungener Kontext-Verdichtung.
             escalated = self._read_only_streak > self.read_streak_limit
+            hard_stop = self._read_only_streak >= self.read_streak_limit + self.read_streak_hard_stop_extra
             interventions.append(self._fire(
                 f"read_without_write#{self._read_only_streak}" if escalated else "read_without_write",
-                f"Du hast {self._read_only_streak} Iterationen nur gelesen und noch keine Datei gespeichert. "
-                "Du hast genug Kontext - schreibe JETZT deine erste Zieldatei per write_file."
-                + (" Weiteres Lesen ohne Schreiben wird als Fehlschlag der Aufgabe gewertet." if escalated else ""),
+                (
+                    f"Du hast {self._read_only_streak} Iterationen nur gelesen und noch keine Datei gespeichert. "
+                    "Die Aufgabe wird JETZT abgebrochen (kein weiterer Iterations-Versuch) - ein wiederholter "
+                    "Hinweis hat nicht gereicht."
+                    if hard_stop else
+                    f"Du hast {self._read_only_streak} Iterationen nur gelesen und noch keine Datei gespeichert. "
+                    "Du hast genug Kontext - schreibe JETZT deine erste Zieldatei per write_file."
+                    + (" Weiteres Lesen ohne Schreiben wird als Fehlschlag der Aufgabe gewertet." if escalated else "")
+                ),
                 compact=escalated,
+                stop=hard_stop,
             ))
 
         for (name, args), result in zip(tool_calls, tool_results, strict=False):

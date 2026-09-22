@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+PyJWT
+python-multipart
+locust
+httpx

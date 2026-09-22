@@ -683,6 +683,19 @@ _IO_MUTATION_RE = re.compile(
     r"|\.delete\w*\("
     r"|\.clear\w*\(",
 )
+# Fünfzehnter realer Fund (apex_vault-Projekt, 2026-09-22): `_IO_MUTATION_RE` verlangte bisher
+# durchgängig einen Punkt vor dem CRUD-Verb (`.create(`, `.update(`, ...), traf also nur
+# Objekt-Methodenaufrufe. Ein Router, der sauber per FastAPI-Idiom an eine direkt importierte
+# Service-Funktion delegiert (`from app.services.vault_service import create_secret` +
+# `return await create_secret(db, secret_in, actor_ip)`), enthält denselben validen I/O-Aufruf
+# OHNE führenden Punkt und wurde fälschlich als Stub gemeldet - der Backend-Agent konnte den
+# Fund nicht beheben, ohne die geforderte Service-Layer-Architektur zu verletzen, und brach mit
+# `no_delivery` ab. Erkennt `await <name_mit_crud_verb>(` unabhängig davon, ob ein Objekt-Präfix
+# vorangeht.
+_SERVICE_DELEGATION_RE = re.compile(
+    r"\bawait\s+[\w.]*(create|update|delete|revoke|save|persist|insert|remove|store)\w*\(",
+    re.IGNORECASE,
+)
 # Endpunktnamen, bei denen eine fehlende I/O-Anbindung erwartbar/legitim ist (z.B. ein reiner
 # Logout, der nur ein Cookie löscht) - bewusst kurz gehalten, kein Anspruch auf Vollständigkeit.
 _ROUTE_IO_EXEMPT_NAME_RE = re.compile(r"health|ping|version|logout|status", re.IGNORECASE)

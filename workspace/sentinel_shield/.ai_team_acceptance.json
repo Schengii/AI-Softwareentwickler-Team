@@ -1,0 +1,14 @@
+{
+  "requirements": [
+    "Die Anwendung 'sentinel_shield' muss in Python mit FastAPI modular aufgebaut sein und alle Router unter dem Präfix `/api/v1` registrieren.",
+    "Die Konfiguration muss über Pydantic-Settings erfolgen und Pydantic-v2-Schemas mit Enums in Kleinbuchstaben verwenden.",
+    "Der In-Memory-Rate-Limiter muss Token-Bucket- und Sliding-Window-Verfahren basierend auf API-Key-Validierung unterstützen.",
+    "Der Circuit-Breaker muss die Zustände 'closed', 'open' und 'half_open' über Failure-Thresholds und Recovery-Timeouts steuern.",
+    "Der Endpunkt `POST /api/v1/dispatch` muss Anfragen weiterleiten, bei Limit-Überschreitung HTTP 429 mit dem Header 'Retry-After' und bei offenem Circuit ohne Weiterleitung HTTP 503 liefern.",
+    "Der Endpunkt `GET /api/v1/circuits` muss den Status aller Circuits ausgeben und `POST /api/v1/circuits/{service_name}/reset` muss einen Circuit manuell auf 'closed' setzen.",
+    "Der Endpunkt `GET /api/v1/metrics` muss Zähler für Gesamt-Requests, Rate-Limits, Circuit-Trips sowie Latenzen liefern und `GET /health` muss mit `{\"status\": \"ok\"}` antworten.",
+    "Die Datei `requirements.txt` muss FastAPI, Uvicorn, httpx, pydantic, pytest und pytest-asyncio enthalten.",
+    "Die Testsuite in `tests/test_gateway.py` muss über die Fixture `async_client` aus `tests/conftest.py` die Statuscodes 200, 429, 503, die Half-Open-Recovery und den Reset prüfen.",
+    "Das Repository muss eine `README.md` mit Architekturübersicht und Beispiel-cURL-Befehlen enthalten und den Ruff-Check fehlerfrei bestehen."
+  ]
+}

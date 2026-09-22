@@ -1,0 +1,2 @@
+{"timestamp": "2026-09-22T12:41:36.222839+00:00", "event": "project_scaffold_applied", "detail": "Stack fastapi: pytest.ini, requirements.txt, requirements-dev.txt, .env.example, tests/conftest.py"}
+{"timestamp": "2026-09-22T12:46:38.268930+00:00", "event": "missing_tests_fix_dispatched", "detail": "Unvollständiges Projekt erkannt: Ein tests/-Verzeichnis mit conftest.py existiert, aber keine einzige echte Testdatei (test_*.py/*_test.py) - sieht nach einer abgebrochenen Testsuite aus, nicht nach einem Projekt, das bewusst auf Tests verzichtet."}

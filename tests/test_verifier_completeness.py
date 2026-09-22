@@ -192,6 +192,30 @@ class TestCompletenessCheck(unittest.TestCase):
             report = verifier.check_completeness()
             self.assertTrue(report.passed)
 
+    def test_write_route_with_bare_service_function_delegation_passes(self):
+        """Root-Cause-Befund 2026-09-22 (apex_vault-Projekt): ein Router, der sauber per
+        FastAPI-Idiom an eine direkt importierte Service-Funktion delegiert
+        (`from app.services.vault_service import create_secret` +
+        `return await create_secret(db, secret_in, actor_ip)`), enthält denselben validen
+        I/O-Aufruf wie ein Objekt-Methodenaufruf (`.create(`), nur OHNE führenden Punkt vor dem
+        CRUD-Verb. Das Framework meldete das bisher fälschlich als Stub, der Backend-Agent konnte
+        den Fund nicht beheben, ohne die geforderte Service-Layer-Architektur zu verletzen."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "main.py").write_text(
+                "from fastapi import FastAPI, Depends\n"
+                "from app.services.vault_service import create_secret\n"
+                "app = FastAPI()\n\n"
+                "@app.post('/api/v1/secrets')\n"
+                "async def create_new_secret(secret_in, db=Depends()):\n"
+                "    return await create_secret(db, secret_in, 'unknown')\n",
+                encoding="utf-8",
+            )
+            (project_dir / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+            verifier = ProjectVerifier(tmp)
+            report = verifier.check_completeness()
+            self.assertTrue(report.passed)
+
     def test_write_route_with_named_delete_or_clear_method_passes(self):
         """Team-Optimierung 2026-09-17 (hyperion_metrics-Root-Cause): `.delete...(`/`.clear...(`
         auf einer In-Memory-Engine ist dieselbe Klasse valider Zustandsmutation wie `.remove...(`/

@@ -1,0 +1,14 @@
+{
+  "requirements": [
+    "Die FastAPI-Anwendung muss mit SQLite und SQLAlchemy in der vorgegebenen modularen Ordnerstruktur aufgebaut sein und alle Vault-Routen unter dem Präfix `/api/v1` bereitstellen.",
+    "Der Endpunkt `GET /health` muss ohne Authentifizierung den HTTP-Statuscode 200 mit dem Body `{\"status\": \"ok\"}` zurückgeben.",
+    "Alle Endpunkte unter `/api/v1/*` müssen das Vorhandensein und die Gültigkeit des HTTP-Headers `X-Vault-Token` erzwingen und unautorisierte Anfragen abweisen.",
+    "Der Endpunkt `POST /api/v1/secrets` muss Secret-Werte mit AES-256-GCM oder Fernet verschlüsselt in der Datenbank ablegen und mit Status 201 ausschließlich Metadaten ohne Klartextwert zurückgeben.",
+    "Der Endpunkt `GET /api/v1/secrets/{name}` muss gültige Secrets entschlüsselt mit Status 200 ausliefern oder bei überschrittener TTL mit Status 410 bzw. 404 antworten.",
+    "Der Endpunkt `POST /api/v1/secrets/{name}/rotate` muss den Secret-Wert aktualisieren und die vorherige Version archivieren.",
+    "Der Endpunkt `DELETE /api/v1/secrets/{name}` muss das Secret unverzüglich auf den Status `'revoked'` setzen.",
+    "Jede Lese-, Schreib- und Rotationsoperation muss einen Audit-Eintrag in der SQLite-Datenbank protokollieren, der über `GET /api/v1/audit` filter- und paginierbar ist und niemals Klartext-Secrets enthält.",
+    "Die Daten- und Pydantic-v2-Modelle müssen für den Status exakt die Kleinbuchstaben-Werte `'active'`, `'revoked'` und `'expired'` verwenden und Konfigurationsparameter via Pydantic-Settings laden.",
+    "In `tests/test_vault.py` muss eine asynchrone pytest-Suite mit der Fixture `async_client` existieren, die Secret-Erstellung, Entschlüsselung, TTL-Prüfung, Token-Validierung, Rotation und Audit-Logging vollständig abdeckt."
+  ]
+}

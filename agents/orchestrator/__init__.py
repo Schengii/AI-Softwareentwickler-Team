@@ -1248,6 +1248,23 @@ class Orchestrator(
                         "dem Loslegen)."
                     ),
                 )
+            elif self._root_cause_analysis_worthwhile_despite_budget_abort(
+                provider_exhausted_this_run=getattr(self, "_provider_exhausted_this_run", False),
+                verification_summary=verification_summary,
+                verification_ok=verification_ok,
+            ):
+                # Siehe _root_cause_analysis_worthwhile_despite_budget_abort()-Docstring
+                # (agents/orchestrator/retrospective.py): ein Budget-Abbruch NACH echten
+                # Testfehlern (statt Provider-Erschöpfung) verdient trotzdem die sonst nur im
+                # `else`-Zweig laufende Tiefenanalyse.
+                await self._maybe_run_root_cause_analysis(
+                    user_request=user_request,
+                    verification_ok=verification_ok,
+                    verification_summary=verification_summary,
+                    files_written=geschriebene_dateien,
+                    project_dir=project_dir,
+                    notify=notify,
+                )
         elif manually_cancelled:
             notify("⏹️ [bold red]Lauf manuell abgebrochen:[/bold red] Retrospektive & Selbstoptimierung werden übersprungen.")
         else:

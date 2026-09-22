@@ -64,6 +64,7 @@ from core.verifier.models import (
     _RESILIENCE_FALLBACK_EXCEPT_RE,
     _ROUTE_DECL_RE,
     _ROUTE_IO_EXEMPT_NAME_RE,
+    _SERVICE_DELEGATION_RE,
     _SQLA_ASYNC_ENGINE_RE,
     _SQLA_DECLARATIVE_BASE_RE,
     _SQLA_DRIVER_TO_PACKAGE_NAME,
@@ -311,7 +312,11 @@ class CompletenessMixin:
                 k += 1
             body_joined = "\n".join(body)
             body_text = body_joined.lower()
-            has_io = any(marker in body_text for marker in _IO_CALL_MARKERS) or _IO_MUTATION_RE.search(body_joined)
+            has_io = (
+                any(marker in body_text for marker in _IO_CALL_MARKERS)
+                or _IO_MUTATION_RE.search(body_joined)
+                or _SERVICE_DELEGATION_RE.search(body_joined)
+            )
             if body and not has_io:
                 found.append(CompletenessIssue(
                     file_path=rel, line_number=j + 1,

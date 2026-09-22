@@ -181,6 +181,31 @@ class RetrospectiveMixin:
 
         return trainer_result
 
+    @staticmethod
+    def _root_cause_analysis_worthwhile_despite_budget_abort(
+        provider_exhausted_this_run: bool,
+        verification_summary: str,
+        verification_ok: bool,
+    ) -> bool:
+        """Team-Optimierung (echter Fund, sentinel_shield-Projekt 2026-09-22): ein Lauf, der
+        WEGEN echter Testfehler mehrere Fix-Versuche brauchte, dabei sein MAX_RUN_TOKENS-Budget
+        aufbrauchte UND danach immer noch rot blieb, übersprang bisher die Root-Cause-Analyse
+        vollständig - sie lief bisher NUR im `else`-Zweig (weder budget_aborted noch
+        manually_cancelled). Der Postmortem dieses Laufs verlinkte deshalb kein einziges
+        Root-Cause-Ticket, obwohl genau dieser Lauf den wertvollsten Befund geliefert hätte
+        (zwei echte, über zwei Fix-Versuche hinweg unveränderte Testfehler). Der Fund wäre ohne
+        manuelle Log-Analyse verloren gegangen.
+
+        Eine Provider-Erschöpfung (`provider_exhausted_this_run`) bleibt bewusst ausgeschlossen:
+        ein weiterer LLM-Aufruf für die Analyse würde dort ohnehin nur am selben, gerade
+        erschöpften Kontingent scheitern - reine Tokenverschwendung ohne Erkenntnisgewinn. Ein
+        Budget-Abbruch NACH echten, in `verification_summary` sichtbaren Testfehlern ist dagegen
+        ein starkes, die zusätzlichen Kosten eines einzelnen Diagnose-Aufrufs rechtfertigendes
+        Signal - `_maybe_run_root_cause_analysis()` selbst bleibt best-effort (eigenes
+        try/except) und prüft zusätzlich `should_trigger()`, diese Funktion ist nur das Tor
+        davor."""
+        return bool(verification_summary) and not verification_ok and not provider_exhausted_this_run
+
     async def _maybe_run_root_cause_analysis(
         self,
         user_request: str,

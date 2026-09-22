@@ -1,0 +1,38 @@
+{
+  "modules": {
+    "app/main.py": {
+      "lifespan": "function",
+      "health_check": "function"
+    },
+    "app/api/routes_admin.py": {
+      "reset_circuit": "function",
+      "get_circuits": "function"
+    },
+    "app/api/routes_gateway.py": {
+      "dispatch_request": "function"
+    },
+    "app/api/routes_metrics.py": {
+      "get_metrics": "function"
+    },
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/core/security.py": {
+      "get_api_key": "function"
+    },
+    "app/models/schemas.py": {
+      "CircuitState": "class",
+      "DispatchRequest": "class",
+      "DispatchResponse": "class",
+      "HealthResponse": "class"
+    },
+    "app/services/circuit_breaker.py": {
+      "CircuitBreaker": "class",
+      "CircuitBreakerManager": "class"
+    },
+    "app/services/rate_limiter.py": {
+      "RateLimiter": "class"
+    }
+  }
+}

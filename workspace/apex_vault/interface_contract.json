@@ -1,0 +1,49 @@
+{
+  "modules": {
+    "app/main.py": {
+      "lifespan": "function",
+      "health_check": "function"
+    },
+    "app/api/routes_audit.py": {
+      "get_audit_logs": "function"
+    },
+    "app/api/routes_vault.py": {
+      "SecretResponse": "class",
+      "SecretValueResponse": "class",
+      "create_new_secret": "function",
+      "read_secret": "function",
+      "revoke_existing_secret": "function"
+    },
+    "app/core/config.py": {
+      "Settings": "class",
+      "get_settings": "function"
+    },
+    "app/core/security.py": {
+      "get_encryption_key": "function",
+      "encrypt_value": "function",
+      "decrypt_value": "function",
+      "get_current_user": "function"
+    },
+    "app/db/base.py": {
+      "Base": "class"
+    },
+    "app/db/session.py": {
+      "get_db": "function"
+    },
+    "app/models/audit.py": {
+      "AuditLog": "class",
+      "AuditLogResponse": "class"
+    },
+    "app/models/vault_item.py": {
+      "SecretStatus": "class",
+      "Secret": "class"
+    },
+    "app/services/vault_service.py": {
+      "SecretCreate": "class",
+      "log_audit": "function",
+      "create_secret": "function",
+      "get_secret": "function",
+      "revoke_secret": "function"
+    }
+  }
+}

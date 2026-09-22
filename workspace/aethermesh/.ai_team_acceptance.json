@@ -1,0 +1,9 @@
+{
+  "requirements": [
+    "Die verbleibenden Verifikations-Fehler des bestehenden Projekts aethermesh müssen ohne Neuentwicklung behoben werden.",
+    "Vor der Durchführung weiterer Änderungen muss zuerst die Verifikation des Projekts ausgeführt werden.",
+    "Das Kriterium `tests_pass` der Definition of Done muss durch eine fehlerfreie Testausführung erfüllt werden.",
+    "Alle Abhängigkeiten müssen sich über `pip install -r requirements.txt` mit dem Exit-Code 0 installieren lassen.",
+    "Die vier im Vorab-Import-Check identifizierten Backend-Fehler müssen behoben werden, sodass der Import-Check fehlerfrei durchläuft."
+  ]
+}

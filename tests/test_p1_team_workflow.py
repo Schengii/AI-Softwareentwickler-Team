@@ -72,7 +72,12 @@ class TestProjectScaffold:
         assert report.stack == STACK_FASTAPI
         for rel in ("app/__init__.py", "app/core/__init__.py", "app/db/__init__.py", "pytest.ini", ".env.example", "tests/conftest.py"):
             assert (tmp_path / rel).is_file(), rel
-        assert "async_client" in (tmp_path / "tests/conftest.py").read_text(encoding="utf-8")
+        conftest = (tmp_path / "tests/conftest.py").read_text(encoding="utf-8")
+        assert "async_client" in conftest
+        # Realer Fund (pulse_queue, 2026-09-22): conftest muss BEIDE Namen liefern (async_client
+        # UND client als Alias), damit eine Umbenennung in eine Richtung die andere nicht bricht.
+        assert "def client" in conftest, "client-Alias fehlt in conftest.py"
+        assert "auth_headers" in conftest, "auth_headers-Fixture fehlt in conftest.py"
         runtime = (tmp_path / "requirements.txt").read_text(encoding="utf-8")
         dev = (tmp_path / "requirements-dev.txt").read_text(encoding="utf-8")
         assert "greenlet" in runtime and "PyJWT" in runtime and "python-multipart" in runtime

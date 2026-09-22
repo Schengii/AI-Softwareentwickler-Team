@@ -7,6 +7,69 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Team-Optimierung 2026-09-22 (Sprint 3): Tester haluziniert keine Schemas mehr, Regressions-Gate schützt vor Fix-Kaskaden
+
+Fuenf Befunde aus dem `pulse_queue`- und `sentinel_shield`-Lauf (2026-09-22), allesamt
+reproduziert und behoben:
+
+* **Tester erfand Enum-Werte und Feldnamen (`core/contract_digest.py`, neue Datei):**
+  Der Tester schrieb `JobType.DATA_EXPORT` (erfunden) statt `JobType.data_export` (tatsaechlich
+  deklariert) und `{"job_type": ...}` statt `{"type": ...}` - obwohl `app/models/job.py` im
+  Workspace lag. Der bisherige Kontext (Projekt-Steckbrief, ~600 Zeichen) listete Dateien und
+  Symbole, nicht aber Enum-MITGLIEDER oder Pydantic-FELDNAMEN. Das neue Modul extrahiert
+  mechanisch (AST, kein LLM-Aufruf) alle Enum-Werte und Pydantic-Felder aus dem Nicht-Test-Code
+  und uebergibt sie dem Tester als kopierfertigen Text, der Fix-Dispatch ruft
+  `build_backend_contract_digest()` auf und haengt das Ergebnis als Kontext ans Tester-Prompt.
+  Abgedeckt durch `tests/test_contract_digest.py`.
+
+* **`fixture '...' not found` wurde dem falschen Agenten zugewiesen (`core/failure_triage.py`):**
+  Beim Nachruesten einer `auth_headers`-Fixture in `tests/conftest.py` benannte der Tester
+  versehentlich `async_client` in `client` um. pytest meldete `fixture 'async_client' not found`
+  pro Test - kein Stack-Trace, kein Datei-Bezug. Die generische Owner-Ermittlung schickte einen
+  ANDEREN, gleichzeitig gemeldeten Assertion-Fehler an `backend`, das 113k Tokens fuer eine
+  triviale Status-String-Aenderung verbrannte, waehrend die eigentliche Fixture-Regression
+  unbearbeitet blieb. Neu: `_triage_fixture_not_found()` erkennt das Muster und weist es
+  zwingend und exklusiv dem `tester` zu - `responsible_file=None`, damit auch ein von `backend`
+  zuletzt angefasster Conftest den Fix korrekt an den Tester weiterleitet.
+  Abgedeckt durch `tests/test_failure_triage.py::TestFixtureNotFoundTriage`.
+
+* **Regressions-Gate: Fix-Versuch der die Fehlerzahl erhoehte (`core/failure_triage.py`):**
+  Die Fixture-Umbenennung erhoehte die Fehlerzahl von 4 auf 7, ohne dass eine einzige
+  Testfunktion entfernt wurde (die Testfunktionen verlangten noch den alten Namen) - der Fix
+  baute auf diesem kaputteren Stand auf. Neu: `snapshot_project_py_files()` sichert VOR jedem
+  Fix-Dispatch den vollstaendigen Python-Quellbaum; `restore_project_py_files()` stellt ihn
+  wieder her, falls `_handle_test_result_or_escalate()` in der NAECHSTEN Iteration eine
+  Verschlechterung erkennt (`len(report.failures) > _pre_fix_failure_count`). Im Protokoll
+  erscheint das als `↩️ Regression erkannt: Fixversuch erhöhte die Testfehler von N auf M`.
+  Abgedeckt durch `tests/test_failure_triage.py::TestRegressionGate`.
+
+* **`conftest.py`-Gerüst mit geschuetzten Fixture-Aliases (`core/project_scaffold.py`):**
+  Das Scaffold legt `tests/conftest.py` jetzt mit ZWEI synchronisierten Fixture-Namen an:
+  `async_client` (primaer, ASGITransport) und `client` (Alias, gibt `async_client` zurueck).
+  Eine Umbenennung in eine Richtung bricht die andere nicht mehr, weil beide Namen von Anfang
+  an vorhanden sind. Ergaenzt wird eine `auth_headers`-Fixture ({}) als stabiler Platzhalter,
+  damit der Tester keinen neuen Namen erfinden muss. `format_for_agents()` instruiert die
+  Agenten explizit, diese Fixtures unter GENAU diesen Namen zu verwenden und NICHT umzubenennen.
+  Abgedeckt durch `tests/test_p1_team_workflow.py::TestProjectScaffold`.
+
+* **Completeness-Check false positive (Service-Layer-Delegation):**
+  `_scan_write_routes_missing_io()` erkannte nur Objekt-Methoden-Aufrufe mit fuehrendem Punkt
+  (z.B. `db.add()`, `session.commit()`). Saubere Service-Layer-Architektur delegiert ueber
+  nackte async-Funktionsaufrufe (`await create_secret(db, ...)`), die kein fuehrendes Punkt
+  haben - das loeste das Hard-Delivery-Gate aus, ohne echten Fehler (apex_vault). Fix:
+  `_SERVICE_DELEGATION_RE` in `core/verifier/models.py` + `core/verifier/completeness.py`,
+  Regressions-Test in `tests/test_verifier_completeness.py`.
+
+* **Root-Cause-Analyse wurde bei Budget-Abort uebersprungen (`agents/orchestrator/`):**
+  Wenn `MAX_RUN_TOKENS` durch echte Testfehler erschoepft wurde, landete der Lauf im
+  `if budget_aborted:`-Zweig und uebersprang `retrospective.py` - wertvolle Diagnose-
+  Informationen aus 2 persistenten Testfehlern (sentinel_shield) wurden nie als Backlog-Ticket
+  erfasst. Fix: `_root_cause_analysis_worthwhile_despite_budget_abort()` unterscheidet echte
+  Testfehler-Aborts von Provider-Erschoepfungs-Aborts und loest die Analyse nur im ersten Fall
+  aus. Abgedeckt durch `tests/test_root_cause_analysis_despite_budget_abort.py`.
+
+---
+
 ## 🟢 Team-Optimierung 2026-09-20 (Sprint 2): Das Team bleibt nicht mehr stecken
 
 Sprint 1 hat die Verifikation aufgehoert, Laeufe ohne Sachgrund rot zu faerben. Sprint 2 setzt

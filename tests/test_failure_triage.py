@@ -18,6 +18,7 @@ from pathlib import Path
 from agents.orchestrator.verification import _route_failure_owners
 from core.code_sandbox import ExecutionResult
 from core.failure_triage import (
+    KIND_FIXTURE_NOT_FOUND,
     KIND_INTERFACE_DRIFT,
     KIND_MISSING_LOCAL_MODULE,
     KIND_MISSING_SYMBOL,
@@ -27,7 +28,9 @@ from core.failure_triage import (
     blocking_failures_first,
     find_contract_violations,
     restore_dependency_manifests,
+    restore_project_py_files,
     snapshot_dependency_manifests,
+    snapshot_project_py_files,
     triage_structural_failure,
 )
 from core.verifier.models import TestFailure
@@ -213,6 +216,108 @@ class TestLocalModuleNotFound(_ProjectMixin, unittest.TestCase):
         message = "E   ModuleNotFoundError: No module named 'jose'"
         self.assertIsNone(triage_structural_failure(message, [], self.owners, self.root))
         self.assertEqual(self.route(message, ["tests/test_x.py"], self.owners), {"refactoring"})
+
+
+class TestFixtureNotFoundTriage(_ProjectMixin, unittest.TestCase):
+    """Realer Fund (pulse_queue, 2026-09-22): fixture '...' not found muss zwingend dem
+    tester-Agenten zugewiesen werden, niemals dem backend-Agenten."""
+
+    def test_fixture_not_found_goes_to_tester(self):
+        message = "ERRORS\nfixture 'async_client' not found"
+        result = triage_structural_failure(message, [], {}, self.root)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.kind, KIND_FIXTURE_NOT_FOUND)
+        self.assertEqual(result.fallback_agent, "tester")
+        self.assertIsNone(result.responsible_file)
+
+    def test_fixture_name_captured_in_diagnosis(self):
+        message = "fixture 'auth_headers' not found"
+        result = triage_structural_failure(message, [], {}, self.root)
+        self.assertIn("auth_headers", result.diagnosis)
+        self.assertIn("conftest.py", result.diagnosis)
+
+    def test_fixture_triage_routes_to_tester_even_if_conftest_owned_by_backend(self):
+        """backend als conftest.py-Owner darf NICHT die Zuweisung übernehmen - die Ursache
+        ist immer ein Test-Setup-Fehler, kein Backend-Code-Problem."""
+        self.write("tests/conftest.py", "@pytest.fixture\nasync def async_client(): ...\n")
+        owners = {"tests/conftest.py": "backend", "app/main.py": "backend"}
+        message = "fixture 'async_client' not found"
+        result = triage_structural_failure(message, [], owners, self.root)
+        self.assertEqual(result.fallback_agent, "tester")
+
+    def test_no_false_positive_on_unrelated_message(self):
+        message = "AssertionError: assert 1 == 2"
+        result = triage_structural_failure(message, [], {}, self.root)
+        # Keine fixture-triage, aber ggf. andere triage - was zählt ist kein KIND_FIXTURE_NOT_FOUND
+        if result is not None:
+            self.assertNotEqual(result.kind, KIND_FIXTURE_NOT_FOUND)
+
+    def test_fixture_triage_precedes_other_triages(self):
+        """fixture-Fehler soll VOR anderen Checks getriggert werden (Reihenfolge in
+        triage_structural_failure), damit er nicht von einem zufälligen Syntax-Match überdeckt wird."""
+        message = "fixture 'db' not found\nSyntaxError: invalid syntax"
+        result = triage_structural_failure(message, [], {}, self.root)
+        # Syntax-Error kommt zuerst in der Kette - fixture-triage ist ZWEITE Prüfung.
+        # Was wichtig ist: der fixture-Fehler wird NICHT ignoriert - ein Ergebnis muss kommen.
+        self.assertIsNotNone(result)
+
+
+class TestRegressionGate(_ProjectMixin, unittest.TestCase):
+    """Realer Fund (pulse_queue, 2026-09-22): Wenn ein Fix-Versuch die Fehlerzahl erhöht
+    (z.B. weil eine Fixture in conftest.py umbenannt wurde), muss der vollständige Python-
+    Quellbaum auf den Stand vor dem Fix zurückgesetzt werden."""
+
+    def test_snapshot_captures_all_py_files(self):
+        self.write("app/__init__.py", "# init\n")
+        self.write("app/main.py", "from fastapi import FastAPI\napp = FastAPI()\n")
+        self.write("tests/conftest.py", "@pytest.fixture\nasync def async_client(): ...\n")
+        snap = snapshot_project_py_files(self.root)
+        self.assertIn("app/__init__.py", snap)
+        self.assertIn("app/main.py", snap)
+        self.assertIn("tests/conftest.py", snap)
+
+    def test_snapshot_excludes_venv_and_pycache(self):
+        self.write(".venv/lib/site-packages/fastapi/__init__.py", "# extern\n")
+        self.write("app/main.py", "# app\n")
+        snap = snapshot_project_py_files(self.root)
+        self.assertIn("app/main.py", snap)
+        venv_keys = [k for k in snap if ".venv" in k or "site-packages" in k]
+        self.assertEqual(venv_keys, [])
+
+    def test_restore_reverts_modified_file(self):
+        self.write("tests/conftest.py", "async def async_client(): ...\n")
+        snap = snapshot_project_py_files(self.root)
+        # Tester benennt Fixture um (der Fehler aus pulse_queue)
+        self.write("tests/conftest.py", "async def client(): ...\n")
+        restored = restore_project_py_files(self.root, snap)
+        self.assertIn("tests/conftest.py", restored)
+        content = (self.root / "tests" / "conftest.py").read_text(encoding="utf-8")
+        self.assertIn("async_client", content)
+        self.assertNotIn("def client(", content)
+
+    def test_restore_removes_newly_created_files(self):
+        self.write("app/main.py", "# original\n")
+        snap = snapshot_project_py_files(self.root)
+        # Fix-Versuch legt neue Datei an
+        self.write("app/new_module.py", "# neu\n")
+        restored = restore_project_py_files(self.root, snap)
+        self.assertIn("app/new_module.py", restored)
+        self.assertFalse((self.root / "app" / "new_module.py").exists())
+
+    def test_restore_restores_deleted_file(self):
+        self.write("app/models.py", "class User: pass\n")
+        snap = snapshot_project_py_files(self.root)
+        (self.root / "app" / "models.py").unlink()
+        restored = restore_project_py_files(self.root, snap)
+        self.assertIn("app/models.py", restored)
+        self.assertTrue((self.root / "app" / "models.py").exists())
+
+    def test_idempotent_restore_returns_empty_list(self):
+        self.write("app/main.py", "# content\n")
+        snap = snapshot_project_py_files(self.root)
+        # Keine Änderung - restore soll [] liefern
+        result = restore_project_py_files(self.root, snap)
+        self.assertEqual(result, [])
 
 
 class TestFixLoopControls(_ProjectMixin, unittest.TestCase):

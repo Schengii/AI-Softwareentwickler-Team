@@ -1601,13 +1601,39 @@ Agenten-Aufruf kostet.
 > `test_database_review_preflight.py`, `test_verifier_completeness.py`,
 > `test_verifier_smoke.py`) grün bestätigt.
 
+> **Umsetzung 2026-09-22, drei weitere Teilschritte, danach natürlicher Haltepunkt erreicht:**
+> `_run_preflight_check_loop()` (Pre-Flight-Fix-Schleife), `_run_preimport_check_loop()`
+> (Vorab-Import-Fix-Schleife) und `_run_frontend_build_check()` (`npm run build`-Check)
+> extrahiert - dieselbe Rückgabewert-Technik wie zuvor (Tupel aus `budget_aborted`/
+> `manually_cancelled` bzw. `bool | None` für einen `verification_ok`-Veto), keine der drei
+> braucht ein Zustandsobjekt. `_run_verification_loop_impl()` damit von ~1438 auf **1189
+> Zeilen** geschrumpft (9 Hilfsmethoden insgesamt, jede einzeln committet und verifiziert).
+> Anschließend GEZIELT nach weiteren Kandidaten gesucht (jeder verbleibende Banner-Kommentar-
+> Block im Methodenrumpf einzeln geprüft) - der einzige übrig gebliebene, nennenswerte Block
+> (Vollständigkeits-Check, ~185 Zeilen) teilt sich `stuck_owners` und `completeness_report` mit
+> der davor liegenden, ~765 Zeilen großen Haupt-Testfehler-Schleife (Zirkuit-Breaker,
+> Modell-Eskalation, Zweitmeinungs-Runde) über einen Bereich von Zeile 386 bis 1481 hinweg -
+> genau der Fall "Block bleedet in umliegenden Code hinein", der laut Auftrag übersprungen
+> werden sollte. Damit ist der verbleibende Rumpf (~1189 Zeilen, im Wesentlichen die eine große
+> Haupt-Testfehler-Schleife plus der damit verwobene Vollständigkeits-Check) tatsächlich der
+> einzige Teil, der einen echten Kontrollfluss-Umbau statt reiner Code-Verschiebung braucht -
+> keine mechanisch isolierbaren Blöcke mehr übrig. Verifiziert: `ruff check` sauber nach jeder
+> Extraktion, 141 Tests aus der breiten verifikationsnahen Testsuite plus die jeweils direkt
+> betroffenen Tests (`test_preflight_check_fix_loop.py`, `test_preimport_check.py`,
+> `test_frontend_build_check.py`, `test_frontend_build_integration.py`,
+> `test_budget_aborted_after_verification_ok.py`) grün.
+
 **Zusammenfassung P6-5:** 2 von 3 Dateien vollständig gesplittet (`interface/cli.py`,
-`core/llm_factory.py`); `verification.py` um 6 Methoden entlastet, ~195 Zeilen (~12 %) aus der
-zentralen Fix-Loop-Methode extrahiert, jeder Schritt einzeln verifiziert - der verbleibende
-Rumpf (~1438 Zeilen) bleibt aus den genannten Gründen (viele weiterhin eng verflochtene Blöcke,
-echter Kontrollfluss-Umbau statt reiner Code-Verschiebung nötig) für eine künftige, dedizierte
-Sitzung offen. Kein Punkt mehr unbegründet als "zu riskant" abgehakt - für jeden verbleibenden
-Rest liegt eine konkrete, verifizierte technische Begründung vor.
+`core/llm_factory.py`); `verification.py` um 9 Methoden entlastet, ~444 Zeilen (~27 %) aus der
+zentralen Fix-Loop-Methode extrahiert (von ursprünglich ~1633 auf 1189 Zeilen), jeder Schritt
+einzeln verifiziert - der verbleibende Rumpf ist im Kern EINE große, eng verwobene
+Haupt-Testfehler-Schleife (Zirkuit-Breaker, Modell-Eskalation, Zweitmeinung) plus der damit über
+`stuck_owners`/`completeness_report` verwobene Vollständigkeits-Check; ein Dritter der
+ursprünglichen Datei bleibt aus genau diesem Grund für eine künftige, dedizierte Sitzung offen -
+kein weiterer mechanisch isolierbarer Block wurde übersehen, jeder verbleibende Banner-Kommentar-
+Block im Methodenrumpf wurde einzeln geprüft und die Nicht-Extrahierbarkeit konkret belegt. Kein
+Punkt mehr unbegründet als "zu riskant" abgehakt - für jeden verbleibenden Rest liegt eine
+konkrete, verifizierte technische Begründung vor.
 
 | P6-6 | `core/message_bus.py` enthält nur noch zwei Dataclasses – in `core/agent_contracts.py` umbenennen (60+ Importe, daher mit Alias-Übergang) | S |
 
@@ -1750,4 +1776,4 @@ ruff check && python -m pytest -q
 | P5-3 | Verifikations-Reserve im Budget | P5 | ☑ erledigt (Reserve existierte, Gate korrigiert) |
 | P6-1 | Gestagte Fixes committet | P6 | ☑ erledigt |
 | P6-2 | ~~Workspace aus Framework-Commits~~ | P6 | ☑ Fehlannahme, siehe oben |
-| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-6, P6-7, P6-8 erledigt; P6-5 ~2.2/3 (`interface/cli.py` + `core/llm_factory.py` erledigt; `verification.py` 6 Blöcke extrahiert (~12% der Kernmethode), Rest für eigene Sitzung offen - konkrete Begründung s.o.) |
+| P6-3…8 | Hygiene & Aufräumen | P6 | 🟡 P6-3, P6-4, P6-6, P6-7, P6-8 erledigt; P6-5 ~2.4/3 (`interface/cli.py` + `core/llm_factory.py` erledigt; `verification.py` 9 Blöcke extrahiert (~27% der Kernmethode), verbleibender Rumpf ist EINE verwobene Haupt-Schleife - konkret belegt, kein Block mehr übersehen) |

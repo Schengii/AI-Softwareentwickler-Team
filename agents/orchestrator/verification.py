@@ -447,19 +447,10 @@ class VerificationMixin:
         # Fix-Ergebnisse des letzten Versuchs NO_DELIVERY waren - dieselbe Eskalation, die sonst
         # ohnehin nach dem nächsten identischen Fehlschlag ausgelöst würde, kein neuer Pfad.
         previous_fix_all_no_delivery = False
-        # Bei "kein Fortschritt" EIN Eskalationsversuch an den Fachbereichsleiter (andere Perspektive
-        # statt exakter Wiederholung) - nicht mehr, damit die Schleife begrenzt bleibt.
-        escalation_attempted = False
-        # Danach GENAU EINMAL pro Lauf ein letzter Versuch mit HEAVY_MODEL nur für die betroffenen
-        # Agenten, statt erst im späteren Backlog-Retry (core/backlog_worker.py) zu eskalieren.
-        model_escalation_attempted = False
-        # Letzte Stufe der Eskalationsleiter: eine Zweitmeinung einer ANDEREN Rolle - siehe
-        # _second_opinion_fix_round(). Greift auch dann, wenn HEAVY_MODEL nicht erreichbar ist,
-        # und ist damit die einzige Stufe, die keine stärkere Modellstufe voraussetzt.
-        second_opinion_attempted = False
-        # Vorinitialisiert: bei MAX_VERIFICATION_ITERATIONS > 2 kann der "kein Fortschritt"-Zweig nach
-        # bereits erfolgter Eskalation erneut greifen und top_failures im Ticket-Text referenzieren.
-        top_failures = ""
+        # escalation_attempted/model_escalation_attempted/second_opinion_attempted/top_failures:
+        # jetzt lokale Variablen in _run_no_progress_escalation_ladder() (P6-5, ROADMAP_TEMP.md)
+        # - der Block, der sie liest/schreibt, führt IMMER zu einem `break` dieser Schleife,
+        # sie müssen also nie über einen einzelnen Aufruf dieser Methode hinaus bestehen bleiben.
         # Vorinitialisiert: wird das Budget vor der ersten Eskalation überschritten, bliebe stuck_owners
         # sonst ungesetzt und der Modell-Eskalations-Check würde mit NameError crashen.
         stuck_owners: set = set()
@@ -719,267 +710,24 @@ class VerificationMixin:
                     "reguläre Wiederholung übersprungen, direkt eskaliert."
                 )
             if _no_progress(previous_failure_signature, current_signature) or skip_retry_no_delivery:
-                escalated_and_resolved = False
-                _heavy_escalation_downgrade_note = ""
-                try:
-                    if not escalation_attempted and not (
-                        run_start_tokens is not None and (
-                            self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
-                        )
-                    ):
-                        escalation_attempted = True
-                        tester_participated = any(r.agent_id == "tester" for r in all_results)
-                        stuck_owners = set()
-                        for failure in (report.failures or []):
-                            routed = _route_failure_owners(
-                                failure.message, failure.files, file_owners, self._agents,
-                                tester_participated, project_dir=project_dir,
-                            )
-                            stuck_owners.update(routed)
-                            for f in (failure.files or []):
-                                if isinstance(f, str) and f in file_owners and file_owners[f] in self._agents:
-                                    stuck_owners.add(file_owners[f])
-                        lead_targets = {
-                            dept_id for dept_id, defn in DEPARTMENT_DEFINITIONS.items()
-                            if stuck_owners & set(defn["members"]) and dept_id in self._dept_leads
-                        }
-                        top_failures = _format_failures_for_agent(report.failures or [], max_failures=5, max_msg_chars=1200)
-                        no_delivery_notice = (
-                            "\n\n🚨 HARD DELIVERY GATE HINWEIS: Der vorherige Fixversuch hat keine einzige Datei gespeichert "
-                            "(reine Textantwort ohne Tool-Aufruf). Deine Antwort gilt als Totalausfall, wenn du nicht zwingend "
-                            "edit_file oder write_file aufrufst, um die Änderungen physisch im Dateisystem zu speichern!"
-                            if skip_retry_no_delivery else ""
-                        )
-                        if lead_targets:
-                            notify(
-                                f"  🔀 [bold yellow]Strategiewechsel (Eskalation):[/bold yellow] Derselbe Fehler nach "
-                                f"einem wirkungslosen Fixversuch – ziehe Fachbereichsleiter "
-                                f"({', '.join(sorted(lead_targets))}) statt derselben Wiederholung hinzu..."
-                            )
-                            escalation_brief_ctx = _build_project_brief_context(project_dir)
-                            escalation_tasks = [
-                                AgentTask(
-                                    task_id=f"verify_escalation_{dept_id}_{attempt}",
-                                    agent_id=dept_id,
-                                    description=(
-                                        "Ein vorheriger, gezielter Fixversuch deines Fachbereichs hat den folgenden "
-                                        "echten Testfehler NICHT behoben (identisch vor und nach dem Versuch) - "
-                                        "derselbe Ansatz hat also erkennbar nicht funktioniert. Analysiere das Problem "
-                                        "aus einer anderen Perspektive (z.B. falsche Grundannahme, fehlende "
-                                        "Abhängigkeit zwischen Dateien, falscher zuständiger Agent) und weise dein "
-                                        f"Team mit einer GEÄNDERTEN Strategie an, statt denselben Fix zu wiederholen.\n\n{top_failures}"
-                                        + no_delivery_notice
-                                    ),
-                                    context=escalation_brief_ctx, project_dir=project_dir,
-                                )
-                                for dept_id in lead_targets
-                            ]
-                            fix_results = await self._run_agents_parallel(escalation_tasks, notify=notify)
-                            self._update_file_owners(file_owners, fix_results)
-                            all_results.extend(fix_results)
-                            summary_lines.append(
-                                f"- 🔀 Versuch {attempt}: kein Fortschritt beim vorherigen Fix → Eskalation an "
-                                f"Fachbereichsleiter ({', '.join(sorted(lead_targets))}) mit geänderter Strategie."
-                            )
-                            # Eskalationsergebnis HIER sofort per Testlauf prüfen statt per `continue`: das
-                            # würde einen Versuch verbrauchen und im letzten Versuch ohne Meldung/Ticket
-                            # enden (siehe tests/test_verification_no_progress_breaker.py).
-                            await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
-                            report = await self._run_tests_logged(verifier, "nach-fixversuch")
-                            if report.passed:
-                                notify(f"  ✅ [bold green]Eskalation erfolgreich:[/bold green] Alle Tests bestanden (Versuch {attempt}, {report.duration_seconds:.1f}s).")
-                                summary_lines.append("- ✅ Eskalation an Fachbereichsleiter behob den Fehler – Testsuite bestanden.")
-                                verification_ok = True
-                                if had_prior_test_ticket and test_ticket_id:
-                                    try:
-                                        upsert_ticket(
-                                            ticket_id=test_ticket_id,
-                                            title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
-                                            source="orchestrator", status="done", project_slug=self.last_project_slug,
-                                            detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
-                                        )
-                                    except Exception as e:
-                                        notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
-                                break
-                            escalated_and_resolved = True  # Eskalation lief, aber weiterhin rot - unten normal abbrechen.
-
-                        # Letzter Versuch vor dem Aufgeben: dieselben stecken gebliebenen Agenten (nicht die
-                        # Fachbereichsleiter) bekommen für diesen einen Fix HEAVY_MODEL.
-                        if not model_escalation_attempted and stuck_owners:
-                            model_escalation_attempted = True
-                            escalated_agent_ids = self._escalate_agent_models(stuck_owners)
-                            # HEAVY_MODEL nachweislich nicht erreichbar: der Versuch würde intern
-                            # auf ein SCHWÄCHERES Modell zurückfallen als das, mit dem der Fix
-                            # zuvor schon zweimal gescheitert ist - er kann also nichts Neues
-                            # bringen und wird übersprungen statt verbrannt. Der Grund gehört
-                            # sichtbar ins Protokoll UND ins Ticket, sonst liest sich das
-                            # Ergebnis wie ein Agenten-/Prompt-Problem, obwohl es ein
-                            # Infrastruktur-/Kontingent-Befund ist.
-                            _blocked_reason = getattr(self, "last_model_escalation_blocked_reason", None)
-                            if not escalated_agent_ids and _blocked_reason:
-                                notify(
-                                    f"  ⏭️ [dim yellow]Modell-Eskalation übersprungen:[/dim yellow] "
-                                    f"{_blocked_reason} - ein Versuch auf derselben oder einer "
-                                    "schwächeren Stufe kann den Fehler nicht neu angehen."
-                                )
-                                summary_lines.append(
-                                    f"- ⏭️ Modell-Eskalation auf HEAVY_MODEL übersprungen: {_blocked_reason}. "
-                                    "Der Versuch wäre auf derselben oder einer schwächeren Stufe gelaufen "
-                                    "als die bereits gescheiterten - kein neuer Ansatz, nur Mehrverbrauch."
-                                )
-                                _heavy_escalation_downgrade_note = (
-                                    "\n\n⚠️ Hinweis: Die HEAVY_MODEL-Eskalation wurde gar nicht erst "
-                                    f"versucht, weil die Stufe nicht erreichbar war ({_blocked_reason}). "
-                                    "Dieses Ticket ist damit eher ein Infrastruktur-/Kontingent- als ein "
-                                    "Agenten-/Prompt-Befund - ein erneuter Anlauf lohnt erst, wenn die "
-                                    "Modellstufe wieder verfügbar ist."
-                                )
-                            if escalated_agent_ids:
-                                notify(
-                                    f"  ⬆️ [bold yellow]Letzter Versuch mit stärkerem Modell:[/bold yellow] "
-                                    f"{', '.join(sorted(escalated_agent_ids))} laufen für diesen Fix-Auftrag "
-                                    "auf HEAVY_MODEL, statt direkt aufzugeben."
-                                )
-                                model_brief_ctx = _build_project_brief_context(project_dir)
-                                model_escalation_tasks = [
-                                    AgentTask(
-                                        task_id=f"verify_model_escalation_{owner}_{attempt}",
-                                        agent_id=owner,
-                                        description=(
-                                            "Dein vorheriger, gezielter Fixversuch UND die Eskalation an deinen "
-                                            "Fachbereichsleiter haben den folgenden echten Testfehler NICHT behoben - "
-                                            "du bekommst jetzt für diesen letzten Versuch ein stärkeres Modell. "
-                                            "Analysiere die Grundannahme neu, statt denselben Ansatz ein drittes Mal "
-                                            f"zu wiederholen.\n\n{top_failures}"
-                                        ),
-                                        context=model_brief_ctx, project_dir=project_dir,
-                                    )
-                                    for owner in sorted(escalated_agent_ids)
-                                ]
-                                fix_results = await self._run_agents_parallel(model_escalation_tasks, notify=notify)
-                                self._update_file_owners(file_owners, fix_results)
-                                all_results.extend(fix_results)
-                                summary_lines.append(
-                                    f"- ⬆️ Versuch {attempt}: kein Fortschritt auch nach Eskalation an den "
-                                    f"Fachbereichsleiter → letzter Versuch mit HEAVY_MODEL für "
-                                    f"{', '.join(sorted(escalated_agent_ids))}."
-                                )
-                                # Realer Fund (chronoflow-Lauf 20260917_092911): `agent._llm` wird oben
-                                # zwar zuverlässig auf HEAVY_MODEL gesetzt, der tatsächliche API-Aufruf
-                                # kann aber (Kontingent-Erschöpfung) intern auf ein SCHWÄCHERES Modell
-                                # zurückfallen - `model_used` zeigte am Ende `gemini-3.8-flash` statt des
-                                # angeforderten `gemini-pro-latest`. Da `tester` (anders als z.B.
-                                # `backend`) kein CRITICAL_AGENT_ID ist, griff dafür auch kein
-                                # Capability Floor und die spätere Modell-Abstufungs-Anzeige im
-                                # Abschlussbericht (core.model_capability.describe_degraded_results()) sah
-                                # es nie. Ohne diesen Hinweis liest sich ein spätes "kein Fortschritt trotz
-                                # HEAVY_MODEL" wie ein Agenten-/Prompt-Problem, obwohl in Wahrheit nie ein
-                                # stärkeres Modell zum Einsatz kam - ein Infrastruktur-, kein Qualitätsfund.
-                                _not_actually_heavy = sorted(
-                                    r.agent_id for r in fix_results
-                                    if r.agent_id in escalated_agent_ids and r.model_used
-                                    and model_capability_tier(r.model_used) < model_capability_tier(HEAVY_MODEL)
-                                )
-                                if _not_actually_heavy:
-                                    notify(
-                                        f"  ⚠️ [dim yellow]HEAVY_MODEL für {', '.join(_not_actually_heavy)} nicht "
-                                        "tatsächlich erreicht (vermutlich Kontingent-Erschöpfung) - der Fix lief "
-                                        "auf einem schwächeren Modell als angefordert.[/dim yellow]"
-                                    )
-                                    summary_lines.append(
-                                        f"- ⚠️ HEAVY_MODEL-Eskalation für {', '.join(_not_actually_heavy)} griff "
-                                        "nicht tatsächlich (Kontingent-Erschöpfung o.ä.) - der letzte Versuch lief "
-                                        "auf einem schwächeren als dem angeforderten Modell."
-                                    )
-                                    _heavy_escalation_downgrade_note = (
-                                        "\n\n⚠️ Hinweis: HEAVY_MODEL-Eskalation für "
-                                        f"{', '.join(_not_actually_heavy)} erreichte tatsächlich NICHT die "
-                                        "angeforderte Modellstufe (vermutlich Kontingent-Erschöpfung) - der "
-                                        "letzte Versuch lief auf einem schwächeren Modell. Dieses Ticket ist "
-                                        "damit eher ein Infrastruktur-/Kontingent- als ein Agenten-/Prompt-Befund."
-                                    )
-                                await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
-                                report = await self._run_tests_logged(verifier, "nach-eskalation")
-                                if report.passed:
-                                    notify(f"  ✅ [bold green]Modell-Eskalation erfolgreich:[/bold green] Alle Tests bestanden (Versuch {attempt}, {report.duration_seconds:.1f}s).")
-                                    summary_lines.append("- ✅ Fix mit HEAVY_MODEL behob den Fehler – Testsuite bestanden.")
-                                    verification_ok = True
-                                    if had_prior_test_ticket and test_ticket_id:
-                                        try:
-                                            upsert_ticket(
-                                                ticket_id=test_ticket_id,
-                                                title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
-                                                source="orchestrator", status="done", project_slug=self.last_project_slug,
-                                                detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
-                                            )
-                                        except Exception as e:
-                                            notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
-                                    break
-                                escalated_and_resolved = True  # Auch mit stärkerem Modell weiterhin rot - unten normal abbrechen.
-
-                        # Letzte Stufe: Zweitmeinung einer anderen Rolle. Bewusst NACH der
-                        # Modell-Eskalation, aber unabhängig davon, ob diese überhaupt möglich
-                        # war - sie ist die einzige Stufe, die ohne stärkere Modellstufe
-                        # auskommt (siehe _second_opinion_fix_round()).
-                        if not second_opinion_attempted and stuck_owners and not (
-                            run_start_tokens is not None and (
-                                self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
-                            )
-                        ):
-                            second_opinion_attempted = True
-                            _resolved, report = await self._second_opinion_fix_round(
-                                verifier=verifier, project_dir=project_dir, stuck_owners=stuck_owners,
-                                top_failures=top_failures, attempt=attempt, file_owners=file_owners,
-                                all_results=all_results, summary_lines=summary_lines, notify=notify,
-                                current_report=report,
-                            )
-                            if _resolved:
-                                verification_ok = True
-                                if had_prior_test_ticket and test_ticket_id:
-                                    try:
-                                        upsert_ticket(
-                                            ticket_id=test_ticket_id,
-                                            title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
-                                            source="orchestrator", status="done", project_slug=self.last_project_slug,
-                                            detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
-                                        )
-                                    except Exception as e:
-                                        notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
-                                break
-                            escalated_and_resolved = True
-
-                    notify(
-                        "  🛑 [bold red]Kein Fortschritt:[/bold red] identische Testfehler wie vor dem letzten "
-                        f"Fixversuch{' (auch nach Eskalation an den Fachbereichsleiter)' if escalated_and_resolved else ''} "
-                        "– breche Verifikations-Schleife ab statt unverändert zu wiederholen."
-                    )
-                    summary_lines.append(
-                        f"- 🛑 Versuch {attempt}: dieselben {len(report.failures)} Testfehler wie nach dem vorherigen "
-                        "Fixversuch (keine Veränderung)" + (" - auch nach Eskalation" if escalated_and_resolved else "") +
-                        " – Schleife abgebrochen statt einen wirkungslosen weiteren Versuch zu verbrauchen."
-                    )
-                    if self.last_project_slug:
-                        try:
-                            upsert_ticket(
-                                ticket_id=f"recurring-failure-{self.last_project_slug}",
-                                title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
-                                source="orchestrator", status="blocked", project_slug=self.last_project_slug,
-                                detail=f"Fixversuch änderte nichts an {len(report.failures)} Testfehler(n) – "
-                                       "vermutlich falscher/unzureichend instruierter Agent.\n\n" + top_failures
-                                       + _heavy_escalation_downgrade_note
-                                       + self._provider_exhaustion_ticket_note(),
-                            )
-                        except Exception as e:
-                            notify(f"  ⚠️ [dim yellow]Ticket für ungelösten Testfehler konnte nicht angelegt werden: {e}[/dim yellow]")
-                except Exception as e:
-                    notify(
-                        f"  ⚠️ [dim yellow]Eskalations-/Ticket-Verarbeitung nach nicht behobenem "
-                        f"Testfehler fehlgeschlagen (kein Absturz des Laufs): {e}[/dim yellow]"
-                    )
-                    summary_lines.append(
-                        f"- ⚠️ Eskalations-/Ticket-Verarbeitung nach nicht behobenem Testfehler "
-                        f"fehlgeschlagen, ohne den Lauf abzubrechen: {e}"
-                    )
+                # P6-5 (ROADMAP_TEMP.md): dieser Block führt IMMER zu einem `break` der Schleife
+                # (jeder Pfad darin endet entweder in einem frühen `break` bei Erfolg oder im
+                # abschließenden `return` unten) - er kann also nie ein zweites Mal in diesem
+                # Lauf betreten werden. Deshalb sicher als eigene Methode extrahierbar: alle
+                # Flags/Zwischenwerte, die nur INNERHALB dieses Blocks gelesen/geschrieben
+                # werden (escalation_attempted, model_escalation_attempted,
+                # second_opinion_attempted, stuck_owners, top_failures,
+                # escalated_and_resolved, _heavy_escalation_downgrade_note), müssen die
+                # Schleife nie wieder erreichen und leben jetzt als lokale Variablen in
+                # `_run_no_progress_escalation_ladder()`. Einzige Werte, die zurück in die
+                # Schleife müssen: der ggf. neu gelaufene `report` und `verification_ok`.
+                report, verification_ok = await self._run_no_progress_escalation_ladder(
+                    verifier=verifier, project_dir=project_dir, report=report,
+                    file_owners=file_owners, all_results=all_results, summary_lines=summary_lines,
+                    notify=notify, attempt=attempt, run_start_tokens=run_start_tokens,
+                    skip_retry_no_delivery=skip_retry_no_delivery,
+                    had_prior_test_ticket=had_prior_test_ticket, test_ticket_id=test_ticket_id,
+                )
                 break
             previous_failure_signature = current_signature
 
@@ -2184,6 +1932,302 @@ class VerificationMixin:
         notify(f"  ❌ [bold red]Verifikations-Veto durch Lastentest:[/bold red] {_grund}")
         summary_lines.append(f"- ❌ **Verifikations-Veto durch Lastentest:** {_grund}")
         return lb_aborted, lb_cancelled, True
+
+    async def _run_no_progress_escalation_ladder(
+        self,
+        *,
+        verifier: ProjectVerifier,
+        project_dir: str,
+        report: VerificationReport,
+        file_owners: dict[str, str],
+        all_results: list[AgentResult],
+        summary_lines: list[str],
+        notify: Callable[[str], None],
+        attempt: int,
+        run_start_tokens: int | None,
+        skip_retry_no_delivery: bool,
+        had_prior_test_ticket: bool,
+        test_ticket_id: str | None,
+    ) -> tuple[VerificationReport, bool]:
+        """P6-5 (ROADMAP_TEMP.md): aus `_run_verification_loop_impl()` extrahiert - die
+        Eskalationsleiter, die nach identischen Testfehlern zwischen zwei Versuchen (oder einem
+        NO_DELIVERY-Fixversuch) greift: Fachbereichsleiter-Eskalation → HEAVY_MODEL-Eskalation →
+        Zweitmeinung einer anderen Rolle, danach Aufgabe mit Ticket. Sicher isolierbar, weil
+        JEDER Pfad hier die aufrufende Schleife über `break` sofort verlässt (Erfolg an jeder
+        Stufe ODER endgültige Aufgabe am Ende) - der Aufrufer betritt diesen Block deshalb
+        höchstens einmal pro Lauf. Gibt den ggf. neu gelaufenen `report` und `verification_ok`
+        zurück; alle übrigen Zwischenwerte (welche Eskalationsstufe schon versucht wurde,
+        `stuck_owners`, `top_failures`, ...) müssen die Schleife nie wieder erreichen und
+        bleiben deshalb rein lokal.
+        """
+        escalation_attempted = False
+        model_escalation_attempted = False
+        second_opinion_attempted = False
+        verification_ok = False
+        escalated_and_resolved = False
+        _heavy_escalation_downgrade_note = ""
+        stuck_owners: set = set()
+        top_failures = ""
+        try:
+            if not escalation_attempted and not (
+                run_start_tokens is not None and (
+                    self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                )
+            ):
+                escalation_attempted = True
+                tester_participated = any(r.agent_id == "tester" for r in all_results)
+                stuck_owners = set()
+                for failure in (report.failures or []):
+                    routed = _route_failure_owners(
+                        failure.message, failure.files, file_owners, self._agents,
+                        tester_participated, project_dir=project_dir,
+                    )
+                    stuck_owners.update(routed)
+                    for f in (failure.files or []):
+                        if isinstance(f, str) and f in file_owners and file_owners[f] in self._agents:
+                            stuck_owners.add(file_owners[f])
+                lead_targets = {
+                    dept_id for dept_id, defn in DEPARTMENT_DEFINITIONS.items()
+                    if stuck_owners & set(defn["members"]) and dept_id in self._dept_leads
+                }
+                top_failures = _format_failures_for_agent(report.failures or [], max_failures=5, max_msg_chars=1200)
+                no_delivery_notice = (
+                    "\n\n🚨 HARD DELIVERY GATE HINWEIS: Der vorherige Fixversuch hat keine einzige Datei gespeichert "
+                    "(reine Textantwort ohne Tool-Aufruf). Deine Antwort gilt als Totalausfall, wenn du nicht zwingend "
+                    "edit_file oder write_file aufrufst, um die Änderungen physisch im Dateisystem zu speichern!"
+                    if skip_retry_no_delivery else ""
+                )
+                if lead_targets:
+                    notify(
+                        f"  🔀 [bold yellow]Strategiewechsel (Eskalation):[/bold yellow] Derselbe Fehler nach "
+                        f"einem wirkungslosen Fixversuch – ziehe Fachbereichsleiter "
+                        f"({', '.join(sorted(lead_targets))}) statt derselben Wiederholung hinzu..."
+                    )
+                    escalation_brief_ctx = _build_project_brief_context(project_dir)
+                    escalation_tasks = [
+                        AgentTask(
+                            task_id=f"verify_escalation_{dept_id}_{attempt}",
+                            agent_id=dept_id,
+                            description=(
+                                "Ein vorheriger, gezielter Fixversuch deines Fachbereichs hat den folgenden "
+                                "echten Testfehler NICHT behoben (identisch vor und nach dem Versuch) - "
+                                "derselbe Ansatz hat also erkennbar nicht funktioniert. Analysiere das Problem "
+                                "aus einer anderen Perspektive (z.B. falsche Grundannahme, fehlende "
+                                "Abhängigkeit zwischen Dateien, falscher zuständiger Agent) und weise dein "
+                                f"Team mit einer GEÄNDERTEN Strategie an, statt denselben Fix zu wiederholen.\n\n{top_failures}"
+                                + no_delivery_notice
+                            ),
+                            context=escalation_brief_ctx, project_dir=project_dir,
+                        )
+                        for dept_id in lead_targets
+                    ]
+                    fix_results = await self._run_agents_parallel(escalation_tasks, notify=notify)
+                    self._update_file_owners(file_owners, fix_results)
+                    all_results.extend(fix_results)
+                    summary_lines.append(
+                        f"- 🔀 Versuch {attempt}: kein Fortschritt beim vorherigen Fix → Eskalation an "
+                        f"Fachbereichsleiter ({', '.join(sorted(lead_targets))}) mit geänderter Strategie."
+                    )
+                    # Eskalationsergebnis HIER sofort per Testlauf prüfen statt per `continue`: das
+                    # würde einen Versuch verbrauchen und im letzten Versuch ohne Meldung/Ticket
+                    # enden (siehe tests/test_verification_no_progress_breaker.py).
+                    await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
+                    report = await self._run_tests_logged(verifier, "nach-fixversuch")
+                    if report.passed:
+                        notify(f"  ✅ [bold green]Eskalation erfolgreich:[/bold green] Alle Tests bestanden (Versuch {attempt}, {report.duration_seconds:.1f}s).")
+                        summary_lines.append("- ✅ Eskalation an Fachbereichsleiter behob den Fehler – Testsuite bestanden.")
+                        verification_ok = True
+                        if had_prior_test_ticket and test_ticket_id:
+                            try:
+                                upsert_ticket(
+                                    ticket_id=test_ticket_id,
+                                    title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                                    source="orchestrator", status="done", project_slug=self.last_project_slug,
+                                    detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
+                                )
+                            except Exception as e:
+                                notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
+                        return report, verification_ok
+                    escalated_and_resolved = True  # Eskalation lief, aber weiterhin rot - unten normal abbrechen.
+
+                # Letzter Versuch vor dem Aufgeben: dieselben stecken gebliebenen Agenten (nicht die
+                # Fachbereichsleiter) bekommen für diesen einen Fix HEAVY_MODEL.
+                if not model_escalation_attempted and stuck_owners:
+                    model_escalation_attempted = True
+                    escalated_agent_ids = self._escalate_agent_models(stuck_owners)
+                    # HEAVY_MODEL nachweislich nicht erreichbar: der Versuch würde intern
+                    # auf ein SCHWÄCHERES Modell zurückfallen als das, mit dem der Fix
+                    # zuvor schon zweimal gescheitert ist - er kann also nichts Neues
+                    # bringen und wird übersprungen statt verbrannt. Der Grund gehört
+                    # sichtbar ins Protokoll UND ins Ticket, sonst liest sich das
+                    # Ergebnis wie ein Agenten-/Prompt-Problem, obwohl es ein
+                    # Infrastruktur-/Kontingent-Befund ist.
+                    _blocked_reason = getattr(self, "last_model_escalation_blocked_reason", None)
+                    if not escalated_agent_ids and _blocked_reason:
+                        notify(
+                            f"  ⏭️ [dim yellow]Modell-Eskalation übersprungen:[/dim yellow] "
+                            f"{_blocked_reason} - ein Versuch auf derselben oder einer "
+                            "schwächeren Stufe kann den Fehler nicht neu angehen."
+                        )
+                        summary_lines.append(
+                            f"- ⏭️ Modell-Eskalation auf HEAVY_MODEL übersprungen: {_blocked_reason}. "
+                            "Der Versuch wäre auf derselben oder einer schwächeren Stufe gelaufen "
+                            "als die bereits gescheiterten - kein neuer Ansatz, nur Mehrverbrauch."
+                        )
+                        _heavy_escalation_downgrade_note = (
+                            "\n\n⚠️ Hinweis: Die HEAVY_MODEL-Eskalation wurde gar nicht erst "
+                            f"versucht, weil die Stufe nicht erreichbar war ({_blocked_reason}). "
+                            "Dieses Ticket ist damit eher ein Infrastruktur-/Kontingent- als ein "
+                            "Agenten-/Prompt-Befund - ein erneuter Anlauf lohnt erst, wenn die "
+                            "Modellstufe wieder verfügbar ist."
+                        )
+                    if escalated_agent_ids:
+                        notify(
+                            f"  ⬆️ [bold yellow]Letzter Versuch mit stärkerem Modell:[/bold yellow] "
+                            f"{', '.join(sorted(escalated_agent_ids))} laufen für diesen Fix-Auftrag "
+                            "auf HEAVY_MODEL, statt direkt aufzugeben."
+                        )
+                        model_brief_ctx = _build_project_brief_context(project_dir)
+                        model_escalation_tasks = [
+                            AgentTask(
+                                task_id=f"verify_model_escalation_{owner}_{attempt}",
+                                agent_id=owner,
+                                description=(
+                                    "Dein vorheriger, gezielter Fixversuch UND die Eskalation an deinen "
+                                    "Fachbereichsleiter haben den folgenden echten Testfehler NICHT behoben - "
+                                    "du bekommst jetzt für diesen letzten Versuch ein stärkeres Modell. "
+                                    "Analysiere die Grundannahme neu, statt denselben Ansatz ein drittes Mal "
+                                    f"zu wiederholen.\n\n{top_failures}"
+                                ),
+                                context=model_brief_ctx, project_dir=project_dir,
+                            )
+                            for owner in sorted(escalated_agent_ids)
+                        ]
+                        fix_results = await self._run_agents_parallel(model_escalation_tasks, notify=notify)
+                        self._update_file_owners(file_owners, fix_results)
+                        all_results.extend(fix_results)
+                        summary_lines.append(
+                            f"- ⬆️ Versuch {attempt}: kein Fortschritt auch nach Eskalation an den "
+                            f"Fachbereichsleiter → letzter Versuch mit HEAVY_MODEL für "
+                            f"{', '.join(sorted(escalated_agent_ids))}."
+                        )
+                        # Realer Fund (chronoflow-Lauf 20260917_092911): `agent._llm` wird oben
+                        # zwar zuverlässig auf HEAVY_MODEL gesetzt, der tatsächliche API-Aufruf
+                        # kann aber (Kontingent-Erschöpfung) intern auf ein SCHWÄCHERES Modell
+                        # zurückfallen - `model_used` zeigte am Ende `gemini-3.8-flash` statt des
+                        # angeforderten `gemini-pro-latest`. Da `tester` (anders als z.B.
+                        # `backend`) kein CRITICAL_AGENT_ID ist, griff dafür auch kein
+                        # Capability Floor und die spätere Modell-Abstufungs-Anzeige im
+                        # Abschlussbericht (core.model_capability.describe_degraded_results()) sah
+                        # es nie. Ohne diesen Hinweis liest sich ein spätes "kein Fortschritt trotz
+                        # HEAVY_MODEL" wie ein Agenten-/Prompt-Problem, obwohl in Wahrheit nie ein
+                        # stärkeres Modell zum Einsatz kam - ein Infrastruktur-, kein Qualitätsfund.
+                        _not_actually_heavy = sorted(
+                            r.agent_id for r in fix_results
+                            if r.agent_id in escalated_agent_ids and r.model_used
+                            and model_capability_tier(r.model_used) < model_capability_tier(HEAVY_MODEL)
+                        )
+                        if _not_actually_heavy:
+                            notify(
+                                f"  ⚠️ [dim yellow]HEAVY_MODEL für {', '.join(_not_actually_heavy)} nicht "
+                                "tatsächlich erreicht (vermutlich Kontingent-Erschöpfung) - der Fix lief "
+                                "auf einem schwächeren Modell als angefordert.[/dim yellow]"
+                            )
+                            summary_lines.append(
+                                f"- ⚠️ HEAVY_MODEL-Eskalation für {', '.join(_not_actually_heavy)} griff "
+                                "nicht tatsächlich (Kontingent-Erschöpfung o.ä.) - der letzte Versuch lief "
+                                "auf einem schwächeren als dem angeforderten Modell."
+                            )
+                            _heavy_escalation_downgrade_note = (
+                                "\n\n⚠️ Hinweis: HEAVY_MODEL-Eskalation für "
+                                f"{', '.join(_not_actually_heavy)} erreichte tatsächlich NICHT die "
+                                "angeforderte Modellstufe (vermutlich Kontingent-Erschöpfung) - der "
+                                "letzte Versuch lief auf einem schwächeren Modell. Dieses Ticket ist "
+                                "damit eher ein Infrastruktur-/Kontingent- als ein Agenten-/Prompt-Befund."
+                            )
+                        await self._resync_environment_if_dependencies_changed(verifier, fix_results, notify, summary_lines)
+                        report = await self._run_tests_logged(verifier, "nach-eskalation")
+                        if report.passed:
+                            notify(f"  ✅ [bold green]Modell-Eskalation erfolgreich:[/bold green] Alle Tests bestanden (Versuch {attempt}, {report.duration_seconds:.1f}s).")
+                            summary_lines.append("- ✅ Fix mit HEAVY_MODEL behob den Fehler – Testsuite bestanden.")
+                            verification_ok = True
+                            if had_prior_test_ticket and test_ticket_id:
+                                try:
+                                    upsert_ticket(
+                                        ticket_id=test_ticket_id,
+                                        title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                                        source="orchestrator", status="done", project_slug=self.last_project_slug,
+                                        detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
+                                    )
+                                except Exception as e:
+                                    notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
+                            return report, verification_ok
+                        escalated_and_resolved = True  # Auch mit stärkerem Modell weiterhin rot - unten normal abbrechen.
+
+                # Letzte Stufe: Zweitmeinung einer anderen Rolle. Bewusst NACH der
+                # Modell-Eskalation, aber unabhängig davon, ob diese überhaupt möglich
+                # war - sie ist die einzige Stufe, die ohne stärkere Modellstufe
+                # auskommt (siehe _second_opinion_fix_round()).
+                if not second_opinion_attempted and stuck_owners and not (
+                    run_start_tokens is not None and (
+                        self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                    )
+                ):
+                    second_opinion_attempted = True
+                    _resolved, report = await self._second_opinion_fix_round(
+                        verifier=verifier, project_dir=project_dir, stuck_owners=stuck_owners,
+                        top_failures=top_failures, attempt=attempt, file_owners=file_owners,
+                        all_results=all_results, summary_lines=summary_lines, notify=notify,
+                        current_report=report,
+                    )
+                    if _resolved:
+                        verification_ok = True
+                        if had_prior_test_ticket and test_ticket_id:
+                            try:
+                                upsert_ticket(
+                                    ticket_id=test_ticket_id,
+                                    title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                                    source="orchestrator", status="done", project_slug=self.last_project_slug,
+                                    detail="In einem späteren Lauf behoben - die Testsuite ist jetzt grün.",
+                                )
+                            except Exception as e:
+                                notify(f"  ⚠️ [dim yellow]Ticket konnte nicht geschlossen werden: {e}[/dim yellow]")
+                        return report, verification_ok
+                    escalated_and_resolved = True
+
+            notify(
+                "  🛑 [bold red]Kein Fortschritt:[/bold red] identische Testfehler wie vor dem letzten "
+                f"Fixversuch{' (auch nach Eskalation an den Fachbereichsleiter)' if escalated_and_resolved else ''} "
+                "– breche Verifikations-Schleife ab statt unverändert zu wiederholen."
+            )
+            summary_lines.append(
+                f"- 🛑 Versuch {attempt}: dieselben {len(report.failures)} Testfehler wie nach dem vorherigen "
+                "Fixversuch (keine Veränderung)" + (" - auch nach Eskalation" if escalated_and_resolved else "") +
+                " – Schleife abgebrochen statt einen wirkungslosen weiteren Versuch zu verbrauchen."
+            )
+            if self.last_project_slug:
+                try:
+                    upsert_ticket(
+                        ticket_id=f"recurring-failure-{self.last_project_slug}",
+                        title=f"Nicht behobener Verifikations-Fehler: {self.last_project_slug}",
+                        source="orchestrator", status="blocked", project_slug=self.last_project_slug,
+                        detail=f"Fixversuch änderte nichts an {len(report.failures)} Testfehler(n) – "
+                               "vermutlich falscher/unzureichend instruierter Agent.\n\n" + top_failures
+                               + _heavy_escalation_downgrade_note
+                               + self._provider_exhaustion_ticket_note(),
+                    )
+                except Exception as e:
+                    notify(f"  ⚠️ [dim yellow]Ticket für ungelösten Testfehler konnte nicht angelegt werden: {e}[/dim yellow]")
+        except Exception as e:
+            notify(
+                f"  ⚠️ [dim yellow]Eskalations-/Ticket-Verarbeitung nach nicht behobenem "
+                f"Testfehler fehlgeschlagen (kein Absturz des Laufs): {e}[/dim yellow]"
+            )
+            summary_lines.append(
+                f"- ⚠️ Eskalations-/Ticket-Verarbeitung nach nicht behobenem Testfehler "
+                f"fehlgeschlagen, ohne den Lauf abzubrechen: {e}"
+            )
+        return report, verification_ok
 
     # Rollen, die eine Zweitmeinung abgeben können: analysieren fremden Code als Kernaufgabe
     # und sind nicht selbst Eigentümer der steckenden Dateien. Reihenfolge ist Priorität.

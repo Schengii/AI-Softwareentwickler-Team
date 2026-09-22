@@ -77,7 +77,7 @@ class TestLLMRouting(unittest.TestCase):
     @patch("core.llm_factory.OPENROUTER_API_KEY", "")
     @patch("core.llm_factory.DEEPSEEK_API_KEY", "")
     @patch("core.llm_factory.GEMINI_API_KEYS", ["fake-single-test-key"])
-    @patch("core.llm_factory.asyncio.sleep")
+    @patch("asyncio.sleep")
     @patch("core.llm_factory._gemini_client")
     def test_daily_quota_error_gets_long_cooldown_not_short_default(
         self, mock_gemini_client, mock_sleep, mock_deepseek_key=None, mock_openrouter_key=None,
@@ -130,7 +130,7 @@ class TestLLMRouting(unittest.TestCase):
 
     @patch("core.llm_factory.OPENROUTER_API_KEY", "sk-or-dummy-test-key")
     @patch("core.llm_factory.DEEPSEEK_API_KEY", "sk-dummy-test-key")
-    @patch("core.llm_factory.asyncio.sleep")
+    @patch("asyncio.sleep")
     @patch("core.llm_factory._gemini_client")
     def test_waits_briefly_when_entire_fallback_chain_is_exhausted(
         self, mock_gemini_client, mock_sleep, mock_deepseek_key=None, mock_openrouter_key=None,

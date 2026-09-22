@@ -77,7 +77,7 @@ class TestGeminiChainRespectsFloor(unittest.TestCase):
     tearDown = setUp
 
     @patch("core.llm_factory._provider_available", lambda model: model.startswith("gemini"))
-    @patch("core.llm_factory.asyncio.sleep", new_callable=AsyncMock)
+    @patch("asyncio.sleep", new_callable=AsyncMock)
     @patch("core.llm_factory._gemini_rate_limiter")
     @patch("core.llm_factory._gemini_client")
     def test_quota_exhaustion_never_reaches_flash_lite_for_critical_role(self, mock_client, mock_limiter, _sleep):

@@ -80,7 +80,7 @@ class TestGeminiQuotaSwitchesProvider(_CleanTokenGuardMixin, unittest.TestCase):
     @patch("core.llm_factory.OPENROUTER_API_KEY", "")
     @patch("core.llm_factory.GROQ_API_KEY", "test-key")
     @patch("core.llm_factory.GroqClient.generate_with_tools", new_callable=AsyncMock)
-    @patch("core.llm_factory.asyncio.sleep", new_callable=AsyncMock)
+    @patch("asyncio.sleep", new_callable=AsyncMock)
     @patch("core.llm_factory._gemini_rate_limiter")
     @patch("core.llm_factory._gemini_client")
     def test_quota_on_gemini_switches_to_groq_without_burning_other_gemini_stages(

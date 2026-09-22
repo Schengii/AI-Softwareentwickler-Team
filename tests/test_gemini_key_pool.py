@@ -66,7 +66,7 @@ class TestGeminiKeyFailover(unittest.TestCase):
         self.assertFalse(has_next2)
 
     @patch("core.llm_factory.GEMINI_API_KEYS", ["key_1", "key_2"])
-    @patch("core.llm_factory.asyncio.sleep", new_callable=AsyncMock)
+    @patch("asyncio.sleep", new_callable=AsyncMock)
     @patch("core.llm_factory._gemini_rate_limiter")
     def test_generate_with_tools_switches_to_second_gemini_key_on_429(
         self, mock_limiter, mock_sleep,

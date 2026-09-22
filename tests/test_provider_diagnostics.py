@@ -102,7 +102,7 @@ class TestProvidersApplyCooldowns(_CleanGuard, unittest.TestCase):
         context.__aenter__ = AsyncMock(return_value=http_client)
         context.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("core.llm_factory.httpx.AsyncClient", return_value=context), self.assertRaises(RuntimeError):
+        with patch("core.llm_providers.deepseek.httpx.AsyncClient", return_value=context), self.assertRaises(RuntimeError):
             asyncio.run(DeepSeekClient().generate_with_usage("hi", None, _allow_self_fallback=False))
 
         info = token_guard._exhausted_models["deepseek:deepseek-chat"]
@@ -115,7 +115,7 @@ class TestChainFailureReport(_CleanGuard, unittest.TestCase):
     @patch("core.llm_factory.DEEPSEEK_API_KEY", "test-key")
     @patch("core.llm_factory.GROQ_API_KEY", "test-key")
     @patch("core.llm_factory.GroqClient.generate_with_tools", new_callable=AsyncMock)
-    @patch("core.llm_factory.asyncio.sleep", new_callable=AsyncMock)
+    @patch("asyncio.sleep", new_callable=AsyncMock)
     @patch("core.llm_factory._gemini_rate_limiter")
     @patch("core.llm_factory._gemini_client")
     def test_final_error_explains_every_candidate(self, mock_gemini, mock_limiter, _sleep, mock_groq_tools):

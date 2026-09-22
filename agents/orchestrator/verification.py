@@ -575,6 +575,215 @@ class VerificationMixin:
             summary_lines.append(f"- 🧪 {icon} {depth.format_summary()}")
         return None, report, verification_ok, test_depth_fix_attempted
 
+    async def _run_completeness_check_loop(
+        self,
+        *,
+        verifier: ProjectVerifier,
+        project_dir: str,
+        file_owners: dict[str, str],
+        all_results: list[AgentResult],
+        summary_lines: list[str],
+        notify: Callable[[str], None],
+        run_start_tokens: int | None,
+        cancel_requested: Callable[[], bool] | None,
+        verification_ok: bool,
+        budget_aborted: bool,
+        manually_cancelled: bool,
+    ):
+        """P6-5 (ROADMAP_TEMP.md): aus `_run_verification_loop_impl()` extrahiert. Anders als
+        die beiden vorherigen Extraktionen (`_handle_report_not_ready()`/
+        `_handle_test_depth_gate()`, die BLÖCKE innerhalb der Haupt-Fixschleife sind und deshalb
+        ein `continue`/`break`-Signal an den Aufrufer zurückgeben müssen) ist der
+        Vollständigkeits-Check eine EIGENE, komplett in sich geschlossene `for`-Schleife mit
+        eigenem Zirkuit-Breaker-Zustand (`previous_completeness_signature`,
+        `completeness_model_escalation_attempted`) - sie kann deshalb als Ganzes verschoben
+        werden und ihr `continue`/`break` bleibt intern, ohne Übersetzung nötig.
+        """
+        # Zirkuit-Breaker wie in den übrigen Fix-Schleifen.
+        previous_completeness_signature: frozenset[tuple[str, str]] | None = None
+        # Team-Optimierung 2026-09-17 (hyperion_metrics-Root-Cause "Backend-Agent
+        # remediierte den Completeness-Befund im Fix-Zyklus nicht"): anders als die
+        # Test-Fehlerschleife oben (siehe stuck_owners/_escalate_agent_models weiter oben in
+        # dieser Methode) gab diese Schleife beim ERSTEN identischen Wiederholungsfund sofort
+        # auf, ohne je ein stärkeres Modell zu versuchen - derselbe (schwache/falsch
+        # instruierte) Agent bekam nie eine zweite Chance mit HEAVY_MODEL, bevor das Veto und
+        # das Backlog-Ticket entstanden. Ein Versuch, dann eskalieren, dann erst aufgeben.
+        completeness_model_escalation_attempted = False
+        completeness_report = None
+        for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
+            if cancel_requested and cancel_requested():
+                manually_cancelled = True
+                notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – weitere Vollständigkeits-Fixversuche werden übersprungen.")
+                summary_lines.append(f"- ⏹️ Manuell abgebrochen – Vollständigkeits-Check nach Versuch {attempt - 1} beendet.")
+                break
+
+            # Die MESSUNG läuft vor dem Budget-Gate: `check_completeness()` ist ein rein
+            # deterministischer AST-/Dateisystem-Check (core/verifier/completeness.py) und
+            # kostet KEINE Tokens. Das Gate stand bisher davor, wodurch bei erschöpftem
+            # Budget gar nicht erst gemessen wurde - `completeness_report` blieb `None`, die
+            # Aufzeichnung unten (`if completeness_report is not None and ... .attempted`)
+            # fiel aus, und der Check galt als "nicht gemessen" statt als bestanden oder
+            # gerissen. Real beobachtet bei `sentinedge` und `eventforge_core`
+            # (2026-09-19): "🚫 Lauf-Budget erreicht – Vollständigkeits-Check nach Versuch 0
+            # abgebrochen" - ein Qualitätssignal ging verloren, ohne dass dadurch auch nur
+            # ein Token gespart wurde. Budgetpflichtig ist erst der FIX-Versuch weiter
+            # unten, der einen echten Agenten-Aufruf kostet.
+            completeness_report = await asyncio.to_thread(verifier.check_completeness)
+            if not completeness_report.attempted:
+                break
+            if completeness_report.passed:
+                if attempt == 1:
+                    notify("  🧩 [bold green]Vollständigkeits-Check:[/bold green] keine Stub-/Platzhalter-Funde, keine fehlenden README-Referenzen.")
+                    summary_lines.append("- 🧩 Vollständigkeits-Check: keine Stub-/Platzhalter-Funde, keine fehlenden README-referenzierten Dateien.")
+                else:
+                    notify(f"  🧩 [bold green]Vollständigkeits-Check nach Fix (Versuch {attempt}) bestanden.[/bold green]")
+                    summary_lines.append(f"- 🧩 Vollständigkeits-Check nach {attempt} Durchlauf/Durchläufen bestanden.")
+                break
+
+            # Ab hier kostet jeder weitere Schritt einen echten Agenten-Aufruf - erst jetzt
+            # greift das Budget-Gate. Der Befund ist zu diesem Zeitpunkt bereits gemessen
+            # und wird unten regulär aufgezeichnet, statt als "nicht gemessen" zu verpuffen.
+            if run_start_tokens is not None and (
+                self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+            ):
+                budget_aborted = True
+                top_open = "; ".join(
+                    f"{i.file_path}:{i.line_number} – {i.message}" for i in completeness_report.issues[:5]
+                )
+                notify(
+                    f"  🚫 [bold red]Budget erreicht[/bold red] – die {len(completeness_report.issues)} "
+                    "Vollständigkeits-Fund(e) bleiben ungefixt (Befund wurde aber gemessen)."
+                )
+                summary_lines.append(
+                    f"- 🚫 {self._budget_exceeded_label(run_start_tokens)} erreicht – "
+                    f"{len(completeness_report.issues)} Vollständigkeits-Fund(e) gemessen, aber nach "
+                    f"Versuch {attempt - 1} kein Fixversuch mehr möglich: {top_open}"
+                )
+                break
+
+            current_completeness_signature = _issue_signature(
+                completeness_report.issues, lambda i: (i.file_path, i.message[:300]),
+            )
+            if _no_progress(previous_completeness_signature, current_completeness_signature):
+                stuck_owners = {
+                    owner
+                    for issue in completeness_report.issues
+                    for owner in [file_owners.get(issue.file_path) or self._infer_owner_from_path(issue.file_path, issue.message)]
+                    if owner and owner in self._agents
+                }
+                if not completeness_model_escalation_attempted and stuck_owners and not (
+                    run_start_tokens is not None and (
+                        self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
+                    )
+                ):
+                    completeness_model_escalation_attempted = True
+                    escalated_agent_ids = self._escalate_agent_models(stuck_owners)
+                    if escalated_agent_ids:
+                        notify(
+                            f"  ⬆️ [bold yellow]Kein Fortschritt bei Vollständigkeits-Fix – letzter Versuch mit "
+                            f"stärkerem Modell:[/bold yellow] {', '.join(sorted(escalated_agent_ids))}."
+                        )
+                        top_issues = "\n".join(
+                            f"- {i.file_path}" + (f":{i.line_number}" if i.line_number else "") + f" – {i.message}"
+                            for i in completeness_report.issues[:5]
+                        )
+                        escalation_tasks = [
+                            AgentTask(
+                                task_id=f"verify_completeness_model_escalation_{owner}_{attempt}",
+                                agent_id=owner,
+                                description=(
+                                    "Dein vorheriger, gezielter Fixversuch hat den folgenden Vollständigkeits-Befund "
+                                    "NICHT wirksam behoben (identisch vor und nach dem Versuch) - du bekommst jetzt "
+                                    "für diesen letzten Versuch ein stärkeres Modell. Prüfe genau, ob dein letzter "
+                                    "Edit tatsächlich gespeichert wurde und die beanstandete Stelle wirklich "
+                                    f"verändert, statt denselben (wirkungslosen) Ansatz zu wiederholen.\n\n{top_issues}"
+                                ),
+                                context="", project_dir=project_dir,
+                            )
+                            for owner in sorted(escalated_agent_ids)
+                        ]
+                        fix_results = await self._run_agents_parallel(escalation_tasks, notify=notify)
+                        self._update_file_owners(file_owners, fix_results)
+                        all_results.extend(fix_results)
+                        summary_lines.append(
+                            f"- 🧩 ⬆️ Versuch {attempt}: kein Fortschritt beim vorherigen Fix → letzter Versuch mit "
+                            f"HEAVY_MODEL für {', '.join(sorted(escalated_agent_ids))}."
+                        )
+                        completeness_report = await asyncio.to_thread(verifier.check_completeness)
+                        if completeness_report.attempted and completeness_report.passed:
+                            notify("  ✅ [bold green]Eskalation erfolgreich:[/bold green] Vollständigkeits-Check nach stärkerem Modell bestanden.")
+                            summary_lines.append("- ✅ Eskalation mit stärkerem Modell behob den Vollständigkeits-Befund.")
+                            break
+                notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Vollständigkeits-Funde wie vor dem letzten Fixversuch – breche Schleife ab.")
+                summary_lines.append(
+                    f"- 🧩 🛑 Versuch {attempt}: dieselben {len(completeness_report.issues)} Vollständigkeits-Fund(e) wie nach "
+                    "dem vorherigen Fixversuch (keine Veränderung) – Schleife abgebrochen statt einen wirkungslosen weiteren "
+                    "Versuch zu verbrauchen."
+                )
+                verification_ok = False
+                _grund = f"{len(completeness_report.issues)} unveränderte(r) Vollständigkeits-Fund(e) nach Fixversuch (kein Fortschritt)."
+                notify(f"  ❌ [bold red]Verifikations-Veto durch Completeness-Check:[/bold red] {_grund}")
+                summary_lines.append(f"- ❌ **Verifikations-Veto durch Completeness-Check:** {_grund}")
+                break
+            previous_completeness_signature = current_completeness_signature
+
+            top = "; ".join(
+                f"{i.file_path}" + (f":{i.line_number}" if i.line_number else "") + f" – {i.message}"
+                for i in completeness_report.issues[:5]
+            )
+            if len(completeness_report.issues) > 5:
+                top += f" … und {len(completeness_report.issues) - 5} weitere"
+            notify(f"  🧩 [bold red]Vollständigkeits-Check: {len(completeness_report.issues)} Fund(e).[/bold red]")
+            verification_ok = False
+            _grund = f"{len(completeness_report.issues)} Vollständigkeits-Fund(e) (Stub-/Platzhalter-Code oder fehlende README-referenzierte Datei): {top}"
+            notify(f"  ❌ [bold red]Verifikations-Veto durch Completeness-Check:[/bold red] {_grund}")
+            summary_lines.append(f"- ❌ **Verifikations-Veto durch Completeness-Check:** {_grund}")
+
+            agents_to_fix: dict[str, list] = {}
+            for issue in completeness_report.issues:
+                owner = file_owners.get(issue.file_path)
+                if not owner:
+                    owner = self._infer_owner_from_path(issue.file_path, issue.message)
+                if owner and owner in self._agents:
+                    agents_to_fix.setdefault(owner, []).append(issue)
+
+            if not agents_to_fix:
+                summary_lines.append(f"- 🧩 ❌ {len(completeness_report.issues)} Vollständigkeits-Fund(e) blieben ungelöst (keinem Agenten eindeutig zuordenbar): {top}")
+                break
+
+            fix_tasks = []
+            for agent_id, agent_issues in agents_to_fix.items():
+                issue_text = "\n".join(
+                    f"- {i.file_path}" + (f":{i.line_number}" if i.line_number else "") + f" – {i.message}"
+                    for i in agent_issues
+                )
+                fix_tasks.append(AgentTask(
+                    task_id=f"verify_fix_completeness_{agent_id}_{attempt}",
+                    agent_id=agent_id,
+                    description=(
+                        f"Der Vollständigkeits-Check hat unfertigen Code gefunden: ein Kommentar/Stub "
+                        f"beschreibt eine Funktionalität, die NICHT wirklich implementiert ist (z.B. "
+                        f"\"Hier würde X erfolgen\"), oder eine im README referenzierte Datei fehlt. "
+                        f"Nutze read_file, um die betroffene(n) Stelle(n) zu prüfen, und implementiere "
+                        f"die fehlende Funktionalität WIRKLICH (nicht nur den Kommentar entfernen) bzw. "
+                        f"lege die fehlende Datei an.\n\n{issue_text}"
+                    ),
+                    context="",
+                    project_dir=project_dir,
+                ))
+
+            notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix (Vollständigkeit):[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())}...")
+            fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
+            self._update_file_owners(file_owners, fix_results)
+            all_results.extend(fix_results)
+            summary_lines.append(f"- 🧩 Versuch {attempt}: {len(completeness_report.issues)} Vollständigkeits-Fund(e) → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt: {top}")
+
+            if attempt == MAX_VERIFICATION_ITERATIONS:
+                notify("  ⚠️ [yellow]Maximale Vollständigkeits-Fixversuche erreicht – letzter Stand wird übernommen.[/yellow]")
+                summary_lines.append(f"- 🧩 ⚠️ Nach {MAX_VERIFICATION_ITERATIONS} Versuchen weiterhin Stub-/Platzhalter-Funde – letzter Stand wurde übernommen.")
+
+        return completeness_report, verification_ok, budget_aborted, manually_cancelled
+
     async def _run_verification_loop_impl(
         self,
         project_dir: str,
@@ -639,13 +848,11 @@ class VerificationMixin:
         # Fix-Ergebnisse des letzten Versuchs NO_DELIVERY waren - dieselbe Eskalation, die sonst
         # ohnehin nach dem nächsten identischen Fehlschlag ausgelöst würde, kein neuer Pfad.
         previous_fix_all_no_delivery = False
-        # escalation_attempted/model_escalation_attempted/second_opinion_attempted/top_failures:
-        # jetzt lokale Variablen in _run_no_progress_escalation_ladder() (P6-5, ROADMAP_TEMP.md)
-        # - der Block, der sie liest/schreibt, führt IMMER zu einem `break` dieser Schleife,
-        # sie müssen also nie über einen einzelnen Aufruf dieser Methode hinaus bestehen bleiben.
-        # Vorinitialisiert: wird das Budget vor der ersten Eskalation überschritten, bliebe stuck_owners
-        # sonst ungesetzt und der Modell-Eskalations-Check würde mit NameError crashen.
-        stuck_owners: set = set()
+        # escalation_attempted/model_escalation_attempted/second_opinion_attempted/top_failures/
+        # stuck_owners: jetzt lokale Variablen in _run_no_progress_escalation_ladder() bzw.
+        # _run_completeness_check_loop() (P6-5, ROADMAP_TEMP.md) - die Blöcke, die sie
+        # lesen/schreiben, führen IMMER zu einem `break`/Rückgabe, sie müssen also nie über
+        # einen einzelnen Aufruf dieser Methode hinaus bestehen bleiben.
         # Cross-Run-Gedächtnis: ein offenes Ticket aus einem früheren Lauf fließt in den ersten
         # Fix-Auftrag ein und wird geschlossen, sobald die Testsuite grün ist.
         test_ticket_id = f"recurring-failure-{self.last_project_slug}" if self.last_project_slug else None
@@ -1104,187 +1311,12 @@ class VerificationMixin:
         # Anders als Lint/SAST blockiert ein Fund verification_ok (nicht erfüllte Anforderung) und
         # löst eine gezielte Fix-Schleife aus.
         if ENABLE_COMPLETENESS_CHECK and not (budget_aborted or manually_cancelled):
-            # Zirkuit-Breaker wie in den übrigen Fix-Schleifen.
-            previous_completeness_signature: frozenset[tuple[str, str]] | None = None
-            # Team-Optimierung 2026-09-17 (hyperion_metrics-Root-Cause "Backend-Agent
-            # remediierte den Completeness-Befund im Fix-Zyklus nicht"): anders als die
-            # Test-Fehlerschleife oben (siehe stuck_owners/_escalate_agent_models weiter oben in
-            # dieser Methode) gab diese Schleife beim ERSTEN identischen Wiederholungsfund sofort
-            # auf, ohne je ein stärkeres Modell zu versuchen - derselbe (schwache/falsch
-            # instruierte) Agent bekam nie eine zweite Chance mit HEAVY_MODEL, bevor das Veto und
-            # das Backlog-Ticket entstanden. Ein Versuch, dann eskalieren, dann erst aufgeben.
-            completeness_model_escalation_attempted = False
-            for attempt in range(1, MAX_VERIFICATION_ITERATIONS + 1):
-                if cancel_requested and cancel_requested():
-                    manually_cancelled = True
-                    notify("  ⏹️ [bold red]Lauf manuell abgebrochen[/bold red] – weitere Vollständigkeits-Fixversuche werden übersprungen.")
-                    summary_lines.append(f"- ⏹️ Manuell abgebrochen – Vollständigkeits-Check nach Versuch {attempt - 1} beendet.")
-                    break
-
-                # Die MESSUNG läuft vor dem Budget-Gate: `check_completeness()` ist ein rein
-                # deterministischer AST-/Dateisystem-Check (core/verifier/completeness.py) und
-                # kostet KEINE Tokens. Das Gate stand bisher davor, wodurch bei erschöpftem
-                # Budget gar nicht erst gemessen wurde - `completeness_report` blieb `None`, die
-                # Aufzeichnung unten (`if completeness_report is not None and ... .attempted`)
-                # fiel aus, und der Check galt als "nicht gemessen" statt als bestanden oder
-                # gerissen. Real beobachtet bei `sentinedge` und `eventforge_core`
-                # (2026-09-19): "🚫 Lauf-Budget erreicht – Vollständigkeits-Check nach Versuch 0
-                # abgebrochen" - ein Qualitätssignal ging verloren, ohne dass dadurch auch nur
-                # ein Token gespart wurde. Budgetpflichtig ist erst der FIX-Versuch weiter
-                # unten, der einen echten Agenten-Aufruf kostet.
-                completeness_report = await asyncio.to_thread(verifier.check_completeness)
-                if not completeness_report.attempted:
-                    break
-                if completeness_report.passed:
-                    if attempt == 1:
-                        notify("  🧩 [bold green]Vollständigkeits-Check:[/bold green] keine Stub-/Platzhalter-Funde, keine fehlenden README-Referenzen.")
-                        summary_lines.append("- 🧩 Vollständigkeits-Check: keine Stub-/Platzhalter-Funde, keine fehlenden README-referenzierten Dateien.")
-                    else:
-                        notify(f"  🧩 [bold green]Vollständigkeits-Check nach Fix (Versuch {attempt}) bestanden.[/bold green]")
-                        summary_lines.append(f"- 🧩 Vollständigkeits-Check nach {attempt} Durchlauf/Durchläufen bestanden.")
-                    break
-
-                # Ab hier kostet jeder weitere Schritt einen echten Agenten-Aufruf - erst jetzt
-                # greift das Budget-Gate. Der Befund ist zu diesem Zeitpunkt bereits gemessen
-                # und wird unten regulär aufgezeichnet, statt als "nicht gemessen" zu verpuffen.
-                if run_start_tokens is not None and (
-                    self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
-                ):
-                    budget_aborted = True
-                    top_open = "; ".join(
-                        f"{i.file_path}:{i.line_number} – {i.message}" for i in completeness_report.issues[:5]
-                    )
-                    notify(
-                        f"  🚫 [bold red]Budget erreicht[/bold red] – die {len(completeness_report.issues)} "
-                        "Vollständigkeits-Fund(e) bleiben ungefixt (Befund wurde aber gemessen)."
-                    )
-                    summary_lines.append(
-                        f"- 🚫 {self._budget_exceeded_label(run_start_tokens)} erreicht – "
-                        f"{len(completeness_report.issues)} Vollständigkeits-Fund(e) gemessen, aber nach "
-                        f"Versuch {attempt - 1} kein Fixversuch mehr möglich: {top_open}"
-                    )
-                    break
-
-                current_completeness_signature = _issue_signature(
-                    completeness_report.issues, lambda i: (i.file_path, i.message[:300]),
-                )
-                if _no_progress(previous_completeness_signature, current_completeness_signature):
-                    stuck_owners = {
-                        owner
-                        for issue in completeness_report.issues
-                        for owner in [file_owners.get(issue.file_path) or self._infer_owner_from_path(issue.file_path, issue.message)]
-                        if owner and owner in self._agents
-                    }
-                    if not completeness_model_escalation_attempted and stuck_owners and not (
-                        run_start_tokens is not None and (
-                            self._run_budget_exceeded(run_start_tokens) or self._project_budget_exceeded(run_start_tokens)
-                        )
-                    ):
-                        completeness_model_escalation_attempted = True
-                        escalated_agent_ids = self._escalate_agent_models(stuck_owners)
-                        if escalated_agent_ids:
-                            notify(
-                                f"  ⬆️ [bold yellow]Kein Fortschritt bei Vollständigkeits-Fix – letzter Versuch mit "
-                                f"stärkerem Modell:[/bold yellow] {', '.join(sorted(escalated_agent_ids))}."
-                            )
-                            top_issues = "\n".join(
-                                f"- {i.file_path}" + (f":{i.line_number}" if i.line_number else "") + f" – {i.message}"
-                                for i in completeness_report.issues[:5]
-                            )
-                            escalation_tasks = [
-                                AgentTask(
-                                    task_id=f"verify_completeness_model_escalation_{owner}_{attempt}",
-                                    agent_id=owner,
-                                    description=(
-                                        "Dein vorheriger, gezielter Fixversuch hat den folgenden Vollständigkeits-Befund "
-                                        "NICHT wirksam behoben (identisch vor und nach dem Versuch) - du bekommst jetzt "
-                                        "für diesen letzten Versuch ein stärkeres Modell. Prüfe genau, ob dein letzter "
-                                        "Edit tatsächlich gespeichert wurde und die beanstandete Stelle wirklich "
-                                        f"verändert, statt denselben (wirkungslosen) Ansatz zu wiederholen.\n\n{top_issues}"
-                                    ),
-                                    context="", project_dir=project_dir,
-                                )
-                                for owner in sorted(escalated_agent_ids)
-                            ]
-                            fix_results = await self._run_agents_parallel(escalation_tasks, notify=notify)
-                            self._update_file_owners(file_owners, fix_results)
-                            all_results.extend(fix_results)
-                            summary_lines.append(
-                                f"- 🧩 ⬆️ Versuch {attempt}: kein Fortschritt beim vorherigen Fix → letzter Versuch mit "
-                                f"HEAVY_MODEL für {', '.join(sorted(escalated_agent_ids))}."
-                            )
-                            completeness_report = await asyncio.to_thread(verifier.check_completeness)
-                            if completeness_report.attempted and completeness_report.passed:
-                                notify("  ✅ [bold green]Eskalation erfolgreich:[/bold green] Vollständigkeits-Check nach stärkerem Modell bestanden.")
-                                summary_lines.append("- ✅ Eskalation mit stärkerem Modell behob den Vollständigkeits-Befund.")
-                                break
-                    notify("  🛑 [bold red]Kein Fortschritt:[/bold red] identische Vollständigkeits-Funde wie vor dem letzten Fixversuch – breche Schleife ab.")
-                    summary_lines.append(
-                        f"- 🧩 🛑 Versuch {attempt}: dieselben {len(completeness_report.issues)} Vollständigkeits-Fund(e) wie nach "
-                        "dem vorherigen Fixversuch (keine Veränderung) – Schleife abgebrochen statt einen wirkungslosen weiteren "
-                        "Versuch zu verbrauchen."
-                    )
-                    verification_ok = False
-                    _grund = f"{len(completeness_report.issues)} unveränderte(r) Vollständigkeits-Fund(e) nach Fixversuch (kein Fortschritt)."
-                    notify(f"  ❌ [bold red]Verifikations-Veto durch Completeness-Check:[/bold red] {_grund}")
-                    summary_lines.append(f"- ❌ **Verifikations-Veto durch Completeness-Check:** {_grund}")
-                    break
-                previous_completeness_signature = current_completeness_signature
-
-                top = "; ".join(
-                    f"{i.file_path}" + (f":{i.line_number}" if i.line_number else "") + f" – {i.message}"
-                    for i in completeness_report.issues[:5]
-                )
-                if len(completeness_report.issues) > 5:
-                    top += f" … und {len(completeness_report.issues) - 5} weitere"
-                notify(f"  🧩 [bold red]Vollständigkeits-Check: {len(completeness_report.issues)} Fund(e).[/bold red]")
-                verification_ok = False
-                _grund = f"{len(completeness_report.issues)} Vollständigkeits-Fund(e) (Stub-/Platzhalter-Code oder fehlende README-referenzierte Datei): {top}"
-                notify(f"  ❌ [bold red]Verifikations-Veto durch Completeness-Check:[/bold red] {_grund}")
-                summary_lines.append(f"- ❌ **Verifikations-Veto durch Completeness-Check:** {_grund}")
-
-                agents_to_fix: dict[str, list] = {}
-                for issue in completeness_report.issues:
-                    owner = file_owners.get(issue.file_path)
-                    if not owner:
-                        owner = self._infer_owner_from_path(issue.file_path, issue.message)
-                    if owner and owner in self._agents:
-                        agents_to_fix.setdefault(owner, []).append(issue)
-
-                if not agents_to_fix:
-                    summary_lines.append(f"- 🧩 ❌ {len(completeness_report.issues)} Vollständigkeits-Fund(e) blieben ungelöst (keinem Agenten eindeutig zuordenbar): {top}")
-                    break
-
-                fix_tasks = []
-                for agent_id, agent_issues in agents_to_fix.items():
-                    issue_text = "\n".join(
-                        f"- {i.file_path}" + (f":{i.line_number}" if i.line_number else "") + f" – {i.message}"
-                        for i in agent_issues
-                    )
-                    fix_tasks.append(AgentTask(
-                        task_id=f"verify_fix_completeness_{agent_id}_{attempt}",
-                        agent_id=agent_id,
-                        description=(
-                            f"Der Vollständigkeits-Check hat unfertigen Code gefunden: ein Kommentar/Stub "
-                            f"beschreibt eine Funktionalität, die NICHT wirklich implementiert ist (z.B. "
-                            f"\"Hier würde X erfolgen\"), oder eine im README referenzierte Datei fehlt. "
-                            f"Nutze read_file, um die betroffene(n) Stelle(n) zu prüfen, und implementiere "
-                            f"die fehlende Funktionalität WIRKLICH (nicht nur den Kommentar entfernen) bzw. "
-                            f"lege die fehlende Datei an.\n\n{issue_text}"
-                        ),
-                        context="",
-                        project_dir=project_dir,
-                    ))
-
-                notify(f"  🛠️ [bold yellow]Gezielter Auto-Fix (Vollständigkeit):[/bold yellow] Beauftrage {', '.join(agents_to_fix.keys())}...")
-                fix_results = await self._run_agents_parallel(fix_tasks, notify=notify)
-                self._update_file_owners(file_owners, fix_results)
-                all_results.extend(fix_results)
-                summary_lines.append(f"- 🧩 Versuch {attempt}: {len(completeness_report.issues)} Vollständigkeits-Fund(e) → gezielt zur Korrektur an {', '.join(agents_to_fix.keys())} zurückgespielt: {top}")
-
-                if attempt == MAX_VERIFICATION_ITERATIONS:
-                    notify("  ⚠️ [yellow]Maximale Vollständigkeits-Fixversuche erreicht – letzter Stand wird übernommen.[/yellow]")
-                    summary_lines.append(f"- 🧩 ⚠️ Nach {MAX_VERIFICATION_ITERATIONS} Versuchen weiterhin Stub-/Platzhalter-Funde – letzter Stand wurde übernommen.")
+            completeness_report, verification_ok, budget_aborted, manually_cancelled = await self._run_completeness_check_loop(
+                verifier=verifier, project_dir=project_dir, file_owners=file_owners, all_results=all_results,
+                summary_lines=summary_lines, notify=notify, run_start_tokens=run_start_tokens,
+                cancel_requested=cancel_requested, verification_ok=verification_ok,
+                budget_aborted=budget_aborted, manually_cancelled=manually_cancelled,
+            )
 
         if completeness_report is not None and completeness_report.attempted:
             outcome.record(

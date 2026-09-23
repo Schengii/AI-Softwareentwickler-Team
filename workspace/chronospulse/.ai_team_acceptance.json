@@ -1,0 +1,9 @@
+{
+  "requirements": [
+    "Die verbleibenden Befunde des bestehenden Projekts `chronospulse` müssen behoben werden, ohne eine Neuentwicklung durchzuführen.",
+    "Vor weiteren Schritten muss zuerst die Verifikation des Projekts ausgeführt werden.",
+    "Die echte Dependency-Installation muss im Rahmen des Verifikations-Protokolls erfolgreich durchgeführt werden.",
+    "Alle automatisierten Tests müssen erfolgreich durchlaufen, damit das Kriterium `tests_pass` der Definition of Done erfüllt ist.",
+    "Die gesamte Bearbeitung und Verifikation muss innerhalb des Token-Budgets von maximal 1.000.000 Tokens abgeschlossen werden."
+  ]
+}

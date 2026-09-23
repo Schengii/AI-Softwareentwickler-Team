@@ -69,9 +69,12 @@ ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 # extrem enges Vorschau-Kontingent von nur 20 Anfragen/Tag (QuotaFailure:
 # GenerateRequestsPerDayPerProjectPerModel-FreeTier, limit: 20). gemini-3.6-flash ist das
 # voll produktive, stabile Flash-Modell mit vollem Free-Tier-Kontingent (15 RPM, 1 Mio Kontext).
+# Token- & Kostenoptimierung (Gemini API Pay-As-You-Go): gemini-pro-latest verursacht das
+# 15- bis 25-fache der Kosten von Flash. Im Regelbetrieb standardmäßig gemini-3.8-flash für HEAVY,
+# um 85-90% der API-Kosten einzusparen.
 GEMINI_LITE_MODEL: str = os.getenv("GEMINI_LITE_MODEL", "gemini-3.1-flash-lite")
 GEMINI_STANDARD_MODEL: str = os.getenv("GEMINI_STANDARD_MODEL", "gemini-3.6-flash")
-GEMINI_HEAVY_MODEL: str = os.getenv("GEMINI_HEAVY_MODEL", "gemini-pro-latest")
+GEMINI_HEAVY_MODEL: str = os.getenv("GEMINI_HEAVY_MODEL", "gemini-3.8-flash")
 
 CLAUDE_LITE_MODEL: str = os.getenv("CLAUDE_LITE_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_STANDARD_MODEL: str = os.getenv("CLAUDE_STANDARD_MODEL", "claude-sonnet-5")
@@ -479,12 +482,13 @@ AUTO_SAVE_WORKSPACE: bool = os.getenv("AUTO_SAVE_WORKSPACE", "true").lower() in 
 # Agentischer Werkzeug-Loop (echte Tool-Nutzung statt Ein-Schuss-Textgenerierung)
 # ──────────────────────────────────────────
 ENABLE_AGENT_TOOLS: bool = os.getenv("ENABLE_AGENT_TOOLS", "true").lower() in ("true", "1", "yes")
-MAX_AGENT_TOOL_ITERATIONS: int = int(os.getenv("MAX_AGENT_TOOL_ITERATIONS", "12"))
+MAX_AGENT_TOOL_ITERATIONS: int = int(os.getenv("MAX_AGENT_TOOL_ITERATIONS", "8"))
 
 # Nicht jeder Agent braucht dasselbe Iterationsbudget: Jede zusätzliche Iteration sendet
 # die komplette bisherige Konversation (inkl. aller Werkzeug-Ergebnisse) erneut mit – das
 # Budget wird daher pro Agenten-Rolle gestaffelt, um unnötigen Tokenverbrauch zu vermeiden,
 # ohne code-schreibende Agenten einzuschränken, die echte Iteration brauchen.
+# Tokenoptimierung (2026-09-23): Gestrafft auf max. 8 Runden für Code-Rollen, um Prompt-Explosion zu verhindern.
 AGENT_MAX_TOOL_ITERATIONS: dict[str, int] = {
     # Führung & Fachbereichsleiter: rein koordinierend/delegierend -> 2-3 Iterationen genügen völlig
     "planning_lead": 3, "dev_lead": 3, "governance_lead": 3, "qa_lead": 3,
@@ -493,16 +497,11 @@ AGENT_MAX_TOOL_ITERATIONS: dict[str, int] = {
     "product_owner": 3, "business_analyst": 3, "web_research": 3, "finops": 3, "team_lead": 3,
     "copywriter": 3, "ui_ux": 3, "accessibility": 3, "i18n": 3, "documentation": 3,
     "readme": 3, "github": 2, "image_generator": 3, "retrospective": 2,
-    # Architektur & technische Spezialisten: schreiben fokussierte Artefakte. tester braucht echte
-    # Iteration (lesen, Tests schreiben, run_tests, korrigieren) - mit 4 Iterationen lag seine
-    # Erfolgsquote bei 57% (Team-Lektion low_performing_agent 2026-09-07).
-    "architect": 5, "devops": 6, "security": 6, "resilience_guard": 6, "tester": 12,
-    # Code-Entwickler: schreiben mehrere Dateien UND prüfen sie vor der Abgabe (Übergabe-Regel,
-    # core/handoff_check.py). 6 Iterationen reichten real nicht für 15+ Dateien - Folge waren Code
-    # im Antworttext statt write_file und unvollständige Module. Der Token-Deckel
-    # (MAX_TASK_TOKENS) begrenzt die Kosten zusätzlich.
-    "backend": 14, "database": 10, "frontend": 14, "api_integration": 10, "data_engineer": 10,
-    "ml": 10, "mobile": 12, "performance": 6, "refactoring": 8, "prompt_engineer": 6,
+    # Architektur & technische Spezialisten: schreiben fokussierte Artefakte.
+    "architect": 5, "devops": 5, "security": 5, "resilience_guard": 5, "tester": 8,
+    # Code-Entwickler: gestrafft von 10-14 auf 6-8, um Multi-Turn Prompt-Explosion zu verhindern
+    "backend": 8, "database": 6, "frontend": 8, "api_integration": 6, "data_engineer": 6,
+    "ml": 6, "mobile": 8, "performance": 5, "refactoring": 6, "prompt_engineer": 5,
     # Reine Prüf-/Review-Rollen: lesen viel, schreiben nichts -> 3 Iterationen
     "code_reviewer": 3, "compliance": 3, "project_cleaner": 3,
 }
@@ -1102,8 +1101,8 @@ TEAMMATE_ANSWER_TOOL_ITERATIONS: int = int(os.getenv("TEAMMATE_ANSWER_TOOL_ITERA
 # Kontext-Verdichtung im Werkzeug-Loop (core/context_compaction.py): große Werkzeug-Ergebnisse älter
 # als die letzten N Modell-Runden werden durch eine Vorschau ersetzt (~95 % der Tokens waren Prompt).
 ENABLE_CONTEXT_COMPACTION: bool = _env_flag("ENABLE_CONTEXT_COMPACTION", True)
-CONTEXT_COMPACTION_KEEP_ROUNDS: int = int(os.getenv("CONTEXT_COMPACTION_KEEP_ROUNDS", "2"))
-CONTEXT_COMPACTION_MIN_CHARS: int = int(os.getenv("CONTEXT_COMPACTION_MIN_CHARS", "800"))
+CONTEXT_COMPACTION_KEEP_ROUNDS: int = int(os.getenv("CONTEXT_COMPACTION_KEEP_ROUNDS", "1"))
+CONTEXT_COMPACTION_MIN_CHARS: int = int(os.getenv("CONTEXT_COMPACTION_MIN_CHARS", "500"))
 CONTEXT_COMPACTION_DEDUPLICATE_READS: bool = _env_flag("CONTEXT_COMPACTION_DEDUPLICATE_READS", True)
 # Fachbereichs-Konsolidierung per LLM (10k-18k Tokens je Lead) oder deterministisch aus Ergebnissen
 # und Team-Board-Übergaben (0 Tokens). Die Delegation zu Phasenbeginn bleibt ein LLM-Aufruf.

@@ -7,6 +7,21 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Token- & Kostenoptimierung für Pay-As-You-Go Gemini-API (2026-09-23)
+
+Realer Fund (Analyse 15 realer Läufe mit >10 Mio. Tokens): `gemini-pro-latest` erzeugte trotz nur 27,8 % Token-Anteil über 90 % der API-Rechnung (Faktor 15x–25x teurer als Flash bei langen Multi-Turn-Prompts >128k Tokens). Gleichzeitig trieben bis zu 14 Iterationen pro Agent die kumulierten Prompt-Tokens auf bis zu 287k je Einzelcall.
+
+* **Kosten-Switch von Pro auf Flash (`GEMINI_HEAVY_MODEL` in `.env` & `config.py`):**
+  Alle Kernrollen (`backend`, `database`, `security`, `architect`, `orchestrator`) laufen im Pay-As-You-Go-Betrieb standardmäßig auf `gemini-3.8-flash` statt `gemini-pro-latest`. Senkt die API-Kosten pro Lauf um ~85 % bis 90 % bei voller Feature-Leistung.
+* **Gestraffte Werkzeug-Iterationen (`AGENT_MAX_TOOL_ITERATIONS`):**
+  Reduziert die Obergrenzen für Code-Entwickler von 10–14 auf 6–8 (`backend: 8`, `frontend: 8`, `tester: 8`, `database: 6`). Verhindert quadratische Prompt-Explosion bei Multi-Turn-Interaktionen.
+* **Verschärfte Kontext-Verdichtung:**
+  `CONTEXT_COMPACTION_KEEP_ROUNDS` von 2 auf 1 gesenkt, `CONTEXT_COMPACTION_MIN_CHARS` auf 500 Zeichen gesetzt. Ältere `read_file`-Ergebnisse werden sofort auf Snippets reduziert.
+* **Leitfaden-Verankerung in `CLAUDE.md`:**
+  Verbindliche Regel eingefügt, die eigenmächtiges Zurückstellen auf `gemini-pro-latest` oder Anheben der Iterationslimits ohne Nutzerwunsch strikt verbietet.
+
+---
+
 ## 🟢 Token-Effizienz & Budget-Flexibilisierung 2026-09-22: Komplexitäts-basiertes Lauf-Budget, `--max-tokens`, Terminal-Output-Kürzung
 
 Ziel: vorzeitige `budget_aborted: true`-Abbrüche bei komplexen Projekten verhindern, ohne die

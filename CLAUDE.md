@@ -33,6 +33,19 @@ Sobald Änderungen von einem Feature- oder Framework-Branch (`ai-team/*`, `feat/
 2. Nicht mehr benötigte Worktrees entfernen: `git worktree remove --force "<pfad>"`.
 3. Verwaiste Metadaten aufräumen: `git worktree prune`.
 
+**💰 Strikte Token- & Kostenoptimierung (Gemini API Pay-As-You-Go – UNVERRÜCKBARE VORGABE):**
+Das kostenlose Gemini-Kontingent ist erschöpft; alle API-Calls sind kostenpflichtig. Um unnötige Kosten zu verhindern, gelten diese unverrückbaren Regeln, die **unter keinen Umständen eigenmächtig rückgängig gemacht werden dürfen**:
+1. **Kein automatischer Einsatz von Gemini Pro (`gemini-pro-latest`):**
+   - In realen Läufen verursachte `gemini-pro-latest` trotz nur 28 % der Tokens über 90 % der API-Rechnung (Faktor 15x–25x teurer als Flash bei langen Prompts).
+   - Alle Rollen (inkl. Backend, Datenbank, Architect, Security, Orchestrator) laufen standardmäßig auf `gemini-3.8-flash` oder `gemini-3.6-flash`.
+   - `GEMINI_HEAVY_MODEL`, `HEAVY_MODEL` oder Agentenmodelle in `config.py` und `.env` dürfen **NIEMALS** eigenmächtig wieder auf `gemini-pro-latest` umgestellt werden!
+2. **Gestraffte Werkzeug-Iterationen (`AGENT_MAX_TOOL_ITERATIONS`):**
+   - Jede zusätzliche Iteration sendet die gesamte kumulierte Historie erneut mit (Multi-Turn Multiplikator für Input-Tokens).
+   - Für Code- und Test-Rollen gilt ein striktes Limit von maximal **8 Iterationen** (`backend: 8`, `frontend: 8`, `tester: 8`, `database: 6`).
+   - Diese Limits nicht eigenmächtig wieder auf 12–14 anheben.
+3. **Kontext-Verdichtung aktiv halten:**
+   - `CONTEXT_COMPACTION_KEEP_ROUNDS=1` und `CONTEXT_COMPACTION_MIN_CHARS=500` bleiben aktiv, damit gelesene Dateien und Bash-Outputs früher zu Snippets verdichtet werden.
+
 ---
 
 ## ⚡ Wichtige Entwicklungs- & Testbefehle

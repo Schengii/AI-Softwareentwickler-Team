@@ -1,26 +1,21 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-from app.db.session import engine, Base
+from fastapi.staticfiles import StaticFiles
+import os
+
+from app.db.session import engine
+from app.db.base import Base
 from app.api.workflows import router as workflows_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize DB tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
-    # Cleanup
-    await engine.dispose()
 
-app = FastAPI(
-    title="ChronosVault API",
-    description="State-Machine-Engine für mehrstufige Workflows mit kryptographischer Audit-Verkettung",
-    version="1.0.0",
-    lifespan=lifespan
-)
+app = FastAPI(title="Workflow API", lifespan=lifespan)
 
-# CORS setup (dynamic from settings in real world, allowing all for dev)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,3 +29,6 @@ async def health_check():
     return {"status": "ok"}
 
 app.include_router(workflows_router)
+
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")

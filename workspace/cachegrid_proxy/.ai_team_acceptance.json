@@ -1,0 +1,10 @@
+{
+  "requirements": [
+    "Der Ruff-Lint-Fehler F841 bezüglich einer ungenutzten Variable in `app/main.py` auf Zeile 16 muss behoben werden, sodass der Lint-Check mit Status `passed` abschließt.",
+    "Die 2 im Verifikations-Protokoll identifizierten Befunde des Pre-Flight-Checks müssen behoben werden, sodass der Pre-Flight-Check fehlerfrei durchläuft.",
+    "Der Prüfschritt `verification_ok` muss ohne verbleibende Einträge in der Liste `failed` erfolgreich validiert werden.",
+    "Die bestehende Testsuite muss weiterhin mit Exit-Code 0 und einer API-Routen-Abdeckung von mindestens 60 % erfolgreich durchlaufen.",
+    "Die Datei `app/main.py` muss beim Runtime-Smoke-Test fehlerfrei starten.",
+    "Die Installation der Abhängigkeiten aus `requirements.txt` und `requirements-dev.txt` muss weiterhin ohne Fehler (Exit-Code 0) durchlaufen."
+  ]
+}

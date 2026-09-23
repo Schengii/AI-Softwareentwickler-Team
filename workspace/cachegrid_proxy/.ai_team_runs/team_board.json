@@ -1,97 +1,69 @@
 {
-  "run_id": "20260919_012548",
+  "run_id": "20260923_041259",
   "handoffs": [
     {
-      "agent_id": "architect",
-      "task_id": "bc373bbf",
-      "files": [
-        "docs/adr/0001-zweistufiges-caching-in-memory-lru-und-d.md",
-        "docs/adr/0002-key-granularer-mutex-lock-single-flight.md"
-      ],
-      "provides": [],
-      "requires": [],
-      "open_issues": [],
-      "timestamp": "2026-09-19T01:26:08+00:00"
-    },
-    {
       "agent_id": "backend",
-      "task_id": "cadcae39",
+      "task_id": "0251931d",
       "files": [
-        "app/core/concurrency.py",
-        "app/core/config.py",
-        "app/core/disk_storage.py",
-        "app/core/engine.py",
-        "app/core/lru_cache.py",
-        "app/core/tag_index.py",
-        "app/core/write_behind.py",
-        "app/main.py",
-        "app/schemas/cache.py"
+        "app/main.py"
       ],
       "provides": [
         "`GET /health` (app/main.py)",
-        "`CacheGridEngine`, `get_cache_engine` (app/core/engine.py)",
-        "`KeyLockManager` (app/core/concurrency.py)",
-        "`MemoryLRUCache` (app/core/lru_cache.py)",
-        "`DiskTierStorage` (app/core/disk_storage.py)",
-        "`WriteBehindWorker` (app/core/write_behind.py)",
-        "`TagIndex` (app/core/tag_index.py)",
-        "app/core/concurrency.py: KeyLockManager",
-        "app/core/config.py: Settings, get_settings",
-        "app/core/disk_storage.py: DiskTierStorage",
-        "app/core/engine.py: CacheGridEngine, get_cache_engine, logger",
-        "app/core/lru_cache.py: CacheEntry, MemoryLRUCache"
+        "`app` (FastAPI Applikation in app/main.py)",
+        "app/main.py: lifespan, health_check, app",
+        "GET /health (app/main.py)"
       ],
       "requires": [],
       "open_issues": [],
-      "timestamp": "2026-09-19T01:27:06+00:00"
+      "timestamp": "2026-09-23T04:14:40+00:00"
     },
     {
-      "agent_id": "tester",
-      "task_id": "ffa7ec53",
+      "agent_id": "backend",
+      "task_id": "verify_fix_smoke_backend_1",
       "files": [
-        "tests/test_core.py",
-        "tests/test_smoke.py"
+        "app/main.py"
       ],
       "provides": [
-        "`tests/test_smoke.py`, `tests/test_core.py`",
-        "tests/test_core.py: test_lru_eviction, test_thundering_herd_protection",
-        "tests/test_smoke.py: test_app_starts_and_health_ok, client"
+        "`GET /health`, `GET /`, `GET /api/cache/{key}`, `POST /api/cache`, `DELETE /api/cache/{key}`, `POST /api/cache/invalidate-tags`, `GET /api/stats` (app/main.py)",
+        "`uvicorn.run()` Entrypoint",
+        "app/main.py: lifespan, CacheSetRequest, TagInvalidationRequest, health_check, root, get_cache_key, set_cache_key, delete_cache_key, invalidate_tags, get_stats",
+        "DELETE /api/cache/{key} (app/main.py)",
+        "GET / (app/main.py)",
+        "GET /api/cache/{key} (app/main.py)",
+        "GET /api/stats (app/main.py)",
+        "GET /health (app/main.py)",
+        "POST /api/cache (app/main.py)",
+        "POST /api/cache/invalidate-tags (app/main.py)"
       ],
       "requires": [],
-      "open_issues": [
-        "Integrationstests für API-Routen und Write-Behind-Worker stehen noch aus."
-      ],
-      "timestamp": "2026-09-19T01:27:24+00:00"
+      "open_issues": [],
+      "timestamp": "2026-09-23T04:20:39+00:00"
     },
     {
-      "agent_id": "security",
-      "task_id": "06a6b80e",
+      "agent_id": "backend",
+      "task_id": "governance_fix_backend_1",
       "files": [
-        "docs/SECURITY_AUDIT.md"
+        "app/main.py"
       ],
       "provides": [
-        "`docs/SECURITY_AUDIT.md` (Vollständiger Security-Audit-Report mit Bedrohungsanalyse, OWASP-Bewertung und Härtungs-Checkliste)"
+        "`FastAPI app` mit Routen `/health`, `/api/cache`, `/api/cache/{key}`, `/api/cache/invalidate-tags`, `/api/stats` (app/main.py)",
+        "`CacheGridEngine` Integration",
+        "app/main.py: get_engine, lifespan, CacheSetRequest, TagInvalidationRequest, health_check, root, get_cache_key, set_cache_key, delete_cache_key, invalidate_tags",
+        "DELETE /api/cache/{key} (app/main.py)",
+        "GET / (app/main.py)",
+        "GET /api/cache/{key} (app/main.py)",
+        "GET /api/stats (app/main.py)",
+        "GET /health (app/main.py)",
+        "POST /api/cache (app/main.py)",
+        "POST /api/cache/invalidate-tags (app/main.py)"
       ],
-      "requires": [
-        "`app/main.py`, `app/schemas/cache.py`, `app/core/disk_storage.py` (Backend-Komponenten)"
-      ],
+      "requires": [],
       "open_issues": [],
-      "timestamp": "2026-09-19T01:28:05+00:00"
+      "timestamp": "2026-09-23T04:21:20+00:00"
     }
   ],
   "claims": {
-    "app/main.py": "backend",
-    "app/core/config.py": "backend",
-    "app/core/concurrency.py": "backend",
-    "app/core/tag_index.py": "backend",
-    "app/core/lru_cache.py": "backend",
-    "app/core/disk_storage.py": "backend",
-    "app/core/write_behind.py": "backend",
-    "app/core/engine.py": "backend",
-    "app/schemas/cache.py": "backend",
-    "tests/test_smoke.py": "tester",
-    "tests/test_core.py": "tester",
-    "docs/SECURITY_AUDIT.md": "security"
+    "app/main.py": "backend"
   },
   "foreign_changes": [],
   "questions": []

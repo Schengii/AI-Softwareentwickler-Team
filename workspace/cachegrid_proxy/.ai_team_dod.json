@@ -1,9 +1,10 @@
 {
   "project_slug": "cachegrid_proxy",
-  "timestamp": "2026-09-19T01:30:23+00:00",
+  "timestamp": "2026-09-23T04:21:45+00:00",
   "is_done": false,
   "blocking": [
-    "verification_ok"
+    "missing_frontend_ui",
+    "requirements_met"
   ],
   "criteria": [
     {
@@ -11,7 +12,7 @@
       "label": "Es wurde tatsächlich Code erzeugt",
       "passed": true,
       "required": true,
-      "detail": "14 Datei(en) geschrieben",
+      "detail": "1 Datei(en) geschrieben",
       "applicable": true
     },
     {
@@ -57,7 +58,7 @@
     {
       "key": "lint_clean",
       "label": "Linter ohne Befund",
-      "passed": false,
+      "passed": true,
       "required": false,
       "detail": "",
       "applicable": true
@@ -66,7 +67,7 @@
       "key": "ui_ok",
       "label": "Frontend/UI-Check ohne Befund",
       "passed": false,
-      "required": false,
+      "required": true,
       "detail": "",
       "applicable": false
     },
@@ -91,8 +92,8 @@
       "label": "Beauftragtes Frontend wurde tatsächlich geliefert",
       "passed": false,
       "required": true,
-      "detail": "",
-      "applicable": false
+      "detail": "kein index.html/src/main.tsx/... gefunden - Frontend-Agent ist am Hard Delivery Gate gescheitert oder hat keine UI-Dateien geschrieben",
+      "applicable": true
     },
     {
       "key": "dark_mode_delivered",
@@ -113,9 +114,9 @@
     {
       "key": "verification_ok",
       "label": "Die Gesamt-Verifikation ist ohne Veto",
-      "passed": false,
+      "passed": true,
       "required": true,
-      "detail": "fehlgeschlagene Prüfungen: lint, pre_flight",
+      "detail": "",
       "applicable": true
     },
     {
@@ -124,6 +125,14 @@
       "passed": false,
       "required": false,
       "detail": "",
+      "applicable": true
+    },
+    {
+      "key": "requirements_met",
+      "label": "Abnahme: alle Anforderungen aus dem Auftragstext erfüllt",
+      "passed": false,
+      "required": true,
+      "detail": "fehlt: Die 2 im Verifikations-Protokoll identifizierten Befunde des Pre-Flight-Checks müssen behoben werden, sodass der Pre-Flight-Check fehlerfrei durchläuft., Der Prüfschritt `verification_ok` muss ohne verbleibende Einträge in der Liste `failed` erfolgreich validiert werden.",
       "applicable": true
     }
   ]

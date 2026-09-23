@@ -1,13 +1,24 @@
-import os
-import aiofiles
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from app.core.markdown import parse_markdown, serialize_markdown, ParsedNote
+from typing import Any
+
+import aiofiles
+
+from app.core.markdown import parse_markdown, serialize_markdown
 
 
 class VaultManager:
-    def __init__(self, root_dir: str = "vault"):
-        self.root_path = Path(root_dir).resolve()
+    def __init__(
+        self,
+        root_dir: str | None = None,
+        vault_dir: str | None = None,
+        vault_path: str | None = None,
+    ):
+        resolved_dir = vault_dir or vault_path or root_dir or "vault"
+        self.root_path = Path(resolved_dir).resolve()
+        self._ensure_root_exists()
+
+    async def initialize_vault(self) -> None:
+        """Explizite (asynchrone) Initialisierung der Vault-Ordnerstruktur und Standarddateien."""
         self._ensure_root_exists()
 
     def _ensure_root_exists(self) -> None:
@@ -71,11 +82,11 @@ Rückverweis zu: [[Welcome to Smart Knowledge Hub]].
             raise ValueError(f"Ungültiger Pfad: Zugriff außerhalb des Vaults verweigert ({relative_path})")
         return target_path
 
-    async def get_tree(self) -> Dict[str, Any]:
+    async def get_tree(self) -> dict[str, Any]:
         """
         Gibt eine rekursive Baumstruktur des Vaults zurück.
         """
-        def build_node(current_path: Path) -> Dict[str, Any]:
+        def build_node(current_path: Path) -> dict[str, Any]:
             rel_path = current_path.relative_to(self.root_path).as_posix()
             if current_path.is_dir():
                 children = []
@@ -100,11 +111,11 @@ Rückverweis zu: [[Welcome to Smart Knowledge Hub]].
 
         return build_node(self.root_path)
 
-    async def list_notes(self) -> List[Dict[str, Any]]:
+    async def list_notes(self) -> list[dict[str, Any]]:
         """
         Listet alle Notizen mit relativen Pfaden und Metadaten auf.
         """
-        notes: List[Dict[str, Any]] = []
+        notes: list[dict[str, Any]] = []
         for file_path in self.root_path.glob("**/*.md"):
             if any(part.startswith(".") for part in file_path.parts):
                 continue
@@ -125,7 +136,7 @@ Rückverweis zu: [[Welcome to Smart Knowledge Hub]].
                 continue
         return sorted(notes, key=lambda n: n["path"].lower())
 
-    async def get_note(self, relative_path: str) -> Dict[str, Any]:
+    async def get_note(self, relative_path: str) -> dict[str, Any]:
         """
         Liest eine Notiz ein und parst Markdown und Frontmatter.
         """
@@ -155,9 +166,9 @@ Rückverweis zu: [[Welcome to Smart Knowledge Hub]].
         self,
         relative_path: str,
         content: str,
-        frontmatter: Optional[Dict[str, Any]] = None,
-        raw_content: Optional[str] = None
-    ) -> Dict[str, Any]:
+        frontmatter: dict[str, Any] | None = None,
+        raw_content: str | None = None
+    ) -> dict[str, Any]:
         """
         Erstellt oder aktualisiert eine Notiz. Schreibt physisch auf die Festplatte.
         """
@@ -196,3 +207,7 @@ Rückverweis zu: [[Welcome to Smart Knowledge Hub]].
             raise FileNotFoundError(f"Notiz nicht gefunden: {relative_path}")
         target_path.unlink()
         return True
+
+
+vault_manager = VaultManager()
+

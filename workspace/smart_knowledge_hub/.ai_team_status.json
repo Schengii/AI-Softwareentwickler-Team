@@ -1,5 +1,29 @@
 [
   {
+    "timestamp": "2026-09-22T18:10:03+00:00",
+    "task_summary": "Service-Instanziierungen korrigiert und Testsuite stabilisiert",
+    "verification_ok": false,
+    "budget_aborted": true,
+    "cancelled": false,
+    "files_written_count": 4,
+    "status": "aborted_due_to_quota",
+    "lint_signature": [
+      "ruff:app/core/adr.py:DTZ011",
+      "ruff:app/core/markdown.py:C414",
+      "ruff:app/core/vault.py:S112",
+      "ruff:app/main.py:PLW1508"
+    ],
+    "failure_detail": "### 🧪 Verifikations-Protokoll (echte Dependency-Installation & Testausführung)\n- 📦 ✅ pip install -r requirements.txt (exit_code=0)\n- 📦 ✅ pip install -r requirements-dev.txt (exit_code=0)\n- 🚦 ❌ Smoke-Test-Gate: `app/main.py` startet nicht – gezielter Fix vor der Testsuite.\n- 🚦 ✅ Startfehler durch `backend` behoben – die Anwendung startet jetzt.\n- 🛠️ Versuch 1: 5 echte Testfehler → gezielt zur Korrektur an tester zurückgespielt.\n… (gekürzt, vollständig in detail_file)",
+    "detail_file": ".ai_team_runs/20260922_180354_verification.md",
+    "failed_checks": [
+      "completeness",
+      "lint",
+      "sast",
+      "smoke",
+      "tests"
+    ]
+  },
+  {
     "timestamp": "2026-09-22T16:55:09+00:00",
     "task_summary": "KI-Zettelkasten-Wissensportal mit Graph und RAG implementiert",
     "verification_ok": false,

@@ -1,7 +1,7 @@
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
-import yaml
+from typing import Any
 
+import yaml
 
 WIKILINK_PATTERN = re.compile(r"\[\[([^\[\]\|\#\n]+)(?:#[^\[\]\|\n]+)?(?:\|([^\[\]\n]+))?\]\]")
 INLINE_TAG_PATTERN = re.compile(r"(?<!\S)#([a-zA-Z0-9_\-\/]+)(?!\S)")
@@ -13,10 +13,10 @@ class ParsedNote:
         self,
         raw_content: str,
         content: str,
-        frontmatter: Dict[str, Any],
-        wikilinks: List[Dict[str, str]],
-        tags: List[str],
-        title: Optional[str] = None
+        frontmatter: dict[str, Any],
+        wikilinks: list[dict[str, str]],
+        tags: list[str],
+        title: str | None = None
     ):
         self.raw_content = raw_content
         self.content = content
@@ -25,7 +25,7 @@ class ParsedNote:
         self.tags = tags
         self.title = title or frontmatter.get("title") or ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "title": self.title,
             "frontmatter": self.frontmatter,
@@ -40,7 +40,7 @@ def parse_markdown(raw_text: str, default_title: str = "") -> ParsedNote:
     """
     Parst Frontmatter (YAML), Markdown-Body, Wikilinks und Tags aus einem Markdown-String.
     """
-    frontmatter: Dict[str, Any] = {}
+    frontmatter: dict[str, Any] = {}
     content = raw_text
 
     fm_match = FRONTMATTER_PATTERN.match(raw_text)
@@ -55,8 +55,8 @@ def parse_markdown(raw_text: str, default_title: str = "") -> ParsedNote:
         content = raw_text[fm_match.end():]
 
     # Wikilinks extrahieren
-    wikilinks: List[Dict[str, str]] = []
-    seen_targets: Set[str] = set()
+    wikilinks: list[dict[str, str]] = []
+    seen_targets: set[str] = set()
     for match in WIKILINK_PATTERN.finditer(content):
         target = match.group(1).strip()
         alias = match.group(2).strip() if match.group(2) else target
@@ -65,7 +65,7 @@ def parse_markdown(raw_text: str, default_title: str = "") -> ParsedNote:
             wikilinks.append({"target": target, "alias": alias})
 
     # Tags sammeln
-    tags_set: Set[str] = set()
+    tags_set: set[str] = set()
     fm_tags = frontmatter.get("tags", [])
     if isinstance(fm_tags, list):
         for t in fm_tags:
@@ -102,7 +102,7 @@ def parse_markdown(raw_text: str, default_title: str = "") -> ParsedNote:
     )
 
 
-def serialize_markdown(content: str, frontmatter: Optional[Dict[str, Any]] = None) -> str:
+def serialize_markdown(content: str, frontmatter: dict[str, Any] | None = None) -> str:
     """
     Serialisiert Frontmatter und Markdown-Content zu einem konsistenten Dateiinhalt.
     """

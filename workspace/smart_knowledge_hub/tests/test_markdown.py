@@ -1,5 +1,4 @@
-import pytest
-from app.core.markdown import parse_markdown, serialize_markdown, ParsedNote
+from app.core.markdown import ParsedNote, parse_markdown, serialize_markdown
 
 
 def test_parse_markdown_basic_content():

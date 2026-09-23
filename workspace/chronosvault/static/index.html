@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChronosVault – Workflow State Machine & Audit Vault</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Zum Hauptinhalt springen</a>
+
+  <header>
+    <div class="header-container">
+      <h1>🛡️ ChronosVault</h1>
+      <p class="subtitle">Kryptografisch gesicherte Workflow State Machine mit Hash-Chain Audit Trail</p>
+    </div>
+  </header>
+
+  <main id="main-content" class="container">
+    <!-- Schnellübersicht / Systemstatus -->
+    <section class="card status-card" aria-labelledby="status-heading">
+      <div class="card-header">
+        <h2 id="status-heading">System-Status</h2>
+        <button id="btn-refresh" class="btn btn-secondary" aria-label="System-Status aktualisieren">🔄 Aktualisieren</button>
+      </div>
+      <div class="status-grid" role="list">
+        <div class="status-item" role="listitem">
+          <span class="label">API-Status:</span>
+          <span id="api-status" class="badge badge-success">Online</span>
+        </div>
+        <div class="status-item" role="listitem">
+          <span class="label">Hash-Chain-Integrität:</span>
+          <span id="chain-status" class="badge badge-info">Wird geprüft...</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Workflows & Instanzen -->
+    <div class="grid-2col">
+      <!-- Workflow Definitionen & Erstellung -->
+      <section class="card" aria-labelledby="defs-heading">
+        <div class="card-header">
+          <h2 id="defs-heading">Workflow-Definitionen</h2>
+        </div>
+        <div class="card-body">
+          <button id="btn-load-definitions" class="btn btn-primary">Definitionen laden</button>
+          <div id="definitions-list" class="list-container mt-3" aria-live="polite">
+            <p class="placeholder-text">Keine Definitionen geladen.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Instanzen & Transitionen -->
+      <section class="card" aria-labelledby="instances-heading">
+        <div class="card-header">
+          <h2 id="instances-heading">Aktive Instanzen</h2>
+          <button id="btn-load-instances" class="btn btn-secondary" aria-label="Instanzen neu laden">Neu laden</button>
+        </div>
+        <div class="card-body">
+          <div id="instances-list" class="list-container" aria-live="polite">
+            <p class="placeholder-text">Keine aktiven Instanzen gefunden.</p>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Neue Instanz starten -->
+    <section class="card mt-4" aria-labelledby="create-instance-heading">
+      <div class="card-header">
+        <h2 id="create-instance-heading">Neue Workflow-Instanz starten</h2>
+      </div>
+      <div class="card-body">
+        <form id="create-instance-form">
+          <div class="form-group">
+            <label for="definition-id">Definition ID / Name:</label>
+            <input type="text" id="definition-id" name="definition_id" required placeholder="z. B. invoice_approval" class="form-control">
+          </div>
+          <div class="form-group">
+            <label for="submitter-name">Einreicher (Submitter):</label>
+            <input type="text" id="submitter-name" name="submitter" required placeholder="z. B. user_alice" class="form-control">
+          </div>
+          <div class="form-group">
+            <label for="payload-json">Payload (JSON):</label>
+            <textarea id="payload-json" name="payload" rows="3" class="form-control" placeholder='{"amount": 1500, "description": "Server hardware"}'></textarea>
+          </div>
+          <button type="submit" class="btn btn-success">Instanz erstellen</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- Transition durchführen (Vier-Augen-Prinzip) -->
+    <section class="card mt-4" aria-labelledby="transition-heading">
+      <div class="card-header">
+        <h2 id="transition-heading">Statusübergang durchführen (Transition)</h2>
+      </div>
+      <div class="card-body">
+        <form id="transition-form">
+          <div class="form-row">
+            <div class="form-group col">
+              <label for="trans-instance-id">Instanz ID:</label>
+              <input type="text" id="trans-instance-id" required placeholder="z. B. inst-12345" class="form-control">
+            </div>
+            <div class="form-group col">
+              <label for="trans-action">Aktion / Transition:</label>
+              <input type="text" id="trans-action" required placeholder="z. B. approve, reject" class="form-control">
+            </div>
+            <div class="form-group col">
+              <label for="trans-actor">Akteur (Actor für 4-Augen-Prüfung):</label>
+              <input type="text" id="trans-actor" required placeholder="z. B. user_bob" class="form-control">
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary">Übergang ausführen</button>
+        </form>
+        <div id="transition-result" class="result-box mt-3" style="display:none;" aria-live="assertive"></div>
+      </div>
+    </section>
+
+    <!-- Audit-Trail / Hash-Chain Inspektor -->
+    <section class="card mt-4" aria-labelledby="audit-heading">
+      <div class="card-header">
+        <h2 id="audit-heading">Kryptografischer Audit-Trail (Hash-Chain)</h2>
+      </div>
+      <div class="card-body">
+        <form id="audit-form" class="form-inline mb-3">
+          <label for="audit-instance-id" class="sr-only">Instanz ID für Audit</label>
+          <input type="text" id="audit-instance-id" placeholder="Instanz ID eingeben" class="form-control mr-2" required>
+          <button type="submit" id="btn-load-audit" class="btn btn-info">Audit-Log prüfen</button>
+        </form>
+        <div id="audit-trail-container" class="audit-trail-box" aria-live="polite">
+          <p class="placeholder-text">Wähle eine Instanz, um die kryptografische Kette zu verifizieren.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container footer-content">
+      <p>&copy; 2026 ChronosVault. Unveränderliche Audit-Trails & Deterministische State Machine.</p>
+    </div>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

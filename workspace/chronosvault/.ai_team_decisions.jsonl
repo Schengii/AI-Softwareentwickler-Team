@@ -1,1 +1,2 @@
 {"timestamp": "2026-09-20T11:36:09.318710+00:00", "event": "project_scaffold_applied", "detail": "Stack fastapi: pytest.ini, requirements.txt, requirements-dev.txt, .env.example"}
+{"timestamp": "2026-09-23T08:35:53.520303+00:00", "event": "project_scaffold_applied", "detail": "Stack fastapi: app/domain/__init__.py, app/infrastructure/__init__.py"}

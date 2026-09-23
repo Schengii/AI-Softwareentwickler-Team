@@ -1,0 +1,10 @@
+{
+  "requirements": [
+    "Alle automatisierten Tests müssen erfolgreich und ohne Fehler durchlaufen, um die Blockade `tests_pass` aufzulösen.",
+    "Eine funktionale Frontend-Benutzeroberfläche muss bereitgestellt werden, um die Blockade `missing_frontend_ui` zu beheben.",
+    "Die Fehlerbehebung muss als Reparatur der bestehenden `chronosvault`-Codebasis ohne Neuentwicklung erfolgen.",
+    "Vor weiteren Änderungen muss als erster Schritt die Verifikation der aktuellen Tests ausgeführt werden.",
+    "Der Start der Anwendung über `app/main.py` muss das Smoke-Test-Gate erfolgreich bestehen.",
+    "Die Installation aller Abhängigkeiten aus `requirements.txt` und `requirements-dev.txt` muss weiterhin fehlerfrei mit Exit-Code 0 durchlaufen."
+  ]
+}

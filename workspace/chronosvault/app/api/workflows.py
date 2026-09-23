@@ -82,12 +82,29 @@ async def execute_transition(instance_id: str, transition: TransitionRequest, db
     result_def = await db.execute(select(WorkflowDefinition).filter(WorkflowDefinition.id == instance.definition_id))
     definition = result_def.scalars().first()
 
+    # Get first audit entry to determine submitter
+    result_first_audit = await db.execute(
+        select(AuditLogEntry)
+        .filter(AuditLogEntry.instance_id == instance_id)
+        .order_by(AuditLogEntry.sequence_number.asc())
+        .limit(1)
+    )
+    first_audit = result_first_audit.scalars().first()
+    submitter = first_audit.actor_id if first_audit else None
+
+    context = {
+        "actor": transition.actor_id,
+        "submitter": submitter
+    }
+    if transition.payload:
+        context.update(transition.payload)
+
     try:
         next_state = StateMachineEngine.validate_transition(
             definition=definition,
             current_state=instance.current_state,
             action=transition.action,
-            payload=transition.payload
+            payload=context
         )
     except StateMachineError as e:
         raise HTTPException(status_code=400, detail=str(e))

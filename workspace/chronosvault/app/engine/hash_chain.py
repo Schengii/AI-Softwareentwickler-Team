@@ -29,21 +29,28 @@ class HashChainService:
             return True
             
         prev_hash = HashChainService.GENESIS_HASH
-        for entry in sorted(entries, key=lambda x: x.sequence_number):
-            if entry.prev_hash != prev_hash:
+        for entry in sorted(entries, key=lambda x: x.get('sequence_number') if isinstance(x, dict) else x.sequence_number):
+            entry_prev_hash = entry.get('prev_hash') if isinstance(entry, dict) else entry.prev_hash
+            if entry_prev_hash != prev_hash:
                 return False
             
+            entry_timestamp = entry.get('timestamp') if isinstance(entry, dict) else entry.timestamp
+            entry_actor_id = entry.get('actor_id') if isinstance(entry, dict) else entry.actor_id
+            entry_action = entry.get('action') if isinstance(entry, dict) else entry.action
+            entry_payload_hash = entry.get('payload_hash') if isinstance(entry, dict) else entry.payload_hash
+            entry_current_hash = entry.get('current_hash') if isinstance(entry, dict) else entry.current_hash
+
             expected_hash = HashChainService.compute_entry_hash(
-                timestamp=entry.timestamp,
-                actor_id=entry.actor_id,
-                action=entry.action,
-                payload_hash=entry.payload_hash or hashlib.sha256(b"").hexdigest(),
+                timestamp=entry_timestamp,
+                actor_id=entry_actor_id,
+                action=entry_action,
+                payload_hash=entry_payload_hash or hashlib.sha256(b"").hexdigest(),
                 prev_hash=prev_hash
             )
             
-            if entry.current_hash != expected_hash:
+            if entry_current_hash != expected_hash:
                 return False
                 
-            prev_hash = entry.current_hash
+            prev_hash = entry_current_hash
             
         return True

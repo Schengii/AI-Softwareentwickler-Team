@@ -1,234 +1,122 @@
 {
-  "run_id": "20260920_113524",
+  "run_id": "20260923_083545",
   "handoffs": [
     {
-      "agent_id": "architect",
-      "task_id": "f9aff6fc",
+      "agent_id": "frontend",
+      "task_id": "dfe0429f",
       "files": [
-        "docs/adr/0001-sqlite-statt-postgresql-f-r-persistenz.md",
-        "docs/adr/0002-fastapi-statt-django-f-r-api.md",
-        "docs/adr/0003-cryptographic-hash-chain-statt-append-on.md"
+        "static/index.html",
+        "static/style.css"
       ],
-      "provides": [],
+      "provides": [
+        "`static/index.html`, `static/style.css`"
+      ],
+      "requires": [
+        "FastAPI StaticFiles Mount in `app/main.py` (`Mount(\"/static\", StaticFiles(directory=\"static\"), name=\"static\")`)"
+      ],
+      "open_issues": [],
+      "timestamp": "2026-09-23T08:37:31+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "1f2b7d51",
+      "files": [
+        "app/api/workflows.py",
+        "app/engine/hash_chain.py",
+        "app/engine/state_machine.py",
+        "app/main.py"
+      ],
+      "provides": [
+        "`GET /health`, Static-Files Mount (app/main.py)",
+        "Fehlerfreie State-Machine- & Hash-Chain-Engine (app/engine/state_machine.py, app/engine/hash_chain.py, app/api/workflows.py)",
+        "app/api/workflows.py: create_definition, create_instance, execute_transition, get_audit_log, router",
+        "GET /instances/{instance_id}/audit (app/api/workflows.py)",
+        "POST /definitions (app/api/workflows.py)",
+        "POST /instances (app/api/workflows.py)",
+        "POST /instances/{instance_id}/transitions (app/api/workflows.py)",
+        "app/engine/hash_chain.py: HashChainService",
+        "app/engine/state_machine.py: StateMachineError, StateMachineEngine",
+        "app/main.py: lifespan, health_check, app",
+        "GET /health (app/main.py)"
+      ],
       "requires": [],
       "open_issues": [],
-      "timestamp": "2026-09-20T11:36:09+00:00"
+      "timestamp": "2026-09-23T08:37:55+00:00"
+    },
+    {
+      "agent_id": "backend",
+      "task_id": "dev_lead_route_mismatch_backend",
+      "files": [
+        "app/main.py"
+      ],
+      "provides": [
+        "`app/main.py` (inkl. `GET /health` und Router-Registrierung)",
+        "app/main.py: lifespan, health_check, app",
+        "GET /health (app/main.py)"
+      ],
+      "requires": [],
+      "open_issues": [
+        "Der Test `test_four_eyes_principle` wirft noch einen `KeyError: 'id'`, was auf ein Problem in der Response-Struktur des Workflow-Endpunkts hindeutet. Dies sollte im nächsten Schritt in `app/api/workflows.py` behoben werden."
+      ],
+      "timestamp": "2026-09-23T08:38:40+00:00"
     },
     {
       "agent_id": "database",
-      "task_id": "33eda953",
+      "task_id": "dev_lead_database_review",
       "files": [
-        "app/api/workflows.py",
-        "app/core/config.py",
-        "app/db/base.py",
-        "app/db/models.py",
-        "app/db/session.py",
-        "requirements.txt"
+        "app/core/settings.py",
+        "app/domain/models.py",
+        "app/infrastructure/database.py"
       ],
       "provides": [
-        "`WorkflowDefinition`, `WorkflowInstance`, `AuditLogEntry` (app/db/models.py)",
-        "`get_db` (app/db/session.py)",
-        "app/api/workflows.py: create_definition, create_instance, execute_transition, get_audit_log, router",
-        "GET /instances/{instance_id}/audit (app/api/workflows.py)",
-        "POST /definitions (app/api/workflows.py)",
-        "POST /instances (app/api/workflows.py)",
-        "POST /instances/{instance_id}/transitions (app/api/workflows.py)",
-        "app/core/config.py: Settings, get_settings",
-        "app/db/base.py: Base",
-        "app/db/models.py: utcnow, WorkflowDefinition, WorkflowInstance, AuditLogEntry",
-        "app/db/session.py: get_db, settings, engine_kwargs, engine, async_session_maker"
+        "**",
+        "app/core/settings.py: Settings, get_settings",
+        "app/domain/models.py: WorkflowDefinition, WorkflowInstance, AuditLogEntry",
+        "app/infrastructure/database.py: Base, get_db, DATABASE_URL, SessionLocal"
       ],
       "requires": [
-        "`backend` muss die Hash-Chain-Logik (SHA-256) in die Service-Schicht integrieren, bevor Audit-Logs persistiert werden."
+        "**"
       ],
-      "open_issues": [],
-      "timestamp": "2026-09-20T11:37:45+00:00"
-    },
-    {
-      "agent_id": "backend",
-      "task_id": "71d072af",
-      "files": [
-        "app/api/workflows.py",
-        "app/config.py",
-        "app/db/models.py",
-        "app/db/session.py",
-        "app/engine/hash_chain.py",
-        "app/engine/state_machine.py",
-        "app/main.py",
-        "app/schemas/workflows.py",
-        "tests/test_workflows.py"
-      ],
-      "provides": [
-        "`GET /health`, `POST /api/workflows/definitions`, `POST /api/workflows/instances`, `POST /api/workflows/instances/{id}/transitions`, `GET /api/workflows/instances/{id}/audit` (app/main.py, app/api/workflows.py)",
-        "`StateMachineEngine`, `HashChainService`",
-        "app/api/workflows.py: create_definition, create_instance, execute_transition, get_audit_log, router",
-        "GET /instances/{instance_id}/audit (app/api/workflows.py)",
-        "POST /definitions (app/api/workflows.py)",
-        "POST /instances (app/api/workflows.py)",
-        "POST /instances/{instance_id}/transitions (app/api/workflows.py)",
-        "app/config.py: Settings, get_settings",
-        "app/db/models.py: utcnow, WorkflowDefinition, WorkflowInstance, AuditLogEntry",
-        "app/db/session.py: get_db, settings, engine_kwargs, engine, async_session_maker",
-        "app/engine/hash_chain.py: HashChainService",
-        "app/engine/state_machine.py: StateMachineError, StateMachineEngine"
-      ],
-      "requires": [],
       "open_issues": [
-        "Anpassung der Test-Fixtures, um den FastAPI-Lifespan (Tabellenerstellung) während der Testausführung korrekt zu triggern."
+        "**"
       ],
-      "timestamp": "2026-09-20T11:37:56+00:00"
+      "timestamp": "2026-09-23T08:39:29+00:00"
     },
     {
-      "agent_id": "tester",
-      "task_id": "02b776c5",
+      "agent_id": "accessibility",
+      "task_id": "54788c67",
       "files": [
-        "tests/conftest.py",
-        "tests/test_four_eyes.py",
-        "tests/test_hash_chain.py"
+        "static/index.html"
       ],
       "provides": [
-        "`tests/test_hash_chain.py`, `tests/test_four_eyes.py`, `tests/conftest.py`",
-        "tests/conftest.py: db_session, override_dependency, DATABASE_URL",
-        "tests/test_four_eyes.py: test_four_eyes_principle",
-        "tests/test_hash_chain.py: test_hash_chain_integrity"
+        "`static/index.html` (mit WCAG 2.2 Optimierungen)"
       ],
       "requires": [
-        "Implementierung der `verify_chain`-Logik in `app/engine/hash_chain.py` durch `backend`."
+        "Keine (Backend-Integration der Endpunkte ist Voraussetzung)"
       ],
       "open_issues": [
-        "Keine."
+        "Keine (Frontend-Struktur ist nun barrierefrei)"
       ],
-      "timestamp": "2026-09-20T11:38:30+00:00"
-    },
-    {
-      "agent_id": "readme",
-      "task_id": "a13ceae8",
-      "files": [
-        "CHANGELOG.md",
-        "README.md"
-      ],
-      "provides": [
-        "`README.md`, `CHANGELOG.md`"
-      ],
-      "requires": [],
-      "open_issues": [],
-      "timestamp": "2026-09-20T11:38:40+00:00"
-    },
-    {
-      "agent_id": "tester",
-      "task_id": "verify_fix_tester_1",
-      "files": [
-        "tests/test_workflows.py"
-      ],
-      "provides": [
-        "Korrektur der `AsyncClient`-Instanziierung in `tests/test_workflows.py`",
-        "tests/test_workflows.py: test_health_check, test_workflow_lifecycle"
-      ],
-      "requires": [],
-      "open_issues": [
-        "Überprüfung, ob `tests/test_four_eyes.py` und `tests/test_hash_chain.py` ebenfalls die `ASGITransport`-Anpassung benötigen."
-      ],
-      "timestamp": "2026-09-20T11:42:14+00:00"
-    },
-    {
-      "agent_id": "backend",
-      "task_id": "verify_fix_backend_1",
-      "files": [
-        "app/engine/hash_chain.py",
-        "app/schemas/workflows.py",
-        "tests/test_four_eyes.py"
-      ],
-      "provides": [
-        "`tests/test_four_eyes.py` (gefixt), `tests/test_workflows.py` (gefixt), `HashChainService.verify_chain` (app/engine/hash_chain.py)",
-        "app/engine/hash_chain.py: HashChainService",
-        "app/schemas/workflows.py: WorkflowDefinitionCreate, WorkflowDefinitionResponse, WorkflowInstanceCreate, WorkflowInstanceResponse, TransitionRequest, AuditLogEntryResponse",
-        "tests/test_four_eyes.py: test_four_eyes_principle"
-      ],
-      "requires": [],
-      "open_issues": [
-        "400 Bad Request in `test_four_eyes_principle` beheben",
-        "Signatur-Mismatch in `test_hash_chain_integrity` bei `verify_chain` prüfen."
-      ],
-      "timestamp": "2026-09-20T11:43:24+00:00"
-    },
-    {
-      "agent_id": "tester",
-      "task_id": "verify_fix_tester_2",
-      "files": [
-        "tests/test_hash_chain.py"
-      ],
-      "provides": [
-        "`tests/test_hash_chain.py` (gefixt)",
-        "`tests/test_four_eyes.py` (gefixt)",
-        "tests/test_hash_chain.py: test_hash_chain_integrity"
-      ],
-      "requires": [],
-      "open_issues": [],
-      "timestamp": "2026-09-20T11:43:42+00:00"
-    },
-    {
-      "agent_id": "backend",
-      "task_id": "verify_fix_backend_2",
-      "files": [
-        "app/engine/hash_chain.py"
-      ],
-      "provides": [
-        "app/engine/hash_chain.py: HashChainService"
-      ],
-      "requires": [],
-      "open_issues": [],
-      "timestamp": "2026-09-20T11:44:27+00:00"
+      "timestamp": "2026-09-23T08:39:41+00:00"
     }
   ],
   "claims": {
-    "requirements.txt": "database",
-    "app/config.py": "backend",
-    "app/db/session.py": "backend",
-    "app/db/models.py": "backend",
-    "app/schemas/workflows.py": "backend",
+    "static/index.html": "frontend",
+    "static/style.css": "frontend",
     "app/engine/hash_chain.py": "backend",
     "app/engine/state_machine.py": "backend",
-    "app/core/config.py": "database",
-    "app/db/base.py": "database",
     "app/api/workflows.py": "backend",
     "app/main.py": "backend",
-    "tests/test_workflows.py": "backend",
-    "tests/test_hash_chain.py": "tester",
-    "tests/test_four_eyes.py": "tester",
-    "tests/conftest.py": "tester",
-    "README.md": "readme",
-    "CHANGELOG.md": "readme"
+    "app/infrastructure/database.py": "database",
+    "app/domain/models.py": "database",
+    "app/core/settings.py": "database"
   },
   "foreign_changes": [
     {
-      "path": "app/db/models.py",
-      "owner": "backend",
-      "changed_by": "database",
-      "timestamp": "2026-09-20T11:37:24+00:00"
-    },
-    {
-      "path": "app/db/session.py",
-      "owner": "backend",
-      "changed_by": "database",
-      "timestamp": "2026-09-20T11:37:32+00:00"
-    },
-    {
-      "path": "app/api/workflows.py",
-      "owner": "backend",
-      "changed_by": "database",
-      "timestamp": "2026-09-20T11:37:37+00:00"
-    },
-    {
-      "path": "tests/test_workflows.py",
-      "owner": "backend",
-      "changed_by": "tester",
-      "timestamp": "2026-09-20T11:42:11+00:00"
-    },
-    {
-      "path": "tests/test_four_eyes.py",
-      "owner": "tester",
-      "changed_by": "backend",
-      "timestamp": "2026-09-20T11:42:27+00:00"
+      "path": "static/index.html",
+      "owner": "frontend",
+      "changed_by": "accessibility",
+      "timestamp": "2026-09-23T08:39:38+00:00"
     }
   ],
   "questions": []

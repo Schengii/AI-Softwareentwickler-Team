@@ -1,7 +1,8 @@
 import datetime
 import re
-from typing import Any, Dict, List, Optional
-from app.core.vault import VaultManager
+from typing import Any
+
+from app.core.vault import VaultManager, vault_manager
 
 
 class ADRGenerator:
@@ -18,8 +19,7 @@ class ADRGenerator:
             match = adr_pattern.search(path)
             if match:
                 num = int(match.group(1))
-                if num > max_num:
-                    max_num = num
+                max_num = max(max_num, num)
         return max_num + 1
 
     def _slugify(self, title: str) -> str:
@@ -35,9 +35,9 @@ class ADRGenerator:
         decision: str,
         consequences: str,
         status: str = "Accepted",
-        related_notes: Optional[List[str]] = None,
-        tags: Optional[List[str]] = None
-    ) -> Dict[str, Any]:
+        related_notes: list[str] | None = None,
+        tags: list[str] | None = None
+    ) -> dict[str, Any]:
         """
         Generiert ein Architecture Decision Record (ADR) im Nygard-Format und speichert es im Vault.
         """
@@ -99,3 +99,8 @@ class ADRGenerator:
             "status": status,
             "note": saved_note
         }
+
+
+ADRService = ADRGenerator
+adr_generator = ADRGenerator(vault_manager=vault_manager)
+adr_service = adr_generator

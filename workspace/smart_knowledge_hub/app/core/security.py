@@ -4,9 +4,10 @@ Bietet Path-Traversal-Schutz mit is_relative_to, Endungsvalidierung und Input-Sa
 """
 
 from __future__ import annotations
+
 import re
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 
 def validate_safe_vault_path(

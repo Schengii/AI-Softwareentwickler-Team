@@ -1,13 +1,13 @@
 {
   "requirements": [
-    "Das Backend muss mit Python 3.11+ und FastAPI mit asynchronen Endpunkten implementiert sein.",
-    "Das System muss Markdown-Dateien in einer strukturierten Ordnerhierarchie einlesen, erstellen, bearbeiten und deren Frontmatter-Metadaten automatisch synchronisieren.",
-    "Ein lokaler Dateisystem-Watcher muss Änderungen an Markdown-Dateien im Speicherverzeichnis automatisch erfassen.",
-    "Eine semantische Suchmaske auf Basis von Embeddings oder BM25-Fallback muss Inhalte aus Notizen und Code-Snippets abfragen können.",
-    "Ein integriertes Tool muss Architecture Decision Records (ADRs) im Nygard-Format automatisiert generieren und im Vault ablegen.",
-    "Ein interaktiver Graph-Visualisierer oder ein JSON-Endpunkt muss Verknüpfungen und Wikilinks zwischen Notizen darstellen.",
-    "Das Frontend muss als responsives Web-Interface im Dark Mode mit Notizbaum-Ansicht und Markdown-Live-Preview bereitgestellt werden.",
-    "Eine Test-Suite muss Markdown-Syntax, Frontmatter-Integrität und API-Routen automatisiert prüfen.",
-    "Das Projekt muss im Ordner `workspace/` mit den Bestandteilen `main.py`, `requirements.txt` oder `pyproject.toml`, `core/`, `tests/` und `README.md` strukturiert sein."
+    "In `app/main.py` wird `VaultManager` aus `app.core.vault` statt des nicht-existierenden `VaultService` importiert und instanziiert.",
+    "In `app/main.py` wird `GraphBuilder` aus `app.core.graph` statt des nicht-existierenden `KnowledgeGraphService` importiert und instanziiert.",
+    "Der `ADRGenerator` nutzt ausschließlich die tatsächlich implementierten Methoden von `VaultManager`.",
+    "Das Modul `app.core.rag` führt BM25- und semantische Suchen ohne Importfehler auf Basis der bestehenden `VaultManager`-Struktur aus.",
+    "In `conftest.py` wird die FastAPI-App fehlerfrei geladen und die Fixture `async_client` zur Verfügung gestellt.",
+    "Alle Tests in `tests/test_vault.py` und `tests/test_markdown.py` werden erfolgreich und ohne Fehler abgeschlossen.",
+    "Der gesamte Testlauf via `pytest tests/` wird ohne fehlschlagende Tests ausgeführt.",
+    "Die FastAPI-Applikation startet vollständig ohne Laufzeit- oder Initialisierungsfehler.",
+    "Die statische Code-Prüfung mit dem Befehl `ruff check` läuft fehlerfrei durch."
   ]
 }

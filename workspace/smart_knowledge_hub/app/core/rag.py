@@ -1,6 +1,7 @@
 import math
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 from app.core.vault import VaultManager
 
 
@@ -10,17 +11,17 @@ class BM25SearchEngine:
     def __init__(self, k1: float = 1.5, b: float = 0.75):
         self.k1 = k1
         self.b = b
-        self.corpus: List[Dict[str, Any]] = []
-        self.doc_lengths: List[int] = []
+        self.corpus: list[dict[str, Any]] = []
+        self.doc_lengths: list[int] = []
         self.avg_doc_len: float = 0.0
-        self.doc_freqs: Dict[str, int] = {}
-        self.idf: Dict[str, float] = {}
+        self.doc_freqs: dict[str, int] = {}
+        self.idf: dict[str, float] = {}
 
-    def _tokenize(self, text: str) -> List[str]:
+    def _tokenize(self, text: str) -> list[str]:
         """Einfache Tokenisierung: Kleinbuchstaben und alphanumerische Wörter."""
         return re.findall(r"\w+", (text or "").lower())
 
-    def index(self, documents: List[Dict[str, Any]]) -> None:
+    def index(self, documents: list[dict[str, Any]]) -> None:
         """Indiziert eine Liste von Dokumenten (müssen 'path' und 'content' bzw. 'snippet' haben)."""
         self.corpus = documents
         self.doc_lengths = []
@@ -48,7 +49,7 @@ class BM25SearchEngine:
         for term, df in self.doc_freqs.items():
             self.idf[term] = math.log(1.0 + (n_docs - df + 0.5) / (df + 0.5))
 
-    def search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """Berechnet BM25 Scores für den Such-Query und liefert die Top-K Treffer."""
         if not self.corpus:
             return []
@@ -57,7 +58,7 @@ class BM25SearchEngine:
         if not query_tokens:
             return []
 
-        scores: List[float] = [0.0] * len(self.corpus)
+        scores: list[float] = [0.0] * len(self.corpus)
 
         for i, doc in enumerate(self.corpus):
             doc_len = self.doc_lengths[i]
@@ -66,7 +67,7 @@ class BM25SearchEngine:
 
             text = f"{doc.get('title', '')} {doc.get('content', '')} {' '.join(doc.get('tags', []))}"
             tokens = self._tokenize(text)
-            term_counts: Dict[str, int] = {}
+            term_counts: dict[str, int] = {}
             for t in tokens:
                 term_counts[t] = term_counts.get(t, 0) + 1
 
@@ -88,7 +89,7 @@ class BM25SearchEngine:
             reverse=True,
         )
 
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         for idx in ranked_indices[:top_k]:
             doc = self.corpus[idx]
             results.append({
@@ -121,12 +122,12 @@ class RAGEngine:
                 full_docs.append(n)
         self.search_engine.index(full_docs)
 
-    async def retrieve(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    async def retrieve(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """Findet relevante Notizen per BM25."""
         await self.refresh_index()
         return self.search_engine.search(query=query, top_k=top_k)
 
-    async def generate_answer(self, query: str, top_k: int = 3) -> Dict[str, Any]:
+    async def generate_answer(self, query: str, top_k: int = 3) -> dict[str, Any]:
         """Synthetisiert eine Antwort basierend auf dem abgerufenen Kontext."""
         retrieved_docs = await self.retrieve(query=query, top_k=top_k)
         if not retrieved_docs:

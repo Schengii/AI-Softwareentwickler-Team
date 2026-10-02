@@ -23,6 +23,13 @@
 
 </div>
 
+> **In short (EN):** A Python framework that turns a written feature request into a planned, implemented and tested software project. Specialised LLM agents (planning, backend, frontend, testing, security) hand work to each other; a verifier runs the real tests and linters and sends failures back to the responsible agent until the result passes.
+>
+> **Example:** `python main.py` → describe the app you want → the team plans the architecture, writes the code into `workspace/<project>/`, runs pytest/npm tests and writes a final report. The `workspace/` folder holds dozens of projects generated this way.
+>
+> **Stack:** Python 3.11+ · FastAPI · Pydantic · pytest · ruff · Playwright · MCP server · GitHub Actions
+
+
 ---
 
 ## 📜 Änderungsprotokoll

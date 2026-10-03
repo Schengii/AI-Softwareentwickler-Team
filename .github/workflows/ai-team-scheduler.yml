@@ -80,7 +80,7 @@ jobs:
       # speichert also am Ende IMMER den aktuellen Stand) + `restore-keys`-Präfix (findet den
       # Eintrag der VORHERIGEN Ausführung per Präfixsuche).
       - name: Restore persistent AI-Team state (backlog, run history, deployment status)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             memory/*.json

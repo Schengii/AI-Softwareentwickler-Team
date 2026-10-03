@@ -5,7 +5,7 @@
 # da die Testsuite komplett gemockt läuft (siehe README, Abschnitt "Automatisierte Tests").
 # Untergrenzen bleiben auf den zuletzt gegen dieses Projekt verifizierten Versionen.
 google-genai>=2.7.0,<3.0.0
-anthropic>=0.122.0,<1.0.0
+anthropic>=1.9.0,<2.0.0
 groq>=1.6.0,<2.0.0
 huggingface_hub>=1.28.0,<2.0.0
 httpx>=0.28.1,<1.0.0

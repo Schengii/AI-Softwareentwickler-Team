@@ -27,7 +27,7 @@ jobs:
       PYTHONIOENCODING: utf-8
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Benchmark-Historie wiederherstellen
         uses: actions/cache/restore@v4

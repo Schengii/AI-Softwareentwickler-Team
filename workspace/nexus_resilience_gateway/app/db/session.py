@@ -47,8 +47,19 @@ def create_engine_and_session() -> tuple[AsyncEngine, async_sessionmaker[AsyncSe
     )
     return engine, session_factory
 
+_session_factory: async_sessionmaker[AsyncSession] | None = None
+
+
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Erzeugt Engine und Session-Factory beim ersten Aufruf und cached sie."""
+    global _session_factory
+    if _session_factory is None:
+        _, _session_factory = create_engine_and_session()
+    return _session_factory
+
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    async with async_session_factory() as session:
+    async with get_session_factory()() as session:
         try:
             yield session
             await session.commit()

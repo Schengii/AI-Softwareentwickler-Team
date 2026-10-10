@@ -2,7 +2,7 @@
  * Orbit Tether - Haupteinstiegspunkt
  */
 
-import { deviceService } from './services/DeviceService.js';
+import './services/DeviceService.js';
 import { hapticService } from './services/HapticService.js';
 
 interface GameState {
@@ -126,7 +126,7 @@ class OrbitTetherGame {
       e.preventDefault();
       this.state.isTethered = true;
       try {
-        hapticService.impactMedium();
+        void hapticService.anchorAttached();
       } catch {
         // Fallback falls native Services nicht verfügbar
       }
@@ -136,7 +136,7 @@ class OrbitTetherGame {
       e.preventDefault();
       this.state.isTethered = false;
       try {
-        hapticService.impactLight();
+        void hapticService.anchorReleased();
       } catch {
         // Fallback
       }

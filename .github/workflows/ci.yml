@@ -59,7 +59,10 @@ jobs:
           cache: "pip"
 
       - name: Abhängigkeiten installieren
-        run: pip install -r requirements.txt
+        # ruff zusätzlich (gleiche Pinning-Grenzen wie requirements-dev.txt): framework_backlog_worker
+        # ruft `ruff check` per Subprozess auf, der Test test_successful_attempt_creates_draft_pr
+        # braucht die Binary also auf dem PATH.
+        run: pip install -r requirements.txt "ruff>=0.16.3,<0.17.0"
 
       - name: Syntax-Check (alle Quelldateien kompilieren)
         run: |

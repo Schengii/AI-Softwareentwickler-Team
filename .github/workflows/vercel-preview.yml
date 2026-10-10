@@ -1,0 +1,83 @@
+name: Vercel Cloud Deployment
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: vercel-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-preview:
+    name: Vercel Preview Deploy
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Vercel CLI installieren
+        run: npm install --global vercel@latest
+
+      - name: Token-Prüfung
+        id: check-token
+        run: |
+          if [ -n "${{ secrets.VERCEL_TOKEN }}" ]; then
+            echo "has_token=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_token=false" >> $GITHUB_OUTPUT
+            echo "::notice ::VERCEL_TOKEN ist in den GitHub Repository Secrets nicht hinterlegt. Vercel Preview-Deploy wird übersprungen."
+          fi
+
+      - name: Vercel Projekt-Konfiguration ziehen (Preview)
+        if: steps.check-token.outputs.has_token == 'true'
+        run: vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Vercel Preview bereitstellen
+        if: steps.check-token.outputs.has_token == 'true'
+        run: vercel deploy --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+  deploy-production:
+    name: Vercel Production Deploy
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Vercel CLI installieren
+        run: npm install --global vercel@latest
+
+      - name: Token-Prüfung
+        id: check-token
+        run: |
+          if [ -n "${{ secrets.VERCEL_TOKEN }}" ]; then
+            echo "has_token=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_token=false" >> $GITHUB_OUTPUT
+            echo "::notice ::VERCEL_TOKEN ist in den GitHub Repository Secrets nicht hinterlegt. Vercel Production-Deploy wird übersprungen."
+          fi
+
+      - name: Vercel Projekt-Konfiguration ziehen (Production)
+        if: steps.check-token.outputs.has_token == 'true'
+        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Vercel Production bereitstellen
+        if: steps.check-token.outputs.has_token == 'true'
+        run: vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}

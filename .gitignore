@@ -43,6 +43,11 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Vercel & Cloud Deployments
+.vercel/
+.vercel_build_output/
+
+
 # IDEs
 .vscode/
 .idea/

@@ -71,8 +71,9 @@ Das kostenlose Gemini-Kontingent ist erschöpft; alle API-Calls sind kostenpflic
 
 ```
 AI-Softwareentwickler-Team/
+├── .github/       # CI/CD Workflows (ci.yml, vercel-preview.yml), Issue- & PR-Vorlagen, Dependabot
 ├── agents/        # 33 Agentenrollen & 6 Fachbereichsleiter (orchestrator/, department_lead_agent.py)
-├── core/          # Kernsystem (task_manager, verifier, obsidian_sync, code_sandbox, rate_limiter)
+├── core/          # Kernsystem (task_manager, verifier, obsidian_sync, code_sandbox, cloud_deployment)
 ├── interface/     # Schnittstellen (cli.py, web_dashboard.py)
 ├── memory/        # Persistentes Backlog (backlog.json), Token-Kosten & Run-Historie
 ├── scripts/       # Hilfsskripte (sync_to_obsidian.py, watch_obsidian_sync.py)
@@ -80,17 +81,33 @@ AI-Softwareentwickler-Team/
 ├── tests/         # pytest-Suite für Framework & Verifier
 ├── workspace/     # Generierte Zielprojekte (vom Framework-Code getrennt halten!)
 ├── config.py      # Zentrale Konfiguration & Umgebungsvariablen
+├── vercel.json    # Vercel Deployment- und Runtime-Konfiguration
+├── .vercelignore  # Ausschlussregeln für Vercel Cloud-Deployments
+├── .claudeignore  # Token-Schutzregeln für Claude Code (große Dumps, Caches, .git)
 └── main.py        # CLI-Einstiegspunkt
 ```
+
+---
+
+## 🚀 GitHub & Vercel Workflows
+
+1. **Pull Requests & Commit-Konventionen:**
+   - Erstelle PRs stets mit der Vorlage `.github/pull_request_template.md`.
+   - Bei Bugfixes für Backlog-Tickets immer `Closes: <ticket-id>` bzw. `Closes: #<issue-id>` im Commit-Body angeben (triggert automatische Backlog-Bereinigung via `core/backlog_hygiene.py`).
+   - Issues mit dem Label `ai-team` können autonom vom `issue_watcher` (`python main.py --check-issues`) bearbeitet werden.
+2. **Vercel Cloud Deployments:**
+   - Previews und Produktion werden über `vercel.json` gesteuert. `.vercelignore` schützt vor dem Upload von `workspace/`, `memory/`, `tests/` und `.env`.
+   - CLI-Befehl: `/deploy-cloud vercel [projekt] [--real]` oder über das Web-Dashboard.
+   - GitHub Actions (`.github/workflows/vercel-preview.yml`) deployt automatisch Preview-Umgebungen für PRs, sobald `VERCEL_TOKEN` in den Repository Secrets hinterlegt ist.
 
 ---
 
 ## 🪙 Token-Optimierung & Best Practices für Claude Code
 
 1. **Kein Einlesen von Riesendateien:**
-   - `CHANGELOG.md` (255 KB / 3.500 Zeilen) und `README.md` (78 KB) nie komplett einlesen – gezielt mit `grep`/`Grep` auf Überschriften oder Stichworte suchen. Für historischen Kontext zusätzlich `git log` oder das Obsidian-Gedächtnis nutzen.
+   - `CHANGELOG.md` (>300 KB) und `README.md` (>75 KB) nie komplett einlesen – gezielt mit `grep`/`Grep` auf Überschriften oder Stichworte suchen. Für historischen Kontext zusätzlich `git log` oder das Obsidian-Gedächtnis nutzen.
 2. **`workspace/` schonen:**
-   - Suche bei allgemeinen Code-Fragen nicht in `workspace/`, da dort über 20 generierte Projekte liegen.
+   - Suche bei allgemeinen Code-Fragen nicht in `workspace/`, da dort über 20 generierte Projekte liegen (durch `.claudeignore` geschützt).
 3. **Präzise Edits:**
    - Bearbeite gezielt nur die betroffenen Zeilenblöcke (keine unnötigen Komplettüberschreibungen großer Dateien).
 4. **Verifikation nach Änderungen:**

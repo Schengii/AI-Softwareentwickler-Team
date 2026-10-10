@@ -79,6 +79,7 @@ class TestPinnedGroqFailureMessage(unittest.TestCase):
         self.assertEqual(str(ctx.exception), "Connection reset by peer")
 
     @patch("core.llm_factory.OPENROUTER_API_KEY", "")
+    @patch("core.llm_factory.DEEPSEEK_API_KEY", "dummy-key-for-test")
     @patch("core.llm_providers.deepseek.DeepSeekClient.generate_with_tools", new_callable=AsyncMock)
     @patch("core.llm_factory._groq_client")
     def test_pinned_groq_rate_limit_fails_over_to_deepseek(self, mock_groq_client, mock_deepseek_tools):
@@ -122,6 +123,7 @@ class TestPinnedGroqFailureMessage(unittest.TestCase):
         self.assertIn("Groq", message)
 
     @patch("core.llm_factory.OPENROUTER_API_KEY", "")
+    @patch("core.llm_factory.DEEPSEEK_API_KEY", "dummy-key-for-test")
     @patch("core.llm_providers.deepseek.DeepSeekClient.generate_with_usage", new_callable=AsyncMock)
     @patch("core.llm_factory._groq_client")
     def test_pinned_groq_rate_limit_fails_over_to_deepseek_non_tools_path(

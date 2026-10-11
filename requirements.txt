@@ -25,7 +25,7 @@ aiofiles>=25.1.0,<26.0.0
 # Abhängigkeit. NACH `pip install` zusätzlich einmalig nötig: `playwright install chromium`
 # (lädt das Browser-Binary, kein pip-Paket - CI installiert das bewusst NICHT, da CI keine
 # echten Generierungsläufe ausführt, siehe .github/workflows/ci.yml).
-playwright>=1.40.0,<2.0.0
+playwright>=1.63.0,<2.0.0
 
 # Einige Testmodule (u.a. tests/test_dashboard_sse.py, test_prompt_caching.py,
 # test_mcp_server_extended.py) importieren pytest direkt (Fixtures/@pytest.mark.anyio) statt

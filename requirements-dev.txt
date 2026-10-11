@@ -12,7 +12,7 @@ ruff>=0.16.3,<0.17.0
 pip-audit>=2.7.0
 
 # Echte Testabdeckungs-Messung für generierte Python-Projekte (core/verifier.py.check_coverage)
-pytest-cov>=4.1.0
+pytest-cov>=7.1.0
 
 # playwright selbst ist jetzt eine Laufzeit-Abhängigkeit (siehe requirements.txt) - hier
 # nur noch axe-core-python, das für Barrierefreiheits-Scans zusätzlich Playwright braucht.

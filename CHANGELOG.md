@@ -21,6 +21,12 @@ Realer Bedarf: Reibungslose und zuverlässige Zusammenarbeit zwischen Claude Cod
   - `.github/ISSUE_TEMPLATE/bug_report.md` & `feature_request.md`: Strukturierte Vorlagen mit direkter Opt-in-Anbindung an das autonome Issue-Watcher-Team via `ai-team`-Label.
   - `.github/dependabot.yml`: Automatisierte wöchentliche Updates für Pip-Pakete und GitHub Actions.
   - `.github/workflows/vercel-preview.yml`: Automatische Vercel Previews bei Pull Requests und Produktiv-Deployments auf `main` (mit resilientem Graceful-Skip bei noch unkonfigurierten Secrets).
+* **Pre-Commit Hook für .env- und Secret-Schutz (`scripts/git-hooks/`):**
+  - Neuer deterministischer Pre-Commit Hook (`scripts/git-hooks/pre-commit` & `scripts/git-hooks/check_secrets.py`), der in Git (`core.hooksPath` & `.git/hooks/pre-commit`) aktiviert ist.
+  - Gate 1: Blockiert das Stagen jeglicher echter `.env`-Dateien (`.env`, `.env.local`, `.env.*`).
+  - Gate 2: Scannt den gestagten Diff (`git diff --cached`) über `core/secret_scanner.py` auf echte API-Keys (Google, AWS, Anthropic, OpenAI, GitHub, Slack, Stripe, Private Keys) und bricht den Commit bei Funden geschwärzt ab.
+  - Gate 3: Führt `ruff check` auf allen gestagten Python-Dateien aus.
+  - Installer-Skripte `scripts/install-git-hooks.ps1` und `.sh` für bequeme Ein-Klick-Aktivierung bereitgestellt; vollständig durch Unit-Tests in `tests/test_pre_commit_secret_hook.py` abgesichert.
 * **Umgebungsvariablen (`.env` & `.env.example`):**
   - `.env.example` und `.env` um GitHub-Zugangsdaten (`GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_DEFAULT_BRANCH`) und Vercel-Deployment-Variablen (`VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`) ergänzt.
   - `.gitignore` um Vercel-Caches (`.vercel/`, `.vercel_build_output/`) erweitert.

@@ -63,6 +63,8 @@ Das kostenlose Gemini-Kontingent ist erschöpft; alle API-Calls sind kostenpflic
 | **Workspace-Hygiene (Alte Build-Artefakte prunen)** | `python main.py --workspace-hygiene [--days 7] [--dry-run]` |
 | **Backlog-Hygiene** | `python main.py --backlog-hygiene` |
 | **Rote Projekte zur Nachbesserung einplanen** | `python main.py --queue-red-projects` |
+| **Pre-Commit-Hook aktivieren** | `powershell -ExecutionPolicy Bypass -File scripts/install-git-hooks.ps1` |
+| **Secret- & .env-Gate manuell prüfen** | `python scripts/git-hooks/check_secrets.py` |
 | **Nur-Kommentar-Änderung beweisen** | `python scripts/check_comment_only_change.py <dateien>` |
 
 ---
@@ -99,6 +101,25 @@ AI-Softwareentwickler-Team/
    - Previews und Produktion werden über `vercel.json` gesteuert. `.vercelignore` schützt vor dem Upload von `workspace/`, `memory/`, `tests/` und `.env`.
    - CLI-Befehl: `/deploy-cloud vercel [projekt] [--real]` oder über das Web-Dashboard.
    - GitHub Actions (`.github/workflows/vercel-preview.yml`) deployt automatisch Preview-Umgebungen für PRs, sobald `VERCEL_TOKEN` in den Repository Secrets hinterlegt ist.
+
+---
+
+## 🔒 Git-Sicherheit & Pre-Commit-Hook (Secrets- & .env-Schutz)
+
+Vor jedem Commit prüft der installierte Pre-Commit-Hook (`scripts/git-hooks/pre-commit` & `scripts/git-hooks/check_secrets.py`) vollautomatisch alle gestagten Änderungen:
+1. **Gate 1 – `.env`-Dateien blockieren:**
+   - Gestagte `.env`, `.env.local`, `.env.*` oder Unterordner-`.env`-Dateien führen zum sofortigen Commit-Abbruch.
+   - Nur `.env.example` ist als versionierte Vorlage ohne echte Secrets gestattet.
+2. **Gate 2 – API-Keys & Secrets im Diff blockieren:**
+   - Scannt mit [core/secret_scanner.py](file:///c:/Users/sche-/Desktop/Programmieren%20Projekte/AI-Softwareentwickler-Team/core/secret_scanner.py) auf echte API-Keys (Google Gemini, OpenAI, Anthropic, AWS, GitHub, Slack, Stripe, Private Keys, etc.).
+   - Funde werden geschwärzt ausgegeben und der Commit wird blockiert.
+3. **Gate 3 – Lint-Gate:**
+   - Führt `ruff check` auf allen gestagten `.py`-Dateien aus.
+
+**⚠️ Unverrückbare Vorgabe für Claude Code:**
+- Bei einem Commit-Abbruch wegen `.env` oder Secrets darf **NIEMALS** `--no-verify` verwendet werden!
+- Das Secret muss sofort aus dem Code entfernt und in die lokale `.env` ausgelagert werden.
+- Hook aktivieren / reparieren: `powershell -ExecutionPolicy Bypass -File scripts/install-git-hooks.ps1` (setzt `git config core.hooksPath scripts/git-hooks` und aktualisiert `.git/hooks/pre-commit`).
 
 ---
 

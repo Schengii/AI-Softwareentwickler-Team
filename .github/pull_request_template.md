@@ -19,7 +19,7 @@ Closes:
 - [ ] **Tests:** Alle `pytest`-Tests laufen erfolgreich durch (`pytest` lokal ausgeführt)
 - [ ] **Linter & Formatierung:** `ruff check` meldet keine Fehler
 - [ ] **Token- & Kontext-Hygiene:** Keine unnötigen Großdateien committet; `.claudeignore` & `.gitignore` beachtet
-- [ ] **Secrets & Security:** Keine echten API-Keys oder Zugangsdaten im Diff (`.env` unberührt)
+- [ ] **Secrets & Security:** Keine echten API-Keys oder Zugangsdaten im Diff; Pre-Commit Hook (Secret- & .env-Gate) erfolgreich durchlaufen
 - [ ] **Cloud & Vercel Readiness:** Änderungen sind kompatibel mit Vercel-Deployments (`.vercelignore` / `vercel.json` intakt)
 - [ ] **Dokumentation:** Relevante Dokumentationen (`CHANGELOG.md`, `CLAUDE.md`, `README.md`) bei Bedarf aktualisiert
 

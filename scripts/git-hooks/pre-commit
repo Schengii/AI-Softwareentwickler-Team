@@ -1,28 +1,49 @@
 #!/bin/sh
-# scripts/git-hooks/pre-commit – lokales Lint-Gate vor jedem Commit
+# scripts/git-hooks/pre-commit – Pre-Commit Gate für Secrets, .env und Linting
 #
-# Realer Fund: main.py/agents/orchestrator.py & Co. landeten mehrfach mit Lint-Fehlern
-# (ungenutzte Imports, ein echter F821-Undefined-Name-Bug) auf `main`, weil `ruff check .`
-# nirgends VOR dem Commit lief - erst der CI-Lint-Job in der Cloud fing es auf, nachdem der
-# rote Stand bereits gepusht war. Dieser Hook holt genau diese Prüfung lokal nach vorne,
-# ohne einen neuen Python-Paketmanager oder das `pre-commit`-Framework einzuführen - nur
-# `ruff` (ohnehin in requirements-dev.txt), dieselbe ruff.toml wie CI.
+# Dieser Hook schützt das Repository vor versehentlichen Datenlecks und Lint-Fehlern:
+# 1. Gate: Blockiert gestagte .env-Dateien (.env, .env.local, .env.* - außer .env.example)
+# 2. Gate: Blockiert echte API-Keys, Private Keys und Secrets im gestagten Diff (via core/secret_scanner.py)
+# 3. Gate: Führt ruff check auf allen gestagten Python-Dateien aus
 #
-# Installation (einmalig, siehe scripts/install-git-hooks.ps1 bzw. .sh):
-#   Kopiert diese Datei nach .git/hooks/pre-commit (Git versioniert .git/hooks/ selbst nicht,
-#   deshalb liegt das Original hier im normal versionierten scripts/-Verzeichnis).
-#
-# Bewusst NUR ein Gate, kein automatischer Fix: ein Commit, der sich lautlos selbst verändert,
-# wäre überraschender als ein abgebrochener Commit mit klarer Fehlermeldung.
+# Installation:
+#   powershell -ExecutionPolicy Bypass -File scripts/install-git-hooks.ps1 (Windows)
+#   bash scripts/install-git-hooks.sh                                      (Linux/macOS)
 
-#
-# Realer Fund (Framework-Analyse 2026-09-10, Backlog-Tickets cli-9b95ab3e/cli-034e08e5): das
-# Gate prüfte mit `ruff check .` das GANZE Repository. Eine nicht gestagte Notizdatei
-# (scratch/test_keys.py) oder eine gerade parallel bearbeitete Framework-Datei blockierte
-# dadurch Commits, die diese Dateien gar nicht enthielten. Geprüft werden jetzt nur die
-# gestagten Python-Dateien; --force-exclude hält die Excludes aus ruff.toml auch für explizit
-# übergebene Pfade ein. -z/xargs -0 macht das robust gegen Leerzeichen in Dateinamen.
+# -------------------------------------------------------------
+# 1. & 2. Gate: .env-Dateien und API-Keys / Secrets blockieren
+# -------------------------------------------------------------
+PYTHON_CMD=""
+if command -v python >/dev/null 2>&1; then
+    PYTHON_CMD="python"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD="python3"
+elif command -v py >/dev/null 2>&1; then
+    PYTHON_CMD="py"
+fi
 
+if [ -n "$PYTHON_CMD" ]; then
+    $PYTHON_CMD scripts/git-hooks/check_secrets.py
+    secret_status=$?
+    if [ $secret_status -ne 0 ]; then
+        exit 1
+    fi
+else
+    # Fallback-Prüfung ohne Python für gestagte .env-Dateien
+    staged_env=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|/)\.env($|\..*)' | grep -v '\.env\.example$')
+    if [ -n "$staged_env" ]; then
+        echo ""
+        echo "❌ Commit abgebrochen: Gestagte .env-Datei(en) gefunden:"
+        echo "$staged_env"
+        echo "   Echte Secrets dürfen NIEMALS committet werden! Verwende stattdessen .env.example."
+        echo ""
+        exit 1
+    fi
+fi
+
+# -------------------------------------------------------------
+# 3. Gate: ruff check (gestagte Python-Dateien)
+# -------------------------------------------------------------
 if [ -z "$(git diff --cached --name-only --diff-filter=ACMR -- '*.py')" ]; then
     exit 0
 fi

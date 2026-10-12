@@ -42,7 +42,7 @@
 - [x] M17 | Backlog-Worker Governance-Retry-Pool Obergrenze durchsetzen | P2 | M | core/backlog_worker.py | core/backlog_worker.py:39 | Fertig wenn: Tickets mit `MAX_GOVERNANCE_TICKET_RETRIES` final als unrecoverable geschlossen werden
 - [x] M18 | Git-Worktree-Bereinigung nach abgebrochenen Läufen automatisieren | P2 | S | core/git_isolation.py | core/git_isolation.py:36 | Fertig wenn: Verwaiste `ai-team/*` Worktrees nach Laufabbruch via `prune_stale_worktrees()` aufgeräumt werden
 - [x] M19 | Obsidian-Sync Watcher Performance & Exception-Handling prüfen | P3 | S | scripts/watch_obsidian_sync.py | scripts/watch_obsidian_sync.py:59 | Fertig wenn: Watcher bei Dateizugriffsfehlern (Windows File Locks) nicht abstürzt und mit Backoff weitermacht
-- [ ] M20 | Telemetrie-Bereinigung CLI-Option Validierung | P3 | S | core/telemetry_hygiene.py | core/telemetry_hygiene.py:1 | Fertig wenn: `python main.py --clean-telemetry --dry-run` verwaiste Rauschdaten korrekt auflistet
+- [x] M20 | Telemetrie-Bereinigung CLI-Option Validierung | P3 | S | core/telemetry_hygiene.py | core/telemetry_hygiene.py:1 | Fertig wenn: `python main.py --clean-telemetry --dry-run` verwaiste Rauschdaten korrekt auflistet
 
 ### Phase 5: Dokumentation & Richtlinien-Synchronisation
 - [ ] M21 | CLAUDE.md und README.md bezüglich Pytest-Version und Modell-Restriktionen abgleichen | P2 | S | CLAUDE.md, README.md | CLAUDE.md:36 | Fertig wenn: Keine Widersprüche bzgl. Flash-Nutzung und Test-Befehlen in Dokumenten existieren

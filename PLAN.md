@@ -39,7 +39,7 @@
 
 ### Phase 4: Backlog, Telemetrie & Performance
 - [x] M16 | Backlog-Archivierung für blockierte Alttickets aktivieren | P2 | S | core/backlog_store.py | core/backlog_store.py:38 | Fertig wenn: `archive_completed_tickets()` verwaiste blocked/cancelled Tickets älter als 14 Tage ins Archiv verschiebt
-- [ ] M17 | Backlog-Worker Governance-Retry-Pool Obergrenze durchsetzen | P2 | M | core/backlog_worker.py | core/backlog_worker.py:39 | Fertig wenn: Tickets mit `MAX_GOVERNANCE_TICKET_RETRIES` final als unrecoverable geschlossen werden
+- [x] M17 | Backlog-Worker Governance-Retry-Pool Obergrenze durchsetzen | P2 | M | core/backlog_worker.py | core/backlog_worker.py:39 | Fertig wenn: Tickets mit `MAX_GOVERNANCE_TICKET_RETRIES` final als unrecoverable geschlossen werden
 - [ ] M18 | Git-Worktree-Bereinigung nach abgebrochenen Läufen automatisieren | P2 | S | core/git_isolation.py | core/git_isolation.py:36 | Fertig wenn: Verwaiste `ai-team/*` Worktrees nach Laufabbruch via `prune_stale_worktrees()` aufgeräumt werden
 - [ ] M19 | Obsidian-Sync Watcher Performance & Exception-Handling prüfen | P3 | S | scripts/watch_obsidian_sync.py | scripts/watch_obsidian_sync.py:59 | Fertig wenn: Watcher bei Dateizugriffsfehlern (Windows File Locks) nicht abstürzt und mit Backoff weitermacht
 - [ ] M20 | Telemetrie-Bereinigung CLI-Option Validierung | P3 | S | core/telemetry_hygiene.py | core/telemetry_hygiene.py:1 | Fertig wenn: `python main.py --clean-telemetry --dry-run` verwaiste Rauschdaten korrekt auflistet

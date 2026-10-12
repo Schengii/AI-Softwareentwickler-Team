@@ -45,7 +45,7 @@
 - [x] M20 | Telemetrie-Bereinigung CLI-Option Validierung | P3 | S | core/telemetry_hygiene.py | core/telemetry_hygiene.py:1 | Fertig wenn: `python main.py --clean-telemetry --dry-run` verwaiste Rauschdaten korrekt auflistet
 
 ### Phase 5: Dokumentation & Richtlinien-Synchronisation
-- [ ] M21 | CLAUDE.md und README.md bezüglich Pytest-Version und Modell-Restriktionen abgleichen | P2 | S | CLAUDE.md, README.md | CLAUDE.md:36 | Fertig wenn: Keine Widersprüche bzgl. Flash-Nutzung und Test-Befehlen in Dokumenten existieren
+- [x] M21 | CLAUDE.md und README.md bezüglich Pytest-Version und Modell-Restriktionen abgleichen | P2 | S | CLAUDE.md, README.md | CLAUDE.md:36 | Fertig wenn: Keine Widersprüche bzgl. Flash-Nutzung und Test-Befehlen in Dokumenten existieren
 - [ ] M22 | Architecture ADR-Verzeichnisstruktur dokumentieren und verlinken | P3 | S | ARCHITECTURE.md, core/adr.py | ARCHITECTURE.md:1 | Fertig wenn: Architektur-Entscheidungen aus dem Memory-Ordner mit Obsidian-Index verlinkt sind
 
 ### Optional (Ideen ohne akuten Fehlerbeleg)

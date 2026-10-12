@@ -31,7 +31,7 @@
 - [x] M10 | Root-Cause-Analyst Ticket-Generierung deduplizieren | P2 | S | core/root_cause_analyst.py | core/root_cause_analyst.py:53 | Fertig wenn: Für denselben Projektfehler innerhalb von 24h maximal 1 RCA-Ticket im Backlog angelegt wird
 
 ### Phase 3: Architektur & Verifier (Qualitäts-Gates)
-- [ ] M11 | Statische Import- und Attribut-Prüfung im Preflight-Check erweitern | P1 | L | core/pre_flight_check.py | core/pre_flight_check.py:756 | Fertig wenn: Diskrepanzen zwischen lokalen Klassen-Exporten und Test-Importen vor dem Testlauf als Fehler gemeldet werden
+- [x] M11 | Statische Import- und Attribut-Prüfung im Preflight-Check erweitern | P1 | L | core/pre_flight_check.py | core/pre_flight_check.py:756 | Fertig wenn: Diskrepanzen zwischen lokalen Klassen-Exporten und Test-Importen vor dem Testlauf als Fehler gemeldet werden
 - [ ] M12 | Interface-Mismatch-Erkennung zwischen Service und Test-Fixtures implementieren | P1 | M | core/contract_verifier.py | core/contract_verifier.py:1 | Fertig wenn: Nicht existierende Methodenaufrufe in Pytest-Fixtures (wie initialize_vault) vor Testausführung moniert werden
 - [ ] M13 | Verifier Runtime-Sandbox-Timeout-Behandlung vereinheitlichen | P2 | M | core/verifier/environment.py | core/verifier/environment.py:55 | Fertig wenn: Venv-Installation bei Timeout sauber abbricht und informativen Report statt unvollständigem Environment liefert
 - [ ] M14 | Canvas- & Blank-Screen-Erkennung im Browser-Verifier härten | P2 | S | core/browser_verifier.py | core/browser_verifier.py:39 | Fertig wenn: Web-Frontends ohne Zeichenaufrufe im `<canvas>` zuverlässig als blank_canvases erkannt werden

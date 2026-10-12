@@ -25,7 +25,7 @@
 
 ### Phase 2: Kern-Stabilität & Fehlerbehandlung (Provider & Delivery Gates)
 - [x] M06 | Hard Delivery Gate Prompt-Eskalation bei reinem Textoutput schärfen | P1 | M | agents/base_agent.py | agents/base_agent.py:204 | Fertig wenn: Ein Agent nach 1. Stufe ohne Tool-Call zwingend einen strukturierten Tool-Call-Zwang erhält und Tests in `test_quality_gates.py` grün sind
-- [ ] M07 | Provider-Failover-Strategie bei 429 Quota Exceeded robuster abfangen | P1 | M | core/provider_exhaustion.py, core/llm_factory.py | core/provider_exhaustion.py:69 | Fertig wenn: Bei Gemini-Key-Erschöpfung ohne Endlosschleife sofort auf konfiguriertes Ausweichmodell umgeschaltet wird
+- [x] M07 | Provider-Failover-Strategie bei 429 Quota Exceeded robuster abfangen | P1 | M | core/provider_exhaustion.py, core/llm_factory.py | core/provider_exhaustion.py:69 | Fertig wenn: Bei Gemini-Key-Erschöpfung ohne Endlosschleife sofort auf konfiguriertes Ausweichmodell umgeschaltet wird
 - [ ] M08 | Groq Rate-Limit & TPM/TPD Backoff-Schutz optimieren | P2 | M | core/llm_factory.py, tests/test_groq_tpm_fallback.py | tests/test_groq_tpm_fallback.py:1 | Fertig wenn: Groq TPM-Limit-Überschreitung eine progressive Wartezeit auslöst oder sofort Flash als Fallback wählt
 - [ ] M09 | Token-Compaction bei langen Verifikationsschleifen sicherstellen | P2 | M | core/context_compaction.py | core/context_compaction.py:1 | Fertig wenn: Überlange bash/tool-Outputs zuverlässig unter 500 Zeichen verdichtet werden und `test_context_compaction.py` besteht
 - [ ] M10 | Root-Cause-Analyst Ticket-Generierung deduplizieren | P2 | S | core/root_cause_analyst.py | core/root_cause_analyst.py:53 | Fertig wenn: Für denselben Projektfehler innerhalb von 24h maximal 1 RCA-Ticket im Backlog angelegt wird

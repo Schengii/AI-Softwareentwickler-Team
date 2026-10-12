@@ -21,7 +21,7 @@
 - [x] M02 | Python 3.14 Kompatibilitäts-Deprecation-Warning isolieren | P2 | S | pytest.ini | pytest.ini:10 | Fertig wenn: filterwarnings in `pytest.ini` die `_UnionGenericAlias` DeprecationWarning aus `google.genai.types` gezielt unterdrückt
 - [x] M03 | Pre-Commit Hook Installationsskript Windows-Pfadkompatibilität verifizieren | P2 | S | scripts/install-git-hooks.ps1 | scripts/install-git-hooks.ps1:15 | Fertig wenn: `install-git-hooks.ps1` idempotente Ausführung ohne ExecutionPolicy-Fehler abschließt
 - [x] M04 | CI Workflow Matrix-Erweiterung für neuere Python-Versionen prüfen | P2 | M | .github/workflows/ci.yml | .github/workflows/ci.yml:49 | Fertig wenn: CI-Matrix mindestens Python 3.12 und 3.13 abbildet und der Test-Job grün durchläuft
-- [ ] M05 | Dependabot Konfiguration für automatische Update-Überwachung abgleichen | P3 | S | .github/dependabot.yml | .github/dependabot.yml:1 | Fertig wenn: Alle Manifest-Pfade (requirements.txt, dev, workspace) valide definiert sind
+- [x] M05 | Dependabot Konfiguration für automatische Update-Überwachung abgleichen | P3 | S | .github/dependabot.yml | .github/dependabot.yml:1 | Fertig wenn: Alle Manifest-Pfade (requirements.txt, dev, workspace) valide definiert sind
 
 ### Phase 2: Kern-Stabilität & Fehlerbehandlung (Provider & Delivery Gates)
 - [ ] M06 | Hard Delivery Gate Prompt-Eskalation bei reinem Textoutput schärfen | P1 | M | agents/base_agent.py | agents/base_agent.py:204 | Fertig wenn: Ein Agent nach 1. Stufe ohne Tool-Call zwingend einen strukturierten Tool-Call-Zwang erhält und Tests in `test_quality_gates.py` grün sind

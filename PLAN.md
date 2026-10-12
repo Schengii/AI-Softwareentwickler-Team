@@ -20,7 +20,7 @@
 - [x] M01 | Pytest-Versions-Pinning in requirements.txt synchronisieren | P1 | S | requirements.txt | requirements.txt:41 | Fertig wenn: `pytest>=8.0.0,<10.0.0` gesetzt ist und `pytest --version` (9.1.1) ohne Versionskonflikt-Warnung akzeptiert wird
 - [x] M02 | Python 3.14 Kompatibilitäts-Deprecation-Warning isolieren | P2 | S | pytest.ini | pytest.ini:10 | Fertig wenn: filterwarnings in `pytest.ini` die `_UnionGenericAlias` DeprecationWarning aus `google.genai.types` gezielt unterdrückt
 - [x] M03 | Pre-Commit Hook Installationsskript Windows-Pfadkompatibilität verifizieren | P2 | S | scripts/install-git-hooks.ps1 | scripts/install-git-hooks.ps1:15 | Fertig wenn: `install-git-hooks.ps1` idempotente Ausführung ohne ExecutionPolicy-Fehler abschließt
-- [ ] M04 | CI Workflow Matrix-Erweiterung für neuere Python-Versionen prüfen | P2 | M | .github/workflows/ci.yml | .github/workflows/ci.yml:49 | Fertig wenn: CI-Matrix mindestens Python 3.12 und 3.13 abbildet und der Test-Job grün durchläuft
+- [x] M04 | CI Workflow Matrix-Erweiterung für neuere Python-Versionen prüfen | P2 | M | .github/workflows/ci.yml | .github/workflows/ci.yml:49 | Fertig wenn: CI-Matrix mindestens Python 3.12 und 3.13 abbildet und der Test-Job grün durchläuft
 - [ ] M05 | Dependabot Konfiguration für automatische Update-Überwachung abgleichen | P3 | S | .github/dependabot.yml | .github/dependabot.yml:1 | Fertig wenn: Alle Manifest-Pfade (requirements.txt, dev, workspace) valide definiert sind
 
 ### Phase 2: Kern-Stabilität & Fehlerbehandlung (Provider & Delivery Gates)

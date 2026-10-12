@@ -28,7 +28,7 @@
 - [x] M07 | Provider-Failover-Strategie bei 429 Quota Exceeded robuster abfangen | P1 | M | core/provider_exhaustion.py, core/llm_factory.py | core/provider_exhaustion.py:69 | Fertig wenn: Bei Gemini-Key-Erschöpfung ohne Endlosschleife sofort auf konfiguriertes Ausweichmodell umgeschaltet wird
 - [x] M08 | Groq Rate-Limit & TPM/TPD Backoff-Schutz optimieren | P2 | M | core/llm_factory.py, tests/test_groq_tpm_fallback.py | tests/test_groq_tpm_fallback.py:1 | Fertig wenn: Groq TPM-Limit-Überschreitung eine progressive Wartezeit auslöst oder sofort Flash als Fallback wählt
 - [x] M09 | Token-Compaction bei langen Verifikationsschleifen sicherstellen | P2 | M | core/context_compaction.py | core/context_compaction.py:1 | Fertig wenn: Überlange bash/tool-Outputs zuverlässig unter 500 Zeichen verdichtet werden und `test_context_compaction.py` besteht
-- [ ] M10 | Root-Cause-Analyst Ticket-Generierung deduplizieren | P2 | S | core/root_cause_analyst.py | core/root_cause_analyst.py:53 | Fertig wenn: Für denselben Projektfehler innerhalb von 24h maximal 1 RCA-Ticket im Backlog angelegt wird
+- [x] M10 | Root-Cause-Analyst Ticket-Generierung deduplizieren | P2 | S | core/root_cause_analyst.py | core/root_cause_analyst.py:53 | Fertig wenn: Für denselben Projektfehler innerhalb von 24h maximal 1 RCA-Ticket im Backlog angelegt wird
 
 ### Phase 3: Architektur & Verifier (Qualitäts-Gates)
 - [ ] M11 | Statische Import- und Attribut-Prüfung im Preflight-Check erweitern | P1 | L | core/pre_flight_check.py | core/pre_flight_check.py:756 | Fertig wenn: Diskrepanzen zwischen lokalen Klassen-Exporten und Test-Importen vor dem Testlauf als Fehler gemeldet werden

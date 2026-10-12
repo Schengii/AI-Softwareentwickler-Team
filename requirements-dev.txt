@@ -30,7 +30,7 @@ bandit>=1.7.0
 # dieser Version existiert --python zum gezielten Prüfen der isolierten Projekt-venv statt der
 # Framework-eigenen Umgebung. Ohne installiertes pip-licenses wird dieser Scan übersprungen
 # (attempted=False), kein Fehler - siehe LicenseAuditReport.
-pip-licenses>=4.0.0
+pip-licenses>=5.5.5
 
 # core/verifier.py.check_load_test() führt vom performance-Agenten geschriebene Locust-
 # Lastentest-Skripte (tests/load/locustfile.py) echt gegen die gestartete generierte App aus -

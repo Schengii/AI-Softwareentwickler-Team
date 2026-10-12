@@ -62,7 +62,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -80,7 +80,7 @@ jobs:
       # speichert also am Ende IMMER den aktuellen Stand) + `restore-keys`-Präfix (findet den
       # Eintrag der VORHERIGEN Ausführung per Präfixsuche).
       - name: Restore persistent AI-Team state (backlog, run history, deployment status)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             memory/*.json
@@ -90,7 +90,7 @@ jobs:
             ai-team-state-
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
           cache: 'pip'

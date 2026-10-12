@@ -160,8 +160,11 @@ Der Lebenszyklus einer Entwicklungsaufgabe durchläuft folgende feste Phasen:
 - **Benchmark- & Evaluations-Harness (`evals/`)**:
   - Kanonische Referenzaufgaben (`evals/tasks.py`) für reproduzierbare Qualitäts- und Regressionstests über `python main.py --eval`.
   - Regressions-Suite aus realen Fehlschlägen (`python main.py --eval --regression`) und **Eval-Gate** (`python main.py --eval-gate`, `evals/gate.py`): Exit-Code 1 bei sinkender Erfolgsquote, gescheiterter Baseline-Aufgabe oder >25 % mehr Tokens. Nächtlich per `.github/workflows/nightly-evals.yml`.
+- **Architecture Decision Records & Obsidian-Sync (`core/adr.py`, `core/obsidian_sync.py`)**:
+  - Verwaltet verbindliche Architektur-Entscheidungen (ADRs) im Projekt (`memory/adr/ADR-*.md`). Jedes ADR wird deterministisch versioniert und automatisch via `core/obsidian_sync.py` in den Obsidian-Vault (`00_PROJEKT_GEDAECHTNIS.md`) synchronisiert.
 - **Periodischer Dependency-Watch (`core/dependency_watch.py`)**:
   - Automatische Überwachung aller Workspace-Projekte auf neue CVEs über `python main.py --check-dependencies`.
+
 
 ---
 

@@ -495,8 +495,9 @@ class BaseAgent(ABC):
                 and not task.tools_read_only
                 and not toolbox.files_written
                 and not toolbox.clarification_requests
-                and ((iteration == 1 and hard_limit > 1) or rescue_applicable)
+                and ((iteration == 1 and hard_limit > 1) or rescue_applicable or no_file_written_retry_used)
             )
+
             try:
                 with require_tool_call(force_tool_call):
                     response = await active_llm.generate_with_tools(

@@ -39,6 +39,10 @@ class TestPreCommitHookLintsOnlyStagedFiles(unittest.TestCase):
     def setUp(self):
         self.repo = Path(tempfile.mkdtemp())
         self._git("init", "-q")
+        # Der Hook ruft scripts/git-hooks/check_secrets.py relativ zum Repo auf.
+        hook_dir = self.repo / "scripts" / "git-hooks"
+        hook_dir.mkdir(parents=True)
+        shutil.copy2(HOOK.parent / "check_secrets.py", hook_dir / "check_secrets.py")
         (self.repo / "good module.py").write_text('print("ok")\n', encoding="utf-8")
         (self.repo / "unstaged_bad.py").write_text("import os\n", encoding="utf-8")  # F401
 

@@ -71,14 +71,18 @@ def run_watcher(interval: float = 2.0):
 
                 now_str = datetime.now().strftime("%H:%M:%S")
                 print(f"[{now_str}] 🔔 Änderung erkannt – synchronisiere nach Obsidian...")
-                result = sync_project_to_obsidian()
-                if result.synced_files:
-                    print(f"[{now_str}] ✅ Aktualisiert: {', '.join(result.synced_files)}")
-                else:
-                    print(f"[{now_str}] ℹ️ Keine Hash-Änderung festgestellt.")
+                try:
+                    result = sync_project_to_obsidian()
+                    if result.synced_files:
+                        print(f"[{now_str}] ✅ Aktualisiert: {', '.join(result.synced_files)}")
+                    else:
+                        print(f"[{now_str}] ℹ️ Keine Hash-Änderung festgestellt.")
+                except Exception as exc:
+                    print(f"[{now_str}] ⚠️ Fehler beim Sync (z.B. Dateisperre), versuche im nächsten Zyklus erneut: {exc}")
 
     except KeyboardInterrupt:
         print("\n🛑 Obsidian-Sync Watcher beendet.")
+
 
 
 def main():

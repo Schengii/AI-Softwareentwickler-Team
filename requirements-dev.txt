@@ -3,7 +3,7 @@
 # Obergrenze <0.17.0: eine neue Minor-Version kann neue Standard-Lint-Regeln aktivieren und
 # den `lint`-Job in .github/workflows/ci.yml unerwartet fehlschlagen lassen (siehe requirements.txt
 # für dieselbe Pinning-Begründung bei den Laufzeit-Abhängigkeiten).
-ruff>=0.16.3,<0.17.0
+ruff>=0.17.0,<0.18.0
 
 # core/verifier.py.check_dependency_vulnerabilities() nutzt `pip-audit`, um generierte
 # Python-Projekte echt gegen die PyPI-/OSV-Advisory-Datenbank zu prüfen (statt einer rein

@@ -9,7 +9,7 @@ ruff>=0.17.0,<0.18.0
 # Python-Projekte echt gegen die PyPI-/OSV-Advisory-Datenbank zu prüfen (statt einer rein
 # LLM-basierten Einschätzung des security-Agenten). Ohne installiertes pip-audit wird dieser
 # Scan pro Projekt übersprungen (attempted=False), kein Fehler - siehe DependencyAuditReport.
-pip-audit>=2.7.0
+pip-audit>=2.10.1
 
 # Echte Testabdeckungs-Messung für generierte Python-Projekte (core/verifier.py.check_coverage)
 pytest-cov>=7.1.0

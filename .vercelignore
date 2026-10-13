@@ -1,0 +1,59 @@
+# .vercelignore – Ausschlussregeln für Vercel-Deployments
+# Verhindert, dass interne Test-Suiten, Workspace-Codebases, Secrets oder
+# riesige Caches in das Vercel-Deployment-Bundle hochgeladen werden.
+
+# 1. Versionskontrolle & CI/CD
+.git/
+.github/
+.gitattributes
+
+# 2. Lokale Secrets & sensible Konfigurationen
+.env
+*.env.*
+!.env.example
+
+# 3. Python-Umgebungen & Paket-Caches
+.venv/
+venv/
+env/
+**/.ai_team_venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# 4. Generierte Zielprojekte (20+ Subprojekte im Workspace)
+workspace/
+
+# 5. Tests, Evals & Benchmarks
+tests/
+evals/
+pytest.ini
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# 6. Logs, temporäre Skripte & Dumps
+logs/
+*.log
+scratch/
+*.bak_*
+
+# 7. Lokale Datenbanken, RAG-Embeddings & Memory-Dateien
+memory/*.db
+memory/*.json
+.ai_team_rag/
+.ai-team-worktrees/
+**/.ai_team_deployment.json
+
+# 8. Claude Code & IDE-Konfigurationen
+.claude/
+.claudeignore
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

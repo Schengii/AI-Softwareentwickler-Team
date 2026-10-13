@@ -7,6 +7,32 @@ Für die aktuelle Funktionsübersicht siehe [README.md](README.md).
 
 ---
 
+## 🟢 Claude Code, GitHub & Vercel Integrations-Infrastruktur (2026-10-10)
+
+Realer Bedarf: Reibungslose und zuverlässige Zusammenarbeit zwischen Claude Code, GitHub CI/CD und Vercel Cloud Deployments bei striktem Schutz des Token-Budgets und Ausschluss von Secret-Leaks.
+
+* **Vollständige `.claudeignore`-Optimierung:**
+  Erweitert von Basis-Ausschlussregeln auf umfassenden Schutz: blockiert `.git/`, virtuelle Umgebungen (`.venv/`, `node_modules/`), Datenbank- und Caching-Dumps (`memory/*.db`, `memory/*.json`), RAG-Vektorspeicher (`.ai_team_rag/`), Testabdeckungsberichte, Bild-/Medienbinaries und Deployment-Artefakte (`.vercel/`). Spart signifikant Kontextfenster-Tokens und verhindert kostspielige Vollauslesungen.
+* **Vercel Cloud Deployment Konfiguration (`vercel.json` & `.vercelignore`):**
+  - Neu hinzugefügt: `.vercelignore`, um zu verhindern, dass Test-Suiten, Workspace-Codebases, lokale SQLite-Datenbanken und Entwicklungs-Caches ins Vercel-Bundle hochgeladen werden.
+  - Neu hinzugefügt: `vercel.json` mit Serverless Python Runtime-Spezifikation (`@vercel/python`) und Best-Practice Security-Headern (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`).
+* **GitHub Kollaboration & Automatisierungs-Vorlagen (`.github/`):**
+  - `.github/pull_request_template.md`: Einheitliche PR-Vorlage mit Verifikations-Checkliste (pytest, ruff check, Secret-Scan) und standardisierter `Closes: #...`-Verknüpfung für automatische Backlog-Bereinigung.
+  - `.github/ISSUE_TEMPLATE/bug_report.md` & `feature_request.md`: Strukturierte Vorlagen mit direkter Opt-in-Anbindung an das autonome Issue-Watcher-Team via `ai-team`-Label.
+  - `.github/dependabot.yml`: Automatisierte wöchentliche Updates für Pip-Pakete und GitHub Actions.
+  - `.github/workflows/vercel-preview.yml`: Automatische Vercel Previews bei Pull Requests und Produktiv-Deployments auf `main` (mit resilientem Graceful-Skip bei noch unkonfigurierten Secrets).
+* **Pre-Commit Hook für .env- und Secret-Schutz (`scripts/git-hooks/`):**
+  - Neuer deterministischer Pre-Commit Hook (`scripts/git-hooks/pre-commit` & `scripts/git-hooks/check_secrets.py`), der in Git (`core.hooksPath` & `.git/hooks/pre-commit`) aktiviert ist.
+  - Gate 1: Blockiert das Stagen jeglicher echter `.env`-Dateien (`.env`, `.env.local`, `.env.*`).
+  - Gate 2: Scannt den gestagten Diff (`git diff --cached`) über `core/secret_scanner.py` auf echte API-Keys (Google, AWS, Anthropic, OpenAI, GitHub, Slack, Stripe, Private Keys) und bricht den Commit bei Funden geschwärzt ab.
+  - Gate 3: Führt `ruff check` auf allen gestagten Python-Dateien aus.
+  - Installer-Skripte `scripts/install-git-hooks.ps1` und `.sh` für bequeme Ein-Klick-Aktivierung bereitgestellt; vollständig durch Unit-Tests in `tests/test_pre_commit_secret_hook.py` abgesichert.
+* **Umgebungsvariablen (`.env` & `.env.example`):**
+  - `.env.example` und `.env` um GitHub-Zugangsdaten (`GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_DEFAULT_BRANCH`) und Vercel-Deployment-Variablen (`VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`) ergänzt.
+  - `.gitignore` um Vercel-Caches (`.vercel/`, `.vercel_build_output/`) erweitert.
+
+---
+
 ## 🟢 Token- & Kostenoptimierung für Pay-As-You-Go Gemini-API (2026-09-23)
 
 Realer Fund (Analyse 15 realer Läufe mit >10 Mio. Tokens): `gemini-pro-latest` erzeugte trotz nur 27,8 % Token-Anteil über 90 % der API-Rechnung (Faktor 15x–25x teurer als Flash bei langen Multi-Turn-Prompts >128k Tokens). Gleichzeitig trieben bis zu 14 Iterationen pro Agent die kumulierten Prompt-Tokens auf bis zu 287k je Einzelcall.

@@ -1,25 +1,94 @@
 # .claudeignore – Token-Schutz & Ausschlussregeln für Claude Code
-# Verhindert, dass riesige Log-Dateien, Caches oder generierte Subprojekte
-# das Context-Window von Claude Code unnötig füllen.
+# Verhindert, dass riesige Log-Dateien, Caches, Secrets, Binaries oder generierte
+# Subprojekte das Context-Window von Claude Code unnötig füllen und Token-Kosten erzeugen.
 
-# 2. Generierte Zielprojekte im Workspace (22+ separate Codebases)
+# 1. Versionskontrolle & VCS-Interna
+.git/
+.gitignore
+.gitattributes
+.github/workflows/*.backup
+
+# 2. Virtuelle Python-Umgebungen & Paket-Caches
+.venv/
+venv/
+env/
+ENV/
+**/.ai_team_venv/
+node_modules/
+.npm/
+.yarn/
+.pnpm-store/
+
+# 3. Python-Caches, Bytecode & Build-Artefakte
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# 4. Test-, Linter- & Coverage-Artefakte
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+coverage_report.json
+
+# 5. Generierte Zielprojekte im Workspace (22+ separate Codebases)
 # Nur bei expliziter Aufforderung gezielt öffnen, nicht bei globalen Repo-Suchen!
 workspace/
 
-# 3. Temporäre Skripte, Logs und Caches
+# 6. Temporäre Skripte, Logs, Dumps und Sicherungen
 scratch/
 logs/
 *.log
-.pytest_cache/
-.ruff_cache/
-__pycache__/
-*.pyc
-*.pyo
+*.bak_*
+evals/eval_history.json
 
-# 4. Git-Worktrees und Locks
+# 7. Persistente Datenbanken & RAG-Vektorspeicher
+memory/*.db
+memory/*.json
+.ai_team_rag/
+**/.ai_team_deployment.json
+
+# 8. Git-Worktrees und Locks
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+.ai-team-worktrees/
+**/.ai-team-worktrees/
 
-# 5. OS & Umgebung
+# 9. Cloud & Deployment Caches (Vercel / Cloudflare / Docker)
+.vercel/
+.vercel_build_output/
+.docker/
+
+# 10. Secrets & vertrauliche Umgebungsdateien (Schutz vor Prompt-Leaks)
+.env
+*.env.*
+!.env.example
+
+# 11. IDEs & OS-Dateien
+.vscode/
+.idea/
+*.swp
+*.swo
 .DS_Store
 Thumbs.db
+Desktop.ini
+
+# 12. Binäre Medien- & Archiv-Dateien
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.ico
+*.pdf
+*.zip
+*.tar.gz
+*.tgz
+*.7z
+

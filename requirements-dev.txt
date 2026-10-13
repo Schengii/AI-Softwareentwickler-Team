@@ -3,7 +3,7 @@
 # Obergrenze <0.17.0: eine neue Minor-Version kann neue Standard-Lint-Regeln aktivieren und
 # den `lint`-Job in .github/workflows/ci.yml unerwartet fehlschlagen lassen (siehe requirements.txt
 # für dieselbe Pinning-Begründung bei den Laufzeit-Abhängigkeiten).
-ruff>=0.16.3,<0.17.0
+ruff>=0.17.0,<0.18.0
 
 # core/verifier.py.check_dependency_vulnerabilities() nutzt `pip-audit`, um generierte
 # Python-Projekte echt gegen die PyPI-/OSV-Advisory-Datenbank zu prüfen (statt einer rein
@@ -12,7 +12,7 @@ ruff>=0.16.3,<0.17.0
 pip-audit>=2.7.0
 
 # Echte Testabdeckungs-Messung für generierte Python-Projekte (core/verifier.py.check_coverage)
-pytest-cov>=4.1.0
+pytest-cov>=7.1.0
 
 # playwright selbst ist jetzt eine Laufzeit-Abhängigkeit (siehe requirements.txt) - hier
 # nur noch axe-core-python, das für Barrierefreiheits-Scans zusätzlich Playwright braucht.
@@ -38,7 +38,7 @@ pip-licenses>=5.5.5
 # übersprungen (attempted=False), kein Fehler - siehe PerfCheckReport. k6 (die Alternative für
 # *.js-Lastentest-Skripte) ist KEIN pip-Paket und muss separat installiert werden
 # (https://k6.io/docs/get-started/installation/) - genau wie docker bei check_docker_build().
-locust>=2.20.0
+locust>=2.46.7
 
 # core/browser_verifier.py.verify_accessibility() nutzt `axe-core-python`, um generierte
 # Web-Frontends echt per axe-core (WCAG 2.x) auf Barrierefreiheits-Verstöße zu scannen - statt

@@ -4,10 +4,10 @@
 # anthropic/groq) würde sonst erst bei einem echten Lauf auffallen, nicht schon bei CI/Install,
 # da die Testsuite komplett gemockt läuft (siehe README, Abschnitt "Automatisierte Tests").
 # Untergrenzen bleiben auf den zuletzt gegen dieses Projekt verifizierten Versionen.
-google-genai>=2.25.0,<3.0.0
+google-genai>=2.29.0,<3.0.0
 anthropic>=0.122.0,<1.0.0
-groq>=1.6.0,<2.0.0
-huggingface_hub>=1.28.0,<2.0.0
+groq>=1.7.0,<2.0.0
+huggingface_hub>=2.1.1,<3.0.0
 httpx>=0.28.1,<1.0.0
 python-dotenv>=1.2.2,<2.0.0
 rich>=15.0.0,<16.0.0
@@ -39,5 +39,5 @@ playwright>=1.63.0,<2.0.0
 # umgestellt") über `python -m pytest tests/ -v` (siehe .github/workflows/ci.yml) - der
 # Kommentar hier war seitdem nur nicht nachgezogen worden.
 pytest>=9.1.1,<10.0.0
-pytest-asyncio>=0.23.0,<1.0.0
+pytest-asyncio>=1.4.0,<2.0.0
 anyio>=4.15.1,<5.0.0

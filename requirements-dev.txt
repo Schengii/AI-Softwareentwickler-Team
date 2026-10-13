@@ -22,7 +22,7 @@ pytest-cov>=7.1.0
 # SQL-Injection-Vektoren, …) - statt einer rein LLM-basierten Einschätzung des
 # security-Agenten. Ohne installiertes bandit wird dieser Scan übersprungen (attempted=False),
 # kein Fehler - siehe SastReport.
-bandit>=1.7.0
+bandit>=1.9.4
 
 # core/verifier.py.check_licenses() nutzt `pip-licenses`, um die Lizenzen der tatsächlich in
 # einem generierten Python-Projekt installierten Pakete echt auszulesen - statt einer rein

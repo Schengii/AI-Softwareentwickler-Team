@@ -38,6 +38,6 @@ playwright>=1.64.0,<2.0.0
 # CI-"Tests"-Job läuft seit Commit 7dbafe5 ("CI-Testrunner von unittest discover auf pytest
 # umgestellt") über `python -m pytest tests/ -v` (siehe .github/workflows/ci.yml) - der
 # Kommentar hier war seitdem nur nicht nachgezogen worden.
-pytest>=9.1.1,<10.0.0
+pytest>=9.2.0,<10.0.0
 pytest-asyncio>=1.4.0,<2.0.0
 anyio>=4.15.1,<5.0.0

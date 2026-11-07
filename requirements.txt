@@ -40,5 +40,5 @@ playwright>=1.64.0,<2.0.0
 # Kommentar hier war seitdem nur nicht nachgezogen worden.
 pytest>=9.1.1,<10.0.0
 pytest-asyncio>=1.4.0,<2.0.0
-anyio>=4.15.1,<5.0.0
+anyio>=4.16.0,<5.0.0
 

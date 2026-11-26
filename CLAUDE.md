@@ -126,7 +126,7 @@ Vor jedem Commit prüft der installierte Pre-Commit-Hook (`scripts/git-hooks/pre
 ## 🪙 Token-Optimierung & Best Practices für Claude Code
 
 1. **Kein Einlesen von Riesendateien:**
-   - `CHANGELOG.md` (>300 KB) und `README.md` (>75 KB) nie komplett einlesen – gezielt mit `grep`/`Grep` auf Überschriften oder Stichworte suchen. Für historischen Kontext zusätzlich `git log` oder das Obsidian-Gedächtnis nutzen.
+   - `CHANGELOG.md` (>300 KB) und `docs/FEATURES.md` (>75 KB, ehemals README) nie komplett einlesen – gezielt mit `grep`/`Grep` auf Überschriften oder Stichworte suchen. Für historischen Kontext zusätzlich `git log` oder das Obsidian-Gedächtnis nutzen.
 2. **`workspace/` schonen:**
    - Suche bei allgemeinen Code-Fragen nicht in `workspace/`, da dort über 20 generierte Projekte liegen (durch `.claudeignore` geschützt).
 3. **Präzise Edits:**

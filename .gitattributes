@@ -15,3 +15,7 @@ scripts/git-hooks/* text eol=lf
 # Restlicher Text: normalisieren, aber kein hartes eol erzwingen (autocrlf des jeweiligen
 # Checkouts entscheidet weiterhin, wie es lokal aussieht - nur die o.g. Skripte sind kritisch).
 * text=auto
+
+# Generierte/laufzeitnahe Inhalte: nicht in die GitHub-Sprachstatistik einrechnen, Diffs einklappen.
+workspace/** linguist-generated=true
+logs/** linguist-generated=true
